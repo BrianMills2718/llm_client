@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-client"
+version = "0.1.0"
+description = "Thin LLM client wrapping litellm. Swap models by changing one string."
+requires-python = ">=3.10"
+dependencies = [
+    "litellm>=1.40.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+structured = ["instructor>=1.14.0"]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.10",
+    "instructor>=1.14.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["llm_client*"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
