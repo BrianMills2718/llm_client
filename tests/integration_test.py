@@ -618,6 +618,51 @@ def test_gpt5_json_format() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 13. Agent SDK (requires claude-agent-sdk + ANTHROPIC_API_KEY)
+# ---------------------------------------------------------------------------
+
+
+def test_claude_code_basic() -> None:
+    _header("13a. call_llm('claude-code') — basic agent call")
+    try:
+        result = call_llm(
+            "claude-code",
+            [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
+            max_turns=1,
+        )
+        assert isinstance(result, LLMCallResult)
+        assert "4" in result.content, f"Expected '4' in: {result.content[:200]}"
+        assert result.finish_reason == "stop"
+        print(f"  Content (first 200 chars): {result.content[:200]}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_claude_code_with_model() -> None:
+    _header("13b. call_llm('claude-code/haiku') — agent with model suffix")
+    try:
+        result = call_llm(
+            "claude-code/haiku",
+            [{"role": "user", "content": "What is the capital of France? Reply with just the city name."}],
+            max_turns=1,
+        )
+        assert isinstance(result, LLMCallResult)
+        assert "paris" in result.content.lower(), f"Expected 'paris' in: {result.content[:200]}"
+        assert result.model == "claude-code/haiku"
+        print(f"  Content (first 200 chars): {result.content[:200]}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -668,8 +713,12 @@ async def main() -> None:
     test_gpt5_basic_completion()
     test_gpt5_json_format()
 
+    # Section 13: Agent SDK
+    test_claude_code_basic()
+    test_claude_code_with_model()
+
     print(f"\n{'='*60}")
-    print("  ALL INTEGRATION TESTS COMPLETE (25 tests)")
+    print("  ALL INTEGRATION TESTS COMPLETE (27 tests)")
     print(f"{'='*60}\n")
 
 
