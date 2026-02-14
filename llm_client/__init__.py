@@ -1,4 +1,4 @@
-"""LLM client wrapping litellm.
+"""LLM client wrapping litellm + agent SDKs.
 
 Swap any model by changing the model string. Everything else stays the same.
 
@@ -8,6 +8,10 @@ Usage:
     # Sync
     result = call_llm("gpt-4o", [{"role": "user", "content": "Hello"}])
     print(result.content, result.cost)
+
+    # Agent SDK (same interface, different routing)
+    result = call_llm("claude-code", [{"role": "user", "content": "Fix the bug"}])
+    result = call_llm("claude-code/opus", [{"role": "user", "content": "Review code"}])
 
     # Batch (concurrent)
     results = call_llm_batch("gpt-4o", [msgs1, msgs2, msgs3], max_concurrent=5)

@@ -1,7 +1,7 @@
-"""LLM client wrapping litellm.
+"""LLM client wrapping litellm + agent SDKs.
 
 Fourteen functions (7 sync + 7 async), no class, no mutable state:
-- call_llm / acall_llm: basic completion
+- call_llm / acall_llm: basic completion (+ agent SDK routing)
 - call_llm_structured / acall_llm_structured: Pydantic extraction (instructor or Responses API)
 - call_llm_with_tools / acall_llm_with_tools: tool/function calling
 - call_llm_batch / acall_llm_batch: concurrent batch calls
@@ -10,9 +10,11 @@ Fourteen functions (7 sync + 7 async), no class, no mutable state:
 - stream_llm_with_tools / astream_llm_with_tools: streaming with tools
 
 Features:
+- Three-tier routing: Agent SDK → Responses API → Chat Completions
 - Smart retry with jittered exponential backoff on transient errors,
   empty responses, and JSON parse failures
 - Automatic Responses API routing for GPT-5 models (litellm.responses)
+- Agent SDK routing for "claude-code" models (claude-agent-sdk)
 - Thinking model detection (Gemini 3/4 → budget_tokens: 0)
 - Fallback models — automatic failover to secondary models
 - Observability hooks (before_call, after_call, on_error)
@@ -29,6 +31,8 @@ Supported providers (just change the model string):
     call_llm("mistral/mistral-large", messages)       # Mistral
     call_llm("ollama/llama3", messages)               # Local Ollama
     call_llm("bedrock/anthropic.claude-v2", messages)  # AWS Bedrock
+    call_llm("claude-code", messages)                 # Claude Agent SDK
+    call_llm("claude-code/opus", messages)            # Claude Agent SDK (specific model)
 
 Full provider list: https://docs.litellm.ai/docs/providers
 """
@@ -619,6 +623,19 @@ def _is_responses_api_model(model: str) -> bool:
     return "gpt-5" in model.lower()
 
 
+def _is_agent_model(model: str) -> bool:
+    """Check if model routes to an agent SDK instead of litellm.
+
+    Agent models like "claude-code" or "claude-code/opus" use the Claude
+    Agent SDK. "openai-agents/*" is reserved for future OpenAI Agents SDK.
+    """
+    lower = model.lower()
+    for prefix in ("claude-code", "openai-agents"):
+        if lower == prefix or lower.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Add additionalProperties: false to all objects for OpenAI strict mode.
 
@@ -942,15 +959,18 @@ def call_llm(
     hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
-    """Call any LLM via litellm. Automatically routes GPT-5 to responses API.
+    """Call any LLM. Routes by model string: litellm, Responses API, or Agent SDK.
 
     Just change the model string to switch providers. Everything else
-    stays the same. GPT-5 models are automatically routed through
-    litellm.responses() instead of litellm.completion().
+    stays the same. Three-tier routing:
+    - "claude-code[/model]" → Claude Agent SDK
+    - "gpt-5*" → litellm.responses() (Responses API)
+    - Everything else → litellm.completion()
 
     Retries up to num_retries times with jittered exponential backoff on
     transient errors (rate limits, timeouts, empty responses, JSON parse
-    failures). Non-retryable errors raise immediately.
+    failures). Non-retryable errors raise immediately. Agent models
+    default to 0 retries (side effects) unless explicit retry policy.
 
     If ``fallback_models`` is provided, when all retries are exhausted for
     one model the next model in the list is tried automatically.
@@ -958,7 +978,8 @@ def call_llm(
     Args:
         model: Model name (e.g., "gpt-4o", "gpt-5-mini",
                "anthropic/claude-sonnet-4-5-20250929",
-               "gemini/gemini-2.0-flash", "ollama/llama3")
+               "gemini/gemini-2.0-flash", "claude-code",
+               "claude-code/opus")
         messages: Chat messages in OpenAI format
                   [{"role": "user", "content": "Hello"}]
         timeout: Request timeout in seconds
@@ -974,19 +995,27 @@ def call_llm(
                   (e.g., temperature, max_tokens, stream).
                   For GPT-5 models, response_format is automatically
                   converted and max_tokens is stripped.
+                  For agent models, agent-specific kwargs are extracted:
+                  allowed_tools, cwd, max_turns, permission_mode,
+                  max_budget_usd.
 
     Returns:
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    if cache is not None and _is_agent_model(model):
+        raise ValueError("Caching not supported for agent models — they have side effects.")
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
 
     for model_idx, current_model in enumerate(models):
-        use_responses = _is_responses_api_model(current_model)
+        is_agent = _is_agent_model(current_model)
+        use_responses = not is_agent and _is_responses_api_model(current_model)
 
-        if use_responses:
+        if is_agent:
+            pass  # No kwargs preparation needed for agent models
+        elif use_responses:
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
@@ -1013,10 +1042,17 @@ def call_llm(
             hooks.before_call(current_model, messages, kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
+        effective_retries = 0 if (is_agent and retry is None) else r.max_retries
         try:
-            for attempt in range(r.max_retries + 1):
+            for attempt in range(effective_retries + 1):
                 try:
-                    if use_responses:
+                    if is_agent:
+                        from llm_client.agents import _call_agent
+                        result = _call_agent(
+                            current_model, messages,
+                            timeout=timeout, **kwargs,
+                        )
+                    elif use_responses:
                         response = litellm.responses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model)
                     else:
@@ -1033,7 +1069,7 @@ def call_llm(
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                    if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
@@ -1041,7 +1077,7 @@ def call_llm(
                     logger.warning(
                         "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1,
-                        r.max_retries + 1,
+                        effective_retries + 1,
                         delay,
                         e,
                     )
@@ -1104,6 +1140,8 @@ def call_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Structured output is not yet supported for agent models.")
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -1365,6 +1403,8 @@ def call_llm_with_tools(
     Returns:
         LLMCallResult with tool_calls populated if model chose to use tools
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Tool calling is not yet supported for agent models.")
     return call_llm(
         model,
         messages,
@@ -1410,13 +1450,14 @@ async def acall_llm(
     hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
-    """Async version of call_llm. Routes GPT-5 to aresponses(), others to acompletion().
+    """Async version of call_llm. Same three-tier routing (Agent SDK / Responses API / Completions).
 
     Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
     Args:
         model: Model name (e.g., "gpt-4o", "gpt-5-mini",
-               "anthropic/claude-sonnet-4-5-20250929")
+               "anthropic/claude-sonnet-4-5-20250929",
+               "claude-code", "claude-code/opus")
         messages: Chat messages in OpenAI format
         timeout: Request timeout in seconds
         num_retries: Number of retries on transient failure
@@ -1432,13 +1473,18 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    if cache is not None and _is_agent_model(model):
+        raise ValueError("Caching not supported for agent models — they have side effects.")
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
 
     for model_idx, current_model in enumerate(models):
-        use_responses = _is_responses_api_model(current_model)
+        is_agent = _is_agent_model(current_model)
+        use_responses = not is_agent and _is_responses_api_model(current_model)
 
-        if use_responses:
+        if is_agent:
+            pass  # No kwargs preparation needed for agent models
+        elif use_responses:
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
@@ -1465,10 +1511,17 @@ async def acall_llm(
             hooks.before_call(current_model, messages, kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
+        effective_retries = 0 if (is_agent and retry is None) else r.max_retries
         try:
-            for attempt in range(r.max_retries + 1):
+            for attempt in range(effective_retries + 1):
                 try:
-                    if use_responses:
+                    if is_agent:
+                        from llm_client.agents import _acall_agent
+                        result = await _acall_agent(
+                            current_model, messages,
+                            timeout=timeout, **kwargs,
+                        )
+                    elif use_responses:
                         response = await litellm.aresponses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model)
                     else:
@@ -1485,7 +1538,7 @@ async def acall_llm(
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                    if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
@@ -1493,7 +1546,7 @@ async def acall_llm(
                     logger.warning(
                         "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1,
-                        r.max_retries + 1,
+                        effective_retries + 1,
                         delay,
                         e,
                     )
@@ -1556,6 +1609,8 @@ async def acall_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Structured output is not yet supported for agent models.")
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -1817,6 +1872,8 @@ async def acall_llm_with_tools(
     Returns:
         LLMCallResult with tool_calls populated if model chose to use tools
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Tool calling is not yet supported for agent models.")
     return await acall_llm(
         model,
         messages,
@@ -1885,6 +1942,8 @@ async def acall_llm_batch(
         List of LLMCallResult (or Exception if return_exceptions=True),
         in the same order as messages_list
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Batch calls are not yet supported for agent models.")
     if not messages_list:
         return []
 
@@ -1953,6 +2012,8 @@ def call_llm_batch(
 
     See :func:`acall_llm_batch` for full parameter documentation.
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Batch calls are not yet supported for agent models.")
     coro = acall_llm_batch(
         model, messages_list,
         max_concurrent=max_concurrent,
@@ -2017,6 +2078,8 @@ async def acall_llm_structured_batch(
         List of (parsed_model, LLMCallResult) tuples (or Exception if
         return_exceptions=True), in input order.
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Structured batch calls are not yet supported for agent models.")
     if not messages_list:
         return []
 
@@ -2082,6 +2145,8 @@ def call_llm_structured_batch(
 
     See :func:`acall_llm_batch` for concurrency semantics.
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Structured batch calls are not yet supported for agent models.")
     coro = acall_llm_structured_batch(
         model, messages_list, response_model,
         max_concurrent=max_concurrent,
@@ -2170,6 +2235,8 @@ def stream_llm(
     Returns:
         LLMStream that yields text chunks and exposes ``.result``
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Streaming is not yet supported for agent models.")
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -2251,6 +2318,8 @@ async def astream_llm(
     Returns:
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Streaming is not yet supported for agent models.")
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -2341,6 +2410,8 @@ def stream_llm_with_tools(
     Returns:
         LLMStream with tool_calls available on ``.result`` after consumption
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Streaming is not yet supported for agent models.")
     return stream_llm(
         model, messages,
         timeout=timeout,
@@ -2384,6 +2455,8 @@ async def astream_llm_with_tools(
     Returns:
         AsyncLLMStream with tool_calls available on ``.result`` after consumption
     """
+    if _is_agent_model(model):
+        raise NotImplementedError("Streaming is not yet supported for agent models.")
     return await astream_llm(
         model, messages,
         timeout=timeout,

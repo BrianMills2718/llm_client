@@ -352,11 +352,60 @@ result = call_llm(
 )
 ```
 
+## Agent SDK Models
+
+Agent models route through the Claude Agent SDK instead of litellm. Same `call_llm()` interface — the model string determines routing:
+
+```python
+# Agent SDK (Claude Agent SDK)
+result = call_llm("claude-code", messages)              # Default model
+result = call_llm("claude-code/opus", messages)          # Specify underlying model
+result = call_llm("claude-code/haiku", messages)         # Cheaper model
+
+# Regular API (existing litellm routing)
+result = call_llm("anthropic/claude-opus-4", messages)   # Raw Anthropic API
+```
+
+### Model Naming
+
+| Model String | SDK | Underlying Model |
+|---|---|---|
+| `claude-code` | Claude Agent SDK | SDK default |
+| `claude-code/opus` | Claude Agent SDK | opus |
+| `claude-code/sonnet` | Claude Agent SDK | sonnet |
+| `claude-code/haiku` | Claude Agent SDK | haiku |
+| `openai-agents/*` | Reserved | NotImplementedError |
+
+### Agent-specific kwargs
+
+Pass these through `call_llm` `**kwargs`:
+
+```python
+result = call_llm("claude-code", messages,
+    allowed_tools=["Read", "Edit", "Glob"],
+    permission_mode="acceptEdits",
+    cwd="/path/to/project",
+    max_turns=10,
+    max_budget_usd=1.0,
+)
+```
+
+### Limitations (Phase 1)
+
+- **No streaming**: `stream_llm("claude-code", ...)` raises `NotImplementedError`
+- **No structured output**: `call_llm_structured("claude-code", ...)` raises `NotImplementedError`
+- **No tool calling**: `call_llm_with_tools("claude-code", ...)` raises `NotImplementedError`
+- **No batch**: `call_llm_batch("claude-code", ...)` raises `NotImplementedError`
+- **No caching**: `call_llm("claude-code", ..., cache=...)` raises `ValueError`
+- **Default 0 retries**: Agent calls have side effects; retries default to 0 unless explicit `retry=RetryPolicy(...)` is passed
+- **Fallback works**: `call_llm("claude-code", ..., fallback_models=["gpt-4o"])` works
+
 ## Installation
 
 ```bash
 pip install -e .                    # Basic
 pip install -e ".[structured]"      # With instructor for structured output
+pip install -e ".[agents]"          # With Claude Agent SDK
 ```
 
 ## Environment
@@ -380,4 +429,5 @@ pytest tests/ -v   # All mocked (no real API calls)
 - `litellm>=1.81.3` — Multi-provider abstraction (bumped from 1.40.0 to fix Gemini nullable type bug)
 - `pydantic>=2.0` — Data validation
 - `instructor>=1.14.0` — Structured output fallback for older models (optional; modern models use native JSON schema)
+- `claude-agent-sdk>=0.1.30` — Claude Agent SDK for agent models (optional; install with `pip install llm_client[agents]`)
 - `pytest-asyncio>=0.23` — Async test support (dev only)

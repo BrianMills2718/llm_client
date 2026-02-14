@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-client"
-version = "0.5.0"
-description = "Thin LLM client wrapping litellm. Swap models by changing one string."
+version = "0.6.0"
+description = "Thin LLM client wrapping litellm + agent SDKs. Swap models by changing one string."
 requires-python = ">=3.10"
 dependencies = [
     "litellm>=1.81.3",
@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 structured = ["instructor>=1.14.0"]
+agents = ["claude-agent-sdk>=0.1.30"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
