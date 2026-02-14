@@ -23,6 +23,7 @@ from llm_client.client import (
     call_llm,
     call_llm_structured,
     call_llm_with_tools,
+    strip_fences,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "call_llm",
     "call_llm_structured",
     "call_llm_with_tools",
+    "strip_fences",
 ]
