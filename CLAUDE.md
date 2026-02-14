@@ -13,7 +13,7 @@ result = call_llm("gpt-5-mini", messages)                          # Auto-routes
 result = call_llm("anthropic/claude-sonnet-4-5-20250929", messages)
 result = call_llm("gemini/gemini-2.5-flash", messages)
 
-# Structured extraction (requires instructor)
+# Structured extraction (native JSON schema or instructor fallback)
 from pydantic import BaseModel
 class Entity(BaseModel):
     name: str
@@ -104,7 +104,7 @@ Fourteen functions (7 sync + 7 async):
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
-| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (instructor or Responses API) |
+| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (native JSON schema, Responses API, or instructor) |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
 | `call_llm_batch(model, messages_list, **kwargs)` | `acall_llm_batch(...)` | Concurrent batch calls |
 | `call_llm_structured_batch(model, messages_list, response_model, **kwargs)` | `acall_llm_structured_batch(...)` | Concurrent structured batch |
@@ -244,6 +244,24 @@ All functions retry on transient failures with jittered exponential backoff (cap
 
 Non-retryable errors (e.g., invalid API key, content filter) raise immediately. `num_retries` controls the count (default: 2). Empty responses are automatically retried unless the model made tool calls.
 
+## Structured Output Routing
+
+`call_llm_structured` uses three-tier routing — no code changes needed:
+
+1. **GPT-5** → Responses API with native `text.format` JSON schema
+2. **Models supporting `response_schema`** (gpt-4o, Claude, Gemini, etc.) → `litellm.completion()` with `response_format` JSON schema
+3. **Older models** (gpt-3.5-turbo, etc.) → instructor fallback
+
+```python
+# All use the same call — routing is automatic
+data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)     # Responses API
+data, meta = call_llm_structured("gpt-4o", messages, response_model=Entity)          # native JSON schema
+data, meta = call_llm_structured("gemini/gemini-2.0-flash", messages, response_model=Entity)  # native JSON schema
+data, meta = call_llm_structured("gpt-3.5-turbo", messages, response_model=Entity)  # instructor
+```
+
+Pydantic schemas are automatically made strict-mode-compatible (`additionalProperties: false` added recursively, including through `anyOf`/`allOf`/`oneOf` combinators for Optional/Union fields).
+
 ## GPT-5 / Responses API
 
 GPT-5 models use OpenAI's Responses API instead of Chat Completions. llm_client detects this automatically and routes through `litellm.responses()` / `litellm.aresponses()`. No code changes needed — just pass the model string:
@@ -261,13 +279,9 @@ What happens automatically for GPT-5 models:
 - `max_tokens` / `max_output_tokens` stripped (GPT-5 uses reasoning tokens before output — setting limits can exhaust them on reasoning and return empty output)
 - Response normalized into the same `LLMCallResult` you get from any other model
 - Smart retry still works
-- `call_llm_structured` works with GPT-5 — bypasses instructor, uses native Responses API JSON schema
 - `response_format` with `json_schema` works for structured JSON output via `call_llm`
 
 ```python
-# Structured extraction with GPT-5 — call_llm_structured works directly
-data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)
-
 # Or manual JSON schema via call_llm
 result = call_llm("gpt-5-mini", messages, response_format={
     "type": "json_schema",
@@ -363,5 +377,5 @@ pytest tests/ -v   # All mocked (no real API calls)
 
 - `litellm>=1.81.3` — Multi-provider abstraction (bumped from 1.40.0 to fix Gemini nullable type bug)
 - `pydantic>=2.0` — Data validation
-- `instructor>=1.14.0` — Structured output (optional)
+- `instructor>=1.14.0` — Structured output fallback for older models (optional; modern models use native JSON schema)
 - `pytest-asyncio>=0.23` — Async test support (dev only)

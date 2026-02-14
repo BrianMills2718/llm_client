@@ -690,18 +690,13 @@ class TestGPT5TemperatureStripping:
         assert "response_model" not in call_kwargs
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
-    @patch("instructor.from_litellm")
-    def test_structured_non_gpt5_keeps_temperature(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
-        """Non-GPT-5 models should keep temperature."""
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_non_gpt5_keeps_temperature(self, mock_completion: MagicMock, mock_cost: MagicMock) -> None:
+        """Non-GPT-5 models should keep temperature (native schema path)."""
         class Item(BaseModel):
             name: str
 
-        parsed = Item(name="test")
-        raw_resp = _mock_response()
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
-        mock_from_litellm.return_value = mock_client
+        mock_completion.return_value = _mock_response(content='{"name": "test"}')
 
         from llm_client import call_llm_structured
 
@@ -711,7 +706,7 @@ class TestGPT5TemperatureStripping:
             response_model=Item,
             temperature=0.5,
         )
-        call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
+        call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["temperature"] == 0.5
 
 
@@ -2377,9 +2372,30 @@ class TestGPT5StructuredOutput:
         mock_aresp.assert_called_once()
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_native_schema_model(self, mock_completion: MagicMock, mock_cost: MagicMock) -> None:
+        """Models supporting response_schema use native JSON schema path."""
+        class Item(BaseModel):
+            name: str
+
+        mock_completion.return_value = _mock_response(content='{"name": "test"}')
+
+        result, meta = call_llm_structured(
+            "gpt-4o",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+        )
+        assert result.name == "test"
+        call_kwargs = mock_completion.call_args.kwargs
+        assert "response_format" in call_kwargs
+        assert call_kwargs["response_format"]["type"] == "json_schema"
+        assert call_kwargs["response_format"]["json_schema"]["name"] == "Item"
+
+    @patch("llm_client.client.litellm.supports_response_schema", return_value=False)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("instructor.from_litellm")
-    def test_structured_non_gpt5_still_uses_instructor(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
-        """Non-GPT-5 models still use instructor path."""
+    def test_structured_unsupported_model_uses_instructor(self, mock_from_litellm: MagicMock, mock_cost: MagicMock, mock_supports: MagicMock) -> None:
+        """Models without response_schema support fall back to instructor."""
         class Item(BaseModel):
             name: str
 
@@ -2391,7 +2407,7 @@ class TestGPT5StructuredOutput:
         mock_from_litellm.return_value = mock_client
 
         result, meta = call_llm_structured(
-            "gpt-4o",
+            "gpt-3.5-turbo",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
         )
@@ -2428,3 +2444,58 @@ class TestStrictJsonSchema:
         for defn in schema.get("$defs", {}).values():
             if defn.get("type") == "object":
                 assert defn["additionalProperties"] is False
+
+    def test_anyof_optional_field(self) -> None:
+        """Optional fields produce anyOf — sub-schemas should be processed."""
+        from llm_client.client import _strict_json_schema
+        from typing import Optional
+
+        class WithOptional(BaseModel):
+            data: Optional[str] = None
+
+        schema = _strict_json_schema(WithOptional.model_json_schema())
+        assert schema["additionalProperties"] is False
+        # The anyOf sub-schemas are primitives here, but should not break
+        prop = schema["properties"]["data"]
+        assert "anyOf" in prop
+
+    def test_anyof_with_nested_object(self) -> None:
+        """anyOf containing an object ref gets additionalProperties in $defs."""
+        from llm_client.client import _strict_json_schema
+        from typing import Optional
+
+        class Inner(BaseModel):
+            value: int
+
+        class Outer(BaseModel):
+            inner: Optional[Inner] = None
+
+        schema = _strict_json_schema(Outer.model_json_schema())
+        assert schema["additionalProperties"] is False
+        # Inner in $defs must have additionalProperties: false
+        inner_def = schema["$defs"]["Inner"]
+        assert inner_def["additionalProperties"] is False
+
+    def test_allof_oneof(self) -> None:
+        """allOf and oneOf sub-schemas are also recursed into."""
+        from llm_client.client import _strict_json_schema
+
+        # Manually constructed schema with allOf/oneOf containing objects
+        schema = {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "allOf": [{"type": "object", "properties": {"a": {"type": "string"}}}],
+                },
+                "y": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"b": {"type": "int"}}},
+                        {"type": "string"},
+                    ],
+                },
+            },
+        }
+        _strict_json_schema(schema)
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["x"]["allOf"][0]["additionalProperties"] is False
+        assert schema["properties"]["y"]["oneOf"][0]["additionalProperties"] is False

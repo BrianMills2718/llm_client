@@ -123,6 +123,28 @@ async def test_gpt5_structured_async() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2c. Native JSON schema structured output (non-GPT-5)
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_structured() -> None:
+    _header("2c. call_llm_structured (gemini-flash, native JSON schema)")
+    try:
+        result, meta = call_llm_structured(
+            "gemini/gemini-2.0-flash",
+            [{"role": "user", "content": "Give me info about London"}],
+            response_model=CityInfo,
+        )
+        print(f"  Parsed: name={result.name}, country={result.country}, pop={result.population_millions}M")
+        print(f"  Cost: ${meta.cost:.6f}, tokens: {meta.usage}")
+        assert result.name.lower() == "london"
+        assert result.country.lower() in ("uk", "united kingdom", "england")
+        print("  PASS")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+# ---------------------------------------------------------------------------
 # 3. Streaming with retry (simulate by just verifying it works)
 # ---------------------------------------------------------------------------
 
@@ -201,6 +223,7 @@ async def main() -> None:
     await test_batch_async()
     test_gpt5_structured()
     await test_gpt5_structured_async()
+    test_gemini_structured()
     test_stream_retry()
     test_stream_with_tools()
     print(f"\n{'='*60}")

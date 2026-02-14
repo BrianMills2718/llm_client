@@ -186,7 +186,7 @@ Fourteen functions (7 sync + 7 async):
 | Function | Async Variant | Returns | Description |
 |----------|---------------|---------|-------------|
 | `call_llm(model, messages, **kw)` | `acall_llm(...)` | `LLMCallResult` | Basic completion |
-| `call_llm_structured(model, messages, response_model, **kw)` | `acall_llm_structured(...)` | `(T, LLMCallResult)` | Pydantic extraction (instructor or Responses API) |
+| `call_llm_structured(model, messages, response_model, **kw)` | `acall_llm_structured(...)` | `(T, LLMCallResult)` | Pydantic extraction (native JSON schema, Responses API, or instructor) |
 | `call_llm_with_tools(model, messages, tools, **kw)` | `acall_llm_with_tools(...)` | `LLMCallResult` | Tool/function calling |
 | `call_llm_batch(model, messages_list, **kw)` | `acall_llm_batch(...)` | `list[LLMCallResult]` | Concurrent batch calls |
 | `call_llm_structured_batch(model, messages_list, response_model, **kw)` | `acall_llm_structured_batch(...)` | `list[(T, LLMCallResult)]` | Concurrent structured batch |

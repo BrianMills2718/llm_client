@@ -596,7 +596,8 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
     OpenAI's structured output requires every object in the schema to have
     additionalProperties: false. Pydantic's model_json_schema() doesn't
-    include this by default.
+    include this by default. Recursively processes all combinators (anyOf,
+    allOf, oneOf) and nested structures.
     """
     if schema.get("type") == "object":
         schema["additionalProperties"] = False
@@ -604,6 +605,10 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             _strict_json_schema(prop)
     if "items" in schema:
         _strict_json_schema(schema["items"])
+    # Handle combinators (Optional, Union, discriminated unions)
+    for combinator in ("anyOf", "allOf", "oneOf"):
+        for sub_schema in schema.get(combinator, []):
+            _strict_json_schema(sub_schema)
     # Handle $defs for nested models
     for defn in schema.get("$defs", {}).values():
         _strict_json_schema(defn)
@@ -1048,10 +1053,9 @@ def call_llm_structured(
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
 
-    Uses instructor + litellm for reliable structured extraction
-    across all providers. For GPT-5 models, bypasses instructor and uses
-    the Responses API's native JSON schema support. No manual JSON
-    parsing needed.
+    Three-tier routing: GPT-5 uses Responses API, models supporting
+    native JSON schema use response_format, others fall back to instructor.
+    No manual JSON parsing needed.
 
     Args:
         model: Model name
@@ -1143,8 +1147,68 @@ def call_llm_structured(
                         )
                         time.sleep(delay)
                 raise last_error  # type: ignore[misc]  # unreachable
+            elif litellm.supports_response_schema(model=current_model):
+                # Native JSON schema path: litellm.completion + response_format
+                schema = _strict_json_schema(response_model.model_json_schema())
+                base_kwargs = _prepare_call_kwargs(
+                    current_model, messages,
+                    timeout=timeout,
+                    num_retries=r.max_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    kwargs=kwargs,
+                )
+                base_kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_model.__name__,
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        response = litellm.completion(**base_kwargs)
+                        raw_content = response.choices[0].message.content or ""
+                        if not raw_content.strip():
+                            raise ValueError("Empty content from LLM (native JSON schema structured)")
+                        parsed = response_model.model_validate_json(raw_content)
+                        content = str(parsed.model_dump_json())
+                        usage = _extract_usage(response)
+                        cost = _compute_cost(response)
+                        finish_reason: str = response.choices[0].finish_reason or "stop"
+
+                        if attempt > 0:
+                            logger.info("call_llm_structured (native schema) succeeded after %d retries", attempt)
+
+                        llm_result = LLMCallResult(
+                            content=content, usage=usage, cost=cost,
+                            model=current_model, finish_reason=finish_reason,
+                            raw_response=response,
+                        )
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            cache.set(key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1, r.max_retries + 1, delay, e,
+                        )
+                        time.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
             else:
-                # Standard path: instructor + litellm.completion
+                # Fallback path: instructor + litellm.completion
                 import instructor
 
                 client = instructor.from_litellm(litellm.completion)
@@ -1167,7 +1231,7 @@ def call_llm_structured(
                         usage = _extract_usage(completion_response)
                         cost = _compute_cost(completion_response)
                         content = str(parsed.model_dump_json())
-                        finish_reason: str = completion_response.choices[0].finish_reason or ""
+                        finish_reason = completion_response.choices[0].finish_reason or ""
 
                         if attempt > 0:
                             logger.info("call_llm_structured succeeded after %d retries", attempt)
@@ -1522,8 +1586,68 @@ async def acall_llm_structured(
                         )
                         await asyncio.sleep(delay)
                 raise last_error  # type: ignore[misc]  # unreachable
+            elif litellm.supports_response_schema(model=current_model):
+                # Native JSON schema path: litellm.acompletion + response_format
+                schema = _strict_json_schema(response_model.model_json_schema())
+                base_kwargs = _prepare_call_kwargs(
+                    current_model, messages,
+                    timeout=timeout,
+                    num_retries=r.max_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    kwargs=kwargs,
+                )
+                base_kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_model.__name__,
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        response = await litellm.acompletion(**base_kwargs)
+                        raw_content = response.choices[0].message.content or ""
+                        if not raw_content.strip():
+                            raise ValueError("Empty content from LLM (native JSON schema structured)")
+                        parsed = response_model.model_validate_json(raw_content)
+                        content = str(parsed.model_dump_json())
+                        usage = _extract_usage(response)
+                        cost = _compute_cost(response)
+                        finish_reason: str = response.choices[0].finish_reason or "stop"
+
+                        if attempt > 0:
+                            logger.info("acall_llm_structured (native schema) succeeded after %d retries", attempt)
+
+                        llm_result = LLMCallResult(
+                            content=content, usage=usage, cost=cost,
+                            model=current_model, finish_reason=finish_reason,
+                            raw_response=response,
+                        )
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            await _async_cache_set(cache, key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1, r.max_retries + 1, delay, e,
+                        )
+                        await asyncio.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
             else:
-                # Standard path: instructor + litellm.acompletion
+                # Fallback path: instructor + litellm.acompletion
                 import instructor
 
                 client = instructor.from_litellm(litellm.acompletion)
@@ -1546,7 +1670,7 @@ async def acall_llm_structured(
                         usage = _extract_usage(completion_response)
                         cost = _compute_cost(completion_response)
                         content = str(parsed.model_dump_json())
-                        finish_reason: str = completion_response.choices[0].finish_reason or ""
+                        finish_reason = completion_response.choices[0].finish_reason or ""
 
                         if attempt > 0:
                             logger.info("acall_llm_structured succeeded after %d retries", attempt)

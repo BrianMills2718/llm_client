@@ -65,7 +65,7 @@ Fourteen functions (7 sync + 7 async):
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
-| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (instructor or Responses API) |
+| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (native JSON schema, Responses API, or instructor) |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
 | `call_llm_batch(model, messages_list, **kwargs)` | `acall_llm_batch(...)` | Concurrent batch calls |
 | `call_llm_structured_batch(model, messages_list, response_model, **kwargs)` | `acall_llm_structured_batch(...)` | Concurrent structured batch |
