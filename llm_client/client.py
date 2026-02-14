@@ -601,6 +601,9 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """
     if schema.get("type") == "object":
         schema["additionalProperties"] = False
+        # OpenAI strict mode requires ALL properties in required
+        if "properties" in schema:
+            schema["required"] = list(schema["properties"].keys())
         for prop in schema.get("properties", {}).values():
             _strict_json_schema(prop)
     if "items" in schema:

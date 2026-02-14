@@ -2427,6 +2427,20 @@ class TestStrictJsonSchema:
 
         schema = _strict_json_schema(Simple.model_json_schema())
         assert schema["additionalProperties"] is False
+        assert "name" in schema["required"]
+
+    def test_optional_fields_added_to_required(self) -> None:
+        """Optional fields must be in required for OpenAI strict mode."""
+        from llm_client.client import _strict_json_schema
+        from typing import Optional
+
+        class WithOptional(BaseModel):
+            name: str
+            nickname: Optional[str] = None
+
+        schema = _strict_json_schema(WithOptional.model_json_schema())
+        assert "name" in schema["required"]
+        assert "nickname" in schema["required"]
 
     def test_nested_model(self) -> None:
         """Nested models also get additionalProperties: false."""
