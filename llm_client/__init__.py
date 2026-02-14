@@ -26,6 +26,8 @@ Usage:
     result = await acall_llm("gpt-4o", [{"role": "user", "content": "Hello"}])
 """
 
+from llm_client.prompts import render_prompt
+
 from llm_client.client import (
     AsyncCachePolicy,
     AsyncLLMStream,
@@ -81,5 +83,6 @@ __all__ = [
     "linear_backoff",
     "stream_llm",
     "stream_llm_with_tools",
+    "render_prompt",
     "strip_fences",
 ]
