@@ -197,7 +197,7 @@ Fourteen functions (7 sync + 7 async):
 
 `call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any `**kwargs` passed through to `litellm.completion`.
 
-`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`.
+`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
 
 `*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions`, `on_item_complete`, `on_item_error`.
 

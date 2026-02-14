@@ -13,7 +13,7 @@ result = call_llm("gpt-5-mini", messages)                          # Auto-routes
 result = call_llm("anthropic/claude-sonnet-4-5-20250929", messages)
 result = call_llm("gemini/gemini-2.5-flash", messages)
 
-# Structured extraction (requires instructor)
+# Structured extraction (native JSON schema or instructor fallback)
 from pydantic import BaseModel
 class Entity(BaseModel):
     name: str
