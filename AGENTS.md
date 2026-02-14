@@ -47,30 +47,33 @@ Six functions (3 sync + 3 async), all return `LLMCallResult`:
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, plus any litellm kwargs.
+All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any litellm kwargs.
 
 ### Response Caching
 
 ```python
 from llm_client import LRUCache, call_llm
 
-cache = LRUCache(maxsize=128)
+cache = LRUCache(maxsize=128, ttl=3600)  # thread-safe, 1h TTL
 result = call_llm("gpt-4o", messages, cache=cache)
 ```
 
 Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.).
 
-### Custom Retry Patterns
+### RetryPolicy
 
 ```python
-result = call_llm("gpt-4o", messages, retry_on=["custom error pattern"])
+from llm_client import RetryPolicy, linear_backoff
+
+policy = RetryPolicy(
+    max_retries=5, backoff=linear_backoff,
+    retry_on=["custom error"], on_retry=lambda a, e, d: ...,
+    should_retry=lambda e: True,  # fully custom retryability
+)
+result = call_llm("gpt-4o", messages, retry=policy)
 ```
 
-### Retry Callback
-
-```python
-result = call_llm("gpt-4o", messages, on_retry=lambda attempt, err, delay: print(f"Retry {attempt}"))
-```
+Backoff strategies: `exponential_backoff` (default), `linear_backoff`, `fixed_backoff`, or any `(attempt, base_delay, max_delay) -> delay` callable.
 
 ## Installation
 

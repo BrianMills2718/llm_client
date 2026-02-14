@@ -9,12 +9,16 @@ from llm_client import (
     CachePolicy,
     LLMCallResult,
     LRUCache,
+    RetryPolicy,
     acall_llm,
     acall_llm_structured,
     acall_llm_with_tools,
     call_llm,
     call_llm_structured,
     call_llm_with_tools,
+    exponential_backoff,
+    fixed_backoff,
+    linear_backoff,
     strip_fences,
 )
 
@@ -1294,3 +1298,188 @@ class TestCache:
         )
         assert result2.name == "test"
         assert mock_client.chat.completions.create_with_completion.call_count == 1
+
+    @patch("llm_client.client.time.monotonic")
+    def test_lru_cache_ttl_expiry(self, mock_mono: MagicMock) -> None:
+        """Entries older than TTL should be evicted on access."""
+        mock_mono.return_value = 1000.0
+        cache = LRUCache(ttl=60.0)
+        r = LLMCallResult(content="hi", usage={}, cost=0, model="m")
+        cache.set("k", r)
+
+        # Within TTL
+        mock_mono.return_value = 1050.0
+        assert cache.get("k") is r
+
+        # Past TTL
+        mock_mono.return_value = 1061.0
+        assert cache.get("k") is None
+
+    @patch("llm_client.client.time.monotonic")
+    def test_lru_cache_no_ttl_never_expires(self, mock_mono: MagicMock) -> None:
+        """Without TTL, entries never expire."""
+        mock_mono.return_value = 0.0
+        cache = LRUCache()
+        r = LLMCallResult(content="hi", usage={}, cost=0, model="m")
+        cache.set("k", r)
+
+        mock_mono.return_value = 999999.0
+        assert cache.get("k") is r
+
+    def test_lru_cache_clear(self) -> None:
+        """clear() should empty the cache."""
+        cache = LRUCache()
+        r = LLMCallResult(content="hi", usage={}, cost=0, model="m")
+        cache.set("k", r)
+        assert cache.get("k") is r
+        cache.clear()
+        assert cache.get("k") is None
+
+    def test_lru_cache_thread_safe(self) -> None:
+        """Concurrent reads/writes should not crash."""
+        import concurrent.futures
+
+        cache = LRUCache(maxsize=50)
+        results = [LLMCallResult(content=str(i), usage={}, cost=0, model="m") for i in range(100)]
+
+        def writer(start: int) -> None:
+            for i in range(start, start + 50):
+                cache.set(f"k{i}", results[i])
+
+        def reader(start: int) -> None:
+            for i in range(start, start + 50):
+                cache.get(f"k{i}")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(writer, 0),
+                pool.submit(writer, 50),
+                pool.submit(reader, 0),
+                pool.submit(reader, 50),
+            ]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()  # raises if any thread crashed
+
+
+# ---------------------------------------------------------------------------
+# RetryPolicy tests
+# ---------------------------------------------------------------------------
+
+
+class TestRetryPolicy:
+    """Tests for the RetryPolicy parameter."""
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_policy_overrides_individual_params(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """RetryPolicy should override num_retries/base_delay/max_delay."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),
+            Exception("rate limit"),
+            Exception("rate limit"),
+            _mock_response(),
+        ]
+        policy = RetryPolicy(max_retries=5, base_delay=0.01, max_delay=0.05)
+        # num_retries=0 would fail without policy override
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=0, retry=policy)
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 4
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_policy_on_retry_callback(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """on_retry in RetryPolicy should fire."""
+        mock_comp.side_effect = [Exception("timeout"), _mock_response()]
+        cb = MagicMock()
+        policy = RetryPolicy(max_retries=2, on_retry=cb)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        cb.assert_called_once()
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_policy_custom_backoff(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Custom backoff function on RetryPolicy should be used."""
+        mock_comp.side_effect = [Exception("timeout"), _mock_response()]
+        policy = RetryPolicy(max_retries=2, backoff=fixed_backoff, base_delay=0.42)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        assert mock_sleep.call_args[0][0] == 0.42
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_policy_should_retry_overrides_patterns(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """should_retry on RetryPolicy should replace built-in pattern matching."""
+        mock_comp.side_effect = [
+            Exception("totally custom error xyz"),
+            _mock_response(),
+        ]
+        # This error would NOT match any built-in pattern, but should_retry says yes
+        policy = RetryPolicy(max_retries=2, should_retry=lambda e: "xyz" in str(e))
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_policy_should_retry_can_reject(self, mock_comp: MagicMock, mock_sleep: MagicMock) -> None:
+        """should_retry returning False should prevent retry even for built-in patterns."""
+        mock_comp.side_effect = Exception("rate limit")
+        # "rate limit" normally retries, but should_retry always says no
+        policy = RetryPolicy(max_retries=5, should_retry=lambda e: False)
+        with pytest.raises(Exception, match="rate limit"):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        assert mock_comp.call_count == 1  # no retry
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_retry_policy_async(self, mock_acomp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """RetryPolicy should work with async functions."""
+        mock_acomp.side_effect = [Exception("timeout"), _mock_response()]
+        policy = RetryPolicy(max_retries=3, backoff=linear_backoff, base_delay=0.1)
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        assert result.content == "Hello!"
+        assert mock_acomp.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Backoff strategy tests
+# ---------------------------------------------------------------------------
+
+
+class TestBackoffStrategies:
+    """Tests for the public backoff functions."""
+
+    def test_exponential_backoff_increases(self) -> None:
+        # base * 2^attempt, so attempt 0 → ~1, attempt 3 → ~8
+        for _ in range(50):
+            d0 = exponential_backoff(0, 1.0, 30.0)
+            d3 = exponential_backoff(3, 1.0, 30.0)
+            assert 0.5 <= d0 <= 1.5
+            assert 4.0 <= d3 <= 12.0
+
+    def test_linear_backoff_increases(self) -> None:
+        for _ in range(50):
+            d0 = linear_backoff(0, 1.0, 30.0)
+            d3 = linear_backoff(3, 1.0, 30.0)
+            assert 0.8 <= d0 <= 1.2
+            assert 3.2 <= d3 <= 4.8
+
+    def test_fixed_backoff_constant(self) -> None:
+        for attempt in range(10):
+            assert fixed_backoff(attempt, 2.0, 30.0) == 2.0
+
+    def test_fixed_backoff_respects_max_delay(self) -> None:
+        assert fixed_backoff(0, 100.0, 5.0) == 5.0
+
+    def test_exponential_backoff_capped(self) -> None:
+        for _ in range(100):
+            assert exponential_backoff(20, 1.0, 10.0) <= 10.0
+
+    def test_linear_backoff_capped(self) -> None:
+        for _ in range(100):
+            assert linear_backoff(100, 1.0, 5.0) <= 5.0

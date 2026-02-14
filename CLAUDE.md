@@ -48,38 +48,55 @@ Six functions (3 sync + 3 async), all return `LLMCallResult`:
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, plus any litellm kwargs.
+All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any litellm kwargs.
 
-### Custom Retryable Patterns (`retry_on`)
+### RetryPolicy (reusable retry configuration)
 
-Extend the built-in retryable error patterns with custom ones:
+Create once, reuse across calls. Overrides individual retry params when provided:
+
 ```python
-result = call_llm("gpt-4o", messages, retry_on=["custom error", "my transient"])
+from llm_client import RetryPolicy, call_llm, linear_backoff
+
+policy = RetryPolicy(
+    max_retries=5,
+    base_delay=0.5,
+    max_delay=10.0,
+    retry_on=["custom error"],                   # extend built-in patterns
+    on_retry=lambda attempt, err, delay: ...,     # callback per retry
+    backoff=linear_backoff,                       # or exponential_backoff, fixed_backoff, custom fn
+    should_retry=lambda err: "fatal" not in str(err),  # fully custom retryability
+)
+
+result = call_llm("gpt-4o", messages, retry=policy)
+result = call_llm("gpt-4o", messages2, retry=policy)  # same policy reused
 ```
-Custom patterns are **added** to the defaults (union), not replacing them.
 
-### Retry Callback (`on_retry`)
-
-Hook into the retry loop for custom logging/metrics:
+Individual params still work for quick one-offs:
 ```python
-def my_hook(attempt: int, error: Exception, delay: float) -> None:
-    print(f"Retry {attempt}: {error} (waiting {delay:.1f}s)")
-
-result = call_llm("gpt-4o", messages, on_retry=my_hook)
+result = call_llm("gpt-4o", messages, num_retries=5, retry_on=["custom"])
 ```
+
+### Backoff strategies
+
+Three built-in, or pass any `(attempt, base_delay, max_delay) -> delay` callable:
+- `exponential_backoff` — default, `base * 2^attempt` with jitter
+- `linear_backoff` — `base * (attempt+1)` with jitter
+- `fixed_backoff` — constant `base_delay`, no escalation
 
 ### Response Caching (`cache`)
 
-Plug in response caching with `CachePolicy` protocol. Built-in `LRUCache` for in-memory caching:
+Thread-safe, TTL-capable LRU cache built in. Implement `CachePolicy` protocol for custom backends:
+
 ```python
 from llm_client import LRUCache, call_llm
 
-cache = LRUCache(maxsize=128)
+cache = LRUCache(maxsize=128, ttl=3600)  # 1 hour TTL, thread-safe
 result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
 result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
+cache.clear()  # manual invalidation
 ```
 
-Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.):
+Custom backend (Redis, disk, etc.):
 ```python
 from llm_client import CachePolicy, LLMCallResult
 

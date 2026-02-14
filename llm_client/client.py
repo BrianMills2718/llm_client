@@ -34,6 +34,7 @@ import json as _json
 import logging
 import random
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -95,23 +96,40 @@ class CachePolicy(Protocol):
 
 
 class LRUCache:
-    """In-memory LRU cache for LLM responses."""
+    """Thread-safe in-memory LRU cache for LLM responses.
 
-    def __init__(self, maxsize: int = 128) -> None:
-        self._cache: OrderedDict[str, LLMCallResult] = OrderedDict()
+    Args:
+        maxsize: Maximum number of entries. Oldest evicted on overflow.
+        ttl: Time-to-live in seconds. ``None`` means entries never expire.
+    """
+
+    def __init__(self, maxsize: int = 128, ttl: float | None = None) -> None:
+        self._cache: OrderedDict[str, tuple[LLMCallResult, float]] = OrderedDict()
         self._maxsize = maxsize
+        self._ttl = ttl
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> LLMCallResult | None:
-        if key not in self._cache:
-            return None
-        self._cache.move_to_end(key)
-        return self._cache[key]
+        with self._lock:
+            if key not in self._cache:
+                return None
+            value, ts = self._cache[key]
+            if self._ttl is not None and time.monotonic() - ts > self._ttl:
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return value
 
     def set(self, key: str, value: LLMCallResult) -> None:
-        self._cache[key] = value
-        self._cache.move_to_end(key)
-        if len(self._cache) > self._maxsize:
-            self._cache.popitem(last=False)
+        with self._lock:
+            self._cache[key] = (value, time.monotonic())
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._maxsize:
+                self._cache.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
 
 
 def _cache_key(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> str:
@@ -165,11 +183,97 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     return any(p in error_str for p in patterns)
 
 
-def _calculate_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
-    """Exponential backoff with jitter, capped at max_delay."""
+# -- Backoff strategies ----------------------------------------------------
+
+
+def exponential_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
+    """Exponential backoff with jitter, capped at *max_delay*."""
     delay = base_delay * (2 ** attempt)
     jitter = random.uniform(0.5, 1.5)
     return min(delay * jitter, max_delay)
+
+
+def linear_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
+    """Linear backoff with jitter, capped at *max_delay*."""
+    delay = base_delay * (attempt + 1)
+    jitter = random.uniform(0.8, 1.2)
+    return min(delay * jitter, max_delay)
+
+
+def fixed_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
+    """Fixed delay (no escalation), capped at *max_delay*."""
+    return min(base_delay, max_delay)
+
+
+# Backward-compat alias (used by existing tests)
+_calculate_backoff = exponential_backoff
+
+
+# -- RetryPolicy -----------------------------------------------------------
+
+
+@dataclass
+class RetryPolicy:
+    """Reusable retry configuration.
+
+    Create once and pass to multiple calls for consistent behaviour::
+
+        policy = RetryPolicy(max_retries=5, base_delay=0.5, on_retry=my_logger)
+        call_llm("gpt-4o", msgs, retry=policy)
+        call_llm("gpt-4o", msgs2, retry=policy)
+
+    When ``retry`` is provided it **overrides** the individual retry params
+    (``num_retries``, ``base_delay``, ``max_delay``, ``retry_on``,
+    ``on_retry``).
+
+    Attributes:
+        max_retries: How many times to retry on transient failure.
+        base_delay: Starting delay for backoff (seconds).
+        max_delay: Cap on backoff delay (seconds).
+        retry_on: Extra retryable patterns (added to built-in defaults).
+        on_retry: ``(attempt, error, delay)`` callback fired before each sleep.
+        backoff: Backoff function ``(attempt, base_delay, max_delay) → delay``.
+            Defaults to :func:`exponential_backoff`. Also available:
+            :func:`linear_backoff`, :func:`fixed_backoff`, or any custom
+            callable.
+        should_retry: Fully custom retryability check ``(error) → bool``.
+            When set, **replaces** the built-in pattern matching entirely.
+    """
+
+    max_retries: int = 2
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    retry_on: list[str] | None = None
+    on_retry: Callable[[int, Exception, float], None] | None = None
+    backoff: Callable[[int, float, float], float] | None = None
+    should_retry: Callable[[Exception], bool] | None = None
+
+
+def _effective_retry(
+    retry: RetryPolicy | None,
+    num_retries: int,
+    base_delay: float,
+    max_delay: float,
+    retry_on: list[str] | None,
+    on_retry: Callable[[int, Exception, float], None] | None,
+) -> RetryPolicy:
+    """Resolve a RetryPolicy — use the explicit object or build one from individual params."""
+    if retry is not None:
+        return retry
+    return RetryPolicy(
+        max_retries=num_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+    )
+
+
+def _check_retryable(error: Exception, policy: RetryPolicy) -> bool:
+    """Decide if *error* is retryable according to *policy*."""
+    if policy.should_retry is not None:
+        return policy.should_retry(error)
+    return _is_retryable(error, extra_patterns=policy.retry_on)
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +660,7 @@ def call_llm(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM via litellm. Automatically routes GPT-5 to responses API.
@@ -589,6 +694,7 @@ def call_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     use_responses = _is_responses_api_model(model)
 
     if use_responses:
@@ -602,7 +708,7 @@ def call_llm(
         call_kwargs = _prepare_call_kwargs(
             model, messages,
             timeout=timeout,
-            num_retries=num_retries,
+            num_retries=r.max_retries,
             reasoning_effort=reasoning_effort,
             api_base=api_base,
             kwargs=kwargs,
@@ -614,8 +720,9 @@ def call_llm(
         if cached is not None:
             return cached
 
+    backoff_fn = r.backoff or exponential_backoff
     last_error: Exception | None = None
-    for attempt in range(num_retries + 1):
+    for attempt in range(r.max_retries + 1):
         try:
             if use_responses:
                 response = litellm.responses(**call_kwargs)
@@ -630,15 +737,15 @@ def call_llm(
             return result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
+            if not _check_retryable(e, r) or attempt >= r.max_retries:
                 raise
-            delay = _calculate_backoff(attempt, base_delay, max_delay)
-            if on_retry is not None:
-                on_retry(attempt, e, delay)
+            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+            if r.on_retry is not None:
+                r.on_retry(attempt, e, delay)
             logger.warning(
                 "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
-                num_retries + 1,
+                r.max_retries + 1,
                 delay,
                 e,
             )
@@ -661,6 +768,7 @@ def call_llm_structured(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
@@ -698,6 +806,8 @@ def call_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+
     import instructor
 
     client = instructor.from_litellm(litellm.completion)
@@ -706,7 +816,7 @@ def call_llm_structured(
     base_kwargs = _prepare_call_kwargs(
         model, messages,
         timeout=timeout,
-        num_retries=num_retries,
+        num_retries=r.max_retries,
         reasoning_effort=reasoning_effort,
         api_base=api_base,
         kwargs=kwargs,
@@ -716,16 +826,18 @@ def call_llm_structured(
     # retry (our outer loop handles all retries to avoid double-retry)
     call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
+    _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
     if cache is not None:
-        key = _cache_key(model, messages, response_model=response_model.__name__, **kwargs)
+        key = _cache_key(model, messages, response_model=_model_fqn, **kwargs)
         cached = cache.get(key)
         if cached is not None:
             # Re-parse the cached content back into the Pydantic model
             reparsed = response_model.model_validate_json(cached.content)
             return reparsed, cached
 
+    backoff_fn = r.backoff or exponential_backoff
     last_error: Exception | None = None
-    for attempt in range(num_retries + 1):
+    for attempt in range(r.max_retries + 1):
         try:
             parsed, completion_response = client.chat.completions.create_with_completion(
                 **call_kwargs,
@@ -753,15 +865,15 @@ def call_llm_structured(
             return parsed, llm_result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
+            if not _check_retryable(e, r) or attempt >= r.max_retries:
                 raise
-            delay = _calculate_backoff(attempt, base_delay, max_delay)
-            if on_retry is not None:
-                on_retry(attempt, e, delay)
+            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+            if r.on_retry is not None:
+                r.on_retry(attempt, e, delay)
             logger.warning(
                 "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
-                num_retries + 1,
+                r.max_retries + 1,
                 delay,
                 e,
             )
@@ -784,6 +896,7 @@ def call_llm_with_tools(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
@@ -833,6 +946,7 @@ def call_llm_with_tools(
         retry_on=retry_on,
         on_retry=on_retry,
         cache=cache,
+        retry=retry,
         tools=tools,
         **kwargs,
     )
@@ -856,6 +970,7 @@ async def acall_llm(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm. Routes GPT-5 to aresponses(), others to acompletion().
@@ -877,6 +992,7 @@ async def acall_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     use_responses = _is_responses_api_model(model)
 
     if use_responses:
@@ -890,7 +1006,7 @@ async def acall_llm(
         call_kwargs = _prepare_call_kwargs(
             model, messages,
             timeout=timeout,
-            num_retries=num_retries,
+            num_retries=r.max_retries,
             reasoning_effort=reasoning_effort,
             api_base=api_base,
             kwargs=kwargs,
@@ -902,8 +1018,9 @@ async def acall_llm(
         if cached is not None:
             return cached
 
+    backoff_fn = r.backoff or exponential_backoff
     last_error: Exception | None = None
-    for attempt in range(num_retries + 1):
+    for attempt in range(r.max_retries + 1):
         try:
             if use_responses:
                 response = await litellm.aresponses(**call_kwargs)
@@ -918,15 +1035,15 @@ async def acall_llm(
             return result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
+            if not _check_retryable(e, r) or attempt >= r.max_retries:
                 raise
-            delay = _calculate_backoff(attempt, base_delay, max_delay)
-            if on_retry is not None:
-                on_retry(attempt, e, delay)
+            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+            if r.on_retry is not None:
+                r.on_retry(attempt, e, delay)
             logger.warning(
                 "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
-                num_retries + 1,
+                r.max_retries + 1,
                 delay,
                 e,
             )
@@ -949,6 +1066,7 @@ async def acall_llm_structured(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Async version of call_llm_structured.
@@ -969,6 +1087,8 @@ async def acall_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+
     import instructor
 
     client = instructor.from_litellm(litellm.acompletion)
@@ -977,7 +1097,7 @@ async def acall_llm_structured(
     base_kwargs = _prepare_call_kwargs(
         model, messages,
         timeout=timeout,
-        num_retries=num_retries,
+        num_retries=r.max_retries,
         reasoning_effort=reasoning_effort,
         api_base=api_base,
         kwargs=kwargs,
@@ -987,15 +1107,17 @@ async def acall_llm_structured(
     # retry (our outer loop handles all retries to avoid double-retry)
     call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
+    _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
     if cache is not None:
-        key = _cache_key(model, messages, response_model=response_model.__name__, **kwargs)
+        key = _cache_key(model, messages, response_model=_model_fqn, **kwargs)
         cached = cache.get(key)
         if cached is not None:
             reparsed = response_model.model_validate_json(cached.content)
             return reparsed, cached
 
+    backoff_fn = r.backoff or exponential_backoff
     last_error: Exception | None = None
-    for attempt in range(num_retries + 1):
+    for attempt in range(r.max_retries + 1):
         try:
             parsed, completion_response = await client.chat.completions.create_with_completion(
                 **call_kwargs,
@@ -1023,15 +1145,15 @@ async def acall_llm_structured(
             return parsed, llm_result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
+            if not _check_retryable(e, r) or attempt >= r.max_retries:
                 raise
-            delay = _calculate_backoff(attempt, base_delay, max_delay)
-            if on_retry is not None:
-                on_retry(attempt, e, delay)
+            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+            if r.on_retry is not None:
+                r.on_retry(attempt, e, delay)
             logger.warning(
                 "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
-                num_retries + 1,
+                r.max_retries + 1,
                 delay,
                 e,
             )
@@ -1054,6 +1176,7 @@ async def acall_llm_with_tools(
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm_with_tools.
@@ -1083,6 +1206,7 @@ async def acall_llm_with_tools(
         retry_on=retry_on,
         on_retry=on_retry,
         cache=cache,
+        retry=retry,
         tools=tools,
         **kwargs,
     )

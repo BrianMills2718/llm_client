@@ -89,24 +89,31 @@ result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 ```python
 from llm_client import LRUCache, call_llm
 
-cache = LRUCache(maxsize=128)
+cache = LRUCache(maxsize=128, ttl=3600)  # thread-safe, 1h TTL
 result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
 result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
 ```
 
 Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.).
 
-### Custom retry patterns and callbacks
+### Retry policy
 
 ```python
-# Retry on custom error patterns (added to built-in defaults)
-result = call_llm("gpt-4o", messages, retry_on=["custom error"])
+from llm_client import RetryPolicy, call_llm, linear_backoff
 
-# Hook into retries for logging/metrics
-def on_retry(attempt, error, delay):
-    print(f"Retry {attempt}: {error}")
+# Reusable policy object — overrides individual retry params
+policy = RetryPolicy(
+    max_retries=5,
+    base_delay=0.5,
+    backoff=linear_backoff,                     # or exponential_backoff, fixed_backoff
+    retry_on=["custom error"],                  # extend built-in patterns
+    on_retry=lambda a, err, d: print(f"Retry {a}"),
+    should_retry=lambda err: True,              # fully custom retryability check
+)
+result = call_llm("gpt-4o", messages, retry=policy)
 
-result = call_llm("gpt-4o", messages, on_retry=on_retry)
+# Or quick one-offs with individual params
+result = call_llm("gpt-4o", messages, num_retries=5, retry_on=["custom"])
 ```
 
 ## API
@@ -121,7 +128,7 @@ Six functions (3 sync + 3 async), all return `LLMCallResult`:
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, plus any `**kwargs` passed through to `litellm.completion`.
+All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any `**kwargs` passed through to `litellm.completion`.
 
 ## API keys
 
