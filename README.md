@@ -168,7 +168,9 @@ Eight functions (4 sync + 4 async):
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any `**kwargs` passed through to `litellm.completion`.
+`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any `**kwargs` passed through to `litellm.completion`.
+
+`stream_llm` / `astream_llm` accept: `timeout`, `reasoning_effort`, `api_base`, `hooks`, plus `**kwargs`.
 
 ## API keys
 

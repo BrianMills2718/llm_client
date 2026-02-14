@@ -1,6 +1,6 @@
 # LLM Client
 
-Thin wrapper around litellm. Swap any model by changing one string — everything else stays the same.
+Wrapper around litellm. Swap any model by changing one string — everything else stays the same. Smart retry, fallback models, streaming, observability hooks, response caching, Responses API routing for GPT-5, thinking model detection, and cost tracking built in.
 
 ## Quick Reference
 
@@ -59,7 +59,9 @@ Eight functions (4 sync + 4 async):
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
+`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
+
+`stream_llm` / `astream_llm` accept: `timeout`, `reasoning_effort`, `api_base`, `hooks`, plus litellm kwargs.
 
 ### Response Caching
 
