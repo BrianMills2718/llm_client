@@ -1,15 +1,19 @@
 """LLM client wrapping litellm.
 
-Six functions (3 sync + 3 async), no class, no mutable state:
+Eight functions (4 sync + 4 async), no class, no mutable state:
 - call_llm / acall_llm: basic completion
 - call_llm_structured / acall_llm_structured: instructor-based Pydantic extraction
 - call_llm_with_tools / acall_llm_with_tools: tool/function calling
+- stream_llm / astream_llm: streaming (yields text chunks)
 
 Features:
 - Smart retry with jittered exponential backoff on transient errors,
   empty responses, and JSON parse failures
 - Automatic Responses API routing for GPT-5 models (litellm.responses)
 - Thinking model detection (Gemini 3/4 → budget_tokens: 0)
+- Fallback models — automatic failover to secondary models
+- Observability hooks (before_call, after_call, on_error)
+- Response caching with sync and async cache protocols
 - Fence stripping utility for manual JSON parsing
 - Cost tracking via litellm.completion_cost
 - finish_reason + raw_response on every result
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json as _json
 import logging
 import random
@@ -93,6 +98,19 @@ class CachePolicy(Protocol):
 
     def get(self, key: str) -> LLMCallResult | None: ...
     def set(self, key: str, value: LLMCallResult) -> None: ...
+
+
+@runtime_checkable
+class AsyncCachePolicy(Protocol):
+    """Protocol for async LLM response caches (Redis, etc.).
+
+    Async functions accept either ``CachePolicy`` or ``AsyncCachePolicy``.
+    When an ``AsyncCachePolicy`` is detected, ``await`` is used for get/set
+    so the event loop is never blocked.
+    """
+
+    async def get(self, key: str) -> LLMCallResult | None: ...
+    async def set(self, key: str, value: LLMCallResult) -> None: ...
 
 
 class LRUCache:
@@ -249,6 +267,34 @@ class RetryPolicy:
     should_retry: Callable[[Exception], bool] | None = None
 
 
+@dataclass
+class Hooks:
+    """Observability hooks fired during LLM calls.
+
+    Attach callbacks for logging, metrics, tracing, or OpenTelemetry
+    integration. All fields are optional — set only the ones you need.
+
+    Example::
+
+        hooks = Hooks(
+            before_call=lambda model, msgs, kw: print(f"Calling {model}"),
+            after_call=lambda result: print(f"Got {len(result.content)} chars"),
+            on_error=lambda err, attempt: print(f"Attempt {attempt} failed: {err}"),
+        )
+        result = call_llm("gpt-4o", messages, hooks=hooks)
+
+    Attributes:
+        before_call: ``(model, messages, kwargs) → None``. Fired before each
+            LLM API call (including retries and fallbacks).
+        after_call: ``(LLMCallResult) → None``. Fired after a successful call.
+        on_error: ``(error, attempt) → None``. Fired on each failed attempt.
+    """
+
+    before_call: Callable[[str, list[dict[str, Any]], dict[str, Any]], None] | None = None
+    after_call: Callable[[LLMCallResult], None] | None = None
+    on_error: Callable[[Exception, int], None] | None = None
+
+
 def _effective_retry(
     retry: RetryPolicy | None,
     num_retries: int,
@@ -274,6 +320,169 @@ def _check_retryable(error: Exception, policy: RetryPolicy) -> bool:
     if policy.should_retry is not None:
         return policy.should_retry(error)
     return _is_retryable(error, extra_patterns=policy.retry_on)
+
+
+# ---------------------------------------------------------------------------
+# Async cache helpers
+# ---------------------------------------------------------------------------
+
+
+async def _async_cache_get(cache: Any, key: str) -> LLMCallResult | None:
+    """Get from cache, awaiting if the cache is async."""
+    result = cache.get(key)
+    if inspect.isawaitable(result):
+        return await result
+    return result  # type: ignore[return-value]
+
+
+async def _async_cache_set(cache: Any, key: str, value: LLMCallResult) -> None:
+    """Set into cache, awaiting if the cache is async."""
+    result = cache.set(key, value)
+    if inspect.isawaitable(result):
+        await result
+
+
+# ---------------------------------------------------------------------------
+# Streaming
+# ---------------------------------------------------------------------------
+
+
+class LLMStream:
+    """Sync streaming wrapper. Yields text chunks, then exposes ``.result``.
+
+    Example::
+
+        stream = stream_llm("gpt-4o", messages)
+        for chunk in stream:
+            print(chunk, end="", flush=True)
+        print()
+        print(stream.result.usage)
+    """
+
+    def __init__(self, response_iter: Any, model: str, hooks: Hooks | None = None) -> None:
+        self._iter = response_iter
+        self._model = model
+        self._hooks = hooks
+        self._chunks_text: list[str] = []
+        self._raw_chunks: list[Any] = []
+        self._result: LLMCallResult | None = None
+
+    def __iter__(self) -> LLMStream:
+        return self
+
+    def __next__(self) -> str:
+        try:
+            chunk = next(self._iter)
+        except StopIteration:
+            self._finalize()
+            raise
+        self._raw_chunks.append(chunk)
+        text = ""
+        if chunk.choices:
+            delta = chunk.choices[0].delta
+            text = (delta.content if delta and delta.content else "") or ""
+        self._chunks_text.append(text)
+        return text
+
+    def _finalize(self) -> None:
+        content = "".join(self._chunks_text)
+        usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        cost = 0.0
+        finish_reason = "stop"
+        try:
+            complete = litellm.stream_chunk_builder(self._raw_chunks)
+            if complete:
+                usage = _extract_usage(complete)
+                cost = _compute_cost(complete)
+                finish_reason = complete.choices[0].finish_reason or "stop"
+        except Exception:
+            pass
+        self._result = LLMCallResult(
+            content=content,
+            usage=usage,
+            cost=cost,
+            model=self._model,
+            finish_reason=finish_reason,
+            raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
+        )
+        if self._hooks and self._hooks.after_call:
+            self._hooks.after_call(self._result)
+
+    @property
+    def result(self) -> LLMCallResult:
+        """The accumulated result. Available after the stream is fully consumed."""
+        if self._result is None:
+            raise RuntimeError("Stream not yet consumed. Iterate first.")
+        return self._result
+
+
+class AsyncLLMStream:
+    """Async streaming wrapper. Yields text chunks, then exposes ``.result``.
+
+    Example::
+
+        stream = await astream_llm("gpt-4o", messages)
+        async for chunk in stream:
+            print(chunk, end="", flush=True)
+        print()
+        print(stream.result.usage)
+    """
+
+    def __init__(self, response_iter: Any, model: str, hooks: Hooks | None = None) -> None:
+        self._iter = response_iter
+        self._model = model
+        self._hooks = hooks
+        self._chunks_text: list[str] = []
+        self._raw_chunks: list[Any] = []
+        self._result: LLMCallResult | None = None
+
+    def __aiter__(self) -> AsyncLLMStream:
+        return self
+
+    async def __anext__(self) -> str:
+        try:
+            chunk = await self._iter.__anext__()
+        except StopAsyncIteration:
+            self._finalize()
+            raise
+        self._raw_chunks.append(chunk)
+        text = ""
+        if chunk.choices:
+            delta = chunk.choices[0].delta
+            text = (delta.content if delta and delta.content else "") or ""
+        self._chunks_text.append(text)
+        return text
+
+    def _finalize(self) -> None:
+        content = "".join(self._chunks_text)
+        usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        cost = 0.0
+        finish_reason = "stop"
+        try:
+            complete = litellm.stream_chunk_builder(self._raw_chunks)
+            if complete:
+                usage = _extract_usage(complete)
+                cost = _compute_cost(complete)
+                finish_reason = complete.choices[0].finish_reason or "stop"
+        except Exception:
+            pass
+        self._result = LLMCallResult(
+            content=content,
+            usage=usage,
+            cost=cost,
+            model=self._model,
+            finish_reason=finish_reason,
+            raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
+        )
+        if self._hooks and self._hooks.after_call:
+            self._hooks.after_call(self._result)
+
+    @property
+    def result(self) -> LLMCallResult:
+        """The accumulated result. Available after the stream is fully consumed."""
+        if self._result is None:
+            raise RuntimeError("Stream not yet consumed. Iterate first.")
+        return self._result
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +870,9 @@ def call_llm(
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM via litellm. Automatically routes GPT-5 to responses API.
@@ -672,6 +884,9 @@ def call_llm(
     Retries up to num_retries times with jittered exponential backoff on
     transient errors (rate limits, timeouts, empty responses, JSON parse
     failures). Non-retryable errors raise immediately.
+
+    If ``fallback_models`` is provided, when all retries are exhausted for
+    one model the next model in the list is tried automatically.
 
     Args:
         model: Model name (e.g., "gpt-4o", "gpt-5-mini",
@@ -685,6 +900,9 @@ def call_llm(
                          silently ignored for others
         api_base: Optional API base URL (e.g., for OpenRouter:
                   "https://openrouter.ai/api/v1")
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion
                   (e.g., temperature, max_tokens, stream).
                   For GPT-5 models, response_format is automatically
@@ -695,61 +913,84 @@ def call_llm(
         finish_reason, and raw_response
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    use_responses = _is_responses_api_model(model)
-
-    if use_responses:
-        call_kwargs = _prepare_responses_kwargs(
-            model, messages,
-            timeout=timeout,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-    else:
-        call_kwargs = _prepare_call_kwargs(
-            model, messages,
-            timeout=timeout,
-            num_retries=r.max_retries,
-            reasoning_effort=reasoning_effort,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-
-    if cache is not None:
-        key = _cache_key(model, messages, **kwargs)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-
-    backoff_fn = r.backoff or exponential_backoff
+    models = [model] + (fallback_models or [])
     last_error: Exception | None = None
-    for attempt in range(r.max_retries + 1):
+
+    for model_idx, current_model in enumerate(models):
+        use_responses = _is_responses_api_model(current_model)
+
+        if use_responses:
+            call_kwargs = _prepare_responses_kwargs(
+                current_model, messages,
+                timeout=timeout,
+                api_base=api_base,
+                kwargs=kwargs,
+            )
+        else:
+            call_kwargs = _prepare_call_kwargs(
+                current_model, messages,
+                timeout=timeout,
+                num_retries=r.max_retries,
+                reasoning_effort=reasoning_effort,
+                api_base=api_base,
+                kwargs=kwargs,
+            )
+
+        if cache is not None:
+            key = _cache_key(current_model, messages, **kwargs)
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
+
+        backoff_fn = r.backoff or exponential_backoff
         try:
-            if use_responses:
-                response = litellm.responses(**call_kwargs)
-                result = _build_result_from_responses(response, model)
-            else:
-                response = litellm.completion(**call_kwargs)
-                result = _build_result_from_response(response, model)
-            if attempt > 0:
-                logger.info("call_llm succeeded after %d retries", attempt)
-            if cache is not None:
-                cache.set(key, result)
-            return result
+            for attempt in range(r.max_retries + 1):
+                try:
+                    if use_responses:
+                        response = litellm.responses(**call_kwargs)
+                        result = _build_result_from_responses(response, current_model)
+                    else:
+                        response = litellm.completion(**call_kwargs)
+                        result = _build_result_from_response(response, current_model)
+                    if attempt > 0:
+                        logger.info("call_llm succeeded after %d retries", attempt)
+                    if hooks and hooks.after_call:
+                        hooks.after_call(result)
+                    if cache is not None:
+                        cache.set(key, result)
+                    return result
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1,
+                        r.max_retries + 1,
+                        delay,
+                        e,
+                    )
+                    time.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
-            if not _check_retryable(e, r) or attempt >= r.max_retries:
-                raise
-            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-            if r.on_retry is not None:
-                r.on_retry(attempt, e, delay)
-            logger.warning(
-                "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
-                attempt + 1,
-                r.max_retries + 1,
-                delay,
-                e,
-            )
-            time.sleep(delay)
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
 
     raise last_error  # type: ignore[misc]  # unreachable
 
@@ -769,29 +1010,15 @@ def call_llm_structured(
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
 
     Uses instructor + litellm for reliable structured extraction
     across all providers. No manual JSON parsing needed.
-
-    Instructor handles validation retries internally. On top of that,
-    this function retries on transient errors (rate limits, timeouts,
-    empty responses) with jittered exponential backoff.
-
-    Example:
-        class Sentiment(BaseModel):
-            label: str
-            score: float
-
-        result, meta = call_llm_structured(
-            "gpt-4o",
-            [{"role": "user", "content": "I love this!"}],
-            response_model=Sentiment,
-        )
-        print(result.label, result.score)  # "positive", 0.95
-        print(meta.cost)                    # 0.0003
 
     Args:
         model: Model name
@@ -801,83 +1028,103 @@ def call_llm_structured(
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    models = [model] + (fallback_models or [])
+    last_error: Exception | None = None
 
     import instructor
 
     client = instructor.from_litellm(litellm.completion)
-
-    # Build kwargs using shared helper for thinking/reasoning detection
-    base_kwargs = _prepare_call_kwargs(
-        model, messages,
-        timeout=timeout,
-        num_retries=r.max_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-    )
-
-    # Adapt for instructor: add response_model, disable instructor's internal
-    # retry (our outer loop handles all retries to avoid double-retry)
-    call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
-
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
-    if cache is not None:
-        key = _cache_key(model, messages, response_model=_model_fqn, **kwargs)
-        cached = cache.get(key)
-        if cached is not None:
-            # Re-parse the cached content back into the Pydantic model
-            reparsed = response_model.model_validate_json(cached.content)
-            return reparsed, cached
 
-    backoff_fn = r.backoff or exponential_backoff
-    last_error: Exception | None = None
-    for attempt in range(r.max_retries + 1):
+    for model_idx, current_model in enumerate(models):
+        base_kwargs = _prepare_call_kwargs(
+            current_model, messages,
+            timeout=timeout,
+            num_retries=r.max_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+        call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+
+        if cache is not None:
+            key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
+            cached = cache.get(key)
+            if cached is not None:
+                reparsed = response_model.model_validate_json(cached.content)
+                return reparsed, cached
+
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
+
+        backoff_fn = r.backoff or exponential_backoff
         try:
-            parsed, completion_response = client.chat.completions.create_with_completion(
-                **call_kwargs,
-            )
+            for attempt in range(r.max_retries + 1):
+                try:
+                    parsed, completion_response = client.chat.completions.create_with_completion(
+                        **call_kwargs,
+                    )
 
-            usage = _extract_usage(completion_response)
-            cost = _compute_cost(completion_response)
-            content = str(parsed.model_dump_json())
-            finish_reason: str = completion_response.choices[0].finish_reason or ""
+                    usage = _extract_usage(completion_response)
+                    cost = _compute_cost(completion_response)
+                    content = str(parsed.model_dump_json())
+                    finish_reason: str = completion_response.choices[0].finish_reason or ""
 
-            if attempt > 0:
-                logger.info("call_llm_structured succeeded after %d retries", attempt)
+                    if attempt > 0:
+                        logger.info("call_llm_structured succeeded after %d retries", attempt)
 
-            llm_result = LLMCallResult(
-                content=content,
-                usage=usage,
-                cost=cost,
-                model=model,
-                finish_reason=finish_reason,
-                raw_response=completion_response,
-            )
+                    llm_result = LLMCallResult(
+                        content=content,
+                        usage=usage,
+                        cost=cost,
+                        model=current_model,
+                        finish_reason=finish_reason,
+                        raw_response=completion_response,
+                    )
 
-            if cache is not None:
-                cache.set(key, llm_result)
-            return parsed, llm_result
+                    if hooks and hooks.after_call:
+                        hooks.after_call(llm_result)
+                    if cache is not None:
+                        cache.set(key, llm_result)
+                    return parsed, llm_result
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1,
+                        r.max_retries + 1,
+                        delay,
+                        e,
+                    )
+                    time.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
-            if not _check_retryable(e, r) or attempt >= r.max_retries:
-                raise
-            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-            if r.on_retry is not None:
-                r.on_retry(attempt, e, delay)
-            logger.warning(
-                "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                attempt + 1,
-                r.max_retries + 1,
-                delay,
-                e,
-            )
-            time.sleep(delay)
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
 
     raise last_error  # type: ignore[misc]  # unreachable
 
@@ -897,29 +1144,12 @@ def call_llm_with_tools(
     on_retry: Callable[[int, Exception, float], None] | None = None,
     cache: CachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
-
-    Example:
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather for a location",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "location": {"type": "string"}
-                    },
-                    "required": ["location"]
-                }
-            }
-        }]
-
-        result = call_llm_with_tools("gpt-4o", messages, tools)
-        if result.tool_calls:
-            print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 
     Args:
         model: Model name
@@ -929,6 +1159,9 @@ def call_llm_with_tools(
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion
 
     Returns:
@@ -947,6 +1180,9 @@ def call_llm_with_tools(
         on_retry=on_retry,
         cache=cache,
         retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
         tools=tools,
         **kwargs,
     )
@@ -969,14 +1205,16 @@ async def acall_llm(
     max_delay: float = 30.0,
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
-    cache: CachePolicy | None = None,
+    cache: CachePolicy | AsyncCachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm. Routes GPT-5 to aresponses(), others to acompletion().
 
-    Retries up to num_retries times with jittered exponential backoff on
-    transient errors.
+    Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
     Args:
         model: Model name (e.g., "gpt-4o", "gpt-5-mini",
@@ -986,6 +1224,9 @@ async def acall_llm(
         num_retries: Number of retries on transient failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm
 
     Returns:
@@ -993,61 +1234,84 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    use_responses = _is_responses_api_model(model)
-
-    if use_responses:
-        call_kwargs = _prepare_responses_kwargs(
-            model, messages,
-            timeout=timeout,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-    else:
-        call_kwargs = _prepare_call_kwargs(
-            model, messages,
-            timeout=timeout,
-            num_retries=r.max_retries,
-            reasoning_effort=reasoning_effort,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-
-    if cache is not None:
-        key = _cache_key(model, messages, **kwargs)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-
-    backoff_fn = r.backoff or exponential_backoff
+    models = [model] + (fallback_models or [])
     last_error: Exception | None = None
-    for attempt in range(r.max_retries + 1):
+
+    for model_idx, current_model in enumerate(models):
+        use_responses = _is_responses_api_model(current_model)
+
+        if use_responses:
+            call_kwargs = _prepare_responses_kwargs(
+                current_model, messages,
+                timeout=timeout,
+                api_base=api_base,
+                kwargs=kwargs,
+            )
+        else:
+            call_kwargs = _prepare_call_kwargs(
+                current_model, messages,
+                timeout=timeout,
+                num_retries=r.max_retries,
+                reasoning_effort=reasoning_effort,
+                api_base=api_base,
+                kwargs=kwargs,
+            )
+
+        if cache is not None:
+            key = _cache_key(current_model, messages, **kwargs)
+            cached = await _async_cache_get(cache, key)
+            if cached is not None:
+                return cached
+
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
+
+        backoff_fn = r.backoff or exponential_backoff
         try:
-            if use_responses:
-                response = await litellm.aresponses(**call_kwargs)
-                result = _build_result_from_responses(response, model)
-            else:
-                response = await litellm.acompletion(**call_kwargs)
-                result = _build_result_from_response(response, model)
-            if attempt > 0:
-                logger.info("acall_llm succeeded after %d retries", attempt)
-            if cache is not None:
-                cache.set(key, result)
-            return result
+            for attempt in range(r.max_retries + 1):
+                try:
+                    if use_responses:
+                        response = await litellm.aresponses(**call_kwargs)
+                        result = _build_result_from_responses(response, current_model)
+                    else:
+                        response = await litellm.acompletion(**call_kwargs)
+                        result = _build_result_from_response(response, current_model)
+                    if attempt > 0:
+                        logger.info("acall_llm succeeded after %d retries", attempt)
+                    if hooks and hooks.after_call:
+                        hooks.after_call(result)
+                    if cache is not None:
+                        await _async_cache_set(cache, key, result)
+                    return result
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1,
+                        r.max_retries + 1,
+                        delay,
+                        e,
+                    )
+                    await asyncio.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
-            if not _check_retryable(e, r) or attempt >= r.max_retries:
-                raise
-            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-            if r.on_retry is not None:
-                r.on_retry(attempt, e, delay)
-            logger.warning(
-                "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
-                attempt + 1,
-                r.max_retries + 1,
-                delay,
-                e,
-            )
-            await asyncio.sleep(delay)
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
 
     raise last_error  # type: ignore[misc]  # unreachable
 
@@ -1065,14 +1329,16 @@ async def acall_llm_structured(
     max_delay: float = 30.0,
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
-    cache: CachePolicy | None = None,
+    cache: CachePolicy | AsyncCachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Async version of call_llm_structured.
 
-    Uses instructor + litellm.acompletion for async structured extraction.
-    Retries on transient errors with jittered exponential backoff.
+    Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
     Args:
         model: Model name
@@ -1082,82 +1348,103 @@ async def acall_llm_structured(
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.acompletion
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    models = [model] + (fallback_models or [])
+    last_error: Exception | None = None
 
     import instructor
 
     client = instructor.from_litellm(litellm.acompletion)
-
-    # Build kwargs using shared helper for thinking/reasoning detection
-    base_kwargs = _prepare_call_kwargs(
-        model, messages,
-        timeout=timeout,
-        num_retries=r.max_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-    )
-
-    # Adapt for instructor: add response_model, disable instructor's internal
-    # retry (our outer loop handles all retries to avoid double-retry)
-    call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
-
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
-    if cache is not None:
-        key = _cache_key(model, messages, response_model=_model_fqn, **kwargs)
-        cached = cache.get(key)
-        if cached is not None:
-            reparsed = response_model.model_validate_json(cached.content)
-            return reparsed, cached
 
-    backoff_fn = r.backoff or exponential_backoff
-    last_error: Exception | None = None
-    for attempt in range(r.max_retries + 1):
+    for model_idx, current_model in enumerate(models):
+        base_kwargs = _prepare_call_kwargs(
+            current_model, messages,
+            timeout=timeout,
+            num_retries=r.max_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+        call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+
+        if cache is not None:
+            key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
+            cached = await _async_cache_get(cache, key)
+            if cached is not None:
+                reparsed = response_model.model_validate_json(cached.content)
+                return reparsed, cached
+
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
+
+        backoff_fn = r.backoff or exponential_backoff
         try:
-            parsed, completion_response = await client.chat.completions.create_with_completion(
-                **call_kwargs,
-            )
+            for attempt in range(r.max_retries + 1):
+                try:
+                    parsed, completion_response = await client.chat.completions.create_with_completion(
+                        **call_kwargs,
+                    )
 
-            usage = _extract_usage(completion_response)
-            cost = _compute_cost(completion_response)
-            content = str(parsed.model_dump_json())
-            finish_reason: str = completion_response.choices[0].finish_reason or ""
+                    usage = _extract_usage(completion_response)
+                    cost = _compute_cost(completion_response)
+                    content = str(parsed.model_dump_json())
+                    finish_reason: str = completion_response.choices[0].finish_reason or ""
 
-            if attempt > 0:
-                logger.info("acall_llm_structured succeeded after %d retries", attempt)
+                    if attempt > 0:
+                        logger.info("acall_llm_structured succeeded after %d retries", attempt)
 
-            llm_result = LLMCallResult(
-                content=content,
-                usage=usage,
-                cost=cost,
-                model=model,
-                finish_reason=finish_reason,
-                raw_response=completion_response,
-            )
+                    llm_result = LLMCallResult(
+                        content=content,
+                        usage=usage,
+                        cost=cost,
+                        model=current_model,
+                        finish_reason=finish_reason,
+                        raw_response=completion_response,
+                    )
 
-            if cache is not None:
-                cache.set(key, llm_result)
-            return parsed, llm_result
+                    if hooks and hooks.after_call:
+                        hooks.after_call(llm_result)
+                    if cache is not None:
+                        await _async_cache_set(cache, key, llm_result)
+                    return parsed, llm_result
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1,
+                        r.max_retries + 1,
+                        delay,
+                        e,
+                    )
+                    await asyncio.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
-            if not _check_retryable(e, r) or attempt >= r.max_retries:
-                raise
-            delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-            if r.on_retry is not None:
-                r.on_retry(attempt, e, delay)
-            logger.warning(
-                "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                attempt + 1,
-                r.max_retries + 1,
-                delay,
-                e,
-            )
-            await asyncio.sleep(delay)
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
 
     raise last_error  # type: ignore[misc]  # unreachable
 
@@ -1175,8 +1462,11 @@ async def acall_llm_with_tools(
     max_delay: float = 30.0,
     retry_on: list[str] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
-    cache: CachePolicy | None = None,
+    cache: CachePolicy | AsyncCachePolicy | None = None,
     retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm_with_tools.
@@ -1189,6 +1479,9 @@ async def acall_llm_with_tools(
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
+        hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.acompletion
 
     Returns:
@@ -1207,6 +1500,130 @@ async def acall_llm_with_tools(
         on_retry=on_retry,
         cache=cache,
         retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
         tools=tools,
         **kwargs,
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming functions
+# ---------------------------------------------------------------------------
+
+
+def stream_llm(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> LLMStream:
+    """Stream an LLM response, yielding text chunks as they arrive.
+
+    Returns an :class:`LLMStream` iterator. After consuming all chunks,
+    access ``.result`` for the accumulated :class:`LLMCallResult` with
+    usage and cost (when available from the provider).
+
+    Example::
+
+        stream = stream_llm("gpt-4o", messages)
+        for chunk in stream:
+            print(chunk, end="", flush=True)
+        print()
+        print(stream.result.usage)
+
+    Args:
+        model: Model name
+        messages: Chat messages in OpenAI format
+        timeout: Request timeout in seconds
+        reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL
+        hooks: Observability hooks (before_call, after_call, on_error)
+        **kwargs: Additional params passed to litellm.completion
+
+    Returns:
+        LLMStream that yields text chunks and exposes ``.result``
+    """
+    call_kwargs = _prepare_call_kwargs(
+        model, messages,
+        timeout=timeout,
+        num_retries=0,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        kwargs=kwargs,
+    )
+    call_kwargs["stream"] = True
+
+    if hooks and hooks.before_call:
+        hooks.before_call(model, messages, kwargs)
+
+    try:
+        response = litellm.completion(**call_kwargs)
+    except Exception as e:
+        if hooks and hooks.on_error:
+            hooks.on_error(e, 0)
+        raise
+
+    return LLMStream(response, model, hooks=hooks)
+
+
+async def astream_llm(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> AsyncLLMStream:
+    """Async version of :func:`stream_llm`.
+
+    Returns an :class:`AsyncLLMStream` async iterator.
+
+    Example::
+
+        stream = await astream_llm("gpt-4o", messages)
+        async for chunk in stream:
+            print(chunk, end="", flush=True)
+        print()
+        print(stream.result.usage)
+
+    Args:
+        model: Model name
+        messages: Chat messages in OpenAI format
+        timeout: Request timeout in seconds
+        reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL
+        hooks: Observability hooks (before_call, after_call, on_error)
+        **kwargs: Additional params passed to litellm.acompletion
+
+    Returns:
+        AsyncLLMStream that yields text chunks and exposes ``.result``
+    """
+    call_kwargs = _prepare_call_kwargs(
+        model, messages,
+        timeout=timeout,
+        num_retries=0,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        kwargs=kwargs,
+    )
+    call_kwargs["stream"] = True
+
+    if hooks and hooks.before_call:
+        hooks.before_call(model, messages, kwargs)
+
+    try:
+        response = await litellm.acompletion(**call_kwargs)
+    except Exception as e:
+        if hooks and hooks.on_error:
+            hooks.on_error(e, 0)
+        raise
+
+    return AsyncLLMStream(response, model, hooks=hooks)

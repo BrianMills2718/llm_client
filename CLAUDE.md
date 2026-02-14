@@ -36,19 +36,39 @@ data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entit
 result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 ```
 
+### Streaming
+
+```python
+from llm_client import stream_llm, astream_llm
+
+# Sync streaming
+stream = stream_llm("gpt-4o", messages)
+for chunk in stream:
+    print(chunk, end="", flush=True)
+print()
+print(stream.result.usage)  # usage/cost available after stream ends
+
+# Async streaming
+stream = await astream_llm("gpt-4o", messages)
+async for chunk in stream:
+    print(chunk, end="", flush=True)
+print(stream.result.cost)
+```
+
 ## API
 
-Six functions (3 sync + 3 async), all return `LLMCallResult`:
+Eight functions (4 sync + 4 async):
 
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
 | `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction via instructor |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
+| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming (yields text chunks) |
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any litellm kwargs.
+All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
 
 ### RetryPolicy (reusable retry configuration)
 
@@ -96,7 +116,7 @@ result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
 cache.clear()  # manual invalidation
 ```
 
-Custom backend (Redis, disk, etc.):
+Custom sync backend (Redis, disk, etc.):
 ```python
 from llm_client import CachePolicy, LLMCallResult
 
@@ -104,6 +124,47 @@ class RedisCache:
     def get(self, key: str) -> LLMCallResult | None: ...
     def set(self, key: str, value: LLMCallResult) -> None: ...
 ```
+
+Async cache backend (non-blocking in async code):
+```python
+from llm_client import AsyncCachePolicy, LLMCallResult
+
+class AsyncRedisCache:
+    async def get(self, key: str) -> LLMCallResult | None: ...
+    async def set(self, key: str, value: LLMCallResult) -> None: ...
+```
+
+Async functions (`acall_llm`, etc.) accept either `CachePolicy` or `AsyncCachePolicy` — sync caches work everywhere, async caches avoid blocking the event loop.
+
+### Fallback Models
+
+Automatic fallback to secondary models when the primary fails all retries:
+
+```python
+result = call_llm(
+    "gpt-4o", messages,
+    fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+    on_fallback=lambda failed, err, next_model: print(f"{failed} failed, trying {next_model}"),
+)
+```
+
+Each model gets its own full retry cycle. Non-retryable errors on one model still trigger fallback to the next.
+
+### Observability Hooks
+
+```python
+from llm_client import Hooks, call_llm
+
+hooks = Hooks(
+    before_call=lambda model, msgs, kw: print(f"Calling {model}"),
+    after_call=lambda result: print(f"Got {len(result.content)} chars, ${result.cost:.4f}"),
+    on_error=lambda err, attempt: print(f"Attempt {attempt} failed: {err}"),
+)
+
+result = call_llm("gpt-4o", messages, hooks=hooks)
+```
+
+All three callbacks are optional. Hooks fire for each attempt (including retries and fallbacks). Works with all functions including streaming.
 
 ### Truncation Detection
 

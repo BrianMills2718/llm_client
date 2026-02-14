@@ -6,19 +6,25 @@ import pytest
 from pydantic import BaseModel
 
 from llm_client import (
+    AsyncCachePolicy,
+    AsyncLLMStream,
     CachePolicy,
+    Hooks,
     LLMCallResult,
+    LLMStream,
     LRUCache,
     RetryPolicy,
     acall_llm,
     acall_llm_structured,
     acall_llm_with_tools,
+    astream_llm,
     call_llm,
     call_llm_structured,
     call_llm_with_tools,
     exponential_backoff,
     fixed_backoff,
     linear_backoff,
+    stream_llm,
     strip_fences,
 )
 
@@ -1483,3 +1489,446 @@ class TestBackoffStrategies:
     def test_linear_backoff_capped(self) -> None:
         for _ in range(100):
             assert linear_backoff(100, 1.0, 5.0) <= 5.0
+
+
+# ---------------------------------------------------------------------------
+# Fallback model tests
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackModels:
+    """Tests for the fallback_models parameter."""
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_fallback_on_exhausted_retries(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """When primary model exhausts retries, fallback model should be tried."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),  # primary attempt 0
+            Exception("rate limit"),  # primary attempt 1
+            _mock_response(content="From fallback"),  # fallback attempt 0
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=1,
+            fallback_models=["gpt-3.5-turbo"],
+        )
+        assert result.content == "From fallback"
+        assert result.model == "gpt-3.5-turbo"
+        assert mock_comp.call_count == 3
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_no_fallback_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Fallback should not be used if primary succeeds."""
+        mock_comp.return_value = _mock_response(content="Primary OK")
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            fallback_models=["gpt-3.5-turbo"],
+        )
+        assert result.content == "Primary OK"
+        assert result.model == "gpt-4"
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_on_fallback_callback(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """on_fallback callback should fire with correct args."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),
+            Exception("rate limit"),
+            _mock_response(content="OK"),
+        ]
+        callback = MagicMock()
+        call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=1,
+            fallback_models=["gpt-3.5-turbo"],
+            on_fallback=callback,
+        )
+        callback.assert_called_once()
+        args = callback.call_args[0]
+        assert args[0] == "gpt-4"  # failed model
+        assert isinstance(args[1], Exception)  # error
+        assert args[2] == "gpt-3.5-turbo"  # next model
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion")
+    def test_all_fallbacks_exhausted_raises(self, mock_comp: MagicMock, mock_sleep: MagicMock) -> None:
+        """When all models (primary + fallbacks) fail, error should propagate."""
+        mock_comp.side_effect = Exception("rate limit")
+        with pytest.raises(Exception, match="rate limit"):
+            call_llm(
+                "gpt-4", [{"role": "user", "content": "Hi"}],
+                num_retries=0,
+                fallback_models=["gpt-3.5-turbo"],
+            )
+        assert mock_comp.call_count == 2  # primary + 1 fallback
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_multiple_fallbacks(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Multiple fallback models tried in order."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),  # primary
+            Exception("rate limit"),  # fallback 1
+            _mock_response(content="Third model"),  # fallback 2
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=0,
+            fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+        )
+        assert result.content == "Third model"
+        assert result.model == "ollama/llama3"
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_fallback_async(self, mock_acomp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """Async: fallback should work."""
+        mock_acomp.side_effect = [
+            Exception("timeout"),
+            _mock_response(content="Async fallback"),
+        ]
+        result = await acall_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=0,
+            fallback_models=["gpt-3.5-turbo"],
+        )
+        assert result.content == "Async fallback"
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_fallback_non_retryable_error(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Non-retryable errors on primary should still trigger fallback."""
+        mock_comp.side_effect = [
+            Exception("invalid api key"),  # not retryable, but fallback should kick in
+            _mock_response(content="Fallback OK"),
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            fallback_models=["gpt-3.5-turbo"],
+        )
+        assert result.content == "Fallback OK"
+        assert mock_comp.call_count == 2  # 1 attempt on primary (no retry), 1 on fallback
+
+
+# ---------------------------------------------------------------------------
+# Hooks tests
+# ---------------------------------------------------------------------------
+
+
+class TestHooks:
+    """Tests for the hooks parameter (observability)."""
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_before_call_fires(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """before_call hook should fire with model, messages, kwargs."""
+        mock_comp.return_value = _mock_response()
+        before = MagicMock()
+        hooks = Hooks(before_call=before)
+        messages = [{"role": "user", "content": "Hi"}]
+        call_llm("gpt-4", messages, hooks=hooks)
+        before.assert_called_once()
+        args = before.call_args[0]
+        assert args[0] == "gpt-4"
+        assert args[1] == messages
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_after_call_fires(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """after_call hook should fire with LLMCallResult."""
+        mock_comp.return_value = _mock_response()
+        after = MagicMock()
+        hooks = Hooks(after_call=after)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        after.assert_called_once()
+        result = after.call_args[0][0]
+        assert isinstance(result, LLMCallResult)
+        assert result.content == "Hello!"
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_on_error_fires(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """on_error hook should fire on each failed attempt."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),
+            _mock_response(),
+        ]
+        on_error = MagicMock()
+        hooks = Hooks(on_error=on_error)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, hooks=hooks)
+        on_error.assert_called_once()
+        args = on_error.call_args[0]
+        assert isinstance(args[0], Exception)
+        assert args[1] == 0  # attempt number
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_hooks_not_called_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """No errors when hooks is None (default)."""
+        mock_comp.return_value = _mock_response()
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])  # should not raise
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_hooks_partial_fields(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Only set fields are called; None fields are skipped."""
+        mock_comp.return_value = _mock_response()
+        after = MagicMock()
+        hooks = Hooks(after_call=after)  # before_call and on_error are None
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        after.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_hooks_async(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async: hooks should fire."""
+        mock_acomp.return_value = _mock_response()
+        before = MagicMock()
+        after = MagicMock()
+        hooks = Hooks(before_call=before, after_call=after)
+        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        before.assert_called_once()
+        after.assert_called_once()
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_hooks_structured(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
+        """Hooks should fire for structured calls too."""
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        before = MagicMock()
+        after = MagicMock()
+        hooks = Hooks(before_call=before, after_call=after)
+        call_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            hooks=hooks,
+        )
+        before.assert_called_once()
+        after.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Async cache protocol tests
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncCachePolicy:
+    """Tests for AsyncCachePolicy support in async functions."""
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_async_cache_get_and_set(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async cache should be awaited for get/set."""
+        cached_result = LLMCallResult(
+            content="Cached!", usage={}, cost=0.001, model="gpt-4",
+        )
+
+        class FakeAsyncCache:
+            def __init__(self) -> None:
+                self.store: dict[str, LLMCallResult] = {}
+
+            async def get(self, key: str) -> LLMCallResult | None:
+                return self.store.get(key)
+
+            async def set(self, key: str, value: LLMCallResult) -> None:
+                self.store[key] = value
+
+        cache = FakeAsyncCache()
+        messages = [{"role": "user", "content": "Hi"}]
+
+        # First call — cache miss, calls LLM
+        mock_acomp.return_value = _mock_response(content="Fresh")
+        result1 = await acall_llm("gpt-4", messages, cache=cache)
+        assert result1.content == "Fresh"
+        assert mock_acomp.call_count == 1
+
+        # Second call — cache hit
+        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        assert result2.content == "Fresh"
+        assert mock_acomp.call_count == 1  # no additional call
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_sync_cache_still_works_in_async(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+        """Sync LRUCache should still work in async functions."""
+        cache = LRUCache()
+        messages = [{"role": "user", "content": "Hi"}]
+
+        mock_acomp.return_value = _mock_response(content="Sync cached")
+        result1 = await acall_llm("gpt-4", messages, cache=cache)
+        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        assert result1.content == "Sync cached"
+        assert result2.content == "Sync cached"
+        assert mock_acomp.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Streaming tests
+# ---------------------------------------------------------------------------
+
+
+def _mock_stream_chunks(texts: list[str]) -> list[MagicMock]:
+    """Build mock streaming chunks."""
+    chunks = []
+    for text in texts:
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = text
+        chunks.append(chunk)
+    return chunks
+
+
+class TestStreamLLM:
+    """Tests for stream_llm."""
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_yields_chunks(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """stream_llm should yield text chunks."""
+        chunks = _mock_stream_chunks(["Hello", " ", "world!"])
+        mock_comp.return_value = iter(chunks)
+
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        collected = list(stream)
+        assert collected == ["Hello", " ", "world!"]
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_result_available_after_iteration(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """stream.result should be available after consuming the stream."""
+        chunks = _mock_stream_chunks(["Hello", "!"])
+        mock_comp.return_value = iter(chunks)
+
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        for _ in stream:
+            pass
+        result = stream.result
+        assert isinstance(result, LLMCallResult)
+        assert result.content == "Hello!"
+        assert result.model == "gpt-4"
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_result_raises_before_iteration(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """Accessing .result before iterating should raise."""
+        chunks = _mock_stream_chunks(["Hi"])
+        mock_comp.return_value = iter(chunks)
+
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        with pytest.raises(RuntimeError, match="not yet consumed"):
+            _ = stream.result
+
+    @patch("llm_client.client.litellm.stream_chunk_builder")
+    @patch("llm_client.client.litellm.completion")
+    def test_result_includes_usage_when_available(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """If stream_chunk_builder succeeds, usage and cost should be populated."""
+        chunks = _mock_stream_chunks(["Hi"])
+        mock_comp.return_value = iter(chunks)
+
+        # Mock a complete response from stream_chunk_builder
+        complete = _mock_response(content="Hi")
+        mock_builder.return_value = complete
+
+        with patch("llm_client.client._compute_cost", return_value=0.005):
+            stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            list(stream)
+            assert stream.result.usage["total_tokens"] == 15
+            assert stream.result.cost == 0.005
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_stream_passes_kwargs(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """Extra kwargs should be passed through to litellm."""
+        chunks = _mock_stream_chunks(["Hi"])
+        mock_comp.return_value = iter(chunks)
+
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], temperature=0.5)
+        list(stream)
+        kwargs = mock_comp.call_args.kwargs
+        assert kwargs["stream"] is True
+        assert kwargs["temperature"] == 0.5
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_stream_hooks_before_and_after(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
+        """Hooks should fire for streaming."""
+        chunks = _mock_stream_chunks(["Hi"])
+        mock_comp.return_value = iter(chunks)
+
+        before = MagicMock()
+        after = MagicMock()
+        hooks = Hooks(before_call=before, after_call=after)
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        before.assert_called_once()
+        after.assert_not_called()  # not yet consumed
+
+        list(stream)
+        after.assert_called_once()  # now it's called
+
+
+class TestAstreamLLM:
+    """Tests for astream_llm."""
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_yields_chunks(self, mock_acomp: MagicMock, mock_builder: MagicMock) -> None:
+        """astream_llm should yield text chunks."""
+        chunks = _mock_stream_chunks(["Hello", " ", "world!"])
+
+        async def async_iter():
+            for c in chunks:
+                yield c
+
+        mock_acomp.return_value = async_iter()
+
+        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        collected = []
+        async for chunk in stream:
+            collected.append(chunk)
+        assert collected == ["Hello", " ", "world!"]
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_result_available_after_async_iteration(self, mock_acomp: MagicMock, mock_builder: MagicMock) -> None:
+        """async stream.result should work after consuming."""
+        chunks = _mock_stream_chunks(["Hello", "!"])
+
+        async def async_iter():
+            for c in chunks:
+                yield c
+
+        mock_acomp.return_value = async_iter()
+
+        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        async for _ in stream:
+            pass
+        result = stream.result
+        assert result.content == "Hello!"
+        assert result.model == "gpt-4"

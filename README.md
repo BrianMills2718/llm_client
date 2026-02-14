@@ -74,6 +74,22 @@ if result.tool_calls:
     print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 ```
 
+### Streaming
+
+```python
+from llm_client import stream_llm, astream_llm
+
+stream = stream_llm("gpt-4o", messages)
+for chunk in stream:
+    print(chunk, end="", flush=True)
+print(stream.result.usage)  # usage available after stream ends
+
+# Async
+stream = await astream_llm("gpt-4o", messages)
+async for chunk in stream:
+    print(chunk, end="", flush=True)
+```
+
 ### Async
 
 ```python
@@ -82,6 +98,29 @@ from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
 result = await acall_llm("gpt-4o", messages)
 data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
 result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+```
+
+### Fallback models
+
+```python
+result = call_llm(
+    "gpt-4o", messages,
+    fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+    on_fallback=lambda failed, err, next_: print(f"{failed} failed, trying {next_}"),
+)
+```
+
+### Observability hooks
+
+```python
+from llm_client import Hooks, call_llm
+
+hooks = Hooks(
+    before_call=lambda model, msgs, kw: print(f"Calling {model}"),
+    after_call=lambda result: print(f"${result.cost:.4f}"),
+    on_error=lambda err, attempt: print(f"Attempt {attempt} failed"),
+)
+result = call_llm("gpt-4o", messages, hooks=hooks)
 ```
 
 ### Response caching
@@ -118,17 +157,18 @@ result = call_llm("gpt-4o", messages, num_retries=5, retry_on=["custom"])
 
 ## API
 
-Six functions (3 sync + 3 async), all return `LLMCallResult`:
+Eight functions (4 sync + 4 async):
 
 | Function | Async Variant | Returns | Description |
 |----------|---------------|---------|-------------|
 | `call_llm(model, messages, **kw)` | `acall_llm(...)` | `LLMCallResult` | Basic completion |
 | `call_llm_structured(model, messages, response_model, **kw)` | `acall_llm_structured(...)` | `(T, LLMCallResult)` | Pydantic extraction via instructor |
 | `call_llm_with_tools(model, messages, tools, **kw)` | `acall_llm_with_tools(...)` | `LLMCallResult` | Tool/function calling |
+| `stream_llm(model, messages, **kw)` | `astream_llm(...)` | `LLMStream` | Streaming (yields text chunks) |
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any `**kwargs` passed through to `litellm.completion`.
+All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any `**kwargs` passed through to `litellm.completion`.
 
 ## API keys
 

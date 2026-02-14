@@ -23,31 +23,43 @@ data, meta = call_llm_structured("gpt-4o", messages, response_model=Entity)
 # Tool calling
 result = call_llm_with_tools("gpt-4o", messages, tools=[...])
 result.tool_calls  # normalized across providers
+
+# Streaming
+from llm_client import stream_llm
+stream = stream_llm("gpt-4o", messages)
+for chunk in stream:
+    print(chunk, end="")
+print(stream.result.usage)
 ```
 
 ### Async
 
 ```python
-from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
+from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools, astream_llm
 
 result = await acall_llm("gpt-4o", messages)
 data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
 result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+
+stream = await astream_llm("gpt-4o", messages)
+async for chunk in stream:
+    print(chunk, end="")
 ```
 
 ## API
 
-Six functions (3 sync + 3 async), all return `LLMCallResult`:
+Eight functions (4 sync + 4 async):
 
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
 | `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction via instructor |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
+| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming (yields text chunks) |
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), plus any litellm kwargs.
+All accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
 
 ### Response Caching
 
@@ -58,7 +70,7 @@ cache = LRUCache(maxsize=128, ttl=3600)  # thread-safe, 1h TTL
 result = call_llm("gpt-4o", messages, cache=cache)
 ```
 
-Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.).
+Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.). Async functions also accept `AsyncCachePolicy` for non-blocking cache access.
 
 ### RetryPolicy
 
@@ -74,6 +86,28 @@ result = call_llm("gpt-4o", messages, retry=policy)
 ```
 
 Backoff strategies: `exponential_backoff` (default), `linear_backoff`, `fixed_backoff`, or any `(attempt, base_delay, max_delay) -> delay` callable.
+
+### Fallback Models
+
+```python
+result = call_llm("gpt-4o", messages,
+    fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+    on_fallback=lambda failed, err, next_: print(f"Trying {next_}"),
+)
+```
+
+### Observability Hooks
+
+```python
+from llm_client import Hooks
+
+hooks = Hooks(
+    before_call=lambda model, msgs, kw: ...,
+    after_call=lambda result: ...,
+    on_error=lambda err, attempt: ...,
+)
+result = call_llm("gpt-4o", messages, hooks=hooks)
+```
 
 ## Installation
 
