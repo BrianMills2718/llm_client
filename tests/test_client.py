@@ -6,11 +6,14 @@ import pytest
 from pydantic import BaseModel
 
 from llm_client import (
+    CachePolicy,
     LLMCallResult,
+    LRUCache,
     acall_llm,
     acall_llm_structured,
     acall_llm_with_tools,
     call_llm,
+    call_llm_structured,
     call_llm_with_tools,
     strip_fences,
 )
@@ -631,3 +634,663 @@ class TestBackoffCalculation:
         from llm_client.client import _calculate_backoff
         for _ in range(100):
             assert _calculate_backoff(10, base_delay=1.0) <= 30.0
+
+    def test_custom_max_delay(self) -> None:
+        from llm_client.client import _calculate_backoff
+        for _ in range(100):
+            assert _calculate_backoff(10, base_delay=1.0, max_delay=10.0) <= 10.0
+
+    def test_custom_base_delay(self) -> None:
+        from llm_client.client import _calculate_backoff
+        # base_delay=0.1, attempt=0 → 0.1 * 2^0 * jitter = 0.05..0.15
+        for _ in range(100):
+            d = _calculate_backoff(0, base_delay=0.1, max_delay=30.0)
+            assert 0.05 <= d <= 0.15
+
+
+class TestGPT5TemperatureStripping:
+    """Tests for GPT-5 temperature stripping in _prepare_call_kwargs."""
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_structured_gpt5_strips_temperature(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
+        """acall_llm_structured with GPT-5 should strip temperature from kwargs."""
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        from llm_client import call_llm_structured
+
+        call_llm_structured(
+            "gpt-5-mini",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            temperature=0.5,
+        )
+        call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
+        assert "temperature" not in call_kwargs
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_structured_non_gpt5_keeps_temperature(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
+        """Non-GPT-5 models should keep temperature."""
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        from llm_client import call_llm_structured
+
+        call_llm_structured(
+            "gpt-4o",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            temperature=0.5,
+        )
+        call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.5
+
+
+class TestConfigurableBackoff:
+    """Tests for configurable base_delay and max_delay parameters."""
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_custom_base_delay_used(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Custom base_delay should affect backoff timing."""
+        mock_comp.side_effect = [
+            Exception("rate limit exceeded"),
+            _mock_response(),
+        ]
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1)
+        assert mock_sleep.call_count == 1
+        # base_delay=0.1, attempt=0, so delay should be small (0.05-0.15)
+        actual_delay = mock_sleep.call_args[0][0]
+        assert actual_delay <= 0.15
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_custom_max_delay_caps(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Custom max_delay should cap backoff."""
+        mock_comp.side_effect = [
+            Exception("rate limit exceeded"),
+            Exception("rate limit exceeded"),
+            Exception("rate limit exceeded"),
+            _mock_response(),
+        ]
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=4, base_delay=100.0, max_delay=5.0)
+        for call in mock_sleep.call_args_list:
+            assert call[0][0] <= 5.0
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_async_custom_backoff(self, mock_acomp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """Async functions should respect custom backoff params."""
+        mock_acomp.side_effect = [
+            Exception("rate limit exceeded"),
+            _mock_response(),
+        ]
+        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1, max_delay=1.0)
+        assert mock_sleep.call_count == 1
+        actual_delay = mock_sleep.call_args[0][0]
+        assert actual_delay <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Responses API (GPT-5 models)
+# ---------------------------------------------------------------------------
+
+
+def _mock_responses_api_response(
+    output_text: str = "Hello from GPT-5!",
+    status: str = "completed",
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    total_tokens: int = 15,
+) -> MagicMock:
+    """Build a mock litellm responses() API response."""
+    mock = MagicMock()
+    mock.output_text = output_text
+    mock.status = status
+    mock.incomplete_details = None
+    mock.usage.input_tokens = input_tokens
+    mock.usage.output_tokens = output_tokens
+    mock.usage.total_tokens = total_tokens
+    mock.usage.cost = None
+    return mock
+
+
+class TestResponsesAPIDetection:
+    """Tests for GPT-5 model detection."""
+
+    def test_gpt5_mini_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5-mini") is True
+
+    def test_gpt5_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5") is True
+
+    def test_gpt5_nano_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5-nano") is True
+
+    def test_gpt4_not_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-4o") is False
+
+    def test_claude_not_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("anthropic/claude-sonnet-4-5-20250929") is False
+
+
+class TestMessageConversion:
+    """Tests for converting messages to responses API input."""
+
+    def test_simple_user_message(self) -> None:
+        from llm_client.client import _convert_messages_to_input
+        result = _convert_messages_to_input([{"role": "user", "content": "Hello"}])
+        assert result == "User: Hello"
+
+    def test_system_and_user(self) -> None:
+        from llm_client.client import _convert_messages_to_input
+        messages = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hi"},
+        ]
+        result = _convert_messages_to_input(messages)
+        assert "System: You are helpful" in result
+        assert "User: Hi" in result
+
+    def test_multi_turn(self) -> None:
+        from llm_client.client import _convert_messages_to_input
+        messages = [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+            {"role": "user", "content": "Follow-up"},
+        ]
+        result = _convert_messages_to_input(messages)
+        assert "User: Question" in result
+        assert "Assistant: Answer" in result
+        assert "User: Follow-up" in result
+
+
+class TestResponseFormatConversion:
+    """Tests for converting response_format to responses API text param."""
+
+    def test_none_returns_text(self) -> None:
+        from llm_client.client import _convert_response_format_for_responses
+        result = _convert_response_format_for_responses(None)
+        assert result == {"format": {"type": "text"}}
+
+    def test_json_object_returns_text(self) -> None:
+        from llm_client.client import _convert_response_format_for_responses
+        result = _convert_response_format_for_responses({"type": "json_object"})
+        assert result == {"format": {"type": "text"}}
+
+    def test_json_schema_converted(self) -> None:
+        from llm_client.client import _convert_response_format_for_responses
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "strict": True,
+                "name": "test_schema",
+                "schema": {"type": "object", "properties": {"key": {"type": "string"}}},
+            },
+        }
+        result = _convert_response_format_for_responses(response_format)
+        assert result["format"]["type"] == "json_schema"
+        assert result["format"]["name"] == "test_schema"
+        assert result["format"]["strict"] is True
+        assert "properties" in result["format"]["schema"]
+
+
+class TestResponsesAPIRouting:
+    """Tests for GPT-5 routing through responses() API."""
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_routes_to_responses(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """GPT-5 models should use litellm.responses(), not completion()."""
+        mock_resp.return_value = _mock_responses_api_response()
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        assert result.content == "Hello from GPT-5!"
+        assert result.model == "gpt-5-mini"
+        assert result.finish_reason == "stop"
+        mock_resp.assert_called_once()
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_passes_input_not_messages(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """Responses API receives 'input' string, not 'messages' list."""
+        mock_resp.return_value = _mock_responses_api_response()
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}])
+        kwargs = mock_resp.call_args.kwargs
+        assert "input" in kwargs
+        assert "User: Hello" in kwargs["input"]
+        assert "messages" not in kwargs
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_strips_max_tokens(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """max_tokens should be stripped for GPT-5 (reasoning tokens issue)."""
+        mock_resp.return_value = _mock_responses_api_response()
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096)
+        kwargs = mock_resp.call_args.kwargs
+        assert "max_tokens" not in kwargs
+        assert "max_output_tokens" not in kwargs
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_converts_response_format(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """response_format should be converted to 'text' parameter."""
+        mock_resp.return_value = _mock_responses_api_response()
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "strict": True,
+                "name": "test",
+                "schema": {"type": "object"},
+            },
+        }
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], response_format=response_format)
+        kwargs = mock_resp.call_args.kwargs
+        assert "response_format" not in kwargs
+        assert "text" in kwargs
+        assert kwargs["text"]["format"]["type"] == "json_schema"
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_passes_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """Standard kwargs like temperature should pass through."""
+        mock_resp.return_value = _mock_responses_api_response()
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], temperature=0.5)
+        kwargs = mock_resp.call_args.kwargs
+        assert kwargs["temperature"] == 0.5
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_extracts_usage(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """Usage should map input_tokens/output_tokens to prompt/completion."""
+        mock_resp.return_value = _mock_responses_api_response(
+            input_tokens=100, output_tokens=50, total_tokens=150,
+        )
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        assert result.usage["prompt_tokens"] == 100
+        assert result.usage["completion_tokens"] == 50
+        assert result.usage["total_tokens"] == 150
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_raw_response_included(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """raw_response should contain the original responses API object."""
+        resp = _mock_responses_api_response()
+        mock_resp.return_value = resp
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        assert result.raw_response is resp
+
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_empty_content_raises(self, mock_resp: MagicMock) -> None:
+        """Empty response from GPT-5 should raise ValueError (retryable)."""
+        mock_resp.return_value = _mock_responses_api_response(output_text="")
+        with pytest.raises(ValueError, match="Empty content"):
+            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_incomplete_status_raises(self, mock_resp: MagicMock) -> None:
+        """Incomplete response with max_output_tokens should raise RuntimeError."""
+        resp = _mock_responses_api_response(output_text="partial", status="incomplete")
+        details = MagicMock()
+        details.reason = "max_output_tokens"
+        resp.incomplete_details = details
+        mock_resp.return_value = resp
+        with pytest.raises(RuntimeError, match="truncated"):
+            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_retries_on_transient_error(self, mock_resp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """GPT-5 calls should retry on transient errors."""
+        mock_resp.side_effect = [
+            Exception("rate limit exceeded"),
+            _mock_responses_api_response(),
+        ]
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert result.content == "Hello from GPT-5!"
+        assert mock_resp.call_count == 2
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_api_base_passed(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """api_base should be passed through for GPT-5 models."""
+        mock_resp.return_value = _mock_responses_api_response()
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], api_base="https://custom.api/v1")
+        kwargs = mock_resp.call_args.kwargs
+        assert kwargs["api_base"] == "https://custom.api/v1"
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_gpt4_still_uses_completion(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Non-GPT-5 models should still use litellm.completion()."""
+        mock_comp.return_value = _mock_response()
+        result = call_llm("gpt-4o", [{"role": "user", "content": "Hi"}])
+        assert result.content == "Hello!"
+        mock_comp.assert_called_once()
+
+
+class TestAsyncResponsesAPIRouting:
+    """Tests for async GPT-5 routing through aresponses() API."""
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt5_routes_to_aresponses(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async GPT-5 should use litellm.aresponses()."""
+        mock_aresp.return_value = _mock_responses_api_response()
+        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        assert result.content == "Hello from GPT-5!"
+        assert result.model == "gpt-5-mini"
+        mock_aresp.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt5_passes_input(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async responses API should receive 'input', not 'messages'."""
+        mock_aresp.return_value = _mock_responses_api_response()
+        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}])
+        kwargs = mock_aresp.call_args.kwargs
+        assert "input" in kwargs
+        assert "User: Hello" in kwargs["input"]
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt5_strips_max_tokens(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async: max_tokens should be stripped for GPT-5."""
+        mock_aresp.return_value = _mock_responses_api_response()
+        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096)
+        kwargs = mock_aresp.call_args.kwargs
+        assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt5_retries(self, mock_aresp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """Async GPT-5 should retry on transient errors."""
+        mock_aresp.side_effect = [
+            Exception("service unavailable"),
+            _mock_responses_api_response(),
+        ]
+        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert result.content == "Hello from GPT-5!"
+        assert mock_aresp.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_async_gpt4_still_uses_acompletion(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async non-GPT-5 should still use litellm.acompletion()."""
+        mock_acomp.return_value = _mock_response()
+        result = await acall_llm("gpt-4o", [{"role": "user", "content": "Hi"}])
+        assert result.content == "Hello!"
+        mock_acomp.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# retry_on tests
+# ---------------------------------------------------------------------------
+
+
+class TestRetryOn:
+    """Tests for the retry_on parameter."""
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_on_extends_patterns(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Custom pattern in retry_on should trigger retry."""
+        mock_comp.side_effect = [
+            Exception("custom flux capacitor error"),
+            _mock_response(),
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            retry_on=["flux capacitor"],
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_on_does_not_affect_defaults(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Default retryable patterns still work when retry_on is set."""
+        mock_comp.side_effect = [
+            Exception("rate limit exceeded"),
+            _mock_response(),
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            retry_on=["custom pattern"],
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_retry_on_async(self, mock_acomp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """Async: custom retry_on pattern triggers retry."""
+        mock_acomp.side_effect = [
+            Exception("custom flux capacitor error"),
+            _mock_response(),
+        ]
+        result = await acall_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            retry_on=["flux capacitor"],
+        )
+        assert result.content == "Hello!"
+        assert mock_acomp.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# on_retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestOnRetry:
+    """Tests for the on_retry callback parameter."""
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_on_retry_called_with_attempt_error_delay(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """on_retry should be called with (attempt, error, delay)."""
+        mock_comp.side_effect = [
+            Exception("rate limit exceeded"),
+            _mock_response(),
+        ]
+        callback = MagicMock()
+        call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            on_retry=callback,
+        )
+        callback.assert_called_once()
+        args = callback.call_args[0]
+        assert args[0] == 0  # attempt
+        assert isinstance(args[1], Exception)  # error
+        assert "rate limit" in str(args[1])
+        assert isinstance(args[2], float)  # delay
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_on_retry_not_called_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """on_retry should not be called when the first attempt succeeds."""
+        mock_comp.return_value = _mock_response()
+        callback = MagicMock()
+        call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            on_retry=callback,
+        )
+        callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_on_retry_async(self, mock_acomp: MagicMock, mock_cost: MagicMock, mock_sleep: AsyncMock) -> None:
+        """Async: on_retry callback receives correct args."""
+        mock_acomp.side_effect = [
+            Exception("timeout"),
+            _mock_response(),
+        ]
+        callback = MagicMock()
+        await acall_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            on_retry=callback,
+        )
+        callback.assert_called_once()
+        args = callback.call_args[0]
+        assert args[0] == 0
+        assert isinstance(args[1], Exception)
+        assert isinstance(args[2], float)
+
+
+# ---------------------------------------------------------------------------
+# Cache tests
+# ---------------------------------------------------------------------------
+
+
+class TestCache:
+    """Tests for the cache parameter and LRUCache."""
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_cache_hit_skips_llm_call(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Cached result should be returned without calling the LLM."""
+        cache = LRUCache()
+        messages = [{"role": "user", "content": "Hi"}]
+
+        # First call populates the cache
+        mock_comp.return_value = _mock_response(content="First")
+        result1 = call_llm("gpt-4", messages, cache=cache)
+        assert result1.content == "First"
+        assert mock_comp.call_count == 1
+
+        # Second call with same args should hit cache
+        mock_comp.return_value = _mock_response(content="Second")
+        result2 = call_llm("gpt-4", messages, cache=cache)
+        assert result2.content == "First"  # cached
+        assert mock_comp.call_count == 1  # no additional call
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_cache_miss_calls_llm_and_stores(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Cache miss should call LLM and store the result."""
+        cache = LRUCache()
+        mock_comp.return_value = _mock_response(content="Fresh")
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache)
+        assert result.content == "Fresh"
+        assert mock_comp.call_count == 1
+
+        # Verify it's actually in the cache by calling again
+        result2 = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache)
+        assert result2.content == "Fresh"
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_cache_not_used_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Default behavior (cache=None) should always call LLM."""
+        mock_comp.return_value = _mock_response()
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        assert mock_comp.call_count == 2
+
+    def test_lru_cache_eviction(self) -> None:
+        """Oldest entry should be evicted when maxsize is exceeded."""
+        cache = LRUCache(maxsize=2)
+        r1 = LLMCallResult(content="a", usage={}, cost=0, model="m")
+        r2 = LLMCallResult(content="b", usage={}, cost=0, model="m")
+        r3 = LLMCallResult(content="c", usage={}, cost=0, model="m")
+
+        cache.set("k1", r1)
+        cache.set("k2", r2)
+        assert cache.get("k1") is r1  # present
+        assert cache.get("k2") is r2  # present
+
+        cache.set("k3", r3)  # evicts k1 (k2 was accessed more recently)
+        assert cache.get("k1") is None  # evicted
+        assert cache.get("k2") is r2
+        assert cache.get("k3") is r3
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_cache_async(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async: cache should work the same way."""
+        cache = LRUCache()
+        messages = [{"role": "user", "content": "Hi"}]
+
+        mock_acomp.return_value = _mock_response(content="Cached")
+        result1 = await acall_llm("gpt-4", messages, cache=cache)
+        assert result1.content == "Cached"
+        assert mock_acomp.call_count == 1
+
+        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        assert result2.content == "Cached"
+        assert mock_acomp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_cache_structured(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
+        """Structured call caching should return parsed model and LLMCallResult."""
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        cache = LRUCache()
+        messages = [{"role": "user", "content": "Extract"}]
+
+        result1, meta1 = call_llm_structured(
+            "gpt-4", messages, response_model=Item, cache=cache,
+        )
+        assert result1.name == "test"
+        assert mock_client.chat.completions.create_with_completion.call_count == 1
+
+        # Second call should hit cache
+        result2, meta2 = call_llm_structured(
+            "gpt-4", messages, response_model=Item, cache=cache,
+        )
+        assert result2.name == "test"
+        assert mock_client.chat.completions.create_with_completion.call_count == 1

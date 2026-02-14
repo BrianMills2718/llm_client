@@ -16,7 +16,9 @@ Usage:
 """
 
 from llm_client.client import (
+    CachePolicy,
     LLMCallResult,
+    LRUCache,
     acall_llm,
     acall_llm_structured,
     acall_llm_with_tools,
@@ -27,7 +29,9 @@ from llm_client.client import (
 )
 
 __all__ = [
+    "CachePolicy",
     "LLMCallResult",
+    "LRUCache",
     "acall_llm",
     "acall_llm_structured",
     "acall_llm_with_tools",

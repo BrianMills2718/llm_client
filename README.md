@@ -74,15 +74,54 @@ if result.tool_calls:
     print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 ```
 
+### Async
+
+```python
+from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
+
+result = await acall_llm("gpt-4o", messages)
+data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
+result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+```
+
+### Response caching
+
+```python
+from llm_client import LRUCache, call_llm
+
+cache = LRUCache(maxsize=128)
+result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
+result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
+```
+
+Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.).
+
+### Custom retry patterns and callbacks
+
+```python
+# Retry on custom error patterns (added to built-in defaults)
+result = call_llm("gpt-4o", messages, retry_on=["custom error"])
+
+# Hook into retries for logging/metrics
+def on_retry(attempt, error, delay):
+    print(f"Retry {attempt}: {error}")
+
+result = call_llm("gpt-4o", messages, on_retry=on_retry)
+```
+
 ## API
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `call_llm(model, messages, **kw)` | `LLMCallResult` | Basic completion |
-| `call_llm_structured(model, messages, response_model, **kw)` | `(T, LLMCallResult)` | Pydantic extraction via instructor |
-| `call_llm_with_tools(model, messages, tools, **kw)` | `LLMCallResult` | Tool/function calling |
+Six functions (3 sync + 3 async), all return `LLMCallResult`:
 
-All functions accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), plus any `**kwargs` passed through to `litellm.completion`.
+| Function | Async Variant | Returns | Description |
+|----------|---------------|---------|-------------|
+| `call_llm(model, messages, **kw)` | `acall_llm(...)` | `LLMCallResult` | Basic completion |
+| `call_llm_structured(model, messages, response_model, **kw)` | `acall_llm_structured(...)` | `(T, LLMCallResult)` | Pydantic extraction via instructor |
+| `call_llm_with_tools(model, messages, tools, **kw)` | `acall_llm_with_tools(...)` | `LLMCallResult` | Tool/function calling |
+
+`LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
+
+All accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, plus any `**kwargs` passed through to `litellm.completion`.
 
 ## API keys
 

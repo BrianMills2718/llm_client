@@ -8,6 +8,7 @@ Six functions (3 sync + 3 async), no class, no mutable state:
 Features:
 - Smart retry with jittered exponential backoff on transient errors,
   empty responses, and JSON parse failures
+- Automatic Responses API routing for GPT-5 models (litellm.responses)
 - Thinking model detection (Gemini 3/4 → budget_tokens: 0)
 - Fence stripping utility for manual JSON parsing
 - Cost tracking via litellm.completion_cost
@@ -15,6 +16,7 @@ Features:
 
 Supported providers (just change the model string):
     call_llm("gpt-4o", messages)                     # OpenAI
+    call_llm("gpt-5-mini", messages)                 # OpenAI (Responses API)
     call_llm("anthropic/claude-sonnet-4-5-20250929", messages)  # Anthropic
     call_llm("gemini/gemini-2.0-flash", messages)     # Google
     call_llm("mistral/mistral-large", messages)       # Mistral
@@ -27,12 +29,15 @@ Full provider list: https://docs.litellm.ai/docs/providers
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json as _json
 import logging
 import random
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 
 import litellm
 from pydantic import BaseModel
@@ -77,6 +82,45 @@ class LLMCallResult:
 
 
 # ---------------------------------------------------------------------------
+# Cache infrastructure
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class CachePolicy(Protocol):
+    """Protocol for LLM response caches. Implement get/set for custom backends."""
+
+    def get(self, key: str) -> LLMCallResult | None: ...
+    def set(self, key: str, value: LLMCallResult) -> None: ...
+
+
+class LRUCache:
+    """In-memory LRU cache for LLM responses."""
+
+    def __init__(self, maxsize: int = 128) -> None:
+        self._cache: OrderedDict[str, LLMCallResult] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: str) -> LLMCallResult | None:
+        if key not in self._cache:
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+
+    def set(self, key: str, value: LLMCallResult) -> None:
+        self._cache[key] = value
+        self._cache.move_to_end(key)
+        if len(self._cache) > self._maxsize:
+            self._cache.popitem(last=False)
+
+
+def _cache_key(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> str:
+    """Build a deterministic cache key from call parameters."""
+    key_data = _json.dumps({"model": model, "messages": messages, **kwargs}, sort_keys=True)
+    return hashlib.sha256(key_data.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
 # Retry infrastructure
 # ---------------------------------------------------------------------------
 
@@ -109,20 +153,23 @@ _RETRYABLE_PATTERNS = [
 ]
 
 
-def _is_retryable(error: Exception) -> bool:
+def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
     """Check if an error is transient and worth retrying."""
     # RuntimeError is used for non-retryable conditions (e.g., truncation)
     if isinstance(error, RuntimeError):
         return False
     error_str = str(error).lower()
-    return any(p in error_str for p in _RETRYABLE_PATTERNS)
+    patterns = _RETRYABLE_PATTERNS
+    if extra_patterns:
+        patterns = list(patterns) + [p.lower() for p in extra_patterns]
+    return any(p in error_str for p in patterns)
 
 
-def _calculate_backoff(attempt: int, base_delay: float = 1.0) -> float:
-    """Exponential backoff with jitter, capped at 30s."""
+def _calculate_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
+    """Exponential backoff with jitter, capped at max_delay."""
     delay = base_delay * (2 ** attempt)
     jitter = random.uniform(0.5, 1.5)
-    return min(delay * jitter, 30.0)
+    return min(delay * jitter, max_delay)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +251,205 @@ def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Responses API helpers (GPT-5 models)
+# ---------------------------------------------------------------------------
+
+
+def _is_responses_api_model(model: str) -> bool:
+    """Check if model requires litellm.responses() instead of completion().
+
+    GPT-5 models use OpenAI's Responses API which has different parameters
+    and response format than the Chat Completions API. This function
+    detects them so call_llm/acall_llm can route automatically.
+    """
+    return "gpt-5" in model.lower()
+
+
+def _convert_messages_to_input(messages: list[dict[str, Any]]) -> str:
+    """Convert chat messages to a single input string for responses() API.
+
+    The Responses API accepts either a string or a message list as input.
+    We convert to string to handle all message formats uniformly.
+    """
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            parts.append(f"System: {content}")
+        elif role == "assistant":
+            parts.append(f"Assistant: {content}")
+        else:
+            parts.append(f"User: {content}")
+    return "\n\n".join(parts)
+
+
+def _convert_response_format_for_responses(
+    response_format: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Convert completion() response_format to responses() text parameter.
+
+    The Responses API uses a 'text' parameter with a 'format' key instead of
+    the Chat Completions API's 'response_format' parameter.
+    """
+    if not response_format:
+        return {"format": {"type": "text"}}
+
+    if response_format.get("type") == "json_object":
+        return {"format": {"type": "text"}}
+
+    if response_format.get("type") == "json_schema":
+        json_schema = response_format.get("json_schema", {})
+        return {
+            "format": {
+                "type": "json_schema",
+                "name": json_schema.get("name", "response_schema"),
+                "schema": json_schema.get("schema", {}),
+                "strict": json_schema.get("strict", True),
+            }
+        }
+
+    return {"format": {"type": "text"}}
+
+
+def _prepare_responses_kwargs(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int,
+    api_base: str | None,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Build kwargs for litellm.responses() / aresponses().
+
+    Converts messages to input string, response_format to text parameter,
+    and strips max_tokens/max_output_tokens (GPT-5 uses reasoning tokens
+    before output tokens — setting limits can exhaust them on reasoning
+    and return empty output while still billing you).
+    """
+    kwargs = dict(kwargs)  # Don't mutate caller's dict
+
+    input_text = _convert_messages_to_input(messages)
+
+    resp_kwargs: dict[str, Any] = {
+        "model": model,
+        "input": input_text,
+        "timeout": timeout,
+    }
+
+    if api_base is not None:
+        resp_kwargs["api_base"] = api_base
+
+    # Convert response_format → text parameter
+    response_format = kwargs.pop("response_format", None)
+    if response_format:
+        resp_kwargs["text"] = _convert_response_format_for_responses(
+            response_format
+        )
+
+    # Strip parameters that break GPT-5 or don't apply to responses API
+    for key in ("max_tokens", "max_output_tokens", "messages",
+                "reasoning_effort", "thinking"):
+        kwargs.pop(key, None)
+
+    resp_kwargs.update(kwargs)
+    return resp_kwargs
+
+
+def _extract_responses_usage(response: Any) -> dict[str, Any]:
+    """Extract token usage from responses() API response."""
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        return {
+            "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        }
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> float:
+    """Compute cost for a responses() API call."""
+    # Try litellm's built-in cost calculation
+    try:
+        cost = float(litellm.completion_cost(completion_response=response))
+        if cost > 0:
+            return cost
+    except Exception:
+        pass
+
+    # Try the usage.cost field (responses API sometimes includes this)
+    raw_usage = getattr(response, "usage", None)
+    if raw_usage and hasattr(raw_usage, "cost") and raw_usage.cost:
+        return float(raw_usage.cost)
+
+    # Fallback estimate
+    total = usage["total_tokens"]
+    fallback = total * 0.000001
+    if total > 0:
+        logger.warning(
+            "completion_cost failed for responses API, "
+            "using fallback: $%.6f for %d tokens",
+            fallback,
+            total,
+        )
+    return fallback
+
+
+def _build_result_from_responses(
+    response: Any,
+    model: str,
+) -> LLMCallResult:
+    """Build LLMCallResult from a responses() API response."""
+    # Use litellm's output_text convenience property
+    content = getattr(response, "output_text", None) or ""
+
+    usage = _extract_responses_usage(response)
+    cost = _compute_responses_cost(response, usage)
+
+    # Map responses API status to finish_reason
+    status = getattr(response, "status", "completed")
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = str(getattr(details, "reason", "")) if details else ""
+        if "max_output_tokens" in reason:
+            raise RuntimeError(
+                f"LLM response truncated ({len(content)} chars). "
+                "Responses API hit max_output_tokens limit."
+            )
+        finish_reason = "length"
+    else:
+        finish_reason = "stop"
+
+    # Empty content (retryable)
+    if not content.strip():
+        raise ValueError("Empty content from LLM (responses API)")
+
+    logger.debug(
+        "LLM call (responses API): model=%s tokens=%d cost=$%.6f status=%s",
+        model,
+        usage["total_tokens"],
+        cost,
+        status,
+    )
+
+    return LLMCallResult(
+        content=content,
+        usage=usage,
+        cost=cost,
+        model=model,
+        tool_calls=[],
+        finish_reason=finish_reason,
+        raw_response=response,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Completion API helpers
+# ---------------------------------------------------------------------------
+
+
 def _prepare_call_kwargs(
     model: str,
     messages: list[dict[str, Any]],
@@ -242,6 +488,11 @@ def _prepare_call_kwargs(
     # Thinking model detection: disable reasoning token budget
     if _is_thinking_model(model) and "thinking" not in kwargs:
         call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
+
+    # GPT-5 models don't support the temperature parameter
+    # (structured calls go through instructor + litellm.completion, not responses API)
+    if _is_responses_api_model(model):
+        call_kwargs.pop("temperature", None)
 
     return call_kwargs
 
@@ -300,19 +551,26 @@ def call_llm(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
-    """Call any LLM via litellm.completion.
+    """Call any LLM via litellm. Automatically routes GPT-5 to responses API.
 
     Just change the model string to switch providers. Everything else
-    stays the same.
+    stays the same. GPT-5 models are automatically routed through
+    litellm.responses() instead of litellm.completion().
 
     Retries up to num_retries times with jittered exponential backoff on
     transient errors (rate limits, timeouts, empty responses, JSON parse
     failures). Non-retryable errors raise immediately.
 
     Args:
-        model: Model name (e.g., "gpt-4o", "anthropic/claude-sonnet-4-5-20250929",
+        model: Model name (e.g., "gpt-4o", "gpt-5-mini",
+               "anthropic/claude-sonnet-4-5-20250929",
                "gemini/gemini-2.0-flash", "ollama/llama3")
         messages: Chat messages in OpenAI format
                   [{"role": "user", "content": "Hello"}]
@@ -323,34 +581,60 @@ def call_llm(
         api_base: Optional API base URL (e.g., for OpenRouter:
                   "https://openrouter.ai/api/v1")
         **kwargs: Additional params passed to litellm.completion
-                  (e.g., temperature, max_tokens, stream)
+                  (e.g., temperature, max_tokens, stream).
+                  For GPT-5 models, response_format is automatically
+                  converted and max_tokens is stripped.
 
     Returns:
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
-    call_kwargs = _prepare_call_kwargs(
-        model, messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-    )
+    use_responses = _is_responses_api_model(model)
+
+    if use_responses:
+        call_kwargs = _prepare_responses_kwargs(
+            model, messages,
+            timeout=timeout,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+    else:
+        call_kwargs = _prepare_call_kwargs(
+            model, messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+
+    if cache is not None:
+        key = _cache_key(model, messages, **kwargs)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
 
     last_error: Exception | None = None
     for attempt in range(num_retries + 1):
         try:
-            response = litellm.completion(**call_kwargs)
-            result = _build_result_from_response(response, model)
+            if use_responses:
+                response = litellm.responses(**call_kwargs)
+                result = _build_result_from_responses(response, model)
+            else:
+                response = litellm.completion(**call_kwargs)
+                result = _build_result_from_response(response, model)
             if attempt > 0:
                 logger.info("call_llm succeeded after %d retries", attempt)
+            if cache is not None:
+                cache.set(key, result)
             return result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e) or attempt >= num_retries:
+            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
                 raise
-            delay = _calculate_backoff(attempt)
+            delay = _calculate_backoff(attempt, base_delay, max_delay)
+            if on_retry is not None:
+                on_retry(attempt, e, delay)
             logger.warning(
                 "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
@@ -372,6 +656,11 @@ def call_llm_structured(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
@@ -427,6 +716,14 @@ def call_llm_structured(
     # retry (our outer loop handles all retries to avoid double-retry)
     call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
+    if cache is not None:
+        key = _cache_key(model, messages, response_model=response_model.__name__, **kwargs)
+        cached = cache.get(key)
+        if cached is not None:
+            # Re-parse the cached content back into the Pydantic model
+            reparsed = response_model.model_validate_json(cached.content)
+            return reparsed, cached
+
     last_error: Exception | None = None
     for attempt in range(num_retries + 1):
         try:
@@ -451,12 +748,16 @@ def call_llm_structured(
                 raw_response=completion_response,
             )
 
+            if cache is not None:
+                cache.set(key, llm_result)
             return parsed, llm_result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e) or attempt >= num_retries:
+            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
                 raise
-            delay = _calculate_backoff(attempt)
+            delay = _calculate_backoff(attempt, base_delay, max_delay)
+            if on_retry is not None:
+                on_retry(attempt, e, delay)
             logger.warning(
                 "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
@@ -478,6 +779,11 @@ def call_llm_with_tools(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
@@ -522,6 +828,11 @@ def call_llm_with_tools(
         num_retries=num_retries,
         reasoning_effort=reasoning_effort,
         api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
         tools=tools,
         **kwargs,
     )
@@ -540,48 +851,78 @@ async def acall_llm(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
-    """Async version of call_llm. Uses litellm.acompletion.
+    """Async version of call_llm. Routes GPT-5 to aresponses(), others to acompletion().
 
     Retries up to num_retries times with jittered exponential backoff on
     transient errors.
 
     Args:
-        model: Model name (e.g., "gpt-4o", "anthropic/claude-sonnet-4-5-20250929")
+        model: Model name (e.g., "gpt-4o", "gpt-5-mini",
+               "anthropic/claude-sonnet-4-5-20250929")
         messages: Chat messages in OpenAI format
         timeout: Request timeout in seconds
         num_retries: Number of retries on transient failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
-        **kwargs: Additional params passed to litellm.acompletion
+        **kwargs: Additional params passed to litellm
 
     Returns:
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
-    call_kwargs = _prepare_call_kwargs(
-        model, messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-    )
+    use_responses = _is_responses_api_model(model)
+
+    if use_responses:
+        call_kwargs = _prepare_responses_kwargs(
+            model, messages,
+            timeout=timeout,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+    else:
+        call_kwargs = _prepare_call_kwargs(
+            model, messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+
+    if cache is not None:
+        key = _cache_key(model, messages, **kwargs)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
 
     last_error: Exception | None = None
     for attempt in range(num_retries + 1):
         try:
-            response = await litellm.acompletion(**call_kwargs)
-            result = _build_result_from_response(response, model)
+            if use_responses:
+                response = await litellm.aresponses(**call_kwargs)
+                result = _build_result_from_responses(response, model)
+            else:
+                response = await litellm.acompletion(**call_kwargs)
+                result = _build_result_from_response(response, model)
             if attempt > 0:
                 logger.info("acall_llm succeeded after %d retries", attempt)
+            if cache is not None:
+                cache.set(key, result)
             return result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e) or attempt >= num_retries:
+            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
                 raise
-            delay = _calculate_backoff(attempt)
+            delay = _calculate_backoff(attempt, base_delay, max_delay)
+            if on_retry is not None:
+                on_retry(attempt, e, delay)
             logger.warning(
                 "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
@@ -603,6 +944,11 @@ async def acall_llm_structured(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Async version of call_llm_structured.
@@ -641,6 +987,13 @@ async def acall_llm_structured(
     # retry (our outer loop handles all retries to avoid double-retry)
     call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
+    if cache is not None:
+        key = _cache_key(model, messages, response_model=response_model.__name__, **kwargs)
+        cached = cache.get(key)
+        if cached is not None:
+            reparsed = response_model.model_validate_json(cached.content)
+            return reparsed, cached
+
     last_error: Exception | None = None
     for attempt in range(num_retries + 1):
         try:
@@ -665,12 +1018,16 @@ async def acall_llm_structured(
                 raw_response=completion_response,
             )
 
+            if cache is not None:
+                cache.set(key, llm_result)
             return parsed, llm_result
         except Exception as e:
             last_error = e
-            if not _is_retryable(e) or attempt >= num_retries:
+            if not _is_retryable(e, extra_patterns=retry_on) or attempt >= num_retries:
                 raise
-            delay = _calculate_backoff(attempt)
+            delay = _calculate_backoff(attempt, base_delay, max_delay)
+            if on_retry is not None:
+                on_retry(attempt, e, delay)
             logger.warning(
                 "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                 attempt + 1,
@@ -692,6 +1049,11 @@ async def acall_llm_with_tools(
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm_with_tools.
@@ -716,6 +1078,11 @@ async def acall_llm_with_tools(
         num_retries=num_retries,
         reasoning_effort=reasoning_effort,
         api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
         tools=tools,
         **kwargs,
     )
