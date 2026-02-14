@@ -924,12 +924,12 @@ class TestResponsesAPIRouting:
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")
-    def test_gpt5_passes_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
-        """Standard kwargs like temperature should pass through."""
+    def test_gpt5_strips_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """GPT-5 responses API does not support temperature — should be stripped."""
         mock_resp.return_value = _mock_responses_api_response()
         call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], temperature=0.5)
         kwargs = mock_resp.call_args.kwargs
-        assert kwargs["temperature"] == 0.5
+        assert "temperature" not in kwargs
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")

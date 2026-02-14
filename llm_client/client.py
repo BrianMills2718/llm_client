@@ -747,7 +747,7 @@ def _prepare_responses_kwargs(
 
     # Strip parameters that break GPT-5 or don't apply to responses API
     for key in ("max_tokens", "max_output_tokens", "messages",
-                "reasoning_effort", "thinking"):
+                "reasoning_effort", "thinking", "temperature"):
         kwargs.pop(key, None)
 
     resp_kwargs.update(kwargs)
