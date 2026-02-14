@@ -1,6 +1,6 @@
 # LLM Client
 
-Wrapper around litellm. Swap any model by changing one string — everything else stays the same. Smart retry, automatic Responses API routing for GPT-5, thinking model detection, and cost tracking built in.
+Wrapper around litellm. Swap any model by changing one string — everything else stays the same. Smart retry, fallback models, streaming, observability hooks, response caching, Responses API routing for GPT-5, thinking model detection, and cost tracking built in.
 
 ## Quick Reference
 

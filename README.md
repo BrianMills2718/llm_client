@@ -74,6 +74,16 @@ if result.tool_calls:
     print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 ```
 
+### Async
+
+```python
+from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
+
+result = await acall_llm("gpt-4o", messages)
+data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
+result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+```
+
 ### Streaming
 
 ```python
@@ -88,16 +98,6 @@ print(stream.result.usage)  # usage available after stream ends
 stream = await astream_llm("gpt-4o", messages)
 async for chunk in stream:
     print(chunk, end="", flush=True)
-```
-
-### Async
-
-```python
-from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
-
-result = await acall_llm("gpt-4o", messages)
-data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
-result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 ```
 
 ### Fallback models
@@ -184,7 +184,7 @@ export GEMINI_API_KEY=...
 
 ```bash
 # From your other project's directory:
-pip install -e ~/brian_projects/llm_client
+pip install -e ~/projects/llm_client
 
 # Then in code:
 from llm_client import call_llm
