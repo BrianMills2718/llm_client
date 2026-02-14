@@ -252,6 +252,8 @@ Non-retryable errors (e.g., invalid API key, content filter) raise immediately. 
 2. **Models supporting `response_schema`** (gpt-4o, Claude, Gemini, etc.) → `litellm.completion()` with `response_format` JSON schema
 3. **Older models** (gpt-3.5-turbo, etc.) → instructor fallback
 
+If the native JSON schema path fails due to a provider schema limitation (e.g., Gemini's nesting depth limit for deeply nested Pydantic models), the call automatically falls back to the instructor path. No code changes needed on the consumer side.
+
 ```python
 # All use the same call — routing is automatic
 data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)     # Responses API

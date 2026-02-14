@@ -205,6 +205,34 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     return any(p in error_str for p in patterns)
 
 
+# Patterns indicating the provider rejected the JSON schema itself (not a
+# transient error).  When detected in the native JSON-schema path, the call
+# falls back to the instructor path which prompts for JSON instead of
+# enforcing via API-level schema constraints.
+_SCHEMA_ERROR_PATTERNS: list[str] = [
+    "nesting depth",
+    "schema is invalid",
+    "schema exceeds",
+    "invalid schema",
+    "unsupported schema",
+    "schema too complex",
+    "schema validation",
+    "not a valid json schema",
+    "response_format",
+]
+
+
+def _is_schema_error(error: Exception) -> bool:
+    """Check if an error indicates the provider rejected the response schema."""
+    error_str = str(error).lower()
+    # Must be a 400-class error (BadRequest), not a transient/server error
+    error_type = type(error).__name__.lower()
+    is_bad_request = "badrequest" in error_type or "invalid_argument" in error_str or "400" in error_str
+    if not is_bad_request:
+        return False
+    return any(p in error_str for p in _SCHEMA_ERROR_PATTERNS)
+
+
 # -- Backoff strategies ----------------------------------------------------
 
 
@@ -1152,6 +1180,9 @@ def call_llm_structured(
                 raise last_error  # type: ignore[misc]  # unreachable
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.completion + response_format
+                # If the provider rejects the schema (e.g. Gemini nesting depth
+                # limit), fall through to the instructor path automatically.
+                _native_schema_failed = False
                 schema = _strict_json_schema(response_model.model_json_schema())
                 base_kwargs = _prepare_call_kwargs(
                     current_model, messages,
@@ -1196,6 +1227,14 @@ def call_llm_structured(
                             cache.set(key, llm_result)
                         return parsed, llm_result
                     except Exception as e:
+                        if _is_schema_error(e):
+                            logger.warning(
+                                "Native JSON schema rejected by provider (%s), "
+                                "falling back to instructor: %s",
+                                current_model, e,
+                            )
+                            _native_schema_failed = True
+                            break
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
@@ -1209,8 +1248,10 @@ def call_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, e,
                         )
                         time.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
-            else:
+                else:
+                    raise last_error  # type: ignore[misc]  # unreachable
+
+            if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.completion
                 import instructor
 
@@ -1591,6 +1632,9 @@ async def acall_llm_structured(
                 raise last_error  # type: ignore[misc]  # unreachable
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.acompletion + response_format
+                # If the provider rejects the schema (e.g. Gemini nesting depth
+                # limit), fall through to the instructor path automatically.
+                _native_schema_failed = False
                 schema = _strict_json_schema(response_model.model_json_schema())
                 base_kwargs = _prepare_call_kwargs(
                     current_model, messages,
@@ -1635,6 +1679,14 @@ async def acall_llm_structured(
                             await _async_cache_set(cache, key, llm_result)
                         return parsed, llm_result
                     except Exception as e:
+                        if _is_schema_error(e):
+                            logger.warning(
+                                "Native JSON schema rejected by provider (%s), "
+                                "falling back to instructor: %s",
+                                current_model, e,
+                            )
+                            _native_schema_failed = True
+                            break
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
@@ -1648,8 +1700,10 @@ async def acall_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, e,
                         )
                         await asyncio.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
-            else:
+                else:
+                    raise last_error  # type: ignore[misc]  # unreachable
+
+            if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.acompletion
                 import instructor
 
