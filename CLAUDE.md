@@ -25,6 +25,39 @@ result = call_llm_with_tools("gpt-4o", messages, tools=[...])
 result.tool_calls  # normalized across providers
 ```
 
+### Batch/Parallel Calls
+
+```python
+from llm_client import call_llm_batch, acall_llm_batch
+
+# Run multiple prompts concurrently with rate limiting
+messages_list = [
+    [{"role": "user", "content": "Summarize doc 1"}],
+    [{"role": "user", "content": "Summarize doc 2"}],
+    [{"role": "user", "content": "Summarize doc 3"}],
+]
+results = call_llm_batch("gpt-4o", messages_list, max_concurrent=5)
+
+# Async version (core implementation — call_llm_batch wraps this)
+results = await acall_llm_batch("gpt-4o", messages_list, max_concurrent=10)
+
+# With progress callbacks
+results = await acall_llm_batch(
+    "gpt-4o", messages_list,
+    on_item_complete=lambda idx, res: print(f"Done {idx}: {len(res.content)} chars"),
+    on_item_error=lambda idx, err: print(f"Failed {idx}: {err}"),
+    return_exceptions=True,  # exceptions in results instead of propagating
+)
+
+# Structured batch
+from llm_client import call_llm_structured_batch
+results = call_llm_structured_batch("gpt-4o", messages_list, response_model=Entity)
+for parsed, meta in results:
+    print(parsed.name, meta.cost)
+```
+
+Each item gets full retry/fallback/cache/hooks via `acall_llm` or `acall_llm_structured`. Semaphore-based concurrency control.
+
 ### Async
 
 ```python
@@ -41,8 +74,8 @@ result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 ```python
 from llm_client import stream_llm, astream_llm
 
-# Sync streaming
-stream = stream_llm("gpt-4o", messages)
+# Sync streaming (with retry/fallback support)
+stream = stream_llm("gpt-4o", messages, num_retries=2, fallback_models=["gpt-3.5-turbo"])
 for chunk in stream:
     print(chunk, end="", flush=True)
 print()
@@ -53,24 +86,38 @@ stream = await astream_llm("gpt-4o", messages)
 async for chunk in stream:
     print(chunk, end="", flush=True)
 print(stream.result.cost)
+
+# Streaming with tools
+from llm_client import stream_llm_with_tools
+stream = stream_llm_with_tools("gpt-4o", messages, tools=[...])
+for chunk in stream:
+    print(chunk, end="", flush=True)
+print(stream.result.tool_calls)  # tool calls available after stream ends
 ```
+
+Streaming retries on **pre-stream** errors (rate limits, connection errors). Mid-stream errors are not retried (would require buffering, defeating streaming's purpose).
 
 ## API
 
-Eight functions (4 sync + 4 async):
+Fourteen functions (7 sync + 7 async):
 
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
-| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction via instructor |
+| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (instructor or Responses API) |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
-| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming (yields text chunks) |
+| `call_llm_batch(model, messages_list, **kwargs)` | `acall_llm_batch(...)` | Concurrent batch calls |
+| `call_llm_structured_batch(model, messages_list, response_model, **kwargs)` | `acall_llm_structured_batch(...)` | Concurrent structured batch |
+| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming with retry/fallback |
+| `stream_llm_with_tools(model, messages, tools, **kwargs)` | `astream_llm_with_tools(...)` | Streaming with tools |
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
 `call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
 
-`stream_llm` / `astream_llm` accept: `timeout`, `reasoning_effort`, `api_base`, `hooks`, plus litellm kwargs.
+`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks`, plus litellm kwargs. No `cache` param (caching streams doesn't make sense).
+
+`*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions` (False), `on_item_complete`, `on_item_error`.
 
 ### RetryPolicy (reusable retry configuration)
 
@@ -214,10 +261,14 @@ What happens automatically for GPT-5 models:
 - `max_tokens` / `max_output_tokens` stripped (GPT-5 uses reasoning tokens before output — setting limits can exhaust them on reasoning and return empty output)
 - Response normalized into the same `LLMCallResult` you get from any other model
 - Smart retry still works
-- `response_format` with `json_schema` works for structured JSON output
+- `call_llm_structured` works with GPT-5 — bypasses instructor, uses native Responses API JSON schema
+- `response_format` with `json_schema` works for structured JSON output via `call_llm`
 
 ```python
-# Structured JSON with GPT-5 (use response_format, not call_llm_structured)
+# Structured extraction with GPT-5 — call_llm_structured works directly
+data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)
+
+# Or manual JSON schema via call_llm
 result = call_llm("gpt-5-mini", messages, response_format={
     "type": "json_schema",
     "json_schema": {

@@ -1,10 +1,13 @@
 """LLM client wrapping litellm.
 
-Eight functions (4 sync + 4 async), no class, no mutable state:
+Fourteen functions (7 sync + 7 async), no class, no mutable state:
 - call_llm / acall_llm: basic completion
-- call_llm_structured / acall_llm_structured: instructor-based Pydantic extraction
+- call_llm_structured / acall_llm_structured: Pydantic extraction (instructor or Responses API)
 - call_llm_with_tools / acall_llm_with_tools: tool/function calling
-- stream_llm / astream_llm: streaming (yields text chunks)
+- call_llm_batch / acall_llm_batch: concurrent batch calls
+- call_llm_structured_batch / acall_llm_structured_batch: concurrent structured batch
+- stream_llm / astream_llm: streaming with retry/fallback
+- stream_llm_with_tools / astream_llm_with_tools: streaming with tools
 
 Features:
 - Smart retry with jittered exponential backoff on transient errors,
@@ -33,6 +36,7 @@ Full provider list: https://docs.litellm.ai/docs/providers
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import inspect
 import json as _json
@@ -389,12 +393,15 @@ class LLMStream:
         usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         cost = 0.0
         finish_reason = "stop"
+        tool_calls: list[dict[str, Any]] = []
         try:
             complete = litellm.stream_chunk_builder(self._raw_chunks)
             if complete:
                 usage = _extract_usage(complete)
                 cost = _compute_cost(complete)
                 finish_reason = complete.choices[0].finish_reason or "stop"
+                if complete.choices[0].message.tool_calls:
+                    tool_calls = _extract_tool_calls(complete.choices[0].message)
         except Exception:
             pass
         self._result = LLMCallResult(
@@ -402,6 +409,7 @@ class LLMStream:
             usage=usage,
             cost=cost,
             model=self._model,
+            tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
         )
@@ -458,12 +466,15 @@ class AsyncLLMStream:
         usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         cost = 0.0
         finish_reason = "stop"
+        tool_calls: list[dict[str, Any]] = []
         try:
             complete = litellm.stream_chunk_builder(self._raw_chunks)
             if complete:
                 usage = _extract_usage(complete)
                 cost = _compute_cost(complete)
                 finish_reason = complete.choices[0].finish_reason or "stop"
+                if complete.choices[0].message.tool_calls:
+                    tool_calls = _extract_tool_calls(complete.choices[0].message)
         except Exception:
             pass
         self._result = LLMCallResult(
@@ -471,6 +482,7 @@ class AsyncLLMStream:
             usage=usage,
             cost=cost,
             model=self._model,
+            tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
         )
@@ -1018,7 +1030,9 @@ def call_llm_structured(
     """Call LLM and get back a validated Pydantic model.
 
     Uses instructor + litellm for reliable structured extraction
-    across all providers. No manual JSON parsing needed.
+    across all providers. For GPT-5 models, bypasses instructor and uses
+    the Responses API's native JSON schema support. No manual JSON
+    parsing needed.
 
     Args:
         model: Model name
@@ -1040,22 +1054,9 @@ def call_llm_structured(
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
 
-    import instructor
-
-    client = instructor.from_litellm(litellm.completion)
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
-        base_kwargs = _prepare_call_kwargs(
-            current_model, messages,
-            timeout=timeout,
-            num_retries=r.max_retries,
-            reasoning_effort=reasoning_effort,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-        call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
-
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = cache.get(key)
@@ -1068,52 +1069,122 @@ def call_llm_structured(
 
         backoff_fn = r.backoff or exponential_backoff
         try:
-            for attempt in range(r.max_retries + 1):
-                try:
-                    parsed, completion_response = client.chat.completions.create_with_completion(
-                        **call_kwargs,
-                    )
+            if _is_responses_api_model(current_model):
+                # GPT-5 path: Responses API with native JSON schema
+                schema = response_model.model_json_schema()
+                resp_kwargs = _prepare_responses_kwargs(
+                    current_model, messages,
+                    timeout=timeout, api_base=api_base, kwargs=kwargs,
+                )
+                resp_kwargs["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": response_model.__name__,
+                        "schema": schema,
+                        "strict": True,
+                    }
+                }
 
-                    usage = _extract_usage(completion_response)
-                    cost = _compute_cost(completion_response)
-                    content = str(parsed.model_dump_json())
-                    finish_reason: str = completion_response.choices[0].finish_reason or ""
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        response = litellm.responses(**resp_kwargs)
+                        raw_content = getattr(response, "output_text", None) or ""
+                        if not raw_content.strip():
+                            raise ValueError("Empty content from LLM (responses API structured)")
+                        parsed = response_model.model_validate_json(raw_content)
+                        content = str(parsed.model_dump_json())
+                        usage = _extract_responses_usage(response)
+                        cost = _compute_responses_cost(response, usage)
 
-                    if attempt > 0:
-                        logger.info("call_llm_structured succeeded after %d retries", attempt)
+                        if attempt > 0:
+                            logger.info("call_llm_structured (responses) succeeded after %d retries", attempt)
 
-                    llm_result = LLMCallResult(
-                        content=content,
-                        usage=usage,
-                        cost=cost,
-                        model=current_model,
-                        finish_reason=finish_reason,
-                        raw_response=completion_response,
-                    )
+                        llm_result = LLMCallResult(
+                            content=content, usage=usage, cost=cost,
+                            model=current_model, finish_reason="stop",
+                            raw_response=response,
+                        )
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            cache.set(key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1, r.max_retries + 1, delay, e,
+                        )
+                        time.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
+            else:
+                # Standard path: instructor + litellm.completion
+                import instructor
 
-                    if hooks and hooks.after_call:
-                        hooks.after_call(llm_result)
-                    if cache is not None:
-                        cache.set(key, llm_result)
-                    return parsed, llm_result
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
-                        raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    logger.warning(
-                        "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                        attempt + 1,
-                        r.max_retries + 1,
-                        delay,
-                        e,
-                    )
-                    time.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+                client = instructor.from_litellm(litellm.completion)
+                base_kwargs = _prepare_call_kwargs(
+                    current_model, messages,
+                    timeout=timeout,
+                    num_retries=r.max_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    kwargs=kwargs,
+                )
+                call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        parsed, completion_response = client.chat.completions.create_with_completion(
+                            **call_kwargs,
+                        )
+
+                        usage = _extract_usage(completion_response)
+                        cost = _compute_cost(completion_response)
+                        content = str(parsed.model_dump_json())
+                        finish_reason: str = completion_response.choices[0].finish_reason or ""
+
+                        if attempt > 0:
+                            logger.info("call_llm_structured succeeded after %d retries", attempt)
+
+                        llm_result = LLMCallResult(
+                            content=content,
+                            usage=usage,
+                            cost=cost,
+                            model=current_model,
+                            finish_reason=finish_reason,
+                            raw_response=completion_response,
+                        )
+
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            cache.set(key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1,
+                            r.max_retries + 1,
+                            delay,
+                            e,
+                        )
+                        time.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -1339,6 +1410,8 @@ async def acall_llm_structured(
     """Async version of call_llm_structured.
 
     Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
+    For GPT-5 models, bypasses instructor and uses the Responses API's
+    native JSON schema support via ``litellm.aresponses()``.
 
     Args:
         model: Model name
@@ -1360,22 +1433,9 @@ async def acall_llm_structured(
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
 
-    import instructor
-
-    client = instructor.from_litellm(litellm.acompletion)
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
-        base_kwargs = _prepare_call_kwargs(
-            current_model, messages,
-            timeout=timeout,
-            num_retries=r.max_retries,
-            reasoning_effort=reasoning_effort,
-            api_base=api_base,
-            kwargs=kwargs,
-        )
-        call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
-
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = await _async_cache_get(cache, key)
@@ -1388,52 +1448,122 @@ async def acall_llm_structured(
 
         backoff_fn = r.backoff or exponential_backoff
         try:
-            for attempt in range(r.max_retries + 1):
-                try:
-                    parsed, completion_response = await client.chat.completions.create_with_completion(
-                        **call_kwargs,
-                    )
+            if _is_responses_api_model(current_model):
+                # GPT-5 path: Responses API with native JSON schema
+                schema = response_model.model_json_schema()
+                resp_kwargs = _prepare_responses_kwargs(
+                    current_model, messages,
+                    timeout=timeout, api_base=api_base, kwargs=kwargs,
+                )
+                resp_kwargs["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": response_model.__name__,
+                        "schema": schema,
+                        "strict": True,
+                    }
+                }
 
-                    usage = _extract_usage(completion_response)
-                    cost = _compute_cost(completion_response)
-                    content = str(parsed.model_dump_json())
-                    finish_reason: str = completion_response.choices[0].finish_reason or ""
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        response = await litellm.aresponses(**resp_kwargs)
+                        raw_content = getattr(response, "output_text", None) or ""
+                        if not raw_content.strip():
+                            raise ValueError("Empty content from LLM (responses API structured)")
+                        parsed = response_model.model_validate_json(raw_content)
+                        content = str(parsed.model_dump_json())
+                        usage = _extract_responses_usage(response)
+                        cost = _compute_responses_cost(response, usage)
 
-                    if attempt > 0:
-                        logger.info("acall_llm_structured succeeded after %d retries", attempt)
+                        if attempt > 0:
+                            logger.info("acall_llm_structured (responses) succeeded after %d retries", attempt)
 
-                    llm_result = LLMCallResult(
-                        content=content,
-                        usage=usage,
-                        cost=cost,
-                        model=current_model,
-                        finish_reason=finish_reason,
-                        raw_response=completion_response,
-                    )
+                        llm_result = LLMCallResult(
+                            content=content, usage=usage, cost=cost,
+                            model=current_model, finish_reason="stop",
+                            raw_response=response,
+                        )
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            await _async_cache_set(cache, key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1, r.max_retries + 1, delay, e,
+                        )
+                        await asyncio.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
+            else:
+                # Standard path: instructor + litellm.acompletion
+                import instructor
 
-                    if hooks and hooks.after_call:
-                        hooks.after_call(llm_result)
-                    if cache is not None:
-                        await _async_cache_set(cache, key, llm_result)
-                    return parsed, llm_result
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
-                        raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    logger.warning(
-                        "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                        attempt + 1,
-                        r.max_retries + 1,
-                        delay,
-                        e,
-                    )
-                    await asyncio.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+                client = instructor.from_litellm(litellm.acompletion)
+                base_kwargs = _prepare_call_kwargs(
+                    current_model, messages,
+                    timeout=timeout,
+                    num_retries=r.max_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    kwargs=kwargs,
+                )
+                call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+
+                for attempt in range(r.max_retries + 1):
+                    try:
+                        parsed, completion_response = await client.chat.completions.create_with_completion(
+                            **call_kwargs,
+                        )
+
+                        usage = _extract_usage(completion_response)
+                        cost = _compute_cost(completion_response)
+                        content = str(parsed.model_dump_json())
+                        finish_reason: str = completion_response.choices[0].finish_reason or ""
+
+                        if attempt > 0:
+                            logger.info("acall_llm_structured succeeded after %d retries", attempt)
+
+                        llm_result = LLMCallResult(
+                            content=content,
+                            usage=usage,
+                            cost=cost,
+                            model=current_model,
+                            finish_reason=finish_reason,
+                            raw_response=completion_response,
+                        )
+
+                        if hooks and hooks.after_call:
+                            hooks.after_call(llm_result)
+                        if cache is not None:
+                            await _async_cache_set(cache, key, llm_result)
+                        return parsed, llm_result
+                    except Exception as e:
+                        last_error = e
+                        if hooks and hooks.on_error:
+                            hooks.on_error(e, attempt)
+                        if not _check_retryable(e, r) or attempt >= r.max_retries:
+                            raise
+                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        if r.on_retry is not None:
+                            r.on_retry(attempt, e, delay)
+                        logger.warning(
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            attempt + 1,
+                            r.max_retries + 1,
+                            delay,
+                            e,
+                        )
+                        await asyncio.sleep(delay)
+                raise last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -1509,6 +1639,281 @@ async def acall_llm_with_tools(
 
 
 # ---------------------------------------------------------------------------
+# Batch/parallel functions
+# ---------------------------------------------------------------------------
+
+
+async def acall_llm_batch(
+    model: str,
+    messages_list: list[list[dict[str, Any]]],
+    *,
+    max_concurrent: int = 5,
+    return_exceptions: bool = False,
+    on_item_complete: Callable[[int, LLMCallResult], None] | None = None,
+    on_item_error: Callable[[int, Exception], None] | None = None,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | AsyncCachePolicy | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> list[LLMCallResult | Exception]:
+    """Run multiple LLM calls concurrently with semaphore-based rate limiting.
+
+    Each item delegates to ``acall_llm`` for full retry/fallback/cache/hooks.
+    Results are returned in the same order as ``messages_list``.
+
+    Args:
+        model: Model name
+        messages_list: List of message lists — one per call
+        max_concurrent: Maximum concurrent requests (semaphore)
+        return_exceptions: If True, exceptions are returned in the result list
+            at the corresponding index instead of propagating
+        on_item_complete: ``(index, result)`` callback per successful item
+        on_item_error: ``(index, error)`` callback per failed item
+        **kwargs: All standard params forwarded to ``acall_llm``
+
+    Returns:
+        List of LLMCallResult (or Exception if return_exceptions=True),
+        in the same order as messages_list
+    """
+    if not messages_list:
+        return []
+
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def _call_one(idx: int, messages: list[dict[str, Any]]) -> LLMCallResult:
+        async with sem:
+            try:
+                result = await acall_llm(
+                    model, messages,
+                    timeout=timeout,
+                    num_retries=num_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                    retry_on=retry_on,
+                    on_retry=on_retry,
+                    cache=cache,
+                    retry=retry,
+                    fallback_models=fallback_models,
+                    on_fallback=on_fallback,
+                    hooks=hooks,
+                    **kwargs,
+                )
+                if on_item_complete is not None:
+                    on_item_complete(idx, result)
+                return result
+            except Exception as e:
+                if on_item_error is not None:
+                    on_item_error(idx, e)
+                raise
+
+    tasks = [_call_one(i, msgs) for i, msgs in enumerate(messages_list)]
+    return await asyncio.gather(*tasks, return_exceptions=return_exceptions)  # type: ignore[return-value]
+
+
+def call_llm_batch(
+    model: str,
+    messages_list: list[list[dict[str, Any]]],
+    *,
+    max_concurrent: int = 5,
+    return_exceptions: bool = False,
+    on_item_complete: Callable[[int, LLMCallResult], None] | None = None,
+    on_item_error: Callable[[int, Exception], None] | None = None,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> list[LLMCallResult | Exception]:
+    """Sync wrapper for :func:`acall_llm_batch`.
+
+    Runs the async batch in a new event loop. If called from within a
+    running event loop (e.g., Jupyter), uses a thread to avoid nested
+    event loop errors.
+
+    See :func:`acall_llm_batch` for full parameter documentation.
+    """
+    coro = acall_llm_batch(
+        model, messages_list,
+        max_concurrent=max_concurrent,
+        return_exceptions=return_exceptions,
+        on_item_complete=on_item_complete,
+        on_item_error=on_item_error,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        **kwargs,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+async def acall_llm_structured_batch(
+    model: str,
+    messages_list: list[list[dict[str, Any]]],
+    response_model: type[T],
+    *,
+    max_concurrent: int = 5,
+    return_exceptions: bool = False,
+    on_item_complete: Callable[[int, tuple[T, LLMCallResult]], None] | None = None,
+    on_item_error: Callable[[int, Exception], None] | None = None,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | AsyncCachePolicy | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> list[tuple[T, LLMCallResult] | Exception]:
+    """Run multiple structured LLM calls concurrently.
+
+    Each item delegates to ``acall_llm_structured``. See
+    :func:`acall_llm_batch` for concurrency/callback semantics.
+
+    Returns:
+        List of (parsed_model, LLMCallResult) tuples (or Exception if
+        return_exceptions=True), in input order.
+    """
+    if not messages_list:
+        return []
+
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def _call_one(idx: int, messages: list[dict[str, Any]]) -> tuple[T, LLMCallResult]:
+        async with sem:
+            try:
+                result = await acall_llm_structured(
+                    model, messages, response_model,
+                    timeout=timeout,
+                    num_retries=num_retries,
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                    retry_on=retry_on,
+                    on_retry=on_retry,
+                    cache=cache,
+                    retry=retry,
+                    fallback_models=fallback_models,
+                    on_fallback=on_fallback,
+                    hooks=hooks,
+                    **kwargs,
+                )
+                if on_item_complete is not None:
+                    on_item_complete(idx, result)
+                return result
+            except Exception as e:
+                if on_item_error is not None:
+                    on_item_error(idx, e)
+                raise
+
+    tasks = [_call_one(i, msgs) for i, msgs in enumerate(messages_list)]
+    return await asyncio.gather(*tasks, return_exceptions=return_exceptions)  # type: ignore[return-value]
+
+
+def call_llm_structured_batch(
+    model: str,
+    messages_list: list[list[dict[str, Any]]],
+    response_model: type[T],
+    *,
+    max_concurrent: int = 5,
+    return_exceptions: bool = False,
+    on_item_complete: Callable[[int, tuple[T, LLMCallResult]], None] | None = None,
+    on_item_error: Callable[[int, Exception], None] | None = None,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    cache: CachePolicy | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> list[tuple[T, LLMCallResult] | Exception]:
+    """Sync wrapper for :func:`acall_llm_structured_batch`.
+
+    See :func:`acall_llm_batch` for concurrency semantics.
+    """
+    coro = acall_llm_structured_batch(
+        model, messages_list, response_model,
+        max_concurrent=max_concurrent,
+        return_exceptions=return_exceptions,
+        on_item_complete=on_item_complete,
+        on_item_error=on_item_error,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        **kwargs,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+# ---------------------------------------------------------------------------
 # Streaming functions
 # ---------------------------------------------------------------------------
 
@@ -1518,16 +1923,28 @@ def stream_llm(
     messages: list[dict[str, Any]],
     *,
     timeout: int = 60,
+    num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> LLMStream:
     """Stream an LLM response, yielding text chunks as they arrive.
 
-    Returns an :class:`LLMStream` iterator. After consuming all chunks,
-    access ``.result`` for the accumulated :class:`LLMCallResult` with
-    usage and cost (when available from the provider).
+    Retries on **pre-stream** errors (rate limits, connection errors) with
+    the same backoff logic as :func:`call_llm`. If the stream creation
+    succeeds, errors during chunk consumption are not retried (that would
+    require buffering, defeating streaming's purpose).
+
+    Supports ``fallback_models`` — if the primary model exhausts retries,
+    the next model in the list is tried.
 
     Example::
 
@@ -1541,35 +1958,72 @@ def stream_llm(
         model: Model name
         messages: Chat messages in OpenAI format
         timeout: Request timeout in seconds
+        num_retries: Number of retries on pre-stream failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL
+        retry: Reusable RetryPolicy (overrides individual retry params)
+        fallback_models: Models to try if the primary model fails all retries
+        on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion
 
     Returns:
         LLMStream that yields text chunks and exposes ``.result``
     """
-    call_kwargs = _prepare_call_kwargs(
-        model, messages,
-        timeout=timeout,
-        num_retries=0,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-    )
-    call_kwargs["stream"] = True
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    models = [model] + (fallback_models or [])
+    last_error: Exception | None = None
+    backoff_fn = r.backoff or exponential_backoff
 
-    if hooks and hooks.before_call:
-        hooks.before_call(model, messages, kwargs)
+    for model_idx, current_model in enumerate(models):
+        call_kwargs = _prepare_call_kwargs(
+            current_model, messages,
+            timeout=timeout,
+            num_retries=0,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+        call_kwargs["stream"] = True
 
-    try:
-        response = litellm.completion(**call_kwargs)
-    except Exception as e:
-        if hooks and hooks.on_error:
-            hooks.on_error(e, 0)
-        raise
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
 
-    return LLMStream(response, model, hooks=hooks)
+        try:
+            for attempt in range(r.max_retries + 1):
+                try:
+                    response = litellm.completion(**call_kwargs)
+                    if attempt > 0:
+                        logger.info("stream_llm succeeded after %d retries", attempt)
+                    return LLMStream(response, current_model, hooks=hooks)
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "stream_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1, r.max_retries + 1, delay, e,
+                    )
+                    time.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
+        except Exception as e:
+            last_error = e
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
+
+    raise last_error  # type: ignore[misc]  # unreachable
 
 
 async def astream_llm(
@@ -1577,53 +2031,173 @@ async def astream_llm(
     messages: list[dict[str, Any]],
     *,
     timeout: int = 60,
+    num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     **kwargs: Any,
 ) -> AsyncLLMStream:
-    """Async version of :func:`stream_llm`.
+    """Async version of :func:`stream_llm` with retry/fallback support.
 
-    Returns an :class:`AsyncLLMStream` async iterator.
-
-    Example::
-
-        stream = await astream_llm("gpt-4o", messages)
-        async for chunk in stream:
-            print(chunk, end="", flush=True)
-        print()
-        print(stream.result.usage)
-
-    Args:
-        model: Model name
-        messages: Chat messages in OpenAI format
-        timeout: Request timeout in seconds
-        reasoning_effort: Reasoning effort level (Claude models only)
-        api_base: Optional API base URL
-        hooks: Observability hooks (before_call, after_call, on_error)
-        **kwargs: Additional params passed to litellm.acompletion
+    Retries on pre-stream errors only. See :func:`stream_llm` for details.
 
     Returns:
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
-    call_kwargs = _prepare_call_kwargs(
+    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
+    models = [model] + (fallback_models or [])
+    last_error: Exception | None = None
+    backoff_fn = r.backoff or exponential_backoff
+
+    for model_idx, current_model in enumerate(models):
+        call_kwargs = _prepare_call_kwargs(
+            current_model, messages,
+            timeout=timeout,
+            num_retries=0,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            kwargs=kwargs,
+        )
+        call_kwargs["stream"] = True
+
+        if hooks and hooks.before_call:
+            hooks.before_call(current_model, messages, kwargs)
+
+        try:
+            for attempt in range(r.max_retries + 1):
+                try:
+                    response = await litellm.acompletion(**call_kwargs)
+                    if attempt > 0:
+                        logger.info("astream_llm succeeded after %d retries", attempt)
+                    return AsyncLLMStream(response, current_model, hooks=hooks)
+                except Exception as e:
+                    last_error = e
+                    if hooks and hooks.on_error:
+                        hooks.on_error(e, attempt)
+                    if not _check_retryable(e, r) or attempt >= r.max_retries:
+                        raise
+                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    if r.on_retry is not None:
+                        r.on_retry(attempt, e, delay)
+                    logger.warning(
+                        "astream_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        attempt + 1, r.max_retries + 1, delay, e,
+                    )
+                    await asyncio.sleep(delay)
+            raise last_error  # type: ignore[misc]  # unreachable
+        except Exception as e:
+            last_error = e
+            if model_idx < len(models) - 1:
+                next_model = models[model_idx + 1]
+                if on_fallback is not None:
+                    on_fallback(current_model, e, next_model)
+                logger.warning(
+                    "Falling back from %s to %s: %s", current_model, next_model, e,
+                )
+                continue
+            raise
+
+    raise last_error  # type: ignore[misc]  # unreachable
+
+
+def stream_llm_with_tools(
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> LLMStream:
+    """Stream an LLM response with tool/function calling support.
+
+    Same as :func:`stream_llm` but passes ``tools`` to the model. After
+    consuming the stream, ``stream.result.tool_calls`` contains any tool
+    calls the model made.
+
+    Args:
+        model: Model name
+        messages: Chat messages in OpenAI format
+        tools: Tool definitions in OpenAI format
+        **kwargs: All other params forwarded to :func:`stream_llm`
+
+    Returns:
+        LLMStream with tool_calls available on ``.result`` after consumption
+    """
+    return stream_llm(
         model, messages,
         timeout=timeout,
-        num_retries=0,
+        num_retries=num_retries,
         reasoning_effort=reasoning_effort,
         api_base=api_base,
-        kwargs=kwargs,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        tools=tools,
+        **kwargs,
     )
-    call_kwargs["stream"] = True
 
-    if hooks and hooks.before_call:
-        hooks.before_call(model, messages, kwargs)
 
-    try:
-        response = await litellm.acompletion(**call_kwargs)
-    except Exception as e:
-        if hooks and hooks.on_error:
-            hooks.on_error(e, 0)
-        raise
+async def astream_llm_with_tools(
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retry_on: list[str] | None = None,
+    on_retry: Callable[[int, Exception, float], None] | None = None,
+    retry: RetryPolicy | None = None,
+    fallback_models: list[str] | None = None,
+    on_fallback: Callable[[str, Exception, str], None] | None = None,
+    hooks: Hooks | None = None,
+    **kwargs: Any,
+) -> AsyncLLMStream:
+    """Async version of :func:`stream_llm_with_tools`.
 
-    return AsyncLLMStream(response, model, hooks=hooks)
+    Returns:
+        AsyncLLMStream with tool_calls available on ``.result`` after consumption
+    """
+    return await astream_llm(
+        model, messages,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        tools=tools,
+        **kwargs,
+    )

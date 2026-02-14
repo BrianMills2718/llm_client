@@ -24,22 +24,34 @@ data, meta = call_llm_structured("gpt-4o", messages, response_model=Entity)
 result = call_llm_with_tools("gpt-4o", messages, tools=[...])
 result.tool_calls  # normalized across providers
 
-# Streaming
+# Batch/parallel calls
+from llm_client import call_llm_batch
+results = call_llm_batch("gpt-4o", [msgs1, msgs2, msgs3], max_concurrent=5)
+
+# Streaming (with retry/fallback)
 from llm_client import stream_llm
-stream = stream_llm("gpt-4o", messages)
+stream = stream_llm("gpt-4o", messages, num_retries=2)
 for chunk in stream:
     print(chunk, end="")
 print(stream.result.usage)
+
+# Streaming with tools
+from llm_client import stream_llm_with_tools
+stream = stream_llm_with_tools("gpt-4o", messages, tools=[...])
+for chunk in stream:
+    print(chunk, end="")
+print(stream.result.tool_calls)
 ```
 
 ### Async
 
 ```python
-from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools, astream_llm
+from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools, astream_llm, acall_llm_batch
 
 result = await acall_llm("gpt-4o", messages)
 data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
 result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+results = await acall_llm_batch("gpt-4o", messages_list, max_concurrent=10)
 
 stream = await astream_llm("gpt-4o", messages)
 async for chunk in stream:
@@ -48,20 +60,25 @@ async for chunk in stream:
 
 ## API
 
-Eight functions (4 sync + 4 async):
+Fourteen functions (7 sync + 7 async):
 
 | Function | Async Variant | Purpose |
 |----------|---------------|---------|
 | `call_llm(model, messages, **kwargs)` | `acall_llm(...)` | Basic chat completion |
-| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction via instructor |
+| `call_llm_structured(model, messages, response_model, **kwargs)` | `acall_llm_structured(...)` | Pydantic extraction (instructor or Responses API) |
 | `call_llm_with_tools(model, messages, tools, **kwargs)` | `acall_llm_with_tools(...)` | Tool/function calling |
-| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming (yields text chunks) |
+| `call_llm_batch(model, messages_list, **kwargs)` | `acall_llm_batch(...)` | Concurrent batch calls |
+| `call_llm_structured_batch(model, messages_list, response_model, **kwargs)` | `acall_llm_structured_batch(...)` | Concurrent structured batch |
+| `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming with retry/fallback |
+| `stream_llm_with_tools(model, messages, tools, **kwargs)` | `astream_llm_with_tools(...)` | Streaming with tools |
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
 `call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
 
-`stream_llm` / `astream_llm` accept: `timeout`, `reasoning_effort`, `api_base`, `hooks`, plus litellm kwargs.
+`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus litellm kwargs.
+
+`*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions`, `on_item_complete`, `on_item_error`.
 
 ### Response Caching
 

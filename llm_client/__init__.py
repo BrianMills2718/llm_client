@@ -9,6 +9,9 @@ Usage:
     result = call_llm("gpt-4o", [{"role": "user", "content": "Hello"}])
     print(result.content, result.cost)
 
+    # Batch (concurrent)
+    results = call_llm_batch("gpt-4o", [msgs1, msgs2, msgs3], max_concurrent=5)
+
     # Streaming
     for chunk in stream_llm("gpt-4o", [{"role": "user", "content": "Hello"}]):
         print(chunk, end="")
@@ -29,16 +32,22 @@ from llm_client.client import (
     LRUCache,
     RetryPolicy,
     acall_llm,
+    acall_llm_batch,
     acall_llm_structured,
+    acall_llm_structured_batch,
     acall_llm_with_tools,
     astream_llm,
+    astream_llm_with_tools,
     call_llm,
+    call_llm_batch,
     call_llm_structured,
+    call_llm_structured_batch,
     call_llm_with_tools,
     exponential_backoff,
     fixed_backoff,
     linear_backoff,
     stream_llm,
+    stream_llm_with_tools,
     strip_fences,
 )
 
@@ -52,15 +61,21 @@ __all__ = [
     "LRUCache",
     "RetryPolicy",
     "acall_llm",
+    "acall_llm_batch",
     "acall_llm_structured",
+    "acall_llm_structured_batch",
     "acall_llm_with_tools",
     "astream_llm",
+    "astream_llm_with_tools",
     "call_llm",
+    "call_llm_batch",
     "call_llm_structured",
+    "call_llm_structured_batch",
     "call_llm_with_tools",
     "exponential_backoff",
     "fixed_backoff",
     "linear_backoff",
     "stream_llm",
+    "stream_llm_with_tools",
     "strip_fences",
 ]
