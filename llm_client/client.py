@@ -111,6 +111,7 @@ def call_llm(
     timeout: int = 60,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
+    api_base: str | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM via litellm.completion.
@@ -127,6 +128,8 @@ def call_llm(
         num_retries: Number of retries on failure (litellm built-in)
         reasoning_effort: Reasoning effort level — only used for Claude models,
                          silently ignored for others
+        api_base: Optional API base URL (e.g., for OpenRouter:
+                  "https://openrouter.ai/api/v1")
         **kwargs: Additional params passed to litellm.completion
                   (e.g., temperature, max_tokens, stream)
 
@@ -140,6 +143,9 @@ def call_llm(
         "num_retries": num_retries,
         **kwargs,
     }
+
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
 
     # Only pass reasoning_effort for Claude models
     if reasoning_effort and _is_claude_model(model):
@@ -182,6 +188,7 @@ def call_llm_structured(
     timeout: int = 60,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
+    api_base: str | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
@@ -209,6 +216,7 @@ def call_llm_structured(
         timeout: Request timeout in seconds
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL (e.g., for OpenRouter)
         **kwargs: Additional params passed to litellm.completion
 
     Returns:
@@ -226,6 +234,9 @@ def call_llm_structured(
         "max_retries": num_retries,
         **kwargs,
     }
+
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
 
     # Only pass reasoning_effort for Claude models
     if reasoning_effort and _is_claude_model(model):
@@ -257,6 +268,7 @@ def call_llm_with_tools(
     timeout: int = 60,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
+    api_base: str | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
@@ -288,6 +300,7 @@ def call_llm_with_tools(
         timeout: Request timeout in seconds
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL (e.g., for OpenRouter)
         **kwargs: Additional params passed to litellm.completion
 
     Returns:
@@ -299,6 +312,182 @@ def call_llm_with_tools(
         timeout=timeout,
         num_retries=num_retries,
         reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        tools=tools,
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Async variants
+# ---------------------------------------------------------------------------
+
+
+async def acall_llm(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Async version of call_llm. Uses litellm.acompletion.
+
+    Args:
+        model: Model name (e.g., "gpt-4o", "anthropic/claude-sonnet-4-5-20250929")
+        messages: Chat messages in OpenAI format
+        timeout: Request timeout in seconds
+        num_retries: Number of retries on failure (litellm built-in)
+        reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL (e.g., for OpenRouter)
+        **kwargs: Additional params passed to litellm.acompletion
+
+    Returns:
+        LLMCallResult with content, usage, cost, model, and tool_calls
+    """
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "timeout": timeout,
+        "num_retries": num_retries,
+        **kwargs,
+    }
+
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
+
+    if reasoning_effort and _is_claude_model(model):
+        call_kwargs["reasoning_effort"] = reasoning_effort
+    elif reasoning_effort:
+        logger.debug(
+            "reasoning_effort=%s ignored for non-Claude model %s",
+            reasoning_effort,
+            model,
+        )
+
+    response = await litellm.acompletion(**call_kwargs)
+
+    content: str = response.choices[0].message.content or ""
+    usage = _extract_usage(response)
+    cost = _compute_cost(response)
+    tool_calls = _extract_tool_calls(response.choices[0].message)
+
+    logger.debug(
+        "LLM call: model=%s tokens=%d cost=$%.6f",
+        model,
+        usage["total_tokens"],
+        cost,
+    )
+
+    return LLMCallResult(
+        content=content,
+        usage=usage,
+        cost=cost,
+        model=model,
+        tool_calls=tool_calls,
+    )
+
+
+async def acall_llm_structured(
+    model: str,
+    messages: list[dict[str, Any]],
+    response_model: type[T],
+    *,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    **kwargs: Any,
+) -> tuple[T, LLMCallResult]:
+    """Async version of call_llm_structured.
+
+    Uses instructor + litellm.acompletion for async structured extraction.
+
+    Args:
+        model: Model name
+        messages: Chat messages in OpenAI format
+        response_model: Pydantic model class to extract
+        timeout: Request timeout in seconds
+        num_retries: Number of retries on failure
+        reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL (e.g., for OpenRouter)
+        **kwargs: Additional params passed to litellm.acompletion
+
+    Returns:
+        Tuple of (parsed Pydantic model instance, LLMCallResult)
+    """
+    import instructor
+
+    client = instructor.from_litellm(litellm.acompletion)
+
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "response_model": response_model,
+        "timeout": timeout,
+        "max_retries": num_retries,
+        **kwargs,
+    }
+
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
+
+    if reasoning_effort and _is_claude_model(model):
+        call_kwargs["reasoning_effort"] = reasoning_effort
+
+    result, raw_response = await client.chat.completions.create_with_completion(
+        **call_kwargs,
+    )
+
+    usage = _extract_usage(raw_response)
+    cost = _compute_cost(raw_response)
+    content = str(result.model_dump_json())
+
+    llm_result = LLMCallResult(
+        content=content,
+        usage=usage,
+        cost=cost,
+        model=model,
+    )
+
+    return result, llm_result
+
+
+async def acall_llm_with_tools(
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    timeout: int = 60,
+    num_retries: int = 2,
+    reasoning_effort: str | None = None,
+    api_base: str | None = None,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Async version of call_llm_with_tools.
+
+    Args:
+        model: Model name
+        messages: Chat messages in OpenAI format
+        tools: Tool definitions in OpenAI format
+        timeout: Request timeout in seconds
+        num_retries: Number of retries on failure
+        reasoning_effort: Reasoning effort level (Claude models only)
+        api_base: Optional API base URL (e.g., for OpenRouter)
+        **kwargs: Additional params passed to litellm.acompletion
+
+    Returns:
+        LLMCallResult with tool_calls populated if model chose to use tools
+    """
+    return await acall_llm(
+        model,
+        messages,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
         tools=tools,
         **kwargs,
     )

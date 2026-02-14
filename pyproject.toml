@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Thin LLM client wrapping litellm. Swap models by changing one string."
 requires-python = ">=3.10"
 dependencies = [
-    "litellm>=1.40.0",
+    "litellm>=1.81.3",
     "pydantic>=2.0",
 ]
 
@@ -16,6 +16,7 @@ dependencies = [
 structured = ["instructor>=1.14.0"]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "instructor>=1.14.0",
 ]
