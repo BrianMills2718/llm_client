@@ -2356,6 +2356,7 @@ class TestGPT5StructuredOutput:
         assert fmt["strict"] is True
         assert "properties" in fmt["schema"]
         assert "name" in fmt["schema"]["properties"]
+        assert fmt["schema"]["additionalProperties"] is False
 
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
@@ -2396,3 +2397,34 @@ class TestGPT5StructuredOutput:
         )
         assert result.name == "test"
         mock_from_litellm.assert_called_once()  # instructor was used
+
+
+class TestStrictJsonSchema:
+    """Tests for _strict_json_schema helper."""
+
+    def test_adds_additional_properties_false(self) -> None:
+        """Simple model gets additionalProperties: false."""
+        from llm_client.client import _strict_json_schema
+
+        class Simple(BaseModel):
+            name: str
+
+        schema = _strict_json_schema(Simple.model_json_schema())
+        assert schema["additionalProperties"] is False
+
+    def test_nested_model(self) -> None:
+        """Nested models also get additionalProperties: false."""
+        from llm_client.client import _strict_json_schema
+
+        class Inner(BaseModel):
+            value: int
+
+        class Outer(BaseModel):
+            inner: Inner
+
+        schema = _strict_json_schema(Outer.model_json_schema())
+        assert schema["additionalProperties"] is False
+        # Inner model should be in $defs
+        for defn in schema.get("$defs", {}).values():
+            if defn.get("type") == "object":
+                assert defn["additionalProperties"] is False

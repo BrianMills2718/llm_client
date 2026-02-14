@@ -591,6 +591,25 @@ def _is_responses_api_model(model: str) -> bool:
     return "gpt-5" in model.lower()
 
 
+def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Add additionalProperties: false to all objects for OpenAI strict mode.
+
+    OpenAI's structured output requires every object in the schema to have
+    additionalProperties: false. Pydantic's model_json_schema() doesn't
+    include this by default.
+    """
+    if schema.get("type") == "object":
+        schema["additionalProperties"] = False
+        for prop in schema.get("properties", {}).values():
+            _strict_json_schema(prop)
+    if "items" in schema:
+        _strict_json_schema(schema["items"])
+    # Handle $defs for nested models
+    for defn in schema.get("$defs", {}).values():
+        _strict_json_schema(defn)
+    return schema
+
+
 def _convert_messages_to_input(messages: list[dict[str, Any]]) -> str:
     """Convert chat messages to a single input string for responses() API.
 
@@ -1071,7 +1090,7 @@ def call_llm_structured(
         try:
             if _is_responses_api_model(current_model):
                 # GPT-5 path: Responses API with native JSON schema
-                schema = response_model.model_json_schema()
+                schema = _strict_json_schema(response_model.model_json_schema())
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
                     timeout=timeout, api_base=api_base, kwargs=kwargs,
@@ -1450,7 +1469,7 @@ async def acall_llm_structured(
         try:
             if _is_responses_api_model(current_model):
                 # GPT-5 path: Responses API with native JSON schema
-                schema = response_model.model_json_schema()
+                schema = _strict_json_schema(response_model.model_json_schema())
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
                     timeout=timeout, api_base=api_base, kwargs=kwargs,
