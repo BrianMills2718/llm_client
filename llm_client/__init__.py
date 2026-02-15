@@ -26,6 +26,46 @@ Usage:
     result = await acall_llm("gpt-4o", [{"role": "user", "content": "Hello"}])
 """
 
+import logging as _logging
+import os as _os
+from pathlib import Path as _Path
+
+_DEFAULT_KEYS_FILE = _Path.home() / ".secrets" / "api_keys.env"
+_log = _logging.getLogger(__name__)
+
+
+def _load_api_keys() -> int:
+    """Load API keys from env file into os.environ on import.
+
+    Reads from LLM_CLIENT_KEYS_FILE env var, or ~/.secrets/api_keys.env.
+    Skips comments, empty lines, and keys already set in the environment.
+    Returns the number of keys loaded.
+    """
+    keys_file = _Path(_os.environ.get("LLM_CLIENT_KEYS_FILE", str(_DEFAULT_KEYS_FILE)))
+    if not keys_file.is_file():
+        return 0
+    loaded = 0
+    for line in keys_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:]
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key and key not in _os.environ:
+            _os.environ[key] = value
+            loaded += 1
+    if loaded:
+        _log.debug("llm_client: loaded %d API keys from %s", loaded, keys_file)
+    return loaded
+
+
+_load_api_keys()
+
 from llm_client.prompts import render_prompt
 
 from llm_client.client import (

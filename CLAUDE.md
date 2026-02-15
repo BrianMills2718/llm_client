@@ -438,10 +438,43 @@ result = call_llm("codex", messages,
     skip_git_repo_check=False,
     api_key="sk-...",                     # optional override
     base_url="https://...",               # optional override
+    # MCP server control (load only specified servers instead of global config)
+    mcp_servers={                          # dict of name -> {command, args?, cwd?, env?}
+        "my-server": {
+            "command": "/path/to/python",
+            "args": ["-u", "server.py"],
+            "env": {"SOME_VAR": "value"},
+        },
+    },
+    codex_home="/path/to/custom/home",    # low-level: custom HOME dir (reads .codex/config.toml)
 )
 ```
 
 **Codex cost estimation**: Codex SDK only provides token counts (no USD). Cost is estimated via `litellm.completion_cost()` using the underlying model name. Documented as approximate.
+
+### MCP Server Control
+
+By default, Codex CLI loads ALL MCP servers from `~/.codex/config.toml`. For focused tasks, use `mcp_servers` to load only the servers you need:
+
+```python
+result = await acall_llm("codex", messages,
+    mcp_servers={
+        "digimon-kgrag": {
+            "command": "/path/to/python",
+            "args": ["-u", "digimon_mcp_stdio_server.py"],
+            "env": {"CLAUDECODE": ""},
+        },
+    },
+    working_directory="/path/to/project",
+    approval_policy="never",
+)
+```
+
+This creates a temporary config with only the specified servers, dramatically reducing context window usage (17 servers = 253k tokens overhead vs 1 server = ~15k).
+
+**`mcp_servers`** (high-level): Dict of `{name: {command, args?, cwd?, env?}}`. Creates a temp `.codex/config.toml` with only those servers. Cleaned up automatically after the call.
+
+**`codex_home`** (low-level): Path to a directory used as `HOME` — Codex reads `$HOME/.codex/config.toml`. Mutually exclusive with `mcp_servers`.
 
 ### Agent Capabilities
 
@@ -473,7 +506,13 @@ pip install -e ".[all-agents]"      # Both agent SDKs
 
 ## Environment
 
-API keys via env vars (litellm convention):
+### API Key Auto-Loading
+
+On import, llm_client automatically loads API keys from `~/.secrets/api_keys.env` (or the path in `LLM_CLIENT_KEYS_FILE` env var). Standard `.env` format — `KEY=VALUE` lines, comments with `#`, `export` prefix optional. Existing env vars are never overwritten.
+
+This means any project that `import llm_client` gets API keys automatically — no per-project `.env` files or `load_dotenv()` calls needed.
+
+Manual override still works (litellm convention):
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...

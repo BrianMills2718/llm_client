@@ -1036,3 +1036,125 @@ class TestCodexFallback:
             )
         assert result.content == "Fallback response"
         assert result.model == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# Codex MCP server control
+# ---------------------------------------------------------------------------
+
+
+class TestCodexMcpServers:
+    """Tests for codex_home and mcp_servers kwargs."""
+
+    def test_create_codex_home(self) -> None:
+        """_create_codex_home generates a valid config.toml."""
+        from pathlib import Path
+
+        from llm_client.agents import _cleanup_tmp, _create_codex_home
+
+        servers = {
+            "my-server": {
+                "command": "/usr/bin/python",
+                "args": ["-u", "server.py"],
+                "env": {"FOO": "bar"},
+            },
+            "simple": {
+                "command": "node",
+                "args": ["index.js"],
+                "cwd": "/tmp/test",
+            },
+        }
+        tmp_dir = _create_codex_home(servers)
+        try:
+            config_path = Path(tmp_dir) / ".codex" / "config.toml"
+            assert config_path.exists()
+            content = config_path.read_text()
+            assert '[mcp_servers."my-server"]' in content
+            assert 'command = "/usr/bin/python"' in content
+            assert 'args = ["-u", "server.py"]' in content
+            assert 'FOO = "bar"' in content
+            assert '[mcp_servers."simple"]' in content
+            assert 'cwd = "/tmp/test"' in content
+        finally:
+            _cleanup_tmp(tmp_dir)
+
+    def test_prepare_codex_mcp_passthrough(self) -> None:
+        """No mcp_servers → kwargs unchanged, no tmp_dir."""
+        from llm_client.agents import _prepare_codex_mcp
+
+        kwargs = {"sandbox_mode": "workspace-write"}
+        out, tmp = _prepare_codex_mcp(kwargs)
+        assert tmp is None
+        assert out is kwargs
+
+    def test_prepare_codex_mcp_creates_home(self) -> None:
+        """mcp_servers → creates codex_home, removes mcp_servers from kwargs."""
+        from pathlib import Path
+
+        from llm_client.agents import _cleanup_tmp, _prepare_codex_mcp
+
+        kwargs = {
+            "sandbox_mode": "workspace-write",
+            "mcp_servers": {"test": {"command": "echo", "args": ["hello"]}},
+        }
+        out, tmp = _prepare_codex_mcp(kwargs)
+        try:
+            assert tmp is not None
+            assert "codex_home" in out
+            assert "mcp_servers" not in out
+            assert (Path(tmp) / ".codex" / "config.toml").exists()
+        finally:
+            _cleanup_tmp(tmp)
+
+    def test_prepare_codex_mcp_rejects_both(self) -> None:
+        """Cannot specify both mcp_servers and codex_home."""
+        from llm_client.agents import _prepare_codex_mcp
+
+        kwargs = {
+            "codex_home": "/some/path",
+            "mcp_servers": {"test": {"command": "echo"}},
+        }
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            _prepare_codex_mcp(kwargs)
+
+    @pytest.mark.usefixtures("_mock_codex_sdk")
+    @pytest.mark.asyncio
+    async def test_mcp_servers_end_to_end(self) -> None:
+        """mcp_servers kwarg creates temp config and cleans up."""
+        import tempfile
+        from pathlib import Path
+
+        result = await acall_llm(
+            "codex",
+            [{"role": "user", "content": "What is 2+2?"}],
+            mcp_servers={
+                "test-server": {
+                    "command": "/usr/bin/echo",
+                    "args": ["hello"],
+                },
+            },
+        )
+        assert isinstance(result, LLMCallResult)
+        assert result.content  # got an answer
+
+        # Verify temp dirs are cleaned up
+        tmp_root = Path(tempfile.gettempdir())
+        codex_homes = list(tmp_root.glob("codex_home_*"))
+        for d in codex_homes:
+            config = d / ".codex" / "config.toml"
+            if config.exists():
+                content = config.read_text()
+                if "test-server" in content:
+                    pytest.fail(f"Temp codex home not cleaned up: {d}")
+
+    def test_cleanup_tmp_handles_none(self) -> None:
+        """_cleanup_tmp(None) is a no-op."""
+        from llm_client.agents import _cleanup_tmp
+
+        _cleanup_tmp(None)  # should not raise
+
+    def test_cleanup_tmp_handles_missing(self) -> None:
+        """_cleanup_tmp with nonexistent path doesn't raise."""
+        from llm_client.agents import _cleanup_tmp
+
+        _cleanup_tmp("/tmp/this_does_not_exist_12345")  # should not raise

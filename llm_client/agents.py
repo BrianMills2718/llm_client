@@ -20,9 +20,13 @@ import asyncio
 import concurrent.futures
 import json as _json
 import logging
+import os
 import queue
 import re
+import shutil
+import tempfile
 import threading
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -57,6 +61,8 @@ _AGENT_KWARGS = frozenset({
     "model_reasoning_effort", "network_access_enabled", "web_search_enabled",
     "additional_directories", "skip_git_repo_check",
     "api_key", "base_url",
+    # Codex MCP server control
+    "codex_home", "mcp_servers",
 })
 
 
@@ -505,6 +511,72 @@ def _stream_agent(
 # ===========================================================================
 
 
+def _create_codex_home(mcp_servers: dict[str, Any]) -> str:
+    """Create a temp directory with .codex/config.toml containing only specified MCP servers.
+
+    Symlinks auth.json and other credential files from the real ~/.codex/ so
+    authentication continues to work.
+
+    Args:
+        mcp_servers: Dict of server_name -> {command, args?, cwd?, env?}.
+
+    Returns:
+        Path to the temp directory (acts as HOME for Codex CLI).
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="codex_home_")
+    config_dir = Path(tmp_dir) / ".codex"
+    config_dir.mkdir()
+
+    # Symlink auth and other essential files from real .codex dir
+    real_codex = Path.home() / ".codex"
+    if real_codex.is_dir():
+        for fname in ("auth.json", "version.json", ".personality_migration"):
+            src = real_codex / fname
+            if src.exists():
+                (config_dir / fname).symlink_to(src)
+
+    # Write minimal config.toml with only specified MCP servers
+    lines: list[str] = []
+    for name, cfg in mcp_servers.items():
+        lines.append(f'[mcp_servers."{name}"]')
+        lines.append(f'command = "{cfg["command"]}"')
+        if "args" in cfg:
+            args_str = ", ".join(f'"{a}"' for a in cfg["args"])
+            lines.append(f"args = [{args_str}]")
+        if "cwd" in cfg:
+            lines.append(f'cwd = "{cfg["cwd"]}"')
+        if "env" in cfg:
+            lines.append(f'[mcp_servers."{name}".env]')
+            for k, v in cfg["env"].items():
+                lines.append(f'{k} = "{v}"')
+        lines.append("")
+
+    (config_dir / "config.toml").write_text("\n".join(lines))
+    return tmp_dir
+
+
+def _prepare_codex_mcp(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Process mcp_servers kwarg into codex_home.
+
+    Returns:
+        (updated_kwargs, tmp_dir_to_cleanup_or_None)
+    """
+    if "mcp_servers" not in kwargs:
+        return kwargs, None
+    if "codex_home" in kwargs:
+        raise ValueError("Cannot specify both 'mcp_servers' and 'codex_home'")
+    mcp_servers = kwargs.pop("mcp_servers")
+    tmp_dir = _create_codex_home(mcp_servers)
+    kwargs["codex_home"] = tmp_dir
+    return kwargs, tmp_dir
+
+
+def _cleanup_tmp(tmp_dir: str | None) -> None:
+    """Remove a temporary codex home directory if it exists."""
+    if tmp_dir:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _import_codex_sdk() -> tuple[Any, ...]:
     """Lazily import openai_codex_sdk components.
 
@@ -572,6 +644,11 @@ def _build_codex_options(
         codex_kw["api_key"] = agent_kw["api_key"]
     if "base_url" in agent_kw:
         codex_kw["base_url"] = agent_kw["base_url"]
+    if "codex_home" in agent_kw:
+        # Override HOME so Codex CLI reads config from codex_home/.codex/config.toml
+        env_dict = dict(os.environ)
+        env_dict["HOME"] = str(agent_kw["codex_home"])
+        codex_kw["env"] = env_dict
     codex_opts = CodexOptions(**codex_kw) if codex_kw else None
 
     # ThreadOptions (session-level)
@@ -651,23 +728,27 @@ async def _acall_codex(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Codex SDK and return an LLMCallResult."""
-    prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
-        model, messages, **kwargs,
-    )
-    Codex = sdk[0]
+    kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
+    try:
+        prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
+            model, messages, **kwargs,
+        )
+        Codex = sdk[0]
 
-    codex = Codex(options=codex_opts)
-    thread = codex.start_thread(options=thread_opts)
+        codex = Codex(options=codex_opts)
+        thread = codex.start_thread(options=thread_opts)
 
-    async def _run() -> Any:
-        return await thread.run(prompt, turn_opts)
+        async def _run() -> Any:
+            return await thread.run(prompt, turn_opts)
 
-    if timeout > 0:
-        turn = await asyncio.wait_for(_run(), timeout=float(timeout))
-    else:
-        turn = await _run()
+        if timeout > 0:
+            turn = await asyncio.wait_for(_run(), timeout=float(timeout))
+        else:
+            turn = await _run()
 
-    return _result_from_codex(model, turn.final_response, turn.usage, turn)
+        return _result_from_codex(model, turn.final_response, turn.usage, turn)
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 def _call_codex(
@@ -704,40 +785,44 @@ async def _acall_codex_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Codex SDK with structured output (JSON schema)."""
-    schema = response_model.model_json_schema()
-    prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
-        model, messages, output_schema=schema, **kwargs,
-    )
-    Codex = sdk[0]
-
-    codex = Codex(options=codex_opts)
-    thread = codex.start_thread(options=thread_opts)
-
-    async def _run() -> Any:
-        return await thread.run(prompt, turn_opts)
-
-    if timeout > 0:
-        turn = await asyncio.wait_for(_run(), timeout=float(timeout))
-    else:
-        turn = await _run()
-
-    # Parse JSON from final_response
-    raw_text = turn.final_response or ""
-    if not raw_text.strip():
-        raise ValueError("Empty response from Codex — no structured output")
-
+    kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
     try:
-        parsed_data = _json.loads(raw_text)
-    except _json.JSONDecodeError:
-        # Safety net: strip code fences and retry
-        parsed_data = _json.loads(_strip_fences(raw_text))
+        schema = response_model.model_json_schema()
+        prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
+            model, messages, output_schema=schema, **kwargs,
+        )
+        Codex = sdk[0]
 
-    validated = response_model.model_validate(parsed_data)
+        codex = Codex(options=codex_opts)
+        thread = codex.start_thread(options=thread_opts)
 
-    llm_result = _result_from_codex(model, turn.final_response, turn.usage, turn)
-    llm_result.content = validated.model_dump_json()
+        async def _run() -> Any:
+            return await thread.run(prompt, turn_opts)
 
-    return validated, llm_result
+        if timeout > 0:
+            turn = await asyncio.wait_for(_run(), timeout=float(timeout))
+        else:
+            turn = await _run()
+
+        # Parse JSON from final_response
+        raw_text = turn.final_response or ""
+        if not raw_text.strip():
+            raise ValueError("Empty response from Codex — no structured output")
+
+        try:
+            parsed_data = _json.loads(raw_text)
+        except _json.JSONDecodeError:
+            # Safety net: strip code fences and retry
+            parsed_data = _json.loads(_strip_fences(raw_text))
+
+        validated = response_model.model_validate(parsed_data)
+
+        llm_result = _result_from_codex(model, turn.final_response, turn.usage, turn)
+        llm_result.content = validated.model_dump_json()
+
+        return validated, llm_result
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 def _call_codex_structured(
@@ -780,7 +865,7 @@ class AsyncCodexStream:
         self._task: asyncio.Task[None] | None = None
         self._timeout = timeout
         self._messages = messages
-        self._kwargs = kwargs
+        self._kwargs, self._tmp_dir = _prepare_codex_mcp(kwargs)
 
     async def _produce(self) -> None:
         """Run the Codex streamed turn and push text chunks to the queue."""
@@ -835,6 +920,7 @@ class AsyncCodexStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
+        _cleanup_tmp(self._tmp_dir)
 
     @property
     def result(self) -> LLMCallResult:
