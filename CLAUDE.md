@@ -8,7 +8,7 @@ Wrapper around litellm. Swap any model by changing one string — everything els
 from llm_client import call_llm, call_llm_structured, call_llm_with_tools
 
 # Basic completion (works with any provider)
-result = call_llm("gpt-4o", messages)
+result = call_llm("gpt-5-mini", messages)
 result = call_llm("gpt-5-mini", messages)                          # Auto-routes to Responses API
 result = call_llm("anthropic/claude-sonnet-4-5-20250929", messages)
 result = call_llm("gemini/gemini-2.5-flash", messages)
@@ -219,7 +219,7 @@ All three callbacks are optional. Hooks fire for each attempt (including retries
 
 Check `finish_reason` to detect truncated responses:
 ```python
-result = call_llm("gpt-4o", messages)
+result = call_llm("gpt-5-mini", messages)
 if result.finish_reason == "length":
     # Response was truncated — retry with higher max_tokens or split the task
     ...
@@ -315,6 +315,26 @@ Override with your own config if you want thinking tokens:
 result = call_llm("gemini/gemini-3-flash", messages, thinking={"type": "enabled", "budget_tokens": 1000})
 ```
 
+## Deprecated Model Warnings
+
+llm_client emits loud `DeprecationWarning` when a deprecated/outclassed model is used. The warning text is intentionally aggressive — it's designed to make LLM agents STOP and ask the user before proceeding.
+
+Deprecated models (as of Feb 2026):
+- `gpt-4o` → use `gpt-5` (cheaper and smarter)
+- `gpt-4o-mini` → use `deepseek/deepseek-chat` or `gemini/gemini-2.0-flash`
+- `o1-mini` → use `o4-mini`
+- `o1-pro` → use `o3`
+- `gemini-1.5-*` → use `gemini-2.5-flash` or `gemini-2.5-pro`
+- `gemini-2.0-flash` → use `gemini-2.5-flash`
+- `claude-3-*` → use `claude-4.5-*` equivalents
+- `mistral-large` → use `deepseek/deepseek-chat`
+
+The warning fires on all entry points (`call_llm`, `acall_llm`, `call_llm_structured`, etc.). Batch and `*_with_tools` functions inherit the check from the core functions they delegate to.
+
+To add new deprecated models, update `_DEPRECATED_MODELS` in `client.py`.
+
+See `~/projects/LLM_MODELS.md` for the full model comparison guide.
+
 ## Fence Stripping
 
 `strip_fences()` removes markdown code fences from LLM output. Useful when calling `call_llm()` and parsing JSON manually:
@@ -323,7 +343,7 @@ result = call_llm("gemini/gemini-3-flash", messages, thinking={"type": "enabled"
 from llm_client import call_llm, strip_fences
 import json
 
-result = call_llm("gpt-4o", messages)
+result = call_llm("gpt-5-mini", messages)
 clean = strip_fences(result.content)  # removes ```json ... ``` wrapping
 data = json.loads(clean)
 ```
@@ -378,16 +398,19 @@ result = call_llm("anthropic/claude-opus-4", messages)   # Raw Anthropic API
 
 ### Model Naming
 
-| Model String | SDK | Underlying Model |
-|---|---|---|
-| `claude-code` | Claude Agent SDK | SDK default |
-| `claude-code/opus` | Claude Agent SDK | opus |
-| `claude-code/sonnet` | Claude Agent SDK | sonnet |
-| `claude-code/haiku` | Claude Agent SDK | haiku |
-| `codex` | Codex SDK | SDK default |
-| `codex/gpt-5` | Codex SDK | gpt-5 |
-| `codex/o3` | Codex SDK | o3 |
-| `openai-agents/*` | Reserved | NotImplementedError |
+| Model String | SDK | Underlying Model | Notes |
+|---|---|---|---|
+| `claude-code` | Claude Agent SDK | SDK default | |
+| `claude-code/opus` | Claude Agent SDK | opus | |
+| `claude-code/sonnet` | Claude Agent SDK | sonnet | |
+| `claude-code/haiku` | Claude Agent SDK | haiku | |
+| `codex` | Codex SDK | SDK default (gpt-5.3-codex) | |
+| `codex/gpt-5.3-codex` | Codex SDK | gpt-5.3-codex | Best capability. No API access — CLI/SDK only. |
+| `codex/gpt-5.3-codex-spark` | Codex SDK | gpt-5.3-codex-spark | Near-instant speed. ChatGPT Pro only. |
+| `codex/gpt-5.2-codex` | Codex SDK | gpt-5.2-codex | Previous gen. Has API access. |
+| `codex/gpt-5.1-codex` | Codex SDK | gpt-5.1-codex | Older. |
+| `codex/gpt-5` | Codex SDK | gpt-5 | General-purpose, not coding-optimized. |
+| `openai-agents/*` | Reserved | NotImplementedError | |
 
 ### Agent-specific kwargs
 
@@ -436,7 +459,7 @@ result = call_llm("codex", messages,
 | Caching | Won't implement | Agents have side effects (file writes, bash commands). Caching is unsafe. |
 | Token-level streaming | Deferred | Message-level streaming works. Token-level requires parsing raw `StreamEvent` dicts (fragile). |
 | OpenAI Agents SDK | Deferred | `openai-agents/*` prefix reserved. Architecture supports it. |
-| Gemini CLI SDK | Deferred | Early dev (19 commits), LLM-based output parsing, unstable API. Use `gemini/gemini-2.5-flash` via litellm instead. |
+| Gemini CLI SDK | Deferred | v0.1.0, 19 commits, 5mo stale. Uses gpt-4o-mini to parse CLI stdout (extra cost/latency, misparses stderr). No cost/usage/streaming/structured. Gemini CLI has `--output-format json` but SDK doesn't use it yet. Use `gemini/gemini-2.5-flash` via litellm instead. Revisit when SDK ships native JSON parsing. |
 
 ## Installation
 

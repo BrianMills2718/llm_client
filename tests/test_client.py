@@ -2598,3 +2598,114 @@ class TestStrictJsonSchema:
         assert schema["additionalProperties"] is False
         assert schema["properties"]["x"]["allOf"][0]["additionalProperties"] is False
         assert schema["properties"]["y"]["oneOf"][0]["additionalProperties"] is False
+
+
+# ---------------------------------------------------------------------------
+# Model deprecation warnings
+# ---------------------------------------------------------------------------
+
+
+class TestModelDeprecation:
+    """Test that deprecated models emit loud warnings."""
+
+    def test_gpt4o_warns(self):
+        """GPT-4o should trigger deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+
+    def test_gpt4o_mini_warns(self):
+        """GPT-4o-mini should trigger its own deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o-mini"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}])
+
+    def test_gpt4o_mini_does_not_trigger_gpt4o_pattern(self):
+        """gpt-4o-mini should NOT also trigger the gpt-4o warning (exception logic)."""
+        with pytest.warns(DeprecationWarning) as record:
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}])
+        # Should only have one warning, and it should mention gpt-4o-mini specifically
+        assert len(record) == 1
+        assert "gpt-4o-mini" in str(record[0].message)
+
+    def test_claude_3_haiku_warns(self):
+        """Claude 3 Haiku should trigger deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("anthropic/claude-3-haiku-20240307", [{"role": "user", "content": "hi"}])
+
+    def test_gemini_15_warns(self):
+        """Gemini 1.5 should trigger deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gemini/gemini-1.5-flash", [{"role": "user", "content": "hi"}])
+
+    def test_o1_pro_warns(self):
+        """o1-pro should trigger deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("o1-pro", [{"role": "user", "content": "hi"}])
+
+    def test_current_model_no_warning(self):
+        """Current models should NOT trigger any deprecation warning."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            with patch("litellm.completion", return_value=_mock_response()):
+                # These should all pass without DeprecationWarning
+                call_llm("anthropic/claude-sonnet-4-5-20250929", [{"role": "user", "content": "hi"}])
+
+    def test_deepseek_no_warning(self):
+        """DeepSeek V3.2 should NOT trigger deprecation warning."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "hi"}])
+
+    def test_gemini_25_no_warning(self):
+        """Gemini 2.5+ should NOT trigger deprecation warning."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "hi"}])
+
+    def test_warning_message_contains_stop_instruction(self):
+        """Warning message should contain the LLM-agent-directed STOP instruction."""
+        with pytest.warns(DeprecationWarning) as record:
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+        msg = str(record[0].message)
+        assert "STOP" in msg
+        assert "DO NOT USE THIS MODEL" in msg
+        assert "USER PERMISSION" in msg
+        assert "Use instead:" in msg
+
+    def test_structured_also_warns(self):
+        """call_llm_structured should also check for deprecated models."""
+
+        class _Entity(BaseModel):
+            name: str
+            type: str
+
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.completion", return_value=_mock_response('{"name":"x","type":"y"}')):
+                call_llm_structured(
+                    "gpt-4o", [{"role": "user", "content": "hi"}],
+                    response_model=_Entity,
+                )
+
+    @pytest.mark.asyncio
+    async def test_async_also_warns(self):
+        """acall_llm should also check for deprecated models."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
+                await acall_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+
+    def test_mistral_large_warns(self):
+        """Mistral Large should trigger deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+            with patch("litellm.completion", return_value=_mock_response()):
+                call_llm("mistral/mistral-large-latest", [{"role": "user", "content": "hi"}])

@@ -695,6 +695,111 @@ def _is_agent_model(model: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Model deprecation warnings
+# ---------------------------------------------------------------------------
+
+# Models that are outclassed on both price and quality by newer alternatives.
+# Key: model substring (matched case-insensitively against the model string).
+# Value: (replacement suggestion, reason).
+# Checked at every call_llm / stream_llm entry point.
+_DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
+    "gpt-4o-mini": (
+        "deepseek/deepseek-chat OR gemini/gemini-2.0-flash",
+        "GPT-4o-mini (intel 30, $0.15/$0.60) is outclassed by DeepSeek V3.2 "
+        "(intel 42, $0.28/$0.42) and MiMo-V2-Flash (intel 41, $0.15 blended). "
+        "Both are smarter AND cheaper.",
+    ),
+    "gpt-4o": (
+        "gpt-5",
+        "GPT-4o ($2.50/$10) is strictly worse than GPT-5 ($1.25/$10) — "
+        "GPT-5 is cheaper and smarter. There is no reason to use GPT-4o.",
+    ),
+    "o1-mini": (
+        "o4-mini",
+        "o1-mini is superseded by o4-mini ($1.10/$4.40) which is better at "
+        "reasoning. o1-mini should not be used for new work.",
+    ),
+    "o1-pro": (
+        "o3",
+        "o1-pro ($150/$600) is superseded by o3 ($2/$8) which is better at "
+        "reasoning at a fraction of the cost.",
+    ),
+    "gemini-1.5": (
+        "gemini/gemini-2.5-flash OR gemini/gemini-2.5-pro",
+        "All Gemini 1.5 models are superseded by 2.5+ equivalents at the "
+        "same price with better quality. Use gemini-2.5-flash or gemini-2.5-pro.",
+    ),
+    "gemini-2.0-flash": (
+        "gemini/gemini-2.5-flash",
+        "Gemini 2.0 Flash is superseded by 2.5 Flash at the same price with "
+        "significantly better quality.",
+    ),
+    "claude-3-5": (
+        "anthropic/claude-sonnet-4-5-20250929 OR anthropic/claude-haiku-4-5-20251001",
+        "Claude 3.5 models are superseded by 4.5 equivalents at the same price "
+        "with better quality.",
+    ),
+    "claude-3-opus": (
+        "anthropic/claude-opus-4-6",
+        "Claude 3 Opus is superseded by Opus 4.5/4.6 at a lower price with "
+        "dramatically better quality.",
+    ),
+    "claude-3-sonnet": (
+        "anthropic/claude-sonnet-4-5-20250929",
+        "Claude 3 Sonnet is superseded by Sonnet 4.5 at the same price with "
+        "much better quality.",
+    ),
+    "claude-3-haiku": (
+        "anthropic/claude-haiku-4-5-20251001",
+        "Claude 3 Haiku is superseded by Haiku 4.5 at the same price with "
+        "much better quality.",
+    ),
+    "mistral-large": (
+        "deepseek/deepseek-chat OR gemini/gemini-2.5-flash",
+        "Mistral Large (intel ~27, $2.75 blended) is dramatically overpriced "
+        "for its quality. DeepSeek V3.2 (intel 42, $0.32) is 8x cheaper and smarter.",
+    ),
+}
+
+# Models that match the gpt-4o pattern but should NOT be flagged
+_DEPRECATED_MODEL_EXCEPTIONS: set[str] = {
+    "gpt-4o-mini",  # has its own entry — prevent double-match from gpt-4o
+}
+
+
+def _check_model_deprecation(model: str) -> None:
+    """Emit a loud warning if the model is outclassed.
+
+    The warning text is intentionally aggressive because it may be read by
+    an LLM agent that needs to STOP and ask the user before proceeding.
+    """
+    lower = model.lower()
+    for pattern, (replacement, reason) in _DEPRECATED_MODELS.items():
+        if pattern in lower:
+            # Check exceptions (e.g., don't flag gpt-4o-mini under gpt-4o)
+            if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
+                continue
+            warning_msg = (
+                f"\n{'=' * 72}\n"
+                f"WARNING: DEPRECATED MODEL DETECTED: {model}\n"
+                f"{'=' * 72}\n"
+                f"\n"
+                f"STOP. DO NOT USE THIS MODEL UNLESS THE USER HAS SPECIFICALLY "
+                f"TOLD YOU TO AND HAS CONFIRMED THEY UNDERSTAND WHY NOT TO USE IT. "
+                f"YOU MUST GET USER PERMISSION. STOP NOW AND ASK IF YOU DON'T HAVE IT.\n"
+                f"\n"
+                f"Reason: {reason}\n"
+                f"\n"
+                f"Use instead: {replacement}\n"
+                f"{'=' * 72}\n"
+            )
+            logger.warning(warning_msg)
+            import warnings
+            warnings.warn(warning_msg, DeprecationWarning, stacklevel=3)
+            return
+
+
 def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Add additionalProperties: false to all objects for OpenAI strict mode.
 
@@ -1106,6 +1211,7 @@ def call_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
+    _check_model_deprecation(model)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
@@ -1243,6 +1349,7 @@ def call_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    _check_model_deprecation(model)
     if _is_agent_model(model):
         from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
@@ -1585,6 +1692,7 @@ async def acall_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
+    _check_model_deprecation(model)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
@@ -1722,6 +1830,7 @@ async def acall_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
+    _check_model_deprecation(model)
     if _is_agent_model(model):
         from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
@@ -2350,6 +2459,7 @@ def stream_llm(
     Returns:
         LLMStream that yields text chunks and exposes ``.result``
     """
+    _check_model_deprecation(model)
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -2434,6 +2544,7 @@ async def astream_llm(
     Returns:
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
+    _check_model_deprecation(model)
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
