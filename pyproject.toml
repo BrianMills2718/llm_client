@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 structured = ["instructor>=1.14.0"]
 agents = ["claude-agent-sdk>=0.1.30"]
+codex = ["openai-codex-sdk>=0.1.11"]
+all-agents = ["claude-agent-sdk>=0.1.30", "openai-codex-sdk>=0.1.11"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

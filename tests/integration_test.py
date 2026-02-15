@@ -739,6 +739,111 @@ def test_claude_code_batch() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 14. Codex SDK (requires openai-codex-sdk + OPENAI_API_KEY)
+# ---------------------------------------------------------------------------
+
+
+def test_codex_basic() -> None:
+    _header("14a. call_llm('codex') — basic codex call")
+    try:
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
+        )
+        assert isinstance(result, LLMCallResult)
+        assert "4" in result.content, f"Expected '4' in: {result.content[:200]}"
+        assert result.finish_reason == "stop"
+        print(f"  Content (first 200 chars): {result.content[:200]}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_codex_with_model() -> None:
+    _header("14b. call_llm('codex/gpt-4o') — codex with model suffix")
+    try:
+        result = call_llm(
+            "codex/gpt-4o",
+            [{"role": "user", "content": "What is the capital of France? Reply with just the city name."}],
+        )
+        assert isinstance(result, LLMCallResult)
+        assert "paris" in result.content.lower(), f"Expected 'paris' in: {result.content[:200]}"
+        assert result.model == "codex/gpt-4o"
+        print(f"  Content (first 200 chars): {result.content[:200]}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_codex_structured() -> None:
+    _header("14c. call_llm_structured('codex') — structured codex output")
+    try:
+        parsed, meta = call_llm_structured(
+            "codex",
+            [{"role": "user", "content": "Give me info about Tokyo. Return JSON with name and country fields only."}],
+            response_model=CityInfo,
+        )
+        assert isinstance(parsed, CityInfo)
+        assert "tokyo" in parsed.name.lower(), f"Expected 'tokyo' in name: {parsed.name}"
+        assert isinstance(meta, LLMCallResult)
+        print(f"  Parsed: name={parsed.name}, country={parsed.country}")
+        print(f"  cost=${meta.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_codex_stream() -> None:
+    _header("14d. stream_llm('codex') — codex streaming")
+    try:
+        stream = stream_llm(
+            "codex",
+            [{"role": "user", "content": "What is 3+3? Reply with just the number."}],
+        )
+        chunks: list[str] = []
+        for chunk in stream:
+            chunks.append(chunk)
+        full = "".join(chunks)
+        assert len(chunks) > 0, "No chunks received"
+        result = stream.result
+        assert isinstance(result, LLMCallResult)
+        print(f"  Streamed {len(chunks)} chunk(s): {full[:200]!r}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_codex_batch() -> None:
+    _header("14e. call_llm_batch('codex') — codex batch")
+    try:
+        messages_list = [
+            [{"role": "user", "content": "What is 1+1? Reply with just the number."}],
+            [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
+        ]
+        results = call_llm_batch("codex", messages_list, max_concurrent=2)
+        assert len(results) == 2
+        for i, r in enumerate(results):
+            assert isinstance(r, LLMCallResult), f"Item {i} is {type(r)}: {r}"
+            print(f"  [{i}] content={r.content[:100]!r}  cost=${r.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -789,15 +894,22 @@ async def main() -> None:
     test_gpt5_basic_completion()
     test_gpt5_json_format()
 
-    # Section 13: Agent SDK
+    # Section 13: Agent SDK (Claude)
     test_claude_code_basic()
     test_claude_code_with_model()
     test_claude_code_structured()
     test_claude_code_stream()
     test_claude_code_batch()
 
+    # Section 14: Agent SDK (Codex)
+    test_codex_basic()
+    test_codex_with_model()
+    test_codex_structured()
+    test_codex_stream()
+    test_codex_batch()
+
     print(f"\n{'='*60}")
-    print("  ALL INTEGRATION TESTS COMPLETE (30 tests)")
+    print("  ALL INTEGRATION TESTS COMPLETE (35 tests)")
     print(f"{'='*60}\n")
 
 

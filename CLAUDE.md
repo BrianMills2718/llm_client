@@ -384,6 +384,9 @@ result = call_llm("anthropic/claude-opus-4", messages)   # Raw Anthropic API
 | `claude-code/opus` | Claude Agent SDK | opus |
 | `claude-code/sonnet` | Claude Agent SDK | sonnet |
 | `claude-code/haiku` | Claude Agent SDK | haiku |
+| `codex` | Codex SDK | SDK default |
+| `codex/gpt-5` | Codex SDK | gpt-5 |
+| `codex/o3` | Codex SDK | o3 |
 | `openai-agents/*` | Reserved | NotImplementedError |
 
 ### Agent-specific kwargs
@@ -391,6 +394,7 @@ result = call_llm("anthropic/claude-opus-4", messages)   # Raw Anthropic API
 Pass these through `call_llm` `**kwargs`:
 
 ```python
+# Claude Agent SDK kwargs
 result = call_llm("claude-code", messages,
     allowed_tools=["Read", "Edit", "Glob"],
     permission_mode="acceptEdits",
@@ -398,7 +402,23 @@ result = call_llm("claude-code", messages,
     max_turns=10,
     max_budget_usd=1.0,
 )
+
+# Codex SDK kwargs
+result = call_llm("codex", messages,
+    sandbox_mode="workspace-write",       # "read-only" | "workspace-write" | "danger-full-access"
+    approval_policy="never",              # "never" | "on-request" | "on-failure" | "untrusted"
+    working_directory="/path/to/project",
+    model_reasoning_effort="medium",      # "minimal" | "low" | "medium" | "high"
+    network_access_enabled=True,
+    web_search_enabled=False,
+    additional_directories=["/other/path"],
+    skip_git_repo_check=False,
+    api_key="sk-...",                     # optional override
+    base_url="https://...",               # optional override
+)
 ```
+
+**Codex cost estimation**: Codex SDK only provides token counts (no USD). Cost is estimated via `litellm.completion_cost()` using the underlying model name. Documented as approximate.
 
 ### Agent Capabilities
 
@@ -416,6 +436,7 @@ result = call_llm("claude-code", messages,
 | Caching | Won't implement | Agents have side effects (file writes, bash commands). Caching is unsafe. |
 | Token-level streaming | Deferred | Message-level streaming works. Token-level requires parsing raw `StreamEvent` dicts (fragile). |
 | OpenAI Agents SDK | Deferred | `openai-agents/*` prefix reserved. Architecture supports it. |
+| Gemini CLI SDK | Deferred | Early dev (19 commits), LLM-based output parsing, unstable API. Use `gemini/gemini-2.5-flash` via litellm instead. |
 
 ## Installation
 
@@ -423,6 +444,8 @@ result = call_llm("claude-code", messages,
 pip install -e .                    # Basic
 pip install -e ".[structured]"      # With instructor for structured output
 pip install -e ".[agents]"          # With Claude Agent SDK
+pip install -e ".[codex]"           # With Codex SDK
+pip install -e ".[all-agents]"      # Both agent SDKs
 ```
 
 ## Environment
@@ -447,4 +470,5 @@ pytest tests/ -v   # All mocked (no real API calls)
 - `pydantic>=2.0` — Data validation
 - `instructor>=1.14.0` — Structured output fallback for older models (optional; modern models use native JSON schema)
 - `claude-agent-sdk>=0.1.30` — Claude Agent SDK for agent models (optional; install with `pip install llm_client[agents]`)
+- `openai-codex-sdk>=0.1.11` — Codex SDK for codex agent models (optional; install with `pip install llm_client[codex]`)
 - `pytest-asyncio>=0.23` — Async test support (dev only)

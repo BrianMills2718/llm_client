@@ -14,7 +14,7 @@ Features:
 - Smart retry with jittered exponential backoff on transient errors,
   empty responses, and JSON parse failures
 - Automatic Responses API routing for GPT-5 models (litellm.responses)
-- Agent SDK routing for "claude-code" models (claude-agent-sdk)
+- Agent SDK routing for "claude-code" and "codex" models
 - Thinking model detection (Gemini 3/4 → budget_tokens: 0)
 - Fallback models — automatic failover to secondary models
 - Observability hooks (before_call, after_call, on_error)
@@ -33,6 +33,8 @@ Supported providers (just change the model string):
     call_llm("bedrock/anthropic.claude-v2", messages)  # AWS Bedrock
     call_llm("claude-code", messages)                 # Claude Agent SDK
     call_llm("claude-code/opus", messages)            # Claude Agent SDK (specific model)
+    call_llm("codex", messages)                       # Codex SDK
+    call_llm("codex/gpt-5", messages)                 # Codex SDK (specific model)
 
 Full provider list: https://docs.litellm.ai/docs/providers
 """
@@ -687,7 +689,7 @@ def _is_agent_model(model: str) -> bool:
     Agent SDK. "openai-agents/*" is reserved for future OpenAI Agents SDK.
     """
     lower = model.lower()
-    for prefix in ("claude-code", "openai-agents"):
+    for prefix in ("claude-code", "codex", "openai-agents"):
         if lower == prefix or lower.startswith(prefix + "/"):
             return True
     return False
@@ -1148,8 +1150,8 @@ def call_llm(
             for attempt in range(effective_retries + 1):
                 try:
                     if is_agent:
-                        from llm_client.agents import _call_agent
-                        result = _call_agent(
+                        from llm_client.agents import _route_call
+                        result = _route_call(
                             current_model, messages,
                             timeout=timeout, **kwargs,
                         )
@@ -1242,10 +1244,10 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     if _is_agent_model(model):
-        from llm_client.agents import _call_agent_structured
+        from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
             hooks.before_call(model, messages, kwargs)
-        parsed, llm_result = _call_agent_structured(
+        parsed, llm_result = _route_call_structured(
             model, messages, response_model, timeout=timeout, **kwargs,
         )
         if hooks and hooks.after_call:
@@ -1627,8 +1629,8 @@ async def acall_llm(
             for attempt in range(effective_retries + 1):
                 try:
                     if is_agent:
-                        from llm_client.agents import _acall_agent
-                        result = await _acall_agent(
+                        from llm_client.agents import _route_acall
+                        result = await _route_acall(
                             current_model, messages,
                             timeout=timeout, **kwargs,
                         )
@@ -1721,10 +1723,10 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     if _is_agent_model(model):
-        from llm_client.agents import _acall_agent_structured
+        from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
             hooks.before_call(model, messages, kwargs)
-        parsed, llm_result = await _acall_agent_structured(
+        parsed, llm_result = await _route_acall_structured(
             model, messages, response_model, timeout=timeout, **kwargs,
         )
         if hooks and hooks.after_call:
@@ -2349,8 +2351,8 @@ def stream_llm(
         LLMStream that yields text chunks and exposes ``.result``
     """
     if _is_agent_model(model):
-        from llm_client.agents import _stream_agent
-        return _stream_agent(model, messages, hooks=hooks, timeout=timeout, **kwargs)
+        from llm_client.agents import _route_stream
+        return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -2433,8 +2435,8 @@ async def astream_llm(
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
     if _is_agent_model(model):
-        from llm_client.agents import _astream_agent
-        return await _astream_agent(model, messages, hooks=hooks, timeout=timeout, **kwargs)
+        from llm_client.agents import _route_astream
+        return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
