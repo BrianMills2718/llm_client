@@ -577,6 +577,50 @@ def _cleanup_tmp(tmp_dir: str | None) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+_codex_patched = False
+
+
+def _patch_codex_buffer_limit() -> None:
+    """Increase asyncio subprocess buffer from 64KB to 4MB in CodexExec.run.
+
+    The Codex SDK uses asyncio.create_subprocess_exec with the default 64KB
+    buffer limit. MCP tool results (large JSON payloads) easily exceed this,
+    causing asyncio.LimitOverrunError ("Separator is not found, and chunk
+    exceed the limit"). This patches the run method to use a 4MB limit.
+    """
+    global _codex_patched
+    if _codex_patched:
+        return
+    try:
+        from openai_codex_sdk.exec import CodexExec  # type: ignore[import-untyped]
+        import asyncio as _aio
+        import functools
+
+        _original_run = CodexExec.run
+
+        @functools.wraps(_original_run)
+        async def _patched_run(self: Any, args: Any) -> Any:
+            # Monkey-patch create_subprocess_exec to inject limit=4MB
+            _orig_create = _aio.create_subprocess_exec
+
+            async def _create_with_limit(*a: Any, **kw: Any) -> Any:
+                kw.setdefault("limit", 4 * 1024 * 1024)
+                return await _orig_create(*a, **kw)
+
+            _aio.create_subprocess_exec = _create_with_limit  # type: ignore[assignment]
+            try:
+                async for line in _original_run(self, args):
+                    yield line
+            finally:
+                _aio.create_subprocess_exec = _orig_create  # type: ignore[assignment]
+
+        CodexExec.run = _patched_run  # type: ignore[assignment]
+        _codex_patched = True
+        logging.getLogger(__name__).debug("Patched CodexExec buffer limit to 4MB")
+    except Exception:
+        pass  # SDK not installed or API changed — skip silently
+
+
 def _import_codex_sdk() -> tuple[Any, ...]:
     """Lazily import openai_codex_sdk components.
 
@@ -602,6 +646,7 @@ def _import_codex_sdk() -> tuple[Any, ...]:
             "openai-codex-sdk is required for codex agent models. "
             "Install with: pip install llm_client[codex]"
         ) from None
+    _patch_codex_buffer_limit()
     return (
         Codex, CodexOptions, ThreadOptions, TurnOptions, Turn, StreamedTurn,
         AgentMessageItem, ItemCompletedEvent, TurnCompletedEvent, Usage,
