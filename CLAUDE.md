@@ -321,7 +321,7 @@ llm_client emits loud `DeprecationWarning` when a deprecated/outclassed model is
 
 Deprecated models (as of Feb 2026):
 - `gpt-4o` → use `gpt-5` (cheaper and smarter)
-- `gpt-4o-mini` → use `deepseek/deepseek-chat` or `gemini/gemini-2.0-flash`
+- `gpt-4o-mini` → use `deepseek/deepseek-chat` or `gemini/gemini-2.5-flash`
 - `o1-mini` → use `o4-mini`
 - `o1-pro` → use `o3`
 - `gemini-1.5-*` → use `gemini-2.5-flash` or `gemini-2.5-pro`

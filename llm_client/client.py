@@ -705,7 +705,7 @@ def _is_agent_model(model: str) -> bool:
 # Checked at every call_llm / stream_llm entry point.
 _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
     "gpt-4o-mini": (
-        "deepseek/deepseek-chat OR gemini/gemini-2.0-flash",
+        "deepseek/deepseek-chat OR gemini/gemini-2.5-flash",
         "GPT-4o-mini (intel 30, $0.15/$0.60) is outclassed by DeepSeek V3.2 "
         "(intel 42, $0.28/$0.42) and MiMo-V2-Flash (intel 41, $0.15 blended). "
         "Both are smarter AND cheaper.",
@@ -810,12 +810,19 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     allOf, oneOf) and nested structures.
     """
     if schema.get("type") == "object":
-        schema["additionalProperties"] = False
-        # OpenAI strict mode requires ALL properties in required
         if "properties" in schema:
+            # Structured model — lock down with strict mode
+            schema["additionalProperties"] = False
+            # OpenAI strict mode requires ALL properties in required
             schema["required"] = list(schema["properties"].keys())
-        for prop in schema.get("properties", {}).values():
-            _strict_json_schema(prop)
+            for prop in schema["properties"].values():
+                _strict_json_schema(prop)
+        elif isinstance(schema.get("additionalProperties"), dict):
+            # Freeform dict (e.g. dict[str, str]) — preserve the value schema,
+            # don't overwrite with false which would make it always-empty
+            _strict_json_schema(schema["additionalProperties"])
+        else:
+            schema["additionalProperties"] = False
     if "items" in schema:
         _strict_json_schema(schema["items"])
     # Handle combinators (Optional, Union, discriminated unions)
