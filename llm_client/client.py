@@ -97,6 +97,23 @@ class LLMCallResult:
     raw_response: Any = field(default=None, repr=False)
 
 
+@dataclass
+class EmbeddingResult:
+    """Result from an embedding call.
+
+    Attributes:
+        embeddings: List of embedding vectors (one per input text)
+        usage: Token counts (prompt_tokens, total_tokens)
+        cost: Cost in USD for this call
+        model: The model string that was used
+    """
+
+    embeddings: list[list[float]]
+    usage: dict[str, Any]
+    cost: float
+    model: str
+
+
 # ---------------------------------------------------------------------------
 # Cache infrastructure
 # ---------------------------------------------------------------------------
@@ -2714,3 +2731,99 @@ async def astream_llm_with_tools(
         tools=tools,
         **kwargs,
     )
+
+
+# ---------------------------------------------------------------------------
+# Embeddings
+# ---------------------------------------------------------------------------
+
+
+def embed(
+    model: str,
+    input: str | list[str],
+    *,
+    dimensions: int | None = None,
+    timeout: int = 60,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    **kwargs: Any,
+) -> EmbeddingResult:
+    """Generate embeddings for text input(s).
+
+    Wraps litellm.embedding() for provider-agnostic embedding generation.
+    Swap models by changing the model string — same interface for OpenAI,
+    Cohere, Bedrock, etc.
+
+    Args:
+        model: Embedding model (e.g., "text-embedding-3-small",
+               "text-embedding-3-large", "cohere/embed-english-v3.0")
+        input: Single string or list of strings to embed
+        dimensions: Optional output dimensions (for models that support it,
+                    e.g., text-embedding-3-small supports 256/512/1536)
+        timeout: Request timeout in seconds
+        api_base: Optional API base URL
+        api_key: Optional API key override
+        **kwargs: Additional params passed to litellm.embedding
+
+    Returns:
+        EmbeddingResult with embeddings list, usage, and cost
+    """
+    if isinstance(input, str):
+        input = [input]
+
+    call_kwargs: dict[str, Any] = {"model": model, "input": input, "timeout": timeout}
+    if dimensions is not None:
+        call_kwargs["dimensions"] = dimensions
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
+    if api_key is not None:
+        call_kwargs["api_key"] = api_key
+    call_kwargs.update(kwargs)
+
+    _check_model_deprecation(model)
+    response = litellm.embedding(**call_kwargs)
+
+    embeddings = [item["embedding"] for item in response.data]
+    usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
+    try:
+        cost = litellm.completion_cost(completion_response=response)
+    except Exception:
+        cost = 0.0
+
+    return EmbeddingResult(embeddings=embeddings, usage=usage, cost=cost, model=model)
+
+
+async def aembed(
+    model: str,
+    input: str | list[str],
+    *,
+    dimensions: int | None = None,
+    timeout: int = 60,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    **kwargs: Any,
+) -> EmbeddingResult:
+    """Async version of embed(). See embed() for full docs."""
+    if isinstance(input, str):
+        input = [input]
+
+    call_kwargs: dict[str, Any] = {"model": model, "input": input, "timeout": timeout}
+    if dimensions is not None:
+        call_kwargs["dimensions"] = dimensions
+    if api_base is not None:
+        call_kwargs["api_base"] = api_base
+    if api_key is not None:
+        call_kwargs["api_key"] = api_key
+    call_kwargs.update(kwargs)
+
+    _check_model_deprecation(model)
+    response = await litellm.aembedding(**call_kwargs)
+
+    embeddings = [item["embedding"] for item in response.data]
+    usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
+    try:
+        cost = litellm.completion_cost(completion_response=response)
+    except Exception:
+        cost = 0.0
+
+    return EmbeddingResult(embeddings=embeddings, usage=usage, cost=cost, model=model)
