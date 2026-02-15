@@ -308,7 +308,7 @@ data = json.loads(result.content)
 
 ## Thinking Model Detection
 
-Gemini 3/4 thinking models allocate reasoning tokens by default, consuming output budget. llm_client automatically injects `thinking: {type: "disabled"}` for these models so all tokens go to the actual response.
+Gemini 2.5+ thinking models allocate reasoning tokens by default, consuming output budget. llm_client automatically injects `thinking: {type: "enabled", budget_tokens: 0}` for these models so all tokens go to the actual response.
 
 Override with your own config if you want thinking tokens:
 ```python

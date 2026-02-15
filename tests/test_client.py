@@ -631,7 +631,7 @@ class TestThinkingModelDetection:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}])
         kwargs = mock_comp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
@@ -639,7 +639,7 @@ class TestThinkingModelDetection:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-4-pro", [{"role": "user", "content": "Hi"}])
         kwargs = mock_comp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
@@ -666,7 +666,7 @@ class TestThinkingModelDetection:
         mock_acomp.return_value = _mock_response()
         await acall_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}])
         kwargs = mock_acomp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("instructor.from_litellm")
@@ -689,7 +689,7 @@ class TestThinkingModelDetection:
             response_model=Item,
         )
         call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
-        assert call_kwargs["thinking"] == {"type": "disabled"}
+        assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
 
 class TestStripFences:
