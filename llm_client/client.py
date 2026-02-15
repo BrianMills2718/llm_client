@@ -1237,6 +1237,20 @@ def call_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+
+    # MCP agent loop: non-agent model + mcp_servers → tool-calling loop
+    if "mcp_servers" in kwargs and not _is_agent_model(model):
+        from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
+        from llm_client.agents import _run_sync
+        mcp_kw: dict[str, Any] = {}
+        remaining = dict(kwargs)
+        for k in MCP_LOOP_KWARGS:
+            if k in remaining:
+                mcp_kw[k] = remaining.pop(k)
+        return _run_sync(_acall_with_mcp(
+            model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
+        ))
+
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
@@ -1718,6 +1732,19 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+
+    # MCP agent loop: non-agent model + mcp_servers → tool-calling loop
+    if "mcp_servers" in kwargs and not _is_agent_model(model):
+        from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
+        mcp_kw: dict[str, Any] = {}
+        remaining = dict(kwargs)
+        for k in MCP_LOOP_KWARGS:
+            if k in remaining:
+                mcp_kw[k] = remaining.pop(k)
+        return await _acall_with_mcp(
+            model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
+        )
+
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")

@@ -68,6 +68,14 @@ _load_api_keys()
 
 from llm_client.prompts import render_prompt
 
+from llm_client.mcp_agent import (
+    DEFAULT_MAX_TURNS,
+    DEFAULT_MCP_INIT_TIMEOUT,
+    DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    MCPAgentResult,
+    MCPToolCallRecord,
+)
+
 from llm_client.client import (
     AsyncCachePolicy,
     AsyncLLMStream,
@@ -102,6 +110,11 @@ from llm_client.client import (
 
 __all__ = [
     "AsyncCachePolicy",
+    "DEFAULT_MAX_TURNS",
+    "DEFAULT_MCP_INIT_TIMEOUT",
+    "DEFAULT_TOOL_RESULT_MAX_LENGTH",
+    "MCPAgentResult",
+    "MCPToolCallRecord",
     "AsyncLLMStream",
     "CachePolicy",
     "EmbeddingResult",
