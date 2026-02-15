@@ -242,7 +242,17 @@ All functions retry on transient failures with jittered exponential backoff (cap
 - **Transport**: rate limits, timeouts, connection resets, 500/502/503 errors
 - **Application**: empty responses, JSON parse errors, malformed JSON
 
-Non-retryable errors (e.g., invalid API key, content filter) raise immediately. `num_retries` controls the count (default: 2). Empty responses are automatically retried unless the model made tool calls.
+**Non-retryable errors raise immediately** (no retry, no delay):
+- `AuthenticationError` (401): invalid API key
+- `PermissionDeniedError` (403): forbidden
+- `NotFoundError` (404): model doesn't exist
+- `BudgetExceededError`: litellm budget limit hit
+- `ContentPolicyViolationError`: content filter triggered
+- `RateLimitError` with quota keywords (e.g., "exceeded your current quota"): billing/credits exhausted
+
+Note: `RateLimitError` (429) without quota keywords is treated as transient and retried. Error classification uses litellm exception types first, with string pattern fallback for generic exceptions.
+
+`num_retries` controls the count (default: 2). Empty responses are automatically retried unless the model made tool calls.
 
 ## Structured Output Routing
 
@@ -298,7 +308,7 @@ data = json.loads(result.content)
 
 ## Thinking Model Detection
 
-Gemini 3/4 thinking models allocate reasoning tokens by default, consuming output budget. llm_client automatically injects `thinking: {type: "enabled", budget_tokens: 0}` for these models so all tokens go to the actual response.
+Gemini 3/4 thinking models allocate reasoning tokens by default, consuming output budget. llm_client automatically injects `thinking: {type: "disabled"}` for these models so all tokens go to the actual response.
 
 Override with your own config if you want thinking tokens:
 ```python

@@ -976,9 +976,11 @@ def _prepare_call_kwargs(
             model,
         )
 
-    # Thinking model detection: disable reasoning token budget
+    # Thinking model detection: disable thinking to prevent reasoning tokens
+    # from consuming the output budget. budget_tokens=0 doesn't work reliably
+    # on Gemini 2.5 models (treated as "use default"), so we fully disable.
     if _is_thinking_model(model) and "thinking" not in kwargs:
-        call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
+        call_kwargs["thinking"] = {"type": "disabled"}
 
     # GPT-5 models don't support the temperature parameter
     # (structured calls go through instructor + litellm.completion, not responses API)
