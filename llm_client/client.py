@@ -762,9 +762,10 @@ _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
     ),
 }
 
-# Models that match the gpt-4o pattern but should NOT be flagged
+# Models that match a deprecated pattern but should NOT be flagged
 _DEPRECATED_MODEL_EXCEPTIONS: set[str] = {
     "gpt-4o-mini",  # has its own entry — prevent double-match from gpt-4o
+    "gemini-2.0-flash-lite",  # NOT deprecated — cheapest Google model, no 2.5 equivalent
 }
 
 

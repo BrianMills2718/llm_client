@@ -78,7 +78,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_reasoning_effort_for_claude(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("anthropic/claude-3-opus", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
+        call_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["reasoning_effort"] == "high"
 
@@ -205,7 +205,7 @@ class TestAcallLLM:
     @patch("llm_client.client.litellm.acompletion")
     async def test_reasoning_effort_for_claude(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
-        await acall_llm("anthropic/claude-3-opus", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
+        await acall_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["reasoning_effort"] == "high"
 
@@ -645,7 +645,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.completion")
     def test_non_thinking_model_no_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gemini/gemini-2.0-flash", [{"role": "user", "content": "Hi"}])
+        call_llm("gemini/gemini-2.0-flash-lite", [{"role": "user", "content": "Hi"}])
         kwargs = mock_comp.call_args.kwargs
         assert "thinking" not in kwargs
 
@@ -786,7 +786,7 @@ class TestGPT5TemperatureStripping:
         from llm_client import call_llm_structured
 
         call_llm_structured(
-            "gpt-4o",
+            "deepseek/deepseek-chat",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             temperature=0.5,
@@ -1079,10 +1079,10 @@ class TestResponsesAPIRouting:
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
-    def test_gpt4_still_uses_completion(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+    def test_non_gpt5_still_uses_completion(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Non-GPT-5 models should still use litellm.completion()."""
         mock_comp.return_value = _mock_response()
-        result = call_llm("gpt-4o", [{"role": "user", "content": "Hi"}])
+        result = call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}])
         assert result.content == "Hello!"
         mock_comp.assert_called_once()
 
@@ -1139,10 +1139,10 @@ class TestAsyncResponsesAPIRouting:
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.acompletion")
-    async def test_async_gpt4_still_uses_acompletion(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+    async def test_async_non_gpt5_still_uses_acompletion(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         """Async non-GPT-5 should still use litellm.acompletion()."""
         mock_acomp.return_value = _mock_response()
-        result = await acall_llm("gpt-4o", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}])
         assert result.content == "Hello!"
         mock_acomp.assert_called_once()
 
@@ -2466,7 +2466,7 @@ class TestGPT5StructuredOutput:
         mock_completion.return_value = _mock_response(content='{"name": "test"}')
 
         result, meta = call_llm_structured(
-            "gpt-4o",
+            "deepseek/deepseek-chat",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
         )
