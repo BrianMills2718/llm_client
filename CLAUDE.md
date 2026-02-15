@@ -390,15 +390,22 @@ result = call_llm("claude-code", messages,
 )
 ```
 
-### Limitations (Phase 1)
+### Agent Capabilities
 
-- **No streaming**: `stream_llm("claude-code", ...)` raises `NotImplementedError`
-- **No structured output**: `call_llm_structured("claude-code", ...)` raises `NotImplementedError`
-- **No tool calling**: `call_llm_with_tools("claude-code", ...)` raises `NotImplementedError`
-- **No batch**: `call_llm_batch("claude-code", ...)` raises `NotImplementedError`
-- **No caching**: `call_llm("claude-code", ..., cache=...)` raises `ValueError`
-- **Default 0 retries**: Agent calls have side effects; retries default to 0 unless explicit `retry=RetryPolicy(...)` is passed
+- **Streaming**: `stream_llm("claude-code", ...)` / `astream_llm(...)` — message-level granularity (each `TextBlock`), not token-level
+- **Structured output**: `call_llm_structured("claude-code", ..., response_model=MyModel)` — uses SDK `output_format` with JSON schema
+- **Batch**: `call_llm_batch("claude-code", ...)` — concurrent `call_llm` calls via semaphore
 - **Fallback works**: `call_llm("claude-code", ..., fallback_models=["gpt-4o"])` works
+- **Default 0 retries**: Agent calls have side effects; retries default to 0 unless explicit `retry=RetryPolicy(...)` is passed
+
+### Agent Limitations
+
+| Feature | Status | Reason |
+|---------|--------|--------|
+| Tool calling | Won't implement | Agents run tools autonomously. Use `allowed_tools=` kwarg to configure agent's built-in tools. |
+| Caching | Won't implement | Agents have side effects (file writes, bash commands). Caching is unsafe. |
+| Token-level streaming | Deferred | Message-level streaming works. Token-level requires parsing raw `StreamEvent` dicts (fragile). |
+| OpenAI Agents SDK | Deferred | `openai-agents/*` prefix reserved. Architecture supports it. |
 
 ## Installation
 

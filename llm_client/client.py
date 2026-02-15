@@ -196,13 +196,69 @@ _RETRYABLE_PATTERNS = [
     "temporary failure",
 ]
 
+# Patterns in error messages that indicate permanent failure (never retry).
+# Checked before _RETRYABLE_PATTERNS so they take precedence.
+_NON_RETRYABLE_PATTERNS = [
+    "quota",
+    "billing",
+    "insufficient",
+    "exceeded your current",
+    "plan and billing",
+    "account deactivated",
+    "account suspended",
+]
+
 
 def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
-    """Check if an error is transient and worth retrying."""
+    """Check if an error is transient and worth retrying.
+
+    Uses litellm exception types for reliable classification, with string
+    pattern matching as fallback for generic exceptions.
+    """
     # RuntimeError is used for non-retryable conditions (e.g., truncation)
     if isinstance(error, RuntimeError):
         return False
+
+    # -- Check litellm exception types (preferred over string matching) -------
+    try:
+        import litellm as _lt
+
+        # Permanent failures — never retry
+        if isinstance(error, (
+            _lt.AuthenticationError,      # 401: bad API key
+            _lt.PermissionDeniedError,    # 403: forbidden
+            _lt.BudgetExceededError,      # litellm budget limit
+            _lt.ContentPolicyViolationError,  # content filter
+            _lt.NotFoundError,            # 404: model doesn't exist
+        )):
+            return False
+
+        # RateLimitError (429) is ambiguous — could be transient rate limit
+        # or permanent quota exhaustion. Check the message.
+        if isinstance(error, _lt.RateLimitError):
+            error_str = str(error).lower()
+            if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
+                return False
+            return True  # transient rate limit — retry
+
+        # Transient server errors — always retry
+        if isinstance(error, (
+            _lt.InternalServerError,   # 500
+            _lt.ServiceUnavailableError,  # 503
+            _lt.APIConnectionError,    # network issues
+            _lt.BadGatewayError,       # 502
+        )):
+            return True
+    except ImportError:
+        pass  # litellm not available, fall through to string matching
+
+    # -- Fallback: string pattern matching for generic exceptions --------------
     error_str = str(error).lower()
+
+    # Check non-retryable patterns first
+    if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
+        return False
+
     patterns = _RETRYABLE_PATTERNS
     if extra_patterns:
         patterns = list(patterns) + [p.lower() for p in extra_patterns]
@@ -556,12 +612,13 @@ def _is_claude_model(model: str) -> bool:
 def _is_thinking_model(model: str) -> bool:
     """Check if model needs thinking budget configuration.
 
-    Gemini 3/4 thinking models allocate reasoning tokens by default,
+    Gemini 2.5+ thinking models allocate reasoning tokens by default,
     consuming output token budget. Setting budget_tokens=0 disables
     this so all tokens go to the actual response.
     """
     lower = model.lower()
-    return "gemini-3" in lower or "gemini-4" in lower
+    # Gemini 2.5-flash, 2.5-pro, 2.5-flash-lite, 3.x, 4.x are all thinking models
+    return "gemini-2.5" in lower or "gemini-3" in lower or "gemini-4" in lower
 
 
 def _extract_usage(response: Any) -> dict[str, Any]:
@@ -847,6 +904,43 @@ def _build_result_from_responses(
 # ---------------------------------------------------------------------------
 
 
+def _apply_max_tokens(model: str, call_kwargs: dict[str, Any]) -> None:
+    """Auto-set max output tokens to model's max, or clamp caller's value.
+
+    If no max_tokens/max_completion_tokens is set, defaults to the model's
+    maximum output tokens. If one is set, clamps it to the model's max to
+    prevent "value X but max is X-1" errors across providers.
+    Silently skips if model info lookup fails (unknown/custom models).
+    """
+    try:
+        info = litellm.get_model_info(model)
+    except Exception:
+        return  # Unknown model — pass through unchanged
+
+    model_max = info.get("max_output_tokens")
+    if not model_max:
+        return
+
+    # Determine which key the caller used (if any)
+    token_key = None
+    for key in ("max_completion_tokens", "max_tokens"):
+        if key in call_kwargs:
+            token_key = key
+            break
+
+    if token_key:
+        # Clamp to model's max
+        if call_kwargs[token_key] > model_max:
+            logger.debug(
+                "Clamping %s from %d to %d for %s",
+                token_key, call_kwargs[token_key], model_max, model,
+            )
+            call_kwargs[token_key] = model_max
+    else:
+        # Default to model's max
+        call_kwargs["max_completion_tokens"] = model_max
+
+
 def _prepare_call_kwargs(
     model: str,
     messages: list[dict[str, Any]],
@@ -890,6 +984,11 @@ def _prepare_call_kwargs(
     # (structured calls go through instructor + litellm.completion, not responses API)
     if _is_responses_api_model(model):
         call_kwargs.pop("temperature", None)
+
+    # Auto-set max_tokens to model's max if not specified, or clamp if too high.
+    # Prevents "65536 but max is 65535" errors across different models.
+    if not _is_responses_api_model(model):
+        _apply_max_tokens(model, call_kwargs)
 
     return call_kwargs
 
@@ -1141,7 +1240,15 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Structured output is not yet supported for agent models.")
+        from llm_client.agents import _call_agent_structured
+        if hooks and hooks.before_call:
+            hooks.before_call(model, messages, kwargs)
+        parsed, llm_result = _call_agent_structured(
+            model, messages, response_model, timeout=timeout, **kwargs,
+        )
+        if hooks and hooks.after_call:
+            hooks.after_call(llm_result)
+        return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -1404,7 +1511,9 @@ def call_llm_with_tools(
         LLMCallResult with tool_calls populated if model chose to use tools
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Tool calling is not yet supported for agent models.")
+        raise NotImplementedError(
+            "Agent models have built-in tools. Use allowed_tools= to configure them."
+        )
     return call_llm(
         model,
         messages,
@@ -1610,7 +1719,15 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Structured output is not yet supported for agent models.")
+        from llm_client.agents import _acall_agent_structured
+        if hooks and hooks.before_call:
+            hooks.before_call(model, messages, kwargs)
+        parsed, llm_result = await _acall_agent_structured(
+            model, messages, response_model, timeout=timeout, **kwargs,
+        )
+        if hooks and hooks.after_call:
+            hooks.after_call(llm_result)
+        return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -1873,7 +1990,9 @@ async def acall_llm_with_tools(
         LLMCallResult with tool_calls populated if model chose to use tools
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Tool calling is not yet supported for agent models.")
+        raise NotImplementedError(
+            "Agent models have built-in tools. Use allowed_tools= to configure them."
+        )
     return await acall_llm(
         model,
         messages,
@@ -1942,8 +2061,6 @@ async def acall_llm_batch(
         List of LLMCallResult (or Exception if return_exceptions=True),
         in the same order as messages_list
     """
-    if _is_agent_model(model):
-        raise NotImplementedError("Batch calls are not yet supported for agent models.")
     if not messages_list:
         return []
 
@@ -2012,8 +2129,6 @@ def call_llm_batch(
 
     See :func:`acall_llm_batch` for full parameter documentation.
     """
-    if _is_agent_model(model):
-        raise NotImplementedError("Batch calls are not yet supported for agent models.")
     coro = acall_llm_batch(
         model, messages_list,
         max_concurrent=max_concurrent,
@@ -2078,8 +2193,6 @@ async def acall_llm_structured_batch(
         List of (parsed_model, LLMCallResult) tuples (or Exception if
         return_exceptions=True), in input order.
     """
-    if _is_agent_model(model):
-        raise NotImplementedError("Structured batch calls are not yet supported for agent models.")
     if not messages_list:
         return []
 
@@ -2145,8 +2258,6 @@ def call_llm_structured_batch(
 
     See :func:`acall_llm_batch` for concurrency semantics.
     """
-    if _is_agent_model(model):
-        raise NotImplementedError("Structured batch calls are not yet supported for agent models.")
     coro = acall_llm_structured_batch(
         model, messages_list, response_model,
         max_concurrent=max_concurrent,
@@ -2236,7 +2347,8 @@ def stream_llm(
         LLMStream that yields text chunks and exposes ``.result``
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Streaming is not yet supported for agent models.")
+        from llm_client.agents import _stream_agent
+        return _stream_agent(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -2319,7 +2431,8 @@ async def astream_llm(
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Streaming is not yet supported for agent models.")
+        from llm_client.agents import _astream_agent
+        return await _astream_agent(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
@@ -2411,7 +2524,9 @@ def stream_llm_with_tools(
         LLMStream with tool_calls available on ``.result`` after consumption
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Streaming is not yet supported for agent models.")
+        raise NotImplementedError(
+            "Agent models have built-in tools. Use allowed_tools= to configure them."
+        )
     return stream_llm(
         model, messages,
         timeout=timeout,
@@ -2456,7 +2571,9 @@ async def astream_llm_with_tools(
         AsyncLLMStream with tool_calls available on ``.result`` after consumption
     """
     if _is_agent_model(model):
-        raise NotImplementedError("Streaming is not yet supported for agent models.")
+        raise NotImplementedError(
+            "Agent models have built-in tools. Use allowed_tools= to configure them."
+        )
     return await astream_llm(
         model, messages,
         timeout=timeout,

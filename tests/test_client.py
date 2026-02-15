@@ -537,6 +537,91 @@ class TestSmartRetry:
         assert mock_comp.call_count == 1  # No retry
 
 
+class TestNonRetryableErrors:
+    """Permanent errors (auth, billing, quota) should fail immediately."""
+
+    @patch("llm_client.client.litellm.completion")
+    def test_authentication_error_not_retried(self, mock_comp: MagicMock) -> None:
+        """litellm.AuthenticationError (401) should not retry."""
+        import litellm
+        mock_comp.side_effect = litellm.AuthenticationError(
+            "Incorrect API key provided", model="gpt-4", llm_provider="openai",
+        )
+        with pytest.raises(litellm.AuthenticationError):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion")
+    def test_budget_exceeded_not_retried(self, mock_comp: MagicMock) -> None:
+        """litellm.BudgetExceededError should not retry."""
+        import litellm
+        mock_comp.side_effect = litellm.BudgetExceededError(
+            current_cost=10.0, max_budget=5.0,
+        )
+        with pytest.raises(litellm.BudgetExceededError):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion")
+    def test_content_policy_not_retried(self, mock_comp: MagicMock) -> None:
+        """litellm.ContentPolicyViolationError should not retry."""
+        import litellm
+        mock_comp.side_effect = litellm.ContentPolicyViolationError(
+            "content filtered", model="gpt-4", llm_provider="openai",
+        )
+        with pytest.raises(litellm.ContentPolicyViolationError):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion")
+    def test_not_found_not_retried(self, mock_comp: MagicMock) -> None:
+        """litellm.NotFoundError (404, model doesn't exist) should not retry."""
+        import litellm
+        mock_comp.side_effect = litellm.NotFoundError(
+            "Model not found", model="gpt-99", llm_provider="openai",
+        )
+        with pytest.raises(litellm.NotFoundError):
+            call_llm("gpt-99", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion")
+    def test_quota_exceeded_not_retried(self, mock_comp: MagicMock) -> None:
+        """RateLimitError with quota message should not retry."""
+        import litellm
+        mock_comp.side_effect = litellm.RateLimitError(
+            "You exceeded your current quota, please check your plan and billing details",
+            model="gpt-4", llm_provider="openai",
+        )
+        with pytest.raises(litellm.RateLimitError):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_transient_rate_limit_is_retried(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """RateLimitError with transient message (no quota keywords) should retry."""
+        import litellm
+        mock_comp.side_effect = [
+            litellm.RateLimitError(
+                "Rate limit exceeded, retry after 1s",
+                model="gpt-4", llm_provider="openai",
+            ),
+            _mock_response(),
+        ]
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+
+    @patch("llm_client.client.litellm.completion")
+    def test_generic_quota_string_not_retried(self, mock_comp: MagicMock) -> None:
+        """Generic Exception with quota/billing message should not retry."""
+        mock_comp.side_effect = Exception("insufficient quota for this request")
+        with pytest.raises(Exception, match="insufficient quota"):
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert mock_comp.call_count == 1
+
+
 class TestThinkingModelDetection:
     """Tests for automatic thinking model configuration."""
 
@@ -560,7 +645,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.completion")
     def test_non_thinking_model_no_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "Hi"}])
+        call_llm("gemini/gemini-2.0-flash", [{"role": "user", "content": "Hi"}])
         kwargs = mock_comp.call_args.kwargs
         assert "thinking" not in kwargs
 

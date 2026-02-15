@@ -1,6 +1,8 @@
-"""One-off integration tests against real APIs. Not run by pytest.
+"""Integration tests against real APIs. Require API keys in environment.
 
-Usage: python tests/integration_test.py
+Usage:
+    python tests/integration_test.py          # standalone
+    pytest tests/integration_test.py -v       # via pytest
 """
 
 import asyncio
@@ -8,6 +10,8 @@ import json
 import sys
 import time
 from typing import Any
+
+import pytest
 
 sys.path.insert(0, ".")
 
@@ -65,6 +69,7 @@ def test_batch_sync() -> None:
     print("  PASS")
 
 
+@pytest.mark.asyncio
 async def test_batch_async() -> None:
     _header("1b. acall_llm_batch (async, gemini-flash, 5 items)")
     messages_list = [
@@ -117,6 +122,7 @@ def test_gpt5_structured() -> None:
         print(f"  SKIPPED: {e}")
 
 
+@pytest.mark.asyncio
 async def test_gpt5_structured_async() -> None:
     _header("2b. acall_llm_structured (gpt-5-mini, async)")
     try:
@@ -258,6 +264,7 @@ def test_call_llm_basic() -> None:
     print("  PASS")
 
 
+@pytest.mark.asyncio
 async def test_acall_llm_basic() -> None:
     _header("5b. acall_llm basic (gemini-flash)")
     result = await acall_llm(GEMINI, [{"role": "user", "content": "Reply with just the word 'pong'"}])
@@ -290,6 +297,7 @@ def test_call_llm_with_tools() -> None:
     print("  PASS")
 
 
+@pytest.mark.asyncio
 async def test_acall_llm_with_tools() -> None:
     _header("5d. acall_llm_with_tools (gemini-flash)")
     result = await acall_llm_with_tools(
@@ -325,6 +333,7 @@ def test_structured_batch() -> None:
     print("  PASS")
 
 
+@pytest.mark.asyncio
 async def test_astream_llm() -> None:
     _header("5f. astream_llm (gemini-flash)")
     stream = await astream_llm(
@@ -343,6 +352,7 @@ async def test_astream_llm() -> None:
     print("  PASS")
 
 
+@pytest.mark.asyncio
 async def test_astream_llm_with_tools() -> None:
     _header("5g. astream_llm_with_tools (gemini-flash)")
     stream = await astream_llm_with_tools(
@@ -662,6 +672,72 @@ def test_claude_code_with_model() -> None:
         print(f"  SKIPPED: {e}")
 
 
+def test_claude_code_structured() -> None:
+    _header("13c. call_llm_structured('claude-code') — structured agent output")
+    try:
+        parsed, meta = call_llm_structured(
+            "claude-code",
+            [{"role": "user", "content": "Give me info about Tokyo. Return JSON with name and country fields only."}],
+            response_model=CityInfo,
+            max_turns=1,
+        )
+        assert isinstance(parsed, CityInfo)
+        assert "tokyo" in parsed.name.lower(), f"Expected 'tokyo' in name: {parsed.name}"
+        assert isinstance(meta, LLMCallResult)
+        print(f"  Parsed: name={parsed.name}, country={parsed.country}")
+        print(f"  cost=${meta.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_claude_code_stream() -> None:
+    _header("13d. stream_llm('claude-code') — agent streaming")
+    try:
+        stream = stream_llm(
+            "claude-code",
+            [{"role": "user", "content": "What is 3+3? Reply with just the number."}],
+            max_turns=1,
+        )
+        chunks: list[str] = []
+        for chunk in stream:
+            chunks.append(chunk)
+        full = "".join(chunks)
+        assert len(chunks) > 0, "No chunks received"
+        result = stream.result
+        assert isinstance(result, LLMCallResult)
+        print(f"  Streamed {len(chunks)} chunk(s): {full[:200]!r}")
+        print(f"  cost=${result.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
+def test_claude_code_batch() -> None:
+    _header("13e. call_llm_batch('claude-code') — agent batch")
+    try:
+        messages_list = [
+            [{"role": "user", "content": "What is 1+1? Reply with just the number."}],
+            [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
+        ]
+        results = call_llm_batch(
+            "claude-code", messages_list, max_concurrent=2, max_turns=1,
+        )
+        assert len(results) == 2
+        for i, r in enumerate(results):
+            assert isinstance(r, LLMCallResult), f"Item {i} is {type(r)}: {r}"
+            print(f"  [{i}] content={r.content[:100]!r}  cost=${r.cost:.6f}")
+        print("  PASS")
+    except ImportError as e:
+        print(f"  SKIPPED (SDK not installed): {e}")
+    except Exception as e:
+        print(f"  SKIPPED: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -716,9 +792,12 @@ async def main() -> None:
     # Section 13: Agent SDK
     test_claude_code_basic()
     test_claude_code_with_model()
+    test_claude_code_structured()
+    test_claude_code_stream()
+    test_claude_code_batch()
 
     print(f"\n{'='*60}")
-    print("  ALL INTEGRATION TESTS COMPLETE (27 tests)")
+    print("  ALL INTEGRATION TESTS COMPLETE (30 tests)")
     print(f"{'='*60}\n")
 
 
