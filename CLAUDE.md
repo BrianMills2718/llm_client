@@ -18,10 +18,10 @@ from pydantic import BaseModel
 class Entity(BaseModel):
     name: str
     type: str
-data, meta = call_llm_structured("gpt-4o", messages, response_model=Entity)
+data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)
 
 # Tool calling
-result = call_llm_with_tools("gpt-4o", messages, tools=[...])
+result = call_llm_with_tools("gpt-5-mini", messages, tools=[...])
 result.tool_calls  # normalized across providers
 ```
 
@@ -36,14 +36,14 @@ messages_list = [
     [{"role": "user", "content": "Summarize doc 2"}],
     [{"role": "user", "content": "Summarize doc 3"}],
 ]
-results = call_llm_batch("gpt-4o", messages_list, max_concurrent=5)
+results = call_llm_batch("gpt-5-mini", messages_list, max_concurrent=5)
 
 # Async version (core implementation — call_llm_batch wraps this)
-results = await acall_llm_batch("gpt-4o", messages_list, max_concurrent=10)
+results = await acall_llm_batch("gpt-5-mini", messages_list, max_concurrent=10)
 
 # With progress callbacks
 results = await acall_llm_batch(
-    "gpt-4o", messages_list,
+    "gpt-5-mini", messages_list,
     on_item_complete=lambda idx, res: print(f"Done {idx}: {len(res.content)} chars"),
     on_item_error=lambda idx, err: print(f"Failed {idx}: {err}"),
     return_exceptions=True,  # exceptions in results instead of propagating
@@ -51,7 +51,7 @@ results = await acall_llm_batch(
 
 # Structured batch
 from llm_client import call_llm_structured_batch
-results = call_llm_structured_batch("gpt-4o", messages_list, response_model=Entity)
+results = call_llm_structured_batch("gpt-5-mini", messages_list, response_model=Entity)
 for parsed, meta in results:
     print(parsed.name, meta.cost)
 ```
@@ -64,9 +64,9 @@ Each item gets full retry/fallback/cache/hooks via `acall_llm` or `acall_llm_str
 from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
 
 # Same signatures, just async
-result = await acall_llm("gpt-4o", messages)
-data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
-result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+result = await acall_llm("gpt-5-mini", messages)
+data, meta = await acall_llm_structured("gpt-5-mini", messages, response_model=Entity)
+result = await acall_llm_with_tools("gpt-5-mini", messages, tools=[...])
 ```
 
 ### Streaming
@@ -75,27 +75,27 @@ result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 from llm_client import stream_llm, astream_llm
 
 # Sync streaming (with retry/fallback support)
-stream = stream_llm("gpt-4o", messages, num_retries=2, fallback_models=["gpt-3.5-turbo"])
+stream = stream_llm("gpt-5-mini", messages, num_retries=2, fallback_models=["deepseek/deepseek-chat"])
 for chunk in stream:
     print(chunk, end="", flush=True)
 print()
 print(stream.result.usage)  # usage/cost available after stream ends
 
 # Async streaming
-stream = await astream_llm("gpt-4o", messages)
+stream = await astream_llm("gpt-5-mini", messages)
 async for chunk in stream:
     print(chunk, end="", flush=True)
 print(stream.result.cost)
 
 # Streaming with tools
 from llm_client import stream_llm_with_tools
-stream = stream_llm_with_tools("gpt-4o", messages, tools=[...])
+stream = stream_llm_with_tools("gpt-5-mini", messages, tools=[...])
 for chunk in stream:
     print(chunk, end="", flush=True)
 print(stream.result.tool_calls)  # tool calls available after stream ends
 ```
 
-Streaming retries on **pre-stream** errors (rate limits, connection errors). Mid-stream errors are not retried (would require buffering, defeating streaming's purpose).
+Streaming retries on **pre-stream** errors (rate limits, connection errors) and wraps final failures in `LLMError` subclasses. Mid-stream errors are not retried (would require buffering, defeating streaming's purpose).
 
 ## API
 
@@ -110,6 +110,8 @@ Fourteen functions (7 sync + 7 async):
 | `call_llm_structured_batch(model, messages_list, response_model, **kwargs)` | `acall_llm_structured_batch(...)` | Concurrent structured batch |
 | `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming with retry/fallback |
 | `stream_llm_with_tools(model, messages, tools, **kwargs)` | `astream_llm_with_tools(...)` | Streaming with tools |
+
+Also exported: `LLMError`, `LLMRateLimitError`, `LLMQuotaExhaustedError`, `LLMAuthError`, `LLMContentFilterError`, `LLMTransientError`, `LLMModelNotFoundError`, `classify_error`, `wrap_error` (see [Structured Error Types](#structured-error-types)).
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
@@ -136,13 +138,13 @@ policy = RetryPolicy(
     should_retry=lambda err: "fatal" not in str(err),  # fully custom retryability
 )
 
-result = call_llm("gpt-4o", messages, retry=policy)
-result = call_llm("gpt-4o", messages2, retry=policy)  # same policy reused
+result = call_llm("gpt-5-mini", messages, retry=policy)
+result = call_llm("gpt-5-mini", messages2, retry=policy)  # same policy reused
 ```
 
 Individual params still work for quick one-offs:
 ```python
-result = call_llm("gpt-4o", messages, num_retries=5, retry_on=["custom"])
+result = call_llm("gpt-5-mini", messages, num_retries=5, retry_on=["custom"])
 ```
 
 ### Backoff strategies
@@ -160,8 +162,8 @@ Thread-safe, TTL-capable LRU cache built in. Implement `CachePolicy` protocol fo
 from llm_client import LRUCache, call_llm
 
 cache = LRUCache(maxsize=128, ttl=3600)  # 1 hour TTL, thread-safe
-result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
-result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
+result = call_llm("gpt-5-mini", messages, cache=cache)  # calls LLM
+result = call_llm("gpt-5-mini", messages, cache=cache)  # returns cached
 cache.clear()  # manual invalidation
 ```
 
@@ -191,8 +193,8 @@ Automatic fallback to secondary models when the primary fails all retries:
 
 ```python
 result = call_llm(
-    "gpt-4o", messages,
-    fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+    "gpt-5-mini", messages,
+    fallback_models=["deepseek/deepseek-chat", "ollama/llama3"],
     on_fallback=lambda failed, err, next_model: print(f"{failed} failed, trying {next_model}"),
 )
 ```
@@ -210,7 +212,7 @@ hooks = Hooks(
     on_error=lambda err, attempt: print(f"Attempt {attempt} failed: {err}"),
 )
 
-result = call_llm("gpt-4o", messages, hooks=hooks)
+result = call_llm("gpt-5-mini", messages, hooks=hooks)
 ```
 
 All three callbacks are optional. Hooks fire for each attempt (including retries and fallbacks). Works with all functions including streaming.
@@ -242,15 +244,15 @@ All functions retry on transient failures with jittered exponential backoff (cap
 - **Transport**: rate limits, timeouts, connection resets, 500/502/503 errors
 - **Application**: empty responses, JSON parse errors, malformed JSON
 
-**Non-retryable errors raise immediately** (no retry, no delay):
-- `AuthenticationError` (401): invalid API key
-- `PermissionDeniedError` (403): forbidden
-- `NotFoundError` (404): model doesn't exist
-- `BudgetExceededError`: litellm budget limit hit
-- `ContentPolicyViolationError`: content filter triggered
-- `RateLimitError` with quota keywords (e.g., "exceeded your current quota"): billing/credits exhausted
+**Non-retryable errors skip the retry loop** for the current model, but still trigger fallback to the next model in `fallback_models` (if configured). If all models fail, the error is wrapped in an `LLMError` subclass and raised:
+- `AuthenticationError` (401): invalid API key → `LLMAuthError`
+- `PermissionDeniedError` (403): forbidden → `LLMAuthError`
+- `NotFoundError` (404): model doesn't exist → `LLMModelNotFoundError`
+- `BudgetExceededError`: litellm budget limit hit → `LLMQuotaExhaustedError`
+- `ContentPolicyViolationError`: content filter triggered → `LLMContentFilterError`
+- `RateLimitError` with quota keywords (e.g., "exceeded your current quota"): billing/credits exhausted → `LLMQuotaExhaustedError`
 
-Note: `RateLimitError` (429) without quota keywords is treated as transient and retried. Error classification uses litellm exception types first, with string pattern fallback for generic exceptions.
+Note: `RateLimitError` (429) without quota keywords is treated as transient and retried (`LLMRateLimitError`). Error classification uses litellm exception types first, with string pattern fallback for generic exceptions.
 
 `num_retries` controls the count (default: 2). Empty responses are automatically retried unless the model made tool calls.
 
@@ -262,7 +264,7 @@ After all retries and fallbacks are exhausted, the final error is wrapped in a s
 from llm_client import LLMQuotaExhaustedError, LLMRateLimitError, LLMAuthError, LLMError
 
 try:
-    result = await acall_llm("gpt-4o", messages, fallback_models=["gemini/gemini-2.5-flash"])
+    result = await acall_llm("gpt-5-mini", messages, fallback_models=["gemini/gemini-2.5-flash"])
 except LLMQuotaExhaustedError:
     # All models exhausted their quota — switch provider or abort
     ...
@@ -291,22 +293,23 @@ Error hierarchy (all subclass `LLMError` which subclasses `Exception`):
 
 The `original` attribute on any `LLMError` holds the underlying exception (e.g., the raw litellm error). The `classify_error()` and `wrap_error()` functions are also exported for manual use.
 
+**Agent models note**: Agent SDK calls (`claude-code`, `codex`) do NOT wrap exceptions in `LLMError` — they propagate SDK-native exceptions directly. Only litellm-routed calls get structured error wrapping.
+
 ## Structured Output Routing
 
 `call_llm_structured` uses three-tier routing — no code changes needed:
 
 1. **GPT-5** → Responses API with native `text.format` JSON schema
-2. **Models supporting `response_schema`** (gpt-4o, Claude, Gemini, etc.) → `litellm.completion()` with `response_format` JSON schema
-3. **Older models** (gpt-3.5-turbo, etc.) → instructor fallback
+2. **Models supporting `response_schema`** (GPT-5-mini, Claude, Gemini, etc.) → `litellm.completion()` with `response_format` JSON schema
+3. **Older models** → instructor fallback
 
 If the native JSON schema path fails due to a provider schema limitation (e.g., Gemini's nesting depth limit for deeply nested Pydantic models), the call automatically falls back to the instructor path. No code changes needed on the consumer side.
 
 ```python
 # All use the same call — routing is automatic
-data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)     # Responses API
-data, meta = call_llm_structured("gpt-4o", messages, response_model=Entity)          # native JSON schema
-data, meta = call_llm_structured("gemini/gemini-2.0-flash", messages, response_model=Entity)  # native JSON schema
-data, meta = call_llm_structured("gpt-3.5-turbo", messages, response_model=Entity)  # instructor
+data, meta = call_llm_structured("gpt-5", messages, response_model=Entity)              # Responses API
+data, meta = call_llm_structured("gpt-5-mini", messages, response_model=Entity)          # native JSON schema
+data, meta = call_llm_structured("gemini/gemini-2.5-flash", messages, response_model=Entity)  # native JSON schema
 ```
 
 Pydantic schemas are automatically made strict-mode-compatible (`additionalProperties: false` added recursively, including through `anyOf`/`allOf`/`oneOf` combinators for Optional/Union fields).
@@ -397,7 +400,7 @@ from litellm.caching.caching import Cache
 
 litellm.cache = Cache(type="local")  # or "redis", "s3", "disk"
 
-result = call_llm("gpt-4o", messages, caching=True)
+result = call_llm("gpt-5-mini", messages, caching=True)
 ```
 
 ## OpenRouter
@@ -518,7 +521,7 @@ This creates a temporary config with only the specified servers, dramatically re
 - **Streaming**: `stream_llm("claude-code", ...)` / `astream_llm(...)` — message-level granularity (each `TextBlock`), not token-level
 - **Structured output**: `call_llm_structured("claude-code", ..., response_model=MyModel)` — uses SDK `output_format` with JSON schema
 - **Batch**: `call_llm_batch("claude-code", ...)` — concurrent `call_llm` calls via semaphore
-- **Fallback works**: `call_llm("claude-code", ..., fallback_models=["gpt-4o"])` works
+- **Fallback works**: `call_llm("claude-code", ..., fallback_models=["gpt-5-mini"])` works
 - **Default 0 retries**: Agent calls have side effects; retries default to 0 unless explicit `retry=RetryPolicy(...)` is passed
 - **Clean subprocess env**: Auto-loaded API keys (from `~/.secrets/api_keys.env`) and `CLAUDECODE` are stripped from the agent subprocess env. The bundled Claude CLI uses OAuth, not API keys — inheriting `ANTHROPIC_API_KEY` causes it to crash. Keys already in `os.environ` before `import llm_client` are preserved.
 
@@ -558,7 +561,7 @@ MCP loop kwargs: `mcp_servers`, `mcp_sessions`, `max_turns` (20), `mcp_init_time
 ## Installation
 
 ```bash
-pip install -e .                    # Basic
+pip install -e .                    # Basic (includes error types, retry, fallback, caching, streaming)
 pip install -e ".[structured]"      # With instructor for structured output
 pip install -e ".[agents]"          # With Claude Agent SDK
 pip install -e ".[codex]"           # With Codex SDK
