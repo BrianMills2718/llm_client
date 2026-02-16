@@ -483,6 +483,7 @@ This creates a temporary config with only the specified servers, dramatically re
 - **Batch**: `call_llm_batch("claude-code", ...)` — concurrent `call_llm` calls via semaphore
 - **Fallback works**: `call_llm("claude-code", ..., fallback_models=["gpt-4o"])` works
 - **Default 0 retries**: Agent calls have side effects; retries default to 0 unless explicit `retry=RetryPolicy(...)` is passed
+- **Clean subprocess env**: Auto-loaded API keys (from `~/.secrets/api_keys.env`) and `CLAUDECODE` are stripped from the agent subprocess env. The bundled Claude CLI uses OAuth, not API keys — inheriting `ANTHROPIC_API_KEY` causes it to crash. Keys already in `os.environ` before `import llm_client` are preserved.
 
 ### Agent Limitations
 
