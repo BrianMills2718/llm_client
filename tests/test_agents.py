@@ -37,7 +37,7 @@ from llm_client import (
     stream_llm,
     stream_llm_with_tools,
 )
-from llm_client.agents import _messages_to_agent_prompt, _parse_agent_model
+from llm_client.agents import _build_agent_options, _messages_to_agent_prompt, _parse_agent_model
 from llm_client.client import _is_agent_model
 
 
@@ -358,6 +358,28 @@ class TestAgentCallMocked:
             "claude-code/opus", [{"role": "user", "content": "Hi"}],
         )
         assert result.model == "claude-code/opus"
+
+
+class TestBuildAgentOptions:
+    """Test _build_agent_options env handling."""
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_claudecode_env_stripped_when_set(self, monkeypatch) -> None:
+        """CLAUDECODE env var is cleared so nested sessions work."""
+        monkeypatch.setenv("CLAUDECODE", "1")
+        _, options, _ = _build_agent_options(
+            "claude-code", [{"role": "user", "content": "Hi"}],
+        )
+        assert options.env.get("CLAUDECODE") == ""
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_claudecode_env_not_added_when_unset(self, monkeypatch) -> None:
+        """Don't inject CLAUDECODE env if not already in environment."""
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        _, options, _ = _build_agent_options(
+            "claude-code", [{"role": "user", "content": "Hi"}],
+        )
+        assert "CLAUDECODE" not in options.env
 
 
 class TestAgentFallback:

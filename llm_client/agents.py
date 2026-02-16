@@ -184,6 +184,15 @@ def _build_agent_options(
         if key in agent_kw:
             options_kw[key] = agent_kw[key]
 
+    # Allow nested Claude Code sessions: the SDK subprocess inherits env vars,
+    # and CLAUDECODE causes the child to refuse to start. Clear it so the
+    # spawned agent can run even when called from inside Claude Code.
+    env = options_kw.get("env", {})
+    if os.environ.get("CLAUDECODE"):
+        env.setdefault("CLAUDECODE", "")
+    if env:
+        options_kw["env"] = env
+
     options = ClaudeAgentOptions(**options_kw)
     return prompt, options, sdk
 
