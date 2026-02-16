@@ -58,6 +58,8 @@ from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 import litellm
 from pydantic import BaseModel
 
+from llm_client.errors import wrap_error
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -1330,7 +1332,7 @@ def call_llm(
                         e,
                     )
                     time.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -1341,9 +1343,9 @@ def call_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 def call_llm_structured(
@@ -1472,7 +1474,7 @@ def call_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, e,
                         )
                         time.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
+                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.completion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth
@@ -1544,7 +1546,7 @@ def call_llm_structured(
                         )
                         time.sleep(delay)
                 else:
-                    raise last_error  # type: ignore[misc]  # unreachable
+                    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
             if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.completion
@@ -1606,7 +1608,7 @@ def call_llm_structured(
                             e,
                         )
                         time.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
+                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -1617,9 +1619,9 @@ def call_llm_structured(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 def call_llm_with_tools(
@@ -1824,7 +1826,7 @@ async def acall_llm(
                         e,
                     )
                     await asyncio.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -1835,9 +1837,9 @@ async def acall_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 async def acall_llm_structured(
@@ -1966,7 +1968,7 @@ async def acall_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, e,
                         )
                         await asyncio.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
+                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.acompletion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth
@@ -2038,7 +2040,7 @@ async def acall_llm_structured(
                         )
                         await asyncio.sleep(delay)
                 else:
-                    raise last_error  # type: ignore[misc]  # unreachable
+                    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
             if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.acompletion
@@ -2100,7 +2102,7 @@ async def acall_llm_structured(
                             e,
                         )
                         await asyncio.sleep(delay)
-                raise last_error  # type: ignore[misc]  # unreachable
+                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -2111,9 +2113,9 @@ async def acall_llm_structured(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 async def acall_llm_with_tools(
@@ -2555,7 +2557,7 @@ def stream_llm(
                         attempt + 1, r.max_retries + 1, delay, e,
                     )
                     time.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -2566,9 +2568,9 @@ def stream_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 async def astream_llm(
@@ -2640,7 +2642,7 @@ async def astream_llm(
                         attempt + 1, r.max_retries + 1, delay, e,
                     )
                     await asyncio.sleep(delay)
-            raise last_error  # type: ignore[misc]  # unreachable
+            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -2651,9 +2653,9 @@ async def astream_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
-            raise
+            raise wrap_error(e) from e
 
-    raise last_error  # type: ignore[misc]  # unreachable
+    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
 
 
 def stream_llm_with_tools(

@@ -38,6 +38,7 @@ from llm_client import (
     stream_llm_with_tools,
 )
 from llm_client.agents import _build_agent_options, _messages_to_agent_prompt, _parse_agent_model
+from llm_client.errors import LLMError
 from llm_client.client import _is_agent_model
 
 
@@ -452,7 +453,7 @@ class TestOpenAIAgentsGuard:
     """openai-agents/* should raise NotImplementedError at the agent level."""
 
     def test_openai_agents_not_implemented(self) -> None:
-        with pytest.raises(NotImplementedError, match="not yet supported"):
+        with pytest.raises(LLMError, match="not yet supported"):
             call_llm(
                 "openai-agents/gpt-5",
                 [{"role": "user", "content": "Hi"}],

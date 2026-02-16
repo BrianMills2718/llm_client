@@ -254,6 +254,43 @@ Note: `RateLimitError` (429) without quota keywords is treated as transient and 
 
 `num_retries` controls the count (default: 2). Empty responses are automatically retried unless the model made tool calls.
 
+## Structured Error Types
+
+After all retries and fallbacks are exhausted, the final error is wrapped in a structured `LLMError` subclass. Callers can catch specific failure modes:
+
+```python
+from llm_client import LLMQuotaExhaustedError, LLMRateLimitError, LLMAuthError, LLMError
+
+try:
+    result = await acall_llm("gpt-4o", messages, fallback_models=["gemini/gemini-2.5-flash"])
+except LLMQuotaExhaustedError:
+    # All models exhausted their quota — switch provider or abort
+    ...
+except LLMAuthError:
+    # API key invalid — fix credentials
+    ...
+except LLMRateLimitError:
+    # Transient rate limit survived all retries — wait longer
+    ...
+except LLMError as e:
+    # Any other LLM failure (truncation, empty response, etc.)
+    print(e.original)  # access the underlying exception
+```
+
+Error hierarchy (all subclass `LLMError` which subclasses `Exception`):
+
+| Error Type | Meaning | Retryable? |
+|---|---|---|
+| `LLMRateLimitError` | Transient 429 | Yes |
+| `LLMQuotaExhaustedError` | Permanent quota/billing exhaustion | No |
+| `LLMAuthError` | 401/403 — bad API key or forbidden | No |
+| `LLMContentFilterError` | Content policy violation | No |
+| `LLMModelNotFoundError` | 404 — model doesn't exist | No |
+| `LLMTransientError` | 500/502/503, timeout, connection | Yes |
+| `LLMError` | Base class / uncategorized | Varies |
+
+The `original` attribute on any `LLMError` holds the underlying exception (e.g., the raw litellm error). The `classify_error()` and `wrap_error()` functions are also exported for manual use.
+
 ## Structured Output Routing
 
 `call_llm_structured` uses three-tier routing — no code changes needed:

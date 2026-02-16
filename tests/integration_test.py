@@ -36,6 +36,7 @@ from llm_client import (
     stream_llm,
     stream_llm_with_tools,
 )
+from llm_client.errors import LLMError
 
 
 def _header(name: str) -> None:
@@ -562,9 +563,9 @@ def test_finish_reason_length() -> None:
             max_tokens=5,
         )
         assert False, "Expected RuntimeError for truncation, but call succeeded"
-    except RuntimeError as e:
-        assert "truncated" in str(e).lower(), f"Unexpected RuntimeError: {e}"
-        print(f"  Raised RuntimeError: {e}")
+    except LLMError as e:
+        assert "truncated" in str(e).lower(), f"Unexpected LLMError: {e}"
+        print(f"  Raised LLMError: {e}")
         print("  PASS")
 
 

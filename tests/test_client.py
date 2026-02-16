@@ -33,6 +33,13 @@ from llm_client import (
     stream_llm_with_tools,
     strip_fences,
 )
+from llm_client.errors import (
+    LLMAuthError,
+    LLMContentFilterError,
+    LLMError,
+    LLMModelNotFoundError,
+    LLMQuotaExhaustedError,
+)
 
 
 def _mock_response(
@@ -330,7 +337,7 @@ class TestFinishReasonAndRawResponse:
     def test_finish_reason_length_raises(self, mock_comp: MagicMock) -> None:
         """Truncated responses should raise immediately (not retry)."""
         mock_comp.return_value = _mock_response(finish_reason="length")
-        with pytest.raises(RuntimeError, match="truncated"):
+        with pytest.raises(LLMError, match="truncated"):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
         assert mock_comp.call_count == 1  # No retry on truncation
 
@@ -362,7 +369,7 @@ class TestFinishReasonAndRawResponse:
     async def test_async_finish_reason_length_raises(self, mock_acomp: MagicMock) -> None:
         """Async: truncated responses should raise immediately."""
         mock_acomp.return_value = _mock_response(finish_reason="length")
-        with pytest.raises(RuntimeError, match="truncated"):
+        with pytest.raises(LLMError, match="truncated"):
             await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
         assert mock_acomp.call_count == 1
 
@@ -547,7 +554,7 @@ class TestNonRetryableErrors:
         mock_comp.side_effect = litellm.AuthenticationError(
             "Incorrect API key provided", model="gpt-4", llm_provider="openai",
         )
-        with pytest.raises(litellm.AuthenticationError):
+        with pytest.raises(LLMAuthError):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
         assert mock_comp.call_count == 1
 
@@ -558,7 +565,7 @@ class TestNonRetryableErrors:
         mock_comp.side_effect = litellm.BudgetExceededError(
             current_cost=10.0, max_budget=5.0,
         )
-        with pytest.raises(litellm.BudgetExceededError):
+        with pytest.raises(LLMQuotaExhaustedError):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
         assert mock_comp.call_count == 1
 
@@ -569,7 +576,7 @@ class TestNonRetryableErrors:
         mock_comp.side_effect = litellm.ContentPolicyViolationError(
             "content filtered", model="gpt-4", llm_provider="openai",
         )
-        with pytest.raises(litellm.ContentPolicyViolationError):
+        with pytest.raises(LLMContentFilterError):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
         assert mock_comp.call_count == 1
 
@@ -580,7 +587,7 @@ class TestNonRetryableErrors:
         mock_comp.side_effect = litellm.NotFoundError(
             "Model not found", model="gpt-99", llm_provider="openai",
         )
-        with pytest.raises(litellm.NotFoundError):
+        with pytest.raises(LLMModelNotFoundError):
             call_llm("gpt-99", [{"role": "user", "content": "Hi"}], num_retries=2)
         assert mock_comp.call_count == 1
 
@@ -592,7 +599,7 @@ class TestNonRetryableErrors:
             "You exceeded your current quota, please check your plan and billing details",
             model="gpt-4", llm_provider="openai",
         )
-        with pytest.raises(litellm.RateLimitError):
+        with pytest.raises(LLMQuotaExhaustedError):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
         assert mock_comp.call_count == 1
 
@@ -1041,7 +1048,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_empty_content_raises(self, mock_resp: MagicMock) -> None:
         """Empty response from GPT-5 should raise ValueError (retryable)."""
         mock_resp.return_value = _mock_responses_api_response(output_text="")
-        with pytest.raises(ValueError, match="Empty content"):
+        with pytest.raises(LLMError, match="Empty content"):
             call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
 
     @patch("llm_client.client.litellm.responses")
@@ -1052,7 +1059,7 @@ class TestResponsesAPIRouting:
         details.reason = "max_output_tokens"
         resp.incomplete_details = details
         mock_resp.return_value = resp
-        with pytest.raises(RuntimeError, match="truncated"):
+        with pytest.raises(LLMError, match="truncated"):
             call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
 
     @patch("llm_client.client.time.sleep")

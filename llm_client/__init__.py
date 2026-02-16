@@ -75,6 +75,18 @@ def _load_api_keys() -> int:
 
 _load_api_keys()
 
+from llm_client.errors import (
+    LLMAuthError,
+    LLMContentFilterError,
+    LLMError,
+    LLMModelNotFoundError,
+    LLMQuotaExhaustedError,
+    LLMRateLimitError,
+    LLMTransientError,
+    classify_error,
+    wrap_error,
+)
+
 from llm_client.prompts import render_prompt
 
 from llm_client.mcp_agent import (
@@ -119,6 +131,15 @@ from llm_client.client import (
 )
 
 __all__ = [
+    "LLMAuthError",
+    "LLMContentFilterError",
+    "LLMError",
+    "LLMModelNotFoundError",
+    "LLMQuotaExhaustedError",
+    "LLMRateLimitError",
+    "LLMTransientError",
+    "classify_error",
+    "wrap_error",
     "AsyncCachePolicy",
     "DEFAULT_MAX_TURNS",
     "DEFAULT_MCP_INIT_TIMEOUT",
