@@ -1238,8 +1238,8 @@ def call_llm(
     """
     _check_model_deprecation(model)
 
-    # MCP agent loop: non-agent model + mcp_servers → tool-calling loop
-    if "mcp_servers" in kwargs and not _is_agent_model(model):
+    # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
+    if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
         from llm_client.agents import _run_sync
         mcp_kw: dict[str, Any] = {}
@@ -1733,8 +1733,8 @@ async def acall_llm(
     """
     _check_model_deprecation(model)
 
-    # MCP agent loop: non-agent model + mcp_servers → tool-calling loop
-    if "mcp_servers" in kwargs and not _is_agent_model(model):
+    # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
+    if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
         mcp_kw: dict[str, Any] = {}
         remaining = dict(kwargs)

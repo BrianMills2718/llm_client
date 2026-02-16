@@ -495,6 +495,29 @@ This creates a temporary config with only the specified servers, dramatically re
 | OpenAI Agents SDK | Deferred | `openai-agents/*` prefix reserved. Architecture supports it. |
 | Gemini CLI SDK | Deferred | v0.1.0, 19 commits, 5mo stale. Uses gpt-4o-mini to parse CLI stdout (extra cost/latency, misparses stderr). No cost/usage/streaming/structured. Gemini CLI has `--output-format json` but SDK doesn't use it yet. Use `gemini/gemini-2.5-flash` via litellm instead. Revisit when SDK ships native JSON parsing. |
 
+## MCP Agent Loop
+
+Any litellm model can drive MCP tool-calling via `mcp_servers` or `mcp_sessions` kwargs:
+
+```python
+# Per-call: starts/stops MCP servers each call
+result = await acall_llm("gemini/gemini-3-flash-preview", messages,
+    mcp_servers={"my-server": {"command": "python", "args": ["server.py"]}},
+    max_turns=20,
+)
+
+# Persistent pool: start servers once, reuse across calls
+from llm_client import MCPSessionPool
+
+async with MCPSessionPool(mcp_servers) as pool:
+    for question in questions:
+        result = await acall_llm(model, msgs, mcp_sessions=pool, max_turns=25)
+```
+
+`MCPSessionPool` avoids per-call server startup overhead for batch workloads. Pass `mcp_sessions=pool` instead of `mcp_servers=...`. Requires `pip install mcp`.
+
+MCP loop kwargs: `mcp_servers`, `mcp_sessions`, `max_turns` (20), `mcp_init_timeout` (30s), `tool_result_max_length` (50k chars).
+
 ## Installation
 
 ```bash

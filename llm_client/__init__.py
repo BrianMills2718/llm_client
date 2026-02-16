@@ -82,6 +82,7 @@ from llm_client.mcp_agent import (
     DEFAULT_MCP_INIT_TIMEOUT,
     DEFAULT_TOOL_RESULT_MAX_LENGTH,
     MCPAgentResult,
+    MCPSessionPool,
     MCPToolCallRecord,
 )
 
@@ -123,6 +124,7 @@ __all__ = [
     "DEFAULT_MCP_INIT_TIMEOUT",
     "DEFAULT_TOOL_RESULT_MAX_LENGTH",
     "MCPAgentResult",
+    "MCPSessionPool",
     "MCPToolCallRecord",
     "AsyncLLMStream",
     "CachePolicy",

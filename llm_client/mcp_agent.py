@@ -57,6 +57,7 @@ DEFAULT_TOOL_RESULT_MAX_LENGTH: int = 50_000
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
     "mcp_servers",
+    "mcp_sessions",
     "max_turns",
     "mcp_init_timeout",
     "tool_result_max_length",
@@ -91,6 +92,54 @@ class MCPAgentResult:
     turns: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Session Pool — reuse MCP servers across multiple calls
+# ---------------------------------------------------------------------------
+
+
+class MCPSessionPool:
+    """Persistent MCP server connections for reuse across multiple acall_llm() calls.
+
+    Usage:
+        async with MCPSessionPool(mcp_servers) as pool:
+            for question in questions:
+                result = await acall_llm(model, msgs, mcp_sessions=pool)
+    """
+
+    def __init__(
+        self,
+        mcp_servers: dict[str, dict[str, Any]],
+        init_timeout: float = DEFAULT_MCP_INIT_TIMEOUT,
+    ):
+        self.mcp_servers = mcp_servers
+        self.init_timeout = init_timeout
+        self._stack: AsyncExitStack | None = None
+        self.sessions: dict[str, Any] = {}
+        self.tool_to_server: dict[str, str] = {}
+        self.openai_tools: list[dict[str, Any]] = []
+
+    async def __aenter__(self) -> "MCPSessionPool":
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+        self.sessions, self.tool_to_server, self.openai_tools = await _start_servers(
+            self.mcp_servers, self._stack, self.init_timeout,
+        )
+        logger.info(
+            "MCPSessionPool: started %d servers, %d tools",
+            len(self.sessions), len(self.openai_tools),
+        )
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        if self._stack:
+            await self._stack.__aexit__(*exc)
+            self._stack = None
+            self.sessions = {}
+            self.tool_to_server = {}
+            self.openai_tools = []
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +350,9 @@ async def _inner_acall_llm(
 async def _acall_with_mcp(
     model: str,
     messages: list[dict[str, Any]],
-    mcp_servers: dict[str, dict[str, Any]],
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
     *,
+    mcp_sessions: MCPSessionPool | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     mcp_init_timeout: float = DEFAULT_MCP_INIT_TIMEOUT,
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
@@ -320,6 +370,9 @@ async def _acall_with_mcp(
         model: Any litellm model string (NOT an agent model)
         messages: Initial messages (system + user)
         mcp_servers: Dict of server_name -> {command, args?, env?, cwd?}
+            (ignored if mcp_sessions is provided)
+        mcp_sessions: Pre-started MCPSessionPool for server reuse across calls.
+            When provided, servers are NOT started/stopped per call.
         max_turns: Maximum loop iterations
         mcp_init_timeout: Seconds to wait for server startup
         tool_result_max_length: Max chars per tool result (truncated if longer)
@@ -332,72 +385,41 @@ async def _acall_with_mcp(
     final_content = ""
     final_finish_reason = "stop"
 
-    async with AsyncExitStack() as stack:
-        # Start servers and discover tools
-        sessions, tool_to_server, openai_tools = await _start_servers(
-            mcp_servers, stack, mcp_init_timeout,
-        )
+    if mcp_sessions is not None:
+        # Reuse existing sessions — no server spawn/teardown
+        sessions = mcp_sessions.sessions
+        tool_to_server = mcp_sessions.tool_to_server
+        openai_tools = mcp_sessions.openai_tools
 
         if not openai_tools:
-            raise ValueError(
-                f"No tools discovered from MCP servers: {list(mcp_servers.keys())}"
+            raise ValueError("MCPSessionPool has no tools — was it entered as context manager?")
+
+        final_content, final_finish_reason = await _agent_loop(
+            model, messages, sessions, tool_to_server, openai_tools,
+            agent_result, max_turns, tool_result_max_length, timeout, kwargs,
+        )
+        total_cost = sum(r.latency_s for r in agent_result.tool_calls)  # placeholder; real cost tracked below
+
+    elif mcp_servers is not None:
+        async with AsyncExitStack() as stack:
+            # Start servers and discover tools
+            sessions, tool_to_server, openai_tools = await _start_servers(
+                mcp_servers, stack, mcp_init_timeout,
             )
 
-        # Agent loop
-        for turn in range(max_turns):
-            agent_result.turns = turn + 1
+            if not openai_tools:
+                raise ValueError(
+                    f"No tools discovered from MCP servers: {list(mcp_servers.keys())}"
+                )
 
-            result = await _inner_acall_llm(
-                model, messages, timeout=timeout, tools=openai_tools, **kwargs,
+            final_content, final_finish_reason = await _agent_loop(
+                model, messages, sessions, tool_to_server, openai_tools,
+                agent_result, max_turns, tool_result_max_length, timeout, kwargs,
             )
+    else:
+        raise ValueError("Either mcp_servers or mcp_sessions must be provided")
 
-            # Accumulate usage
-            inp, out = _extract_usage(result.usage or {})
-            agent_result.total_input_tokens += inp
-            agent_result.total_output_tokens += out
-            total_cost += result.cost
-
-            # No tool calls → done
-            if not result.tool_calls:
-                final_content = result.content
-                final_finish_reason = result.finish_reason
-                break
-
-            # Append assistant message with tool calls
-            messages.append({
-                "role": "assistant",
-                "content": result.content or None,
-                "tool_calls": result.tool_calls,
-            })
-
-            # Execute tool calls
-            records, tool_messages = await _execute_tool_calls(
-                result.tool_calls, sessions, tool_to_server, tool_result_max_length,
-            )
-            agent_result.tool_calls.extend(records)
-            messages.extend(tool_messages)
-
-            logger.debug(
-                "MCP agent turn %d/%d: %d tool calls",
-                turn + 1, max_turns, len(result.tool_calls),
-            )
-        else:
-            # max_turns exhausted — one final call without tools to get an answer
-            logger.warning(
-                "MCP agent loop exhausted max_turns=%d, forcing final answer",
-                max_turns,
-            )
-            final_result = await _inner_acall_llm(
-                model, messages, timeout=timeout, **kwargs,
-            )
-            final_content = final_result.content
-            final_finish_reason = final_result.finish_reason
-            total_cost += final_result.cost
-            inp, out = _extract_usage(final_result.usage or {})
-            agent_result.total_input_tokens += inp
-            agent_result.total_output_tokens += out
-            agent_result.turns += 1
-
+    # Cost is accumulated during _agent_loop via agent_result metadata
     return LLMCallResult(
         content=final_content,
         usage={
@@ -407,8 +429,86 @@ async def _acall_with_mcp(
                 agent_result.total_input_tokens + agent_result.total_output_tokens
             ),
         },
-        cost=total_cost,
+        cost=agent_result.metadata.get("total_cost", 0.0),
         model=model,
         finish_reason=final_finish_reason,
         raw_response=agent_result,
     )
+
+
+async def _agent_loop(
+    model: str,
+    messages: list[dict[str, Any]],
+    sessions: dict[str, Any],
+    tool_to_server: dict[str, str],
+    openai_tools: list[dict[str, Any]],
+    agent_result: MCPAgentResult,
+    max_turns: int,
+    tool_result_max_length: int,
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> tuple[str, str]:
+    """Core agent loop shared by both per-call and session-pool paths.
+
+    Returns (final_content, final_finish_reason).
+    """
+    total_cost = 0.0
+    final_content = ""
+    final_finish_reason = "stop"
+
+    for turn in range(max_turns):
+        agent_result.turns = turn + 1
+
+        result = await _inner_acall_llm(
+            model, messages, timeout=timeout, tools=openai_tools, **kwargs,
+        )
+
+        # Accumulate usage
+        inp, out = _extract_usage(result.usage or {})
+        agent_result.total_input_tokens += inp
+        agent_result.total_output_tokens += out
+        total_cost += result.cost
+
+        # No tool calls → done
+        if not result.tool_calls:
+            final_content = result.content
+            final_finish_reason = result.finish_reason
+            break
+
+        # Append assistant message with tool calls
+        messages.append({
+            "role": "assistant",
+            "content": result.content or None,
+            "tool_calls": result.tool_calls,
+        })
+
+        # Execute tool calls
+        records, tool_messages = await _execute_tool_calls(
+            result.tool_calls, sessions, tool_to_server, tool_result_max_length,
+        )
+        agent_result.tool_calls.extend(records)
+        messages.extend(tool_messages)
+
+        logger.debug(
+            "MCP agent turn %d/%d: %d tool calls",
+            turn + 1, max_turns, len(result.tool_calls),
+        )
+    else:
+        # max_turns exhausted — one final call without tools to get an answer
+        logger.warning(
+            "MCP agent loop exhausted max_turns=%d, forcing final answer",
+            max_turns,
+        )
+        final_result = await _inner_acall_llm(
+            model, messages, timeout=timeout, **kwargs,
+        )
+        final_content = final_result.content
+        final_finish_reason = final_result.finish_reason
+        total_cost += final_result.cost
+        inp, out = _extract_usage(final_result.usage or {})
+        agent_result.total_input_tokens += inp
+        agent_result.total_output_tokens += out
+        agent_result.turns += 1
+
+    agent_result.metadata["total_cost"] = total_cost
+    return final_content, final_finish_reason
