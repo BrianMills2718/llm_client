@@ -622,9 +622,65 @@ configure_logging(project="my_project")             # override project name
 configure_logging(data_root="/tmp/llm_logs")        # override data root
 ```
 
-Each JSONL record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`.
+Each JSONL record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`, `task`.
+
+Pass `task="extraction"` (or any task name) to `call_llm` / `acall_llm` / `call_llm_structured` / etc. to tag log records for performance tracking.
 
 Logging never raises — failures are silently dropped to avoid breaking LLM calls.
+
+## Model Registry + Task-Based Selection
+
+Centralized model matrix — no more hardcoded model strings. Each model has intelligence/speed/cost attributes. Task profiles define requirements and sort preferences.
+
+```python
+from llm_client import get_model, list_models, query_performance
+
+# Task-based selection
+model = get_model("extraction")      # → "gemini/gemini-3-flash" (highest intelligence w/ structured output)
+model = get_model("bulk_cheap")      # → "gpt-5-nano" (cheapest)
+model = get_model("graph_building")  # → "xai/grok-4.1-fast" (cheapest w/ structured + min intel)
+
+# Use with call_llm — task kwarg tags the log for performance tracking
+result = call_llm(get_model("synthesis"), messages, task="synthesis")
+
+# Introspection
+for m in list_models():
+    print(f'{m["name"]:25s} intel={m["intelligence"]}  cost=${m["cost"]:.2f}')
+
+# Performance analytics from logged calls
+perf = query_performance(task="extraction", days=7)
+# → [{"task": "extraction", "model": "...", "call_count": 142, "total_cost": 0.83, ...}]
+```
+
+### Default models (8)
+
+| Name | litellm_id | Intel | Speed | Cost ($/1M) | Notes |
+|------|-----------|-------|-------|-------------|-------|
+| deepseek-chat | deepseek/deepseek-chat | 42 | 36 | $0.32 | Bulk default |
+| gemini-3-flash | gemini/gemini-3-flash | 46 | 207 | $1.13 | Best mid-tier |
+| gemini-2.5-flash | gemini/gemini-2.5-flash | 34 | 152 | $0.68 | Free tier |
+| gemini-2.5-flash-lite | gemini/gemini-2.5-flash-lite | 28 | 250 | $0.175 | Cheapest Google |
+| gpt-5-mini | gpt-5-mini | 41 | 127 | $0.69 | Reliable structured |
+| gpt-5 | gpt-5 | 45 | 98 | $3.44 | Frontier |
+| gpt-5-nano | gpt-5-nano | 27 | 141 | $0.14 | Cheapest OpenAI |
+| grok-4.1-fast | xai/grok-4.1-fast | 39 | 179 | $0.28 | 2M context |
+
+### Default tasks (6)
+
+| Task | Min Intel | Requires | Prefer |
+|------|-----------|----------|--------|
+| extraction | 35 | structured_output | intelligence, -cost |
+| bulk_cheap | 25 | — | -cost, speed |
+| synthesis | 40 | — | intelligence, -cost |
+| graph_building | 30 | structured_output | -cost, speed |
+| agent_reasoning | 42 | — | intelligence |
+| code_generation | 38 | — | intelligence, speed |
+
+### Config override
+
+Config loading chain: `LLM_CLIENT_MODELS_CONFIG` env var → `~/.config/llm_client/models.yaml` → built-in defaults.
+
+`available_only=True` (default) filters to models whose `api_key_env` is set in `os.environ`.
 
 ## Tests
 

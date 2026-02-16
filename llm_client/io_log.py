@@ -64,6 +64,7 @@ def log_call(
     error: Exception | None = None,
     latency_s: float | None = None,
     caller: str = "call_llm",
+    task: str | None = None,
 ) -> None:
     """Append one JSONL record. Never raises — logging must not break calls."""
     if not _enabled:
@@ -96,6 +97,7 @@ def log_call(
             "latency_s": round(latency_s, 3) if latency_s is not None else None,
             "error": str(error) if error else None,
             "caller": caller,
+            "task": task,
         }
         with open(d / "calls.jsonl", "a") as f:
             f.write(json.dumps(record, default=str) + "\n")

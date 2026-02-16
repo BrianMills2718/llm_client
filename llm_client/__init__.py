@@ -88,6 +88,13 @@ from llm_client.errors import (
 )
 
 from llm_client.io_log import configure as configure_logging
+from llm_client.models import (
+    ModelInfo,
+    TaskProfile,
+    get_model,
+    list_models,
+    query_performance,
+)
 from llm_client.prompts import render_prompt
 
 from llm_client.mcp_agent import (
@@ -178,4 +185,9 @@ __all__ = [
     "configure_logging",
     "render_prompt",
     "strip_fences",
+    "ModelInfo",
+    "TaskProfile",
+    "get_model",
+    "list_models",
+    "query_performance",
 ]
