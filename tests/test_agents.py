@@ -12,7 +12,7 @@ Tests cover:
 
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -295,7 +295,32 @@ def _make_fake_sdk_module():
     mod.ResultMessage = _FakeResultMessage  # type: ignore[attr-defined]
     mod.TextBlock = _FakeTextBlock  # type: ignore[attr-defined]
     mod.ClaudeAgentOptions = MagicMock  # type: ignore[attr-defined]
+    mod.ToolUseBlock = _FakeToolUseBlock  # type: ignore[attr-defined]
+    mod.ToolResultBlock = _FakeToolResultBlock  # type: ignore[attr-defined]
+    mod.UserMessage = _FakeUserMessage  # type: ignore[attr-defined]
     return mod
+
+
+@dataclass
+class _FakeToolUseBlock:
+    id: str = "tool_1"
+    name: str = "test_tool"
+    input: dict = field(default_factory=dict)
+
+
+@dataclass
+class _FakeToolResultBlock:
+    tool_use_id: str = "tool_1"
+    content: str = ""
+    is_error: bool = False
+
+
+@dataclass
+class _FakeUserMessage:
+    content: list = field(default_factory=list)
+    uuid: str = ""
+    parent_tool_use_id: str | None = None
+    tool_use_result: _FakeToolResultBlock | None = None
 
 
 @pytest.fixture()
@@ -306,7 +331,8 @@ def _mock_agent_sdk(monkeypatch):
     # Also clear the cached lazy import in agents module if it was previously imported
     import llm_client.agents as agents_mod
     # Force re-import on next call by invalidating any cached references
-    for attr in ("query", "AssistantMessage", "ResultMessage", "TextBlock", "ClaudeAgentOptions"):
+    for attr in ("query", "AssistantMessage", "ResultMessage", "TextBlock", "ToolUseBlock",
+                  "ToolResultBlock", "UserMessage", "ClaudeAgentOptions"):
         if hasattr(agents_mod, attr):
             monkeypatch.delattr(agents_mod, attr, raising=False)
 

@@ -126,7 +126,7 @@ def _import_sdk() -> tuple[Any, ...]:
     """Lazily import claude_agent_sdk components.
 
     Returns:
-        (AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query)
+        (AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, ToolUseBlock, query)
     """
     try:
         from claude_agent_sdk import (  # type: ignore[import-untyped]
@@ -134,6 +134,7 @@ def _import_sdk() -> tuple[Any, ...]:
             ClaudeAgentOptions,
             ResultMessage,
             TextBlock,
+            ToolUseBlock,
             query,
         )
     except ImportError:
@@ -141,7 +142,7 @@ def _import_sdk() -> tuple[Any, ...]:
             "claude-agent-sdk is required for agent models. "
             "Install with: pip install llm_client[agents]"
         ) from None
-    return AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
+    return AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, ToolUseBlock, query
 
 
 def _build_agent_options(
@@ -155,12 +156,12 @@ def _build_agent_options(
 
     Returns:
         (prompt, options, sdk_components) where sdk_components is
-        (AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query)
+        (AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, ToolUseBlock, query)
     """
     _, underlying_model = _parse_agent_model(model)
 
     sdk = _import_sdk()
-    _, ClaudeAgentOptions, _, _, _ = sdk
+    _, ClaudeAgentOptions, _, _, _, _ = sdk
 
     prompt, system_prompt = _messages_to_agent_prompt(messages)
 
@@ -206,6 +207,7 @@ def _result_from_agent(
     last_message_text: list[str],
     all_text: list[str],
     result_msg: Any,
+    agent_tool_calls: list[dict[str, Any]] | None = None,
 ) -> LLMCallResult:
     """Build LLMCallResult from collected agent output.
 
@@ -213,6 +215,7 @@ def _result_from_agent(
         last_message_text: Text blocks from the final assistant message only.
         all_text: Text blocks from ALL assistant messages (full conversation).
         result_msg: The ResultMessage from the SDK.
+        agent_tool_calls: Tool use records captured from ToolUseBlock in messages.
     """
     content = "\n".join(last_message_text) if last_message_text else ""
     full_text = "\n".join(all_text) if all_text else ""
@@ -221,18 +224,78 @@ def _result_from_agent(
         if result_msg and result_msg.total_cost_usd is not None
         else 0.0
     )
-    usage = result_msg.usage if result_msg and result_msg.usage else {}
+    usage: dict[str, Any] = dict(result_msg.usage) if result_msg and result_msg.usage else {}
     is_error = result_msg.is_error if result_msg else True
+
+    # Enrich usage with timing and session data from ResultMessage
+    if result_msg:
+        for attr in ("duration_ms", "duration_api_ms", "num_turns", "session_id"):
+            val = getattr(result_msg, attr, None)
+            if val is not None:
+                usage[attr] = val
 
     return LLMCallResult(
         content=content,
         usage=usage,
         cost=cost,
         model=model,
+        tool_calls=agent_tool_calls or [],
         finish_reason="error" if is_error else "stop",
         raw_response=result_msg,
         full_text=full_text if full_text != content else None,
     )
+
+
+def _capture_tool_result(
+    message: Any,
+    conversation_trace: list[dict[str, Any]],
+    agent_tool_calls: list[dict[str, Any]],
+    tool_id_to_idx: dict[str, int],
+    ToolResultBlock: type,
+) -> None:
+    """Extract tool result data from UserMessage or other message types.
+
+    Claude Agent SDK sends UserMessage with:
+      - content: list[TextBlock | ToolResultBlock | ...] — the actual tool result data
+      - tool_use_result: dict — a summary dict (not needed when content has ToolResultBlock)
+    """
+    # UserMessage.content is a list of blocks — extract ToolResultBlock instances
+    content_list = getattr(message, "content", None)
+    if isinstance(content_list, list):
+        for block in content_list:
+            if isinstance(block, ToolResultBlock):
+                tool_use_id = getattr(block, "tool_use_id", "") or ""
+                raw_content = getattr(block, "content", "")
+                is_error = getattr(block, "is_error", False) or False
+                content_str = str(raw_content)[:2000] if raw_content else ""
+                conversation_trace.append({
+                    "role": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content_str,
+                    "is_error": is_error,
+                })
+                if tool_use_id in tool_id_to_idx:
+                    idx = tool_id_to_idx[tool_use_id]
+                    agent_tool_calls[idx]["result_preview"] = content_str[:500]
+                    agent_tool_calls[idx]["is_error"] = is_error
+        return
+
+    # Standalone ToolResultBlock (not wrapped in UserMessage)
+    tool_use_id = getattr(message, "tool_use_id", None)
+    if tool_use_id is not None:
+        raw_content = getattr(message, "content", None)
+        is_error = getattr(message, "is_error", False) or False
+        content_str = str(raw_content)[:2000] if raw_content else ""
+        conversation_trace.append({
+            "role": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content_str,
+            "is_error": is_error,
+        })
+        if tool_use_id in tool_id_to_idx:
+            idx = tool_id_to_idx[tool_use_id]
+            agent_tool_calls[idx]["result_preview"] = content_str[:500]
+            agent_tool_calls[idx]["is_error"] = is_error
 
 
 async def _acall_agent(
@@ -244,25 +307,56 @@ async def _acall_agent(
 ) -> LLMCallResult:
     """Call Claude Agent SDK and return an LLMCallResult."""
     prompt, options, sdk = _build_agent_options(model, messages, **kwargs)
-    AssistantMessage, _, ResultMessage, TextBlock, query_fn = sdk
+    AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
+    from claude_agent_sdk import ToolResultBlock  # type: ignore[import-untyped]
 
     # Track text per assistant message so we can return only the final one
     all_messages_text: list[list[str]] = []
     current_msg_text: list[str] = []
+    agent_tool_calls: list[dict[str, Any]] = []
+    conversation_trace: list[dict[str, Any]] = []
     result_msg: Any = None
+    # Map tool_use_id → index in agent_tool_calls for pairing results
+    _tool_id_to_idx: dict[str, int] = {}
 
     async def _run() -> None:
         nonlocal result_msg, current_msg_text
         async for message in query_fn(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 current_msg_text = []
+                step: dict[str, Any] = {"role": "assistant", "content": []}
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         current_msg_text.append(block.text)
+                        step["content"].append({"type": "text", "text": block.text})
+                    elif isinstance(block, ToolUseBlock):
+                        tc_record = {
+                            "id": block.id,
+                            "type": "function",
+                            "function": {
+                                "name": block.name,
+                                "arguments": block.input,
+                            },
+                        }
+                        _tool_id_to_idx[block.id] = len(agent_tool_calls)
+                        agent_tool_calls.append(tc_record)
+                        step["content"].append({
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
+                if step["content"]:
+                    conversation_trace.append(step)
                 if current_msg_text:
                     all_messages_text.append(current_msg_text)
             elif isinstance(message, ResultMessage):
                 result_msg = message
+            else:
+                # Capture tool results from UserMessage or ToolResultBlock
+                _capture_tool_result(message, conversation_trace,
+                                     agent_tool_calls, _tool_id_to_idx,
+                                     ToolResultBlock)
 
     if timeout > 0:
         await asyncio.wait_for(_run(), timeout=float(timeout))
@@ -272,7 +366,12 @@ async def _acall_agent(
     # content = last assistant message only; full_text = everything
     last_text = all_messages_text[-1] if all_messages_text else []
     all_text = [t for parts in all_messages_text for t in parts]
-    return _result_from_agent(model, last_text, all_text, result_msg)
+    result = _result_from_agent(model, last_text, all_text, result_msg, agent_tool_calls)
+    result.raw_response = {
+        "result_message": result_msg,
+        "conversation_trace": conversation_trace,
+    }
+    return result
 
 
 def _call_agent(
@@ -307,7 +406,7 @@ async def _acall_agent_structured(
     prompt, options, sdk = _build_agent_options(
         model, messages, output_format=output_format, **kwargs,
     )
-    AssistantMessage, _, ResultMessage, TextBlock, query_fn = sdk
+    AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
 
     text_parts: list[str] = []
     result_msg: Any = None
@@ -394,7 +493,7 @@ class AsyncAgentStream:
             prompt, options, sdk = _build_agent_options(
                 self._model, self._messages, **self._kwargs,
             )
-            AssistantMessage, _, ResultMessage, TextBlock, query_fn = sdk
+            AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
 
             async for message in query_fn(prompt=prompt, options=options):
                 if isinstance(message, AssistantMessage):
