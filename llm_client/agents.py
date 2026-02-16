@@ -184,12 +184,16 @@ def _build_agent_options(
         if key in agent_kw:
             options_kw[key] = agent_kw[key]
 
-    # Allow nested Claude Code sessions: the SDK subprocess inherits env vars,
-    # and CLAUDECODE causes the child to refuse to start. Clear it so the
-    # spawned agent can run even when called from inside Claude Code.
+    # Agent subprocesses need a clean env:
+    # 1. CLAUDECODE causes the child CLI to refuse to start (nested session detection)
+    # 2. Auto-loaded API keys (e.g. ANTHROPIC_API_KEY from ~/.secrets/api_keys.env)
+    #    cause the bundled CLI to use the wrong auth mechanism instead of OAuth.
     env = options_kw.get("env", {})
     if os.environ.get("CLAUDECODE"):
         env.setdefault("CLAUDECODE", "")
+    from llm_client import _auto_loaded_keys
+    for key in _auto_loaded_keys:
+        env.setdefault(key, "")
     if env:
         options_kw["env"] = env
 

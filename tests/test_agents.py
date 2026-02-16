@@ -367,6 +367,7 @@ class TestBuildAgentOptions:
     def test_claudecode_env_stripped_when_set(self, monkeypatch) -> None:
         """CLAUDECODE env var is cleared so nested sessions work."""
         monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setattr("llm_client._auto_loaded_keys", frozenset())
         _, options, _ = _build_agent_options(
             "claude-code", [{"role": "user", "content": "Hi"}],
         )
@@ -376,10 +377,39 @@ class TestBuildAgentOptions:
     def test_claudecode_env_not_added_when_unset(self, monkeypatch) -> None:
         """Don't inject CLAUDECODE env if not already in environment."""
         monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setattr("llm_client._auto_loaded_keys", frozenset())
         _, options, _ = _build_agent_options(
             "claude-code", [{"role": "user", "content": "Hi"}],
         )
         assert "CLAUDECODE" not in options.env
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_auto_loaded_keys_stripped(self, monkeypatch) -> None:
+        """Auto-loaded API keys are cleared from agent subprocess env."""
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setattr(
+            "llm_client._auto_loaded_keys",
+            frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}),
+        )
+        _, options, _ = _build_agent_options(
+            "claude-code", [{"role": "user", "content": "Hi"}],
+        )
+        assert options.env.get("ANTHROPIC_API_KEY") == ""
+        assert options.env.get("OPENAI_API_KEY") == ""
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_auto_loaded_plus_claudecode(self, monkeypatch) -> None:
+        """Both CLAUDECODE and auto-loaded keys are cleared together."""
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setattr(
+            "llm_client._auto_loaded_keys",
+            frozenset({"GEMINI_API_KEY"}),
+        )
+        _, options, _ = _build_agent_options(
+            "claude-code", [{"role": "user", "content": "Hi"}],
+        )
+        assert options.env.get("CLAUDECODE") == ""
+        assert options.env.get("GEMINI_API_KEY") == ""
 
 
 class TestAgentFallback:

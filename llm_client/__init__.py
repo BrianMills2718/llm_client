@@ -34,6 +34,13 @@ _DEFAULT_KEYS_FILE = _Path.home() / ".secrets" / "api_keys.env"
 _log = _logging.getLogger(__name__)
 
 
+# Keys auto-loaded from env file (not already present in os.environ).
+# Agent subprocesses (Claude Code CLI, Codex) should NOT inherit these —
+# they use their own auth and auto-loaded keys like ANTHROPIC_API_KEY
+# cause the bundled CLI to use the wrong auth mechanism.
+_auto_loaded_keys: frozenset[str] = frozenset()
+
+
 def _load_api_keys() -> int:
     """Load API keys from env file into os.environ on import.
 
@@ -41,10 +48,11 @@ def _load_api_keys() -> int:
     Skips comments, empty lines, and keys already set in the environment.
     Returns the number of keys loaded.
     """
+    global _auto_loaded_keys  # noqa: PLW0603
     keys_file = _Path(_os.environ.get("LLM_CLIENT_KEYS_FILE", str(_DEFAULT_KEYS_FILE)))
     if not keys_file.is_file():
         return 0
-    loaded = 0
+    loaded_names: list[str] = []
     for line in keys_file.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -58,10 +66,11 @@ def _load_api_keys() -> int:
         value = value.strip().strip("\"'")
         if key and key not in _os.environ:
             _os.environ[key] = value
-            loaded += 1
-    if loaded:
-        _log.debug("llm_client: loaded %d API keys from %s", loaded, keys_file)
-    return loaded
+            loaded_names.append(key)
+    _auto_loaded_keys = frozenset(loaded_names)
+    if loaded_names:
+        _log.debug("llm_client: loaded %d API keys from %s", len(loaded_names), keys_file)
+    return len(loaded_names)
 
 
 _load_api_keys()
