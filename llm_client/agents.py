@@ -180,7 +180,7 @@ def _build_agent_options(
         options_kw["system_prompt"] = system_prompt
     if output_format is not None:
         options_kw["output_format"] = output_format
-    for key in ("allowed_tools", "cwd", "max_turns", "permission_mode", "max_budget_usd"):
+    for key in ("allowed_tools", "cwd", "max_turns", "permission_mode", "max_budget_usd", "mcp_servers"):
         if key in agent_kw:
             options_kw[key] = agent_kw[key]
 

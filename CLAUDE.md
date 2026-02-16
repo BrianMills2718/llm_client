@@ -464,6 +464,13 @@ result = call_llm("claude-code", messages,
     cwd="/path/to/project",
     max_turns=10,
     max_budget_usd=1.0,
+    mcp_servers={                          # dict of name -> McpServerConfig
+        "my-server": {
+            "command": "/path/to/python",
+            "args": ["-u", "server.py"],
+            "env": {"SOME_VAR": "value"},
+        },
+    },
 )
 
 # Codex SDK kwargs
@@ -494,9 +501,23 @@ result = call_llm("codex", messages,
 
 ### MCP Server Control
 
-By default, Codex CLI loads ALL MCP servers from `~/.codex/config.toml`. For focused tasks, use `mcp_servers` to load only the servers you need:
+Both agent SDKs support `mcp_servers` — dict of `{name: {command, args?, env?}}`:
 
 ```python
+# Claude Code — passes mcp_servers natively to ClaudeAgentOptions
+result = await acall_llm("claude-code", messages,
+    mcp_servers={
+        "digimon-kgrag": {
+            "command": "/path/to/python",
+            "args": ["-u", "digimon_mcp_stdio_server.py"],
+            "env": {"SOME_KEY": "value"},
+        },
+    },
+    cwd="/path/to/project",
+    permission_mode="bypassPermissions",
+)
+
+# Codex — creates temp config.toml with only specified servers
 result = await acall_llm("codex", messages,
     mcp_servers={
         "digimon-kgrag": {
@@ -510,11 +531,9 @@ result = await acall_llm("codex", messages,
 )
 ```
 
-This creates a temporary config with only the specified servers, dramatically reducing context window usage (17 servers = 253k tokens overhead vs 1 server = ~15k).
+For Codex, this creates a temporary config with only the specified servers, dramatically reducing context window usage (17 servers = 253k tokens overhead vs 1 server = ~15k). For Claude Code, `mcp_servers` is passed directly to the SDK's native `ClaudeAgentOptions.mcp_servers`.
 
-**`mcp_servers`** (high-level): Dict of `{name: {command, args?, cwd?, env?}}`. Creates a temp `.codex/config.toml` with only those servers. Cleaned up automatically after the call.
-
-**`codex_home`** (low-level): Path to a directory used as `HOME` — Codex reads `$HOME/.codex/config.toml`. Mutually exclusive with `mcp_servers`.
+**`codex_home`** (low-level, Codex only): Path to a directory used as `HOME` — Codex reads `$HOME/.codex/config.toml`. Mutually exclusive with `mcp_servers`.
 
 ### Agent Capabilities
 
@@ -583,6 +602,29 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export GEMINI_API_KEY=...
 export OPENROUTER_API_KEY=sk-or-...
 ```
+
+## I/O Logging
+
+Every `call_llm` / `acall_llm` call is logged to JSONL. Enabled by default.
+
+**Output**: `{DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/calls.jsonl`
+
+**Env vars**:
+- `LLM_CLIENT_LOG_ENABLED` — `"1"` (default) or `"0"` to disable
+- `LLM_CLIENT_DATA_ROOT` — base dir (default: `~/projects/data`)
+- `LLM_CLIENT_PROJECT` — project name (default: `basename(os.getcwd())`)
+
+**Runtime config**:
+```python
+from llm_client import configure_logging
+configure_logging(enabled=False)                    # disable
+configure_logging(project="my_project")             # override project name
+configure_logging(data_root="/tmp/llm_logs")        # override data root
+```
+
+Each JSONL record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`.
+
+Logging never raises — failures are silently dropped to avoid breaking LLM calls.
 
 ## Tests
 

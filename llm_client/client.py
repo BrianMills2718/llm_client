@@ -58,6 +58,8 @@ from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
 import litellm
 from pydantic import BaseModel
 
+from llm_client import io_log as _io_log
+
 from llm_client.errors import wrap_error
 
 logger = logging.getLogger(__name__)
@@ -472,10 +474,15 @@ class LLMStream:
         print(stream.result.usage)
     """
 
-    def __init__(self, response_iter: Any, model: str, hooks: Hooks | None = None) -> None:
+    def __init__(
+        self, response_iter: Any, model: str, hooks: Hooks | None = None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> None:
         self._iter = response_iter
         self._model = model
         self._hooks = hooks
+        self._messages = messages
+        self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
         self._result: LLMCallResult | None = None
@@ -524,6 +531,7 @@ class LLMStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
+        _io_log.log_call(model=self._model, messages=self._messages, result=self._result, latency_s=time.monotonic() - self._t0, caller="stream_llm")
 
     @property
     def result(self) -> LLMCallResult:
@@ -545,10 +553,15 @@ class AsyncLLMStream:
         print(stream.result.usage)
     """
 
-    def __init__(self, response_iter: Any, model: str, hooks: Hooks | None = None) -> None:
+    def __init__(
+        self, response_iter: Any, model: str, hooks: Hooks | None = None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> None:
         self._iter = response_iter
         self._model = model
         self._hooks = hooks
+        self._messages = messages
+        self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
         self._result: LLMCallResult | None = None
@@ -597,6 +610,7 @@ class AsyncLLMStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
+        _io_log.log_call(model=self._model, messages=self._messages, result=self._result, latency_s=time.monotonic() - self._t0, caller="astream_llm")
 
     @property
     def result(self) -> LLMCallResult:
@@ -1239,6 +1253,7 @@ def call_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    _log_t0 = time.monotonic()
 
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
@@ -1249,9 +1264,11 @@ def call_llm(
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
-        return _run_sync(_acall_with_mcp(
+        result = _run_sync(_acall_with_mcp(
             model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
         ))
+        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm")
+        return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
@@ -1314,6 +1331,7 @@ def call_llm(
                         hooks.after_call(result)
                     if cache is not None:
                         cache.set(key, result)
+                    _io_log.log_call(model=current_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm")
                     return result
                 except Exception as e:
                     last_error = e
@@ -1343,6 +1361,7 @@ def call_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
+            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="call_llm")
             raise wrap_error(e) from e
 
     raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -1391,6 +1410,7 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    _log_t0 = time.monotonic()
     if _is_agent_model(model):
         from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
@@ -1400,6 +1420,7 @@ def call_llm_structured(
         )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
+        _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured")
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
@@ -1459,6 +1480,7 @@ def call_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             cache.set(key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         last_error = e
@@ -1522,6 +1544,7 @@ def call_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             cache.set(key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         if _is_schema_error(e):
@@ -1590,6 +1613,7 @@ def call_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             cache.set(key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         last_error = e
@@ -1619,6 +1643,7 @@ def call_llm_structured(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
+            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured")
             raise wrap_error(e) from e
 
     raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -1734,6 +1759,7 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    _log_t0 = time.monotonic()
 
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
@@ -1743,9 +1769,11 @@ async def acall_llm(
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
-        return await _acall_with_mcp(
+        result = await _acall_with_mcp(
             model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
         )
+        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm")
+        return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
@@ -1808,6 +1836,7 @@ async def acall_llm(
                         hooks.after_call(result)
                     if cache is not None:
                         await _async_cache_set(cache, key, result)
+                    _io_log.log_call(model=current_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm")
                     return result
                 except Exception as e:
                     last_error = e
@@ -1837,6 +1866,7 @@ async def acall_llm(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
+            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="acall_llm")
             raise wrap_error(e) from e
 
     raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -1885,6 +1915,7 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    _log_t0 = time.monotonic()
     if _is_agent_model(model):
         from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
@@ -1894,6 +1925,7 @@ async def acall_llm_structured(
         )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
+        _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured")
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
@@ -1953,6 +1985,7 @@ async def acall_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             await _async_cache_set(cache, key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         last_error = e
@@ -2016,6 +2049,7 @@ async def acall_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             await _async_cache_set(cache, key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         if _is_schema_error(e):
@@ -2084,6 +2118,7 @@ async def acall_llm_structured(
                             hooks.after_call(llm_result)
                         if cache is not None:
                             await _async_cache_set(cache, key, llm_result)
+                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured")
                         return parsed, llm_result
                     except Exception as e:
                         last_error = e
@@ -2113,6 +2148,7 @@ async def acall_llm_structured(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
                 continue
+            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured")
             raise wrap_error(e) from e
 
     raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -2542,7 +2578,7 @@ def stream_llm(
                     response = litellm.completion(**call_kwargs)
                     if attempt > 0:
                         logger.info("stream_llm succeeded after %d retries", attempt)
-                    return LLMStream(response, current_model, hooks=hooks)
+                    return LLMStream(response, current_model, hooks=hooks, messages=messages)
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
@@ -2627,7 +2663,7 @@ async def astream_llm(
                     response = await litellm.acompletion(**call_kwargs)
                     if attempt > 0:
                         logger.info("astream_llm succeeded after %d retries", attempt)
-                    return AsyncLLMStream(response, current_model, hooks=hooks)
+                    return AsyncLLMStream(response, current_model, hooks=hooks, messages=messages)
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:

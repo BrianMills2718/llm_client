@@ -87,6 +87,7 @@ from llm_client.errors import (
     wrap_error,
 )
 
+from llm_client.io_log import configure as configure_logging
 from llm_client.prompts import render_prompt
 
 from llm_client.mcp_agent import (
@@ -174,6 +175,7 @@ __all__ = [
     "linear_backoff",
     "stream_llm",
     "stream_llm_with_tools",
+    "configure_logging",
     "render_prompt",
     "strip_fences",
 ]
