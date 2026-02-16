@@ -203,11 +203,19 @@ def _build_agent_options(
 
 def _result_from_agent(
     model: str,
-    text_parts: list[str],
+    last_message_text: list[str],
+    all_text: list[str],
     result_msg: Any,
 ) -> LLMCallResult:
-    """Build LLMCallResult from collected agent output."""
-    content = "\n".join(text_parts) if text_parts else ""
+    """Build LLMCallResult from collected agent output.
+
+    Args:
+        last_message_text: Text blocks from the final assistant message only.
+        all_text: Text blocks from ALL assistant messages (full conversation).
+        result_msg: The ResultMessage from the SDK.
+    """
+    content = "\n".join(last_message_text) if last_message_text else ""
+    full_text = "\n".join(all_text) if all_text else ""
     cost = (
         result_msg.total_cost_usd
         if result_msg and result_msg.total_cost_usd is not None
@@ -223,6 +231,7 @@ def _result_from_agent(
         model=model,
         finish_reason="error" if is_error else "stop",
         raw_response=result_msg,
+        full_text=full_text if full_text != content else None,
     )
 
 
@@ -237,16 +246,21 @@ async def _acall_agent(
     prompt, options, sdk = _build_agent_options(model, messages, **kwargs)
     AssistantMessage, _, ResultMessage, TextBlock, query_fn = sdk
 
-    text_parts: list[str] = []
+    # Track text per assistant message so we can return only the final one
+    all_messages_text: list[list[str]] = []
+    current_msg_text: list[str] = []
     result_msg: Any = None
 
     async def _run() -> None:
-        nonlocal result_msg
+        nonlocal result_msg, current_msg_text
         async for message in query_fn(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
+                current_msg_text = []
                 for block in message.content:
                     if isinstance(block, TextBlock):
-                        text_parts.append(block.text)
+                        current_msg_text.append(block.text)
+                if current_msg_text:
+                    all_messages_text.append(current_msg_text)
             elif isinstance(message, ResultMessage):
                 result_msg = message
 
@@ -255,7 +269,10 @@ async def _acall_agent(
     else:
         await _run()
 
-    return _result_from_agent(model, text_parts, result_msg)
+    # content = last assistant message only; full_text = everything
+    last_text = all_messages_text[-1] if all_messages_text else []
+    all_text = [t for parts in all_messages_text for t in parts]
+    return _result_from_agent(model, last_text, all_text, result_msg)
 
 
 def _call_agent(
@@ -322,7 +339,7 @@ async def _acall_agent_structured(
 
     validated = response_model.model_validate(parsed_data)
 
-    llm_result = _result_from_agent(model, text_parts, result_msg)
+    llm_result = _result_from_agent(model, text_parts, text_parts, result_msg)
     # Override content with the validated JSON for consistency
     llm_result.content = validated.model_dump_json()
 
@@ -412,7 +429,7 @@ class AsyncAgentStream:
 
     def _finalize(self) -> None:
         self._result = _result_from_agent(
-            self._model, self._text_parts, self._result_msg,
+            self._model, self._text_parts, self._text_parts, self._result_msg,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)

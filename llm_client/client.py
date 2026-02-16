@@ -99,6 +99,10 @@ class LLMCallResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
     raw_response: Any = field(default=None, repr=False)
+    full_text: str | None = field(default=None, repr=False)
+    """For agent SDKs: full conversation text (all assistant messages).
+    ``content`` holds only the final assistant message.
+    None for non-agent calls."""
 
 
 @dataclass
