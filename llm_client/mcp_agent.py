@@ -63,6 +63,13 @@ MCP_LOOP_KWARGS = frozenset({
     "tool_result_max_length",
 })
 
+# Kwargs consumed by the direct tool loop
+TOOL_LOOP_KWARGS = frozenset({
+    "python_tools",
+    "max_turns",
+    "tool_result_max_length",
+})
+
 
 # ---------------------------------------------------------------------------
 # Data
@@ -395,9 +402,14 @@ async def _acall_with_mcp(
         if not openai_tools:
             raise ValueError("MCPSessionPool has no tools — was it entered as context manager?")
 
+        async def _mcp_executor(
+            tool_calls: list[dict[str, Any]], max_len: int,
+        ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
+            return await _execute_tool_calls(tool_calls, sessions, tool_to_server, max_len)
+
         final_content, final_finish_reason = await _agent_loop(
-            model, messages, sessions, tool_to_server, openai_tools,
-            agent_result, max_turns, tool_result_max_length, timeout, kwargs,
+            model, messages, openai_tools,
+            agent_result, _mcp_executor, max_turns, tool_result_max_length, timeout, kwargs,
         )
         total_cost = sum(r.latency_s for r in agent_result.tool_calls)  # placeholder; real cost tracked below
 
@@ -413,9 +425,14 @@ async def _acall_with_mcp(
                     f"No tools discovered from MCP servers: {list(mcp_servers.keys())}"
                 )
 
+            async def _mcp_executor(
+                tool_calls: list[dict[str, Any]], max_len: int,
+            ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
+                return await _execute_tool_calls(tool_calls, sessions, tool_to_server, max_len)
+
             final_content, final_finish_reason = await _agent_loop(
-                model, messages, sessions, tool_to_server, openai_tools,
-                agent_result, max_turns, tool_result_max_length, timeout, kwargs,
+                model, messages, openai_tools,
+                agent_result, _mcp_executor, max_turns, tool_result_max_length, timeout, kwargs,
             )
     else:
         raise ValueError("Either mcp_servers or mcp_sessions must be provided")
@@ -440,16 +457,20 @@ async def _acall_with_mcp(
 async def _agent_loop(
     model: str,
     messages: list[dict[str, Any]],
-    sessions: dict[str, Any],
-    tool_to_server: dict[str, str],
     openai_tools: list[dict[str, Any]],
     agent_result: MCPAgentResult,
+    executor: Any,  # Callable[[list, int], Awaitable[tuple[list[MCPToolCallRecord], list[dict]]]]
     max_turns: int,
     tool_result_max_length: int,
     timeout: int,
     kwargs: dict[str, Any],
 ) -> tuple[str, str]:
-    """Core agent loop shared by both per-call and session-pool paths.
+    """Core agent loop shared by MCP, direct-tool, and session-pool paths.
+
+    Args:
+        executor: async callable (tool_calls, max_result_length) -> (records, tool_messages).
+            For MCP: wraps _execute_tool_calls with bound sessions.
+            For direct tools: wraps execute_direct_tool_calls with bound tool_map.
 
     Returns (final_content, final_finish_reason).
     """
@@ -504,10 +525,8 @@ async def _agent_loop(
             ],
         })
 
-        # Execute tool calls
-        records, tool_messages = await _execute_tool_calls(
-            result.tool_calls, sessions, tool_to_server, tool_result_max_length,
-        )
+        # Execute tool calls via executor
+        records, tool_messages = await executor(result.tool_calls, tool_result_max_length)
         agent_result.tool_calls.extend(records)
         messages.extend(tool_messages)
 
@@ -520,13 +539,13 @@ async def _agent_loop(
             })
 
         logger.debug(
-            "MCP agent turn %d/%d: %d tool calls",
+            "Agent turn %d/%d: %d tool calls",
             turn + 1, max_turns, len(result.tool_calls),
         )
     else:
         # max_turns exhausted — one final call without tools to get an answer
         logger.warning(
-            "MCP agent loop exhausted max_turns=%d, forcing final answer",
+            "Agent loop exhausted max_turns=%d, forcing final answer",
             max_turns,
         )
         final_result = await _inner_acall_llm(
@@ -548,3 +567,68 @@ async def _agent_loop(
 
     agent_result.metadata["total_cost"] = total_cost
     return final_content, final_finish_reason
+
+
+# ---------------------------------------------------------------------------
+# Direct Python Tool Loop
+# ---------------------------------------------------------------------------
+
+
+async def _acall_with_tools(
+    model: str,
+    messages: list[dict[str, Any]],
+    python_tools: list[Any],
+    *,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    timeout: int = 60,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Run a tool-calling agent loop with direct Python functions.
+
+    Same loop as _acall_with_mcp but calls Python functions in-process
+    instead of going through MCP subprocess/stdio/JSON-RPC.
+
+    Args:
+        model: Any litellm model string (NOT an agent model).
+        messages: Initial messages (system + user).
+        python_tools: List of typed Python callables (sync or async).
+        max_turns: Maximum loop iterations.
+        tool_result_max_length: Max chars per tool result.
+        timeout: Per-turn LLM call timeout.
+        **kwargs: Passed through to acall_llm.
+    """
+    from llm_client.tool_utils import execute_direct_tool_calls, prepare_direct_tools
+
+    tool_map, openai_tools = prepare_direct_tools(python_tools)
+
+    if not openai_tools:
+        raise ValueError("python_tools list is empty — no tools to call.")
+
+    agent_result = MCPAgentResult()
+    messages = list(messages)  # don't mutate caller's list
+
+    async def _direct_executor(
+        tool_calls: list[dict[str, Any]], max_len: int,
+    ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
+        return await execute_direct_tool_calls(tool_calls, tool_map, max_len)
+
+    final_content, final_finish_reason = await _agent_loop(
+        model, messages, openai_tools,
+        agent_result, _direct_executor, max_turns, tool_result_max_length, timeout, kwargs,
+    )
+
+    return LLMCallResult(
+        content=final_content,
+        usage={
+            "input_tokens": agent_result.total_input_tokens,
+            "output_tokens": agent_result.total_output_tokens,
+            "total_tokens": (
+                agent_result.total_input_tokens + agent_result.total_output_tokens
+            ),
+        },
+        cost=agent_result.metadata.get("total_cost", 0.0),
+        model=model,
+        finish_reason=final_finish_reason,
+        raw_response=agent_result,
+    )

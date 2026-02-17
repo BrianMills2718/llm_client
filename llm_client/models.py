@@ -371,10 +371,10 @@ def query_performance(
     model: str | None = None,
     days: int = 30,
 ) -> list[dict[str, Any]]:
-    """Query performance stats from I/O logs.
+    """Query performance stats from the observability DB.
 
-    Reads ``calls.jsonl`` from the io_log data directory, groups by
-    (task, model), and returns aggregate stats.
+    Uses SQLite for fast aggregation. Falls back to JSONL parsing if the
+    DB doesn't exist yet (backward compat).
 
     Args:
         task: Filter to this task category (None = all).
@@ -385,6 +385,77 @@ def query_performance(
         List of dicts with: task, model, call_count, total_cost,
         avg_latency_s, error_rate, avg_tokens.
     """
+    # Try SQL first (fast). If SQL returns results, use them.
+    # If SQL returns empty or fails, fall back to JSONL (handles migration period
+    # where historical data may only exist in JSONL files).
+    try:
+        sql_result = _query_performance_sql(task=task, model=model, days=days)
+        if sql_result:
+            return sql_result
+    except Exception:
+        logger.debug("SQL query_performance failed, falling back to JSONL", exc_info=True)
+    return _query_performance_jsonl(task=task, model=model, days=days)
+
+
+def _query_performance_sql(
+    *,
+    task: str | None = None,
+    model: str | None = None,
+    days: int = 30,
+) -> list[dict[str, Any]]:
+    """SQL-backed performance query."""
+    from llm_client.io_log import _get_db
+
+    cutoff = datetime.now(timezone.utc).isoformat()[:10]  # date only for rough cutoff
+    cutoff_dt = datetime.now(timezone.utc).timestamp() - (days * 86400)
+    cutoff_iso = datetime.fromtimestamp(cutoff_dt, tz=timezone.utc).isoformat()
+
+    db = _get_db()
+    sql = """
+        SELECT
+            COALESCE(task, 'untagged') as task,
+            model,
+            COUNT(*) as call_count,
+            ROUND(COALESCE(SUM(cost), 0), 4) as total_cost,
+            ROUND(COALESCE(AVG(latency_s), 0), 3) as avg_latency_s,
+            ROUND(CAST(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS REAL) / COUNT(*), 3) as error_rate,
+            ROUND(COALESCE(AVG(total_tokens), 0)) as avg_tokens
+        FROM llm_calls
+        WHERE timestamp >= ?
+    """
+    params: list[Any] = [cutoff_iso]
+
+    if task is not None:
+        sql += " AND COALESCE(task, 'untagged') = ?"
+        params.append(task)
+    if model is not None:
+        sql += " AND model = ?"
+        params.append(model)
+
+    sql += " GROUP BY COALESCE(task, 'untagged'), model ORDER BY task, model"
+
+    rows = db.execute(sql, params).fetchall()
+    return [
+        {
+            "task": row[0],
+            "model": row[1],
+            "call_count": row[2],
+            "total_cost": row[3],
+            "avg_latency_s": row[4],
+            "error_rate": row[5],
+            "avg_tokens": int(row[6]),
+        }
+        for row in rows
+    ]
+
+
+def _query_performance_jsonl(
+    *,
+    task: str | None = None,
+    model: str | None = None,
+    days: int = 30,
+) -> list[dict[str, Any]]:
+    """Legacy JSONL-based performance query (fallback)."""
     from llm_client.io_log import _log_dir
 
     log_file = _log_dir() / "calls.jsonl"
@@ -402,7 +473,6 @@ def query_performance(
         except json.JSONDecodeError:
             continue
 
-        # Parse timestamp
         ts_str = record.get("timestamp", "")
         try:
             ts = datetime.fromisoformat(ts_str).timestamp()

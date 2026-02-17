@@ -88,6 +88,7 @@ from llm_client.errors import (
 )
 
 from llm_client.io_log import configure as configure_logging
+from llm_client.io_log import import_jsonl, log_embedding
 from llm_client.models import (
     ModelInfo,
     TaskProfile,
@@ -132,6 +133,11 @@ from llm_client.mcp_agent import (
     MCPAgentResult,
     MCPSessionPool,
     MCPToolCallRecord,
+)
+
+from llm_client.tool_utils import (
+    callable_to_openai_tool,
+    prepare_direct_tools,
 )
 
 from llm_client.client import (
@@ -211,6 +217,8 @@ __all__ = [
     "stream_llm",
     "stream_llm_with_tools",
     "configure_logging",
+    "import_jsonl",
+    "log_embedding",
     "render_prompt",
     "strip_fences",
     "ModelInfo",
@@ -247,4 +255,7 @@ __all__ = [
     "analyze_history",
     "analyze_run",
     "check_scorer_reliability",
+    # tool_utils
+    "callable_to_openai_tool",
+    "prepare_direct_tools",
 ]

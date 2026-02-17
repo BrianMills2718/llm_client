@@ -159,6 +159,20 @@ class TestListModels:
 
 
 class TestQueryPerformance:
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path):
+        """Isolate SQLite DB so tests don't hit production data."""
+        from llm_client import io_log
+        old_db_path = io_log._db_path
+        old_db_conn = io_log._db_conn
+        io_log._db_path = tmp_path / "test_perf.db"
+        io_log._db_conn = None
+        yield
+        if io_log._db_conn is not None:
+            io_log._db_conn.close()
+        io_log._db_path = old_db_path
+        io_log._db_conn = old_db_conn
+
     def test_empty_when_no_log_file(self):
         with patch("llm_client.io_log._log_dir", return_value=Path("/tmp/nonexistent_dir_xyz")):
             result = query_performance()
