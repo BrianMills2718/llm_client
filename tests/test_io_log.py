@@ -1,0 +1,342 @@
+"""Tests for llm_client.io_log — JSONL logging, embedding logging, SQLite DB."""
+
+import json
+import sqlite3
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from llm_client import io_log
+
+
+@pytest.fixture(autouse=True)
+def _isolate_io_log(tmp_path):
+    """Isolate io_log state per test — temp dirs, fresh DB."""
+    old_enabled = io_log._enabled
+    old_root = io_log._data_root
+    old_project = io_log._project
+    old_db_path = io_log._db_path
+    old_db_conn = io_log._db_conn
+
+    io_log._enabled = True
+    io_log._data_root = tmp_path
+    io_log._project = "test_project"
+    io_log._db_path = tmp_path / "test.db"
+    io_log._db_conn = None
+
+    yield tmp_path
+
+    io_log._enabled = old_enabled
+    io_log._data_root = old_root
+    io_log._project = old_project
+    io_log._db_path = old_db_path
+    if io_log._db_conn is not None:
+        io_log._db_conn.close()
+    io_log._db_conn = old_db_conn
+
+
+# ---------------------------------------------------------------------------
+# log_call
+# ---------------------------------------------------------------------------
+
+
+class TestLogCall:
+    def test_writes_jsonl(self, tmp_path):
+        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "total_tokens": 20}, cost=0.001, finish_reason="stop")
+        io_log.log_call(model="gpt-5", result=result, latency_s=1.5, task="test_task")
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        assert log_file.exists()
+        record = json.loads(log_file.read_text().strip())
+        assert record["model"] == "gpt-5"
+        assert record["cost"] == 0.001
+        assert record["task"] == "test_task"
+        assert record["latency_s"] == 1.5
+
+    def test_writes_sqlite(self, tmp_path):
+        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, cost=0.002, finish_reason="stop")
+        io_log.log_call(model="gpt-5", result=result, latency_s=2.0, task="sql_test")
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT model, cost, task, prompt_tokens, total_tokens FROM llm_calls").fetchone()
+        assert row is not None
+        assert row[0] == "gpt-5"
+        assert row[1] == 0.002
+        assert row[2] == "sql_test"
+        assert row[3] == 10
+        assert row[4] == 15
+        db.close()
+
+    def test_disabled_skips_logging(self, tmp_path):
+        io_log._enabled = False
+        io_log.log_call(model="gpt-5", latency_s=1.0)
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        assert not log_file.exists()
+
+    def test_trace_id_jsonl(self, tmp_path):
+        result = MagicMock(content="hi", usage={}, cost=0.0, finish_reason="stop")
+        io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_abc")
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["trace_id"] == "trace_abc"
+
+    def test_trace_id_sqlite(self, tmp_path):
+        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_xyz")
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT trace_id FROM llm_calls").fetchone()
+        assert row[0] == "trace_xyz"
+        db.close()
+
+    def test_error_logged(self, tmp_path):
+        io_log.log_call(model="gpt-5", error=ValueError("boom"), latency_s=0.5)
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["error"] == "boom"
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT error FROM llm_calls").fetchone()
+        assert row[0] == "boom"
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# log_embedding
+# ---------------------------------------------------------------------------
+
+
+class TestLogEmbedding:
+    def test_writes_jsonl(self, tmp_path):
+        io_log.log_embedding(
+            model="text-embedding-3-small",
+            input_count=5,
+            input_chars=1000,
+            dimensions=1024,
+            usage={"prompt_tokens": 200, "total_tokens": 200},
+            cost=0.0004,
+            latency_s=0.8,
+            task="vdb_build",
+        )
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        assert log_file.exists()
+        record = json.loads(log_file.read_text().strip())
+        assert record["model"] == "text-embedding-3-small"
+        assert record["input_count"] == 5
+        assert record["input_chars"] == 1000
+        assert record["dimensions"] == 1024
+        assert record["cost"] == 0.0004
+        assert record["task"] == "vdb_build"
+        assert record["caller"] == "embed"
+
+    def test_writes_sqlite(self, tmp_path):
+        io_log.log_embedding(
+            model="text-embedding-3-small",
+            input_count=10,
+            input_chars=5000,
+            dimensions=256,
+            usage={"prompt_tokens": 500, "total_tokens": 500},
+            cost=0.001,
+            latency_s=1.2,
+            caller="aembed",
+            task="search",
+        )
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT model, input_count, input_chars, dimensions, prompt_tokens, cost, caller, task FROM embeddings"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "text-embedding-3-small"
+        assert row[1] == 10
+        assert row[2] == 5000
+        assert row[3] == 256
+        assert row[4] == 500
+        assert row[5] == 0.001
+        assert row[6] == "aembed"
+        assert row[7] == "search"
+        db.close()
+
+    def test_trace_id_embedding_jsonl(self, tmp_path):
+        io_log.log_embedding(
+            model="text-embedding-3-small", input_count=1, input_chars=50,
+            dimensions=256, usage={}, cost=0.0, latency_s=0.1, trace_id="emb_trace_1",
+        )
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["trace_id"] == "emb_trace_1"
+
+    def test_trace_id_embedding_sqlite(self, tmp_path):
+        io_log.log_embedding(
+            model="text-embedding-3-small", input_count=1, input_chars=50,
+            dimensions=256, usage={"prompt_tokens": 10}, cost=0.0, latency_s=0.1, trace_id="emb_trace_2",
+        )
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT trace_id FROM embeddings").fetchone()
+        assert row[0] == "emb_trace_2"
+        db.close()
+
+    def test_error_embedding(self, tmp_path):
+        io_log.log_embedding(
+            model="text-embedding-3-small",
+            input_count=1,
+            input_chars=100,
+            error=RuntimeError("timeout"),
+            latency_s=5.0,
+        )
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["error"] == "timeout"
+        assert record["dimensions"] is None
+
+    def test_disabled_skips(self, tmp_path):
+        io_log._enabled = False
+        io_log.log_embedding(model="x", input_count=1, input_chars=10)
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        assert not log_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# SQLite DB
+# ---------------------------------------------------------------------------
+
+
+class TestSQLiteDB:
+    def test_get_db_creates_tables(self, tmp_path):
+        db = io_log._get_db()
+        tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        table_names = {t[0] for t in tables}
+        assert "llm_calls" in table_names
+        assert "embeddings" in table_names
+
+    def test_get_db_singleton(self, tmp_path):
+        db1 = io_log._get_db()
+        db2 = io_log._get_db()
+        assert db1 is db2
+
+    def test_indexes_created(self, tmp_path):
+        db = io_log._get_db()
+        indexes = db.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+        idx_names = {i[0] for i in indexes}
+        assert "idx_calls_timestamp" in idx_names
+        assert "idx_calls_model" in idx_names
+        assert "idx_calls_trace_id" in idx_names
+        assert "idx_emb_task" in idx_names
+        assert "idx_emb_project" in idx_names
+        assert "idx_emb_trace_id" in idx_names
+
+    def test_migrate_adds_trace_id(self, tmp_path):
+        """Migration adds trace_id to a DB created without it."""
+        # Create a DB with old schema (has all columns except trace_id)
+        old_db_path = tmp_path / "old.db"
+        old_conn = sqlite3.connect(str(old_db_path))
+        old_conn.executescript("""
+            CREATE TABLE llm_calls (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, project TEXT,
+                model TEXT NOT NULL, messages TEXT, response TEXT,
+                prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
+                cost REAL, finish_reason TEXT, latency_s REAL, error TEXT, caller TEXT, task TEXT
+            );
+            CREATE TABLE embeddings (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, project TEXT,
+                model TEXT NOT NULL, input_count INTEGER, input_chars INTEGER, dimensions INTEGER,
+                prompt_tokens INTEGER, total_tokens INTEGER, cost REAL, latency_s REAL,
+                error TEXT, caller TEXT, task TEXT
+            );
+        """)
+        old_conn.close()
+
+        # Point io_log at the old DB and trigger migration
+        io_log._db_path = old_db_path
+        io_log._db_conn = None
+        db = io_log._get_db()
+
+        # Verify trace_id column was added
+        for table in ("llm_calls", "embeddings"):
+            cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
+            assert "trace_id" in cols
+
+
+# ---------------------------------------------------------------------------
+# import_jsonl
+# ---------------------------------------------------------------------------
+
+
+class TestImportJsonl:
+    def test_import_calls(self, tmp_path):
+        # Create a fake calls.jsonl
+        data_dir = tmp_path / "myproj" / "myproj_llm_client_data"
+        data_dir.mkdir(parents=True)
+        jsonl_file = data_dir / "calls.jsonl"
+        records = [
+            {"timestamp": "2026-02-16T12:00:00+00:00", "model": "gpt-5", "usage": {"prompt_tokens": 10, "total_tokens": 20}, "cost": 0.01, "task": "test"},
+            {"timestamp": "2026-02-16T12:01:00+00:00", "model": "gemini-3", "usage": {}, "cost": 0.005, "task": None},
+        ]
+        jsonl_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+        count = io_log.import_jsonl(jsonl_file, table="llm_calls")
+        assert count == 2
+
+        db = io_log._get_db()
+        rows = db.execute("SELECT model, project FROM llm_calls ORDER BY model").fetchall()
+        assert len(rows) == 2
+        # Project inferred from path
+        assert rows[0][1] == "myproj"
+
+    def test_import_embeddings(self, tmp_path):
+        data_dir = tmp_path / "proj" / "proj_llm_client_data"
+        data_dir.mkdir(parents=True)
+        jsonl_file = data_dir / "embeddings.jsonl"
+        records = [
+            {"timestamp": "2026-02-16T12:00:00+00:00", "model": "text-embedding-3-small", "input_count": 5, "input_chars": 1000, "dimensions": 1024, "usage": {"prompt_tokens": 200}, "cost": 0.0004, "task": "vdb"},
+        ]
+        jsonl_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+        count = io_log.import_jsonl(jsonl_file, table="embeddings")
+        assert count == 1
+
+        db = io_log._get_db()
+        row = db.execute("SELECT model, input_count, dimensions, project FROM embeddings").fetchone()
+        assert row[0] == "text-embedding-3-small"
+        assert row[1] == 5
+        assert row[2] == 1024
+        assert row[3] == "proj"
+
+    def test_import_bad_table_raises(self, tmp_path):
+        f = tmp_path / "x.jsonl"
+        f.write_text("{}\n")
+        with pytest.raises(ValueError, match="table must be"):
+            io_log.import_jsonl(f, table="bad")
+
+    def test_import_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            io_log.import_jsonl(tmp_path / "nonexistent.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# configure
+# ---------------------------------------------------------------------------
+
+
+class TestConfigure:
+    def test_configure_db_path(self, tmp_path):
+        new_db = tmp_path / "custom.db"
+        io_log.configure(db_path=new_db)
+        assert io_log._db_path == new_db
+
+    def test_configure_closes_old_conn(self, tmp_path):
+        # Force a connection
+        _ = io_log._get_db()
+        assert io_log._db_conn is not None
+        old_conn = io_log._db_conn
+
+        new_db = tmp_path / "new.db"
+        io_log.configure(db_path=new_db)
+        assert io_log._db_conn is None

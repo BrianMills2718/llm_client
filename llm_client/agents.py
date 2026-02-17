@@ -26,6 +26,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -482,9 +483,12 @@ class AsyncAgentStream:
         self._result_msg: Any = None
         self._result: LLMCallResult | None = None
         self._queue: asyncio.Queue[str | None | Exception] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
+        self._task_handle: asyncio.Task[None] | None = None
         self._timeout = timeout
         self._messages = messages
+        self._log_task = kwargs.pop("task", None)
+        self._trace_id = kwargs.pop("trace_id", None)
+        self._t0 = time.monotonic()
         self._kwargs = kwargs
 
     async def _produce(self) -> None:
@@ -509,8 +513,8 @@ class AsyncAgentStream:
             await self._queue.put(e)
 
     async def _ensure_started(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._produce())
+        if self._task_handle is None:
+            self._task_handle = asyncio.create_task(self._produce())
 
     def __aiter__(self) -> AsyncAgentStream:
         return self
@@ -532,6 +536,12 @@ class AsyncAgentStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
+        from llm_client import io_log as _io_log
+        _io_log.log_call(
+            model=self._model, messages=self._messages, result=self._result,
+            latency_s=time.monotonic() - self._t0,
+            caller="astream_agent", task=self._log_task, trace_id=self._trace_id,
+        )
 
     @property
     def result(self) -> LLMCallResult:
@@ -1036,9 +1046,12 @@ class AsyncCodexStream:
         self._usage: Any = None
         self._result: LLMCallResult | None = None
         self._queue: asyncio.Queue[str | None | Exception] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
+        self._task_handle: asyncio.Task[None] | None = None
         self._timeout = timeout
         self._messages = messages
+        self._log_task = kwargs.pop("task", None)
+        self._trace_id = kwargs.pop("trace_id", None)
+        self._t0 = time.monotonic()
         self._kwargs, self._tmp_dir = _prepare_codex_mcp(kwargs)
 
     async def _produce(self) -> None:
@@ -1070,8 +1083,8 @@ class AsyncCodexStream:
             await self._queue.put(e)
 
     async def _ensure_started(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._produce())
+        if self._task_handle is None:
+            self._task_handle = asyncio.create_task(self._produce())
 
     def __aiter__(self) -> AsyncCodexStream:
         return self
@@ -1094,6 +1107,12 @@ class AsyncCodexStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
+        from llm_client import io_log as _io_log
+        _io_log.log_call(
+            model=self._model, messages=self._messages, result=self._result,
+            latency_s=time.monotonic() - self._t0,
+            caller="astream_codex", task=self._log_task, trace_id=self._trace_id,
+        )
         _cleanup_tmp(self._tmp_dir)
 
     @property

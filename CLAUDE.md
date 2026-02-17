@@ -605,14 +605,17 @@ export OPENROUTER_API_KEY=sk-or-...
 
 ## I/O Logging
 
-Every `call_llm` / `acall_llm` call is logged to JSONL. Enabled by default.
+Every `call_llm` / `acall_llm` / `embed` / `aembed` call is dual-written to JSONL + SQLite. Enabled by default.
 
-**Output**: `{DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/calls.jsonl`
+**Output**:
+- JSONL: `{DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/calls.jsonl` (+ `embeddings.jsonl`)
+- SQLite: `LLM_CLIENT_DB_PATH` (default: `~/projects/data/llm_observability.db`)
 
 **Env vars**:
 - `LLM_CLIENT_LOG_ENABLED` — `"1"` (default) or `"0"` to disable
 - `LLM_CLIENT_DATA_ROOT` — base dir (default: `~/projects/data`)
 - `LLM_CLIENT_PROJECT` — project name (default: `basename(os.getcwd())`)
+- `LLM_CLIENT_DB_PATH` — SQLite DB path (default: `~/projects/data/llm_observability.db`)
 
 **Runtime config**:
 ```python
@@ -622,11 +625,30 @@ configure_logging(project="my_project")             # override project name
 configure_logging(data_root="/tmp/llm_logs")        # override data root
 ```
 
-Each JSONL record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`, `task`.
+Each record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`, `task`, `trace_id`.
 
-Pass `task="extraction"` (or any task name) to `call_llm` / `acall_llm` / `call_llm_structured` / etc. to tag log records for performance tracking.
+Pass `task="extraction"` to tag log records for performance tracking. Pass `trace_id="my_trace_123"` to correlate all LLM/embedding calls within a single query or pipeline run.
 
 Logging never raises — failures are silently dropped to avoid breaking LLM calls.
+
+### Cost Dashboard CLI
+
+```bash
+python -m llm_client cost                          # group by project,model
+python -m llm_client cost --group-by project       # project totals
+python -m llm_client cost --group-by task,model    # task breakdown
+python -m llm_client cost --project myproj --days 7
+python -m llm_client cost --trace-id "basic_local_abc123"
+python -m llm_client cost --format json            # machine-readable
+
+python -m llm_client traces                        # recent traces with cost rollup
+python -m llm_client traces --limit 50
+
+python -m llm_client backfill                      # import JSONL → SQLite
+python -m llm_client backfill --clear              # wipe + reimport
+```
+
+Also available as `llm-cost` CLI command after `pip install -e .`.
 
 ## Model Registry + Task-Based Selection
 
