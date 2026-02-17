@@ -293,7 +293,7 @@ PENDING → SPEC_LOCKED → DISPATCHED → RUNNING → VALIDATING → COMPLETED
 
 **2. SPEC_LOCKED** — All dependencies satisfied. Task spec is frozen (SHA256 hash recorded). No changes to prompt, validation criteria, or outputs after this point. This prevents the agent from weakening requirements to match a weak implementation.
 
-**3. DISPATCHED** — Agent has been invoked via `acall_llm()`. The runner records: model selected, difficulty tier, MCP servers loaded, prompt (with template variables resolved).
+**3. DISPATCHED** — Agent has been invoked via `acall_llm()`. The runner records: model selected, difficulty tier, MCP servers loaded, prompt (with template variables resolved). Agent permission modes are set automatically for headless dispatch: `permission_mode="bypassPermissions"` for claude-code, `approval_policy="never"` for codex. Override with `setdefault` — task YAML can't change this, but callers of `_execute_task` can pre-set kwargs.
 
 **4. RUNNING** — Agent is working. The runner doesn't interfere. Timeout applies.
 

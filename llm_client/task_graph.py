@@ -498,6 +498,12 @@ async def _execute_task(
         elif task.agent.startswith("claude-code"):
             kwargs["cwd"] = wd_expanded
 
+    # Agent permission modes — headless dispatch needs full autonomy
+    if task.agent.startswith("claude-code"):
+        kwargs.setdefault("permission_mode", "bypassPermissions")
+    elif task.agent == "codex" or task.agent.startswith("codex/"):
+        kwargs.setdefault("approval_policy", "never")
+
     # --- DISPATCHED → RUNNING ---
     logger.info(
         "Dispatching %s: model=%s tier=%d agent=%s",
