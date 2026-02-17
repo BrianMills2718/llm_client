@@ -96,6 +96,26 @@ from llm_client.models import (
     query_performance,
 )
 from llm_client.prompts import render_prompt
+from llm_client.validators import ValidationResult, run_validators, register_validator, spec_hash
+from llm_client.difficulty import (
+    DifficultyTier,
+    get_model_for_difficulty,
+    get_effective_tier,
+    load_model_floors,
+    save_model_floors,
+)
+from llm_client.task_graph import (
+    ExecutionReport,
+    ExperimentRecord,
+    GraphMeta,
+    TaskDef,
+    TaskGraph,
+    TaskResult,
+    TaskStatus,
+    load_graph,
+    run_graph,
+    toposort_waves,
+)
 
 from llm_client.mcp_agent import (
     DEFAULT_MAX_TURNS,
@@ -190,4 +210,26 @@ __all__ = [
     "get_model",
     "list_models",
     "query_performance",
+    # validators
+    "ValidationResult",
+    "run_validators",
+    "register_validator",
+    "spec_hash",
+    # difficulty
+    "DifficultyTier",
+    "get_model_for_difficulty",
+    "get_effective_tier",
+    "load_model_floors",
+    "save_model_floors",
+    # task_graph
+    "ExecutionReport",
+    "ExperimentRecord",
+    "GraphMeta",
+    "TaskDef",
+    "TaskGraph",
+    "TaskResult",
+    "TaskStatus",
+    "load_graph",
+    "run_graph",
+    "toposort_waves",
 ]

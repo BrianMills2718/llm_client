@@ -682,6 +682,83 @@ Config loading chain: `LLM_CLIENT_MODELS_CONFIG` env var → `~/.config/llm_clie
 
 `available_only=True` (default) filters to models whose `api_key_env` is set in `os.environ`.
 
+## Task Graph Runner
+
+Parse YAML DAGs, dispatch to agents, validate outputs, checkpoint via git. See `docs/TASK_GRAPH_DESIGN.md` for full specification.
+
+```python
+from llm_client import load_graph, run_graph
+
+graph = load_graph("path/to/graph.yaml")
+report = await run_graph(graph)
+for tr in report.task_results:
+    print(f"{tr.task_id}: {tr.status} (${tr.cost_usd:.3f})")
+```
+
+### YAML Format
+
+```yaml
+graph:
+  id: my_pipeline
+  description: "Example pipeline"
+  timeout_minutes: 60
+  checkpoint: git_tag  # git_tag | git_commit | none
+
+tasks:
+  collect:
+    difficulty: 2
+    agent: codex
+    prompt: "Collect data and write to results/data.json"
+    mcp_servers:
+      - sam-gov-government
+    validate:
+      - type: file_exists
+        path: results/data.json
+    outputs:
+      data_file: results/data.json
+
+  process:
+    difficulty: 3
+    depends_on: [collect]
+    prompt: "Process {collect.outputs.data_file}"
+```
+
+### Difficulty Tiers
+
+| Tier | What | Default Model |
+|------|------|--------------|
+| 0 | Scripted — no LLM | None |
+| 1 | Simple: formatting, extraction | deepseek-chat or ollama |
+| 2 | Moderate: classification, analysis | gemini-2.5-flash |
+| 3 | Complex: multi-hop reasoning, synthesis | claude-sonnet-4.5 |
+| 4 | Agent: multi-step autonomous tool use | codex or claude-code SDK |
+
+```python
+from llm_client import get_model_for_difficulty
+model = get_model_for_difficulty(2)  # cheapest available at tier 2
+```
+
+### Validators
+
+| Type | What |
+|------|------|
+| `file_exists` | File was created |
+| `file_not_empty` | File exists and has content |
+| `json_schema` | JSON matches schema |
+| `pytest` | pytest exits 0 |
+| `sql_count` | SQL count matches check expression |
+| `command` | Shell command exits 0 |
+| `mcp_call` | MCP tool result matches check |
+
+```python
+from llm_client import run_validators, register_validator
+
+results = run_validators([
+    {"type": "file_exists", "path": "output.json"},
+    {"type": "sql_count", "db": "data.db", "query": "SELECT count(*) FROM items", "check": "> 0"},
+])
+```
+
 ## Tests
 
 ```bash
@@ -695,4 +772,6 @@ pytest tests/ -v   # All mocked (no real API calls)
 - `instructor>=1.14.0` — Structured output fallback for older models (optional; modern models use native JSON schema)
 - `claude-agent-sdk>=0.1.30` — Claude Agent SDK for agent models (optional; install with `pip install llm_client[agents]`)
 - `openai-codex-sdk>=0.1.11` — Codex SDK for codex agent models (optional; install with `pip install llm_client[codex]`)
+- `pyyaml>=6.0` — YAML parsing for task graphs
+- `jsonschema>=4.0` — JSON schema validation (optional; `json_schema` validator degrades gracefully without it)
 - `pytest-asyncio>=0.23` — Async test support (dev only)
