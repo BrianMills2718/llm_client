@@ -1,0 +1,20 @@
+name: analysis_quality
+version: 1
+description: Score quality of comparative analysis, hypothesis evaluation, or reasoning tasks
+dimensions:
+  - name: depth
+    weight: 0.3
+    description: "Does the analysis go beyond surface-level? Does it identify non-obvious patterns?"
+    scale: 5
+  - name: balance
+    weight: 0.2
+    description: "Are multiple perspectives or hypotheses considered fairly?"
+    scale: 5
+  - name: evidence_grounding
+    weight: 0.3
+    description: "Are conclusions supported by specific evidence, not just assertions?"
+    scale: 5
+  - name: novelty
+    weight: 0.2
+    description: "Does the analysis produce insights that aren't obvious from a surface reading?"
+    scale: 5

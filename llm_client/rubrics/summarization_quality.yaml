@@ -1,0 +1,20 @@
+name: summarization_quality
+version: 1
+description: Score quality of evidence summarization or report synthesis
+dimensions:
+  - name: faithfulness
+    weight: 0.35
+    description: "Does the summary accurately represent the source material? No distortions or additions?"
+    scale: 5
+  - name: coverage
+    weight: 0.25
+    description: "Does it capture the key points? Are important details preserved?"
+    scale: 5
+  - name: conciseness
+    weight: 0.2
+    description: "Is the summary appropriately concise without losing essential information?"
+    scale: 5
+  - name: salience
+    weight: 0.2
+    description: "Does it prioritize the most important information? Or bury the lede?"
+    scale: 5

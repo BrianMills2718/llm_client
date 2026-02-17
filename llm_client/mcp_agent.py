@@ -495,6 +495,20 @@ async def _agent_loop(
         if not result.tool_calls:
             final_content = result.content
             final_finish_reason = result.finish_reason
+            # Log visibility: empty content on first turn is almost always a model failure
+            if not result.content and turn == 0:
+                logger.error(
+                    "Agent loop: model=%s returned empty content with 0 tool calls on turn 1 "
+                    "(finish_reason=%s). All %d retries + fallback exhausted at the per-turn level.",
+                    model, result.finish_reason, kwargs.get("num_retries", 2),
+                )
+            elif not result.content:
+                logger.warning(
+                    "Agent loop: model=%s returned empty content on turn %d/%d "
+                    "(finish_reason=%s, %d tool calls so far).",
+                    model, turn + 1, max_turns, result.finish_reason,
+                    len(agent_result.tool_calls),
+                )
             # Capture final assistant message in trace
             if result.content:
                 agent_result.conversation_trace.append({

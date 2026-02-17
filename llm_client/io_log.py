@@ -242,6 +242,25 @@ CREATE TABLE IF NOT EXISTS embeddings (
     task TEXT,
     trace_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS task_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    task TEXT,
+    trace_id TEXT,
+    rubric TEXT NOT NULL,
+    method TEXT NOT NULL,
+    overall_score REAL NOT NULL,
+    dimensions TEXT,
+    reasoning TEXT,
+    output_model TEXT,
+    judge_model TEXT,
+    agent_spec TEXT,
+    prompt_id TEXT,
+    cost REAL,
+    latency_s REAL
+);
 """
 
 _INDEXES_SQL = """
@@ -255,6 +274,11 @@ CREATE INDEX IF NOT EXISTS idx_emb_model ON embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_emb_task ON embeddings(task);
 CREATE INDEX IF NOT EXISTS idx_emb_project ON embeddings(project);
 CREATE INDEX IF NOT EXISTS idx_emb_trace_id ON embeddings(trace_id);
+CREATE INDEX IF NOT EXISTS idx_scores_task ON task_scores(task);
+CREATE INDEX IF NOT EXISTS idx_scores_rubric ON task_scores(rubric);
+CREATE INDEX IF NOT EXISTS idx_scores_project ON task_scores(project);
+CREATE INDEX IF NOT EXISTS idx_scores_trace_id ON task_scores(trace_id);
+CREATE INDEX IF NOT EXISTS idx_scores_timestamp ON task_scores(timestamp);
 """
 
 
@@ -433,6 +457,71 @@ def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
 
     db.commit()
     return count
+
+
+def log_score(
+    *,
+    rubric: str,
+    method: str,
+    overall_score: float,
+    dimensions: dict[str, Any] | None = None,
+    reasoning: str | None = None,
+    output_model: str | None = None,
+    judge_model: str | None = None,
+    agent_spec: str | None = None,
+    prompt_id: str | None = None,
+    cost: float | None = None,
+    latency_s: float | None = None,
+    task: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Write a rubric score to the observability DB. Never raises."""
+    if not _enabled:
+        return
+    try:
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        # JSONL append
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": timestamp,
+            "rubric": rubric,
+            "method": method,
+            "overall_score": overall_score,
+            "dimensions": dimensions,
+            "reasoning": reasoning,
+            "output_model": output_model,
+            "judge_model": judge_model,
+            "agent_spec": agent_spec,
+            "prompt_id": prompt_id,
+            "cost": cost,
+            "latency_s": round(latency_s, 3) if latency_s is not None else None,
+            "task": task,
+            "trace_id": trace_id,
+        }
+        with open(d / "scores.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+
+        # SQLite write
+        db = _get_db()
+        db.execute(
+            """INSERT INTO task_scores
+               (timestamp, project, task, trace_id, rubric, method,
+                overall_score, dimensions, reasoning, output_model,
+                judge_model, agent_spec, prompt_id, cost, latency_s)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp, _get_project(), task, trace_id, rubric, method,
+                overall_score,
+                json.dumps(dimensions, default=str) if dimensions else None,
+                reasoning, output_model, judge_model, agent_spec, prompt_id,
+                cost, round(latency_s, 3) if latency_s is not None else None,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log.log_score failed", exc_info=True)
 
 
 def _truncate_messages(

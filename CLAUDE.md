@@ -801,6 +801,59 @@ report = analyze_history(experiment_log="path/to/experiments.jsonl")
 
 **Risk levels**: `low` (auto-apply), `medium` (apply on next run, revert if fails), `high` (human review).
 
+## Rubric Scoring
+
+Score task outputs against YAML rubrics via LLM-as-judge. Part of the improvement flywheel — scores accumulate in the observability DB for analysis by `analyzer` and `prompt_eval`.
+
+```python
+from llm_client import ascore_output, load_rubric, list_rubrics
+
+# Score a task output (async)
+result = await ascore_output(
+    output="<task output text>",
+    rubric="research_quality",          # built-in rubric name or path to YAML
+    context={"query": "Palantir contracts"},
+    task="sam_gov_research",            # tags the DB record
+    judge_model="gpt-5-nano",          # defaults to get_model("judging")
+)
+print(result.overall_score)  # 0.0 - 1.0
+print(result.dimensions)     # {"completeness": 4, "accuracy": 3, ...}
+print(result.reasoning)      # {"completeness": "good coverage", ...}
+
+# List available rubrics
+list_rubrics()  # ['analysis_quality', 'code_quality', 'extraction_quality', ...]
+
+# Load and inspect a rubric
+rubric = load_rubric("research_quality")
+print(rubric.dimensions)  # [RubricCriterion(name='completeness', weight=0.3, ...), ...]
+
+# Sync wrapper
+from llm_client import score_output
+result = score_output("output text", "code_quality", judge_model="gpt-5-nano")
+```
+
+**Built-in rubrics** (5): `research_quality`, `extraction_quality`, `summarization_quality`, `analysis_quality`, `code_quality`. Each has weighted dimensions on a 1-5 scale.
+
+**Custom rubrics**: Place YAML files in a project-local `rubrics/` directory or pass a file path directly. Format:
+```yaml
+name: my_rubric
+dimensions:
+  - name: quality
+    weight: 1.0
+    description: "Overall quality"
+    scale: 5
+```
+
+**Scores CLI**:
+```bash
+python -m llm_client scores                           # aggregate by rubric
+python -m llm_client scores --group-by task,rubric     # task breakdown
+python -m llm_client scores --rubric research_quality --days 7
+python -m llm_client scores --trend                    # daily averages
+```
+
+Scores are dual-written to `task_scores` SQLite table and `scores.jsonl`. `ScoreResult` fields: `.rubric`, `.overall_score`, `.dimensions`, `.reasoning`, `.judge_model`, `.method`, `.cost`, `.latency_s`.
+
 ## Tests
 
 ```bash

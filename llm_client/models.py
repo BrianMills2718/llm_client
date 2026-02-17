@@ -200,6 +200,11 @@ _DEFAULT_TASKS: dict[str, dict[str, Any]] = {
         "require": {"min_intelligence": 38},
         "prefer": ["intelligence", "speed"],
     },
+    "judging": {
+        "description": "LLM-as-judge rubric scoring of task outputs",
+        "require": {"structured_output": True, "min_intelligence": 30},
+        "prefer": ["-cost", "intelligence"],
+    },
 }
 
 _DEFAULT_CONFIG: dict[str, Any] = {

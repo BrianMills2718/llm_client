@@ -1,0 +1,20 @@
+name: code_quality
+version: 1
+description: Score quality of code generation, refactoring, or bug fix tasks
+dimensions:
+  - name: correctness
+    weight: 0.35
+    description: "Does the code work? Does it handle edge cases? Would it pass tests?"
+    scale: 5
+  - name: simplicity
+    weight: 0.25
+    description: "Is it the simplest solution that works? No unnecessary abstraction?"
+    scale: 5
+  - name: style
+    weight: 0.2
+    description: "Does it follow the codebase's conventions? Consistent naming, formatting?"
+    scale: 5
+  - name: safety
+    weight: 0.2
+    description: "Are there security issues? Resource leaks? Unhandled errors that should be handled?"
+    scale: 5

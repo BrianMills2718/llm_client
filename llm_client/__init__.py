@@ -140,6 +140,17 @@ from llm_client.tool_utils import (
     prepare_direct_tools,
 )
 
+from llm_client.scoring import (
+    CriterionScore,
+    Rubric,
+    RubricCriterion,
+    ScoreResult,
+    ascore_output,
+    list_rubrics,
+    load_rubric,
+    score_output,
+)
+
 from llm_client.client import (
     AsyncCachePolicy,
     AsyncLLMStream,
@@ -258,4 +269,13 @@ __all__ = [
     # tool_utils
     "callable_to_openai_tool",
     "prepare_direct_tools",
+    # scoring
+    "CriterionScore",
+    "Rubric",
+    "RubricCriterion",
+    "ScoreResult",
+    "ascore_output",
+    "list_rubrics",
+    "load_rubric",
+    "score_output",
 ]

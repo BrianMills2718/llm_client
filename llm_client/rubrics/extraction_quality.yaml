@@ -1,0 +1,20 @@
+name: extraction_quality
+version: 1
+description: Score quality of entity extraction, KG building, or structured output tasks
+dimensions:
+  - name: precision
+    weight: 0.3
+    description: "Are all extracted items actually present in the source? No hallucinated entities or relations?"
+    scale: 5
+  - name: recall
+    weight: 0.3
+    description: "Are all important items from the source captured? What was missed?"
+    scale: 5
+  - name: schema_conformance
+    weight: 0.2
+    description: "Does the output conform to the required schema? Correct types, valid relationships?"
+    scale: 5
+  - name: disambiguation
+    weight: 0.2
+    description: "Are ambiguous references resolved correctly? No duplicate entities for the same thing?"
+    scale: 5

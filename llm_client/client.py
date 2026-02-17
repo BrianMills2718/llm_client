@@ -1269,6 +1269,32 @@ def call_llm(
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
 
+    # Named params that must flow through to per-turn _inner_acall_llm calls
+    # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
+    _inner_named: dict[str, Any] = {}
+    if num_retries != 2:
+        _inner_named["num_retries"] = num_retries
+    if base_delay != 1.0:
+        _inner_named["base_delay"] = base_delay
+    if max_delay != 30.0:
+        _inner_named["max_delay"] = max_delay
+    if retry_on is not None:
+        _inner_named["retry_on"] = retry_on
+    if on_retry is not None:
+        _inner_named["on_retry"] = on_retry
+    if retry is not None:
+        _inner_named["retry"] = retry
+    if fallback_models is not None:
+        _inner_named["fallback_models"] = fallback_models
+    if on_fallback is not None:
+        _inner_named["on_fallback"] = on_fallback
+    if reasoning_effort is not None:
+        _inner_named["reasoning_effort"] = reasoning_effort
+    if api_base is not None:
+        _inner_named["api_base"] = api_base
+    if hooks is not None:
+        _inner_named["hooks"] = hooks
+
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
@@ -1279,7 +1305,7 @@ def call_llm(
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
         result = _run_sync(_acall_with_mcp(
-            model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
+            model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         ))
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
@@ -1296,7 +1322,7 @@ def call_llm(
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
         result = _run_sync(_acall_with_tools(
-            model, messages, timeout=timeout, **tool_kw, **remaining,
+            model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
         ))
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
@@ -1796,6 +1822,32 @@ async def acall_llm(
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
 
+    # Named params that must flow through to per-turn _inner_acall_llm calls
+    # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
+    _inner_named: dict[str, Any] = {}
+    if num_retries != 2:
+        _inner_named["num_retries"] = num_retries
+    if base_delay != 1.0:
+        _inner_named["base_delay"] = base_delay
+    if max_delay != 30.0:
+        _inner_named["max_delay"] = max_delay
+    if retry_on is not None:
+        _inner_named["retry_on"] = retry_on
+    if on_retry is not None:
+        _inner_named["on_retry"] = on_retry
+    if retry is not None:
+        _inner_named["retry"] = retry
+    if fallback_models is not None:
+        _inner_named["fallback_models"] = fallback_models
+    if on_fallback is not None:
+        _inner_named["on_fallback"] = on_fallback
+    if reasoning_effort is not None:
+        _inner_named["reasoning_effort"] = reasoning_effort
+    if api_base is not None:
+        _inner_named["api_base"] = api_base
+    if hooks is not None:
+        _inner_named["hooks"] = hooks
+
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
@@ -1805,7 +1857,7 @@ async def acall_llm(
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
         result = await _acall_with_mcp(
-            model, messages, timeout=timeout, hooks=hooks, **mcp_kw, **remaining,
+            model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         )
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
@@ -1821,7 +1873,7 @@ async def acall_llm(
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
         result = await _acall_with_tools(
-            model, messages, timeout=timeout, **tool_kw, **remaining,
+            model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
         )
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result

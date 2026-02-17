@@ -1,0 +1,24 @@
+name: research_quality
+version: 1
+description: Score quality of a research output (report, evidence collection, investigation)
+dimensions:
+  - name: completeness
+    weight: 0.3
+    description: "Does the output address all aspects of the query? Are there obvious gaps?"
+    scale: 5
+  - name: accuracy
+    weight: 0.25
+    description: "Are claims supported by cited evidence? Any hallucinations or unsupported assertions?"
+    scale: 5
+  - name: source_diversity
+    weight: 0.15
+    description: "Does it draw from multiple independent sources? Or over-rely on one?"
+    scale: 5
+  - name: actionability
+    weight: 0.15
+    description: "Does the output give concrete, specific findings vs vague summaries?"
+    scale: 5
+  - name: coherence
+    weight: 0.15
+    description: "Is the output well-organized, internally consistent, and easy to follow?"
+    scale: 5
