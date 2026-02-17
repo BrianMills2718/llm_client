@@ -116,6 +116,14 @@ from llm_client.task_graph import (
     run_graph,
     toposort_waves,
 )
+from llm_client.analyzer import (
+    AnalysisReport,
+    IssueCategory,
+    Proposal,
+    analyze_history,
+    analyze_run,
+    check_scorer_reliability,
+)
 
 from llm_client.mcp_agent import (
     DEFAULT_MAX_TURNS,
@@ -232,4 +240,11 @@ __all__ = [
     "load_graph",
     "run_graph",
     "toposort_waves",
+    # analyzer
+    "AnalysisReport",
+    "IssueCategory",
+    "Proposal",
+    "analyze_history",
+    "analyze_run",
+    "check_scorer_reliability",
 ]

@@ -759,6 +759,26 @@ results = run_validators([
 ])
 ```
 
+### Self-Improvement Analyzer
+
+Reads experiment logs, classifies failures, generates improvement proposals, maintains cumulative model floors.
+
+```python
+from llm_client import analyze_run, analyze_history, IssueCategory
+
+# After a graph run
+report = analyze_run(execution_report)
+for p in report.proposals:
+    print(f"[{p.risk}] {p.category}: {p.action} for {p.task_id}")
+
+# Standalone historical analysis
+report = analyze_history(experiment_log="path/to/experiments.jsonl")
+```
+
+**8 failure categories**: `MODEL_OVERKILL`, `MODEL_UNDERKILL`, `PROMPT_DRIFT`, `VALIDATION_NOISE`, `TOOL_GAP`, `STUCK_LOOP`, `DATA_QUALITY`, `MEASUREMENT_ERROR`.
+
+**Risk levels**: `low` (auto-apply), `medium` (apply on next run, revert if fails), `high` (human review).
+
 ## Tests
 
 ```bash
