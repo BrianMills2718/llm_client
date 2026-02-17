@@ -1173,8 +1173,10 @@ def _build_result_from_response(
             "Increase max_tokens or simplify the prompt."
         )
 
-    # Raise on empty content (retryable) — unless model made tool calls
-    if not content.strip() and finish_reason != "tool_calls" and not tool_calls:
+    # Raise on empty content (retryable) — unless model made tool calls.
+    # Note: finish_reason="tool_calls" with no actual tool_calls is a model bug
+    # that should be retried, so we only check for actual tool_calls presence.
+    if not content.strip() and not tool_calls:
         raise ValueError("Empty content from LLM")
 
     logger.debug(

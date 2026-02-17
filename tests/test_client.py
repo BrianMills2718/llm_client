@@ -543,6 +543,28 @@ class TestSmartRetry:
         assert result.tool_calls[0]["function"]["name"] == "get_weather"
         assert mock_comp.call_count == 1  # No retry
 
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_finish_reason_tool_calls_but_no_tools_retries(
+        self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
+    ) -> None:
+        """finish_reason='tool_calls' with no actual tool calls should retry.
+
+        Some models (e.g. deepseek) return finish_reason='tool_calls' but
+        with an empty tool_calls list and empty content. This should be
+        treated as an empty response and retried.
+        """
+        # First call: model claims tool_calls but sends nothing
+        bogus = _mock_response(content="", tool_calls=None, finish_reason="tool_calls")
+        # Second call: model responds correctly
+        good = _mock_response(content="Hello!")
+        mock_comp.side_effect = [bogus, good]
+
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2  # Retried once
+
 
 class TestNonRetryableErrors:
     """Permanent errors (auth, billing, quota) should fail immediately."""
