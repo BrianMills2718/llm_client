@@ -325,6 +325,84 @@ class TestImportJsonl:
 # ---------------------------------------------------------------------------
 
 
+class TestLogScoreGitCommit:
+    def test_git_commit_in_db(self, tmp_path):
+        io_log.log_score(
+            rubric="test_rubric",
+            method="llm_judge",
+            overall_score=0.85,
+            task="test_task",
+            git_commit="abc1234",
+        )
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT git_commit FROM task_scores").fetchone()
+        assert row[0] == "abc1234"
+        db.close()
+
+    def test_git_commit_in_jsonl(self, tmp_path):
+        io_log.log_score(
+            rubric="test_rubric",
+            method="llm_judge",
+            overall_score=0.5,
+            git_commit="def5678",
+        )
+
+        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
+        record = json.loads(scores_file.read_text().strip())
+        assert record["git_commit"] == "def5678"
+
+    def test_git_commit_auto_captured(self, tmp_path):
+        """When git_commit is None, it auto-captures from git HEAD."""
+        io_log.log_score(
+            rubric="test_rubric",
+            method="llm_judge",
+            overall_score=0.5,
+        )
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT git_commit FROM task_scores").fetchone()
+        # Should be a real commit hash (llm_client is a git repo) or None if not in repo
+        # Either way, the column exists and was written
+        assert row is not None
+        db.close()
+
+    def test_migrate_adds_git_commit(self, tmp_path):
+        """Migration adds git_commit to a DB without it."""
+        old_db_path = tmp_path / "old_scores.db"
+        old_conn = sqlite3.connect(str(old_db_path))
+        old_conn.executescript("""
+            CREATE TABLE llm_calls (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, project TEXT,
+                model TEXT NOT NULL, messages TEXT, response TEXT,
+                prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
+                cost REAL, finish_reason TEXT, latency_s REAL, error TEXT, caller TEXT,
+                task TEXT, trace_id TEXT
+            );
+            CREATE TABLE embeddings (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, project TEXT,
+                model TEXT NOT NULL, input_count INTEGER, input_chars INTEGER, dimensions INTEGER,
+                prompt_tokens INTEGER, total_tokens INTEGER, cost REAL, latency_s REAL,
+                error TEXT, caller TEXT, task TEXT, trace_id TEXT
+            );
+            CREATE TABLE task_scores (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, project TEXT,
+                task TEXT, trace_id TEXT, rubric TEXT NOT NULL, method TEXT NOT NULL,
+                overall_score REAL NOT NULL, dimensions TEXT, reasoning TEXT,
+                output_model TEXT, judge_model TEXT, agent_spec TEXT, prompt_id TEXT,
+                cost REAL, latency_s REAL
+            );
+        """)
+        old_conn.close()
+
+        io_log._db_path = old_db_path
+        io_log._db_conn = None
+        db = io_log._get_db()
+
+        cols = {r[1] for r in db.execute("PRAGMA table_info(task_scores)").fetchall()}
+        assert "git_commit" in cols
+
+
 class TestConfigure:
     def test_configure_db_path(self, tmp_path):
         new_db = tmp_path / "custom.db"

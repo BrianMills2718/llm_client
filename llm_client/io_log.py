@@ -259,7 +259,8 @@ CREATE TABLE IF NOT EXISTS task_scores (
     agent_spec TEXT,
     prompt_id TEXT,
     cost REAL,
-    latency_s REAL
+    latency_s REAL,
+    git_commit TEXT
 );
 """
 
@@ -279,17 +280,25 @@ CREATE INDEX IF NOT EXISTS idx_scores_rubric ON task_scores(rubric);
 CREATE INDEX IF NOT EXISTS idx_scores_project ON task_scores(project);
 CREATE INDEX IF NOT EXISTS idx_scores_trace_id ON task_scores(trace_id);
 CREATE INDEX IF NOT EXISTS idx_scores_timestamp ON task_scores(timestamp);
+CREATE INDEX IF NOT EXISTS idx_scores_git_commit ON task_scores(git_commit);
 """
 
 
 def _migrate_db(conn: sqlite3.Connection) -> None:
-    """Add trace_id column if missing (idempotent). For DBs created before trace_id existed."""
+    """Add missing columns (idempotent). For DBs created before these columns existed."""
     for table in ("llm_calls", "embeddings"):
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if "trace_id" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN trace_id TEXT")
             prefix = table[:3]
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{prefix}_trace_id ON {table}(trace_id)")
+
+    # task_scores: add git_commit if missing
+    scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
+    if scores_cols and "git_commit" not in scores_cols:
+        conn.execute("ALTER TABLE task_scores ADD COLUMN git_commit TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scores_git_commit ON task_scores(git_commit)")
+
     conn.commit()
 
 
@@ -474,11 +483,18 @@ def log_score(
     latency_s: float | None = None,
     task: str | None = None,
     trace_id: str | None = None,
+    git_commit: str | None = None,
 ) -> None:
     """Write a rubric score to the observability DB. Never raises."""
     if not _enabled:
         return
     try:
+        # Auto-capture git commit if not provided
+        if git_commit is None:
+            from llm_client.git_utils import get_git_head
+
+            git_commit = get_git_head()
+
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # JSONL append
@@ -499,6 +515,7 @@ def log_score(
             "latency_s": round(latency_s, 3) if latency_s is not None else None,
             "task": task,
             "trace_id": trace_id,
+            "git_commit": git_commit,
         }
         with open(d / "scores.jsonl", "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
@@ -509,14 +526,16 @@ def log_score(
             """INSERT INTO task_scores
                (timestamp, project, task, trace_id, rubric, method,
                 overall_score, dimensions, reasoning, output_model,
-                judge_model, agent_spec, prompt_id, cost, latency_s)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                judge_model, agent_spec, prompt_id, cost, latency_s,
+                git_commit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp, _get_project(), task, trace_id, rubric, method,
                 overall_score,
                 json.dumps(dimensions, default=str) if dimensions else None,
                 reasoning, output_model, judge_model, agent_spec, prompt_id,
                 cost, round(latency_s, 3) if latency_s is not None else None,
+                git_commit,
             ),
         )
         db.commit()

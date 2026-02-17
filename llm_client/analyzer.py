@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import mean, variance
 from typing import Any
 
 from pydantic import BaseModel
@@ -32,6 +34,7 @@ from llm_client.difficulty import (
     load_model_floors,
     save_model_floors,
 )
+from llm_client.git_utils import PROMPT_CHANGE, classify_diff_files, get_diff_files
 from llm_client.task_graph import ExecutionReport, ExperimentRecord, TaskStatus
 from llm_client.validators import ValidationResult, run_validators
 
@@ -80,6 +83,7 @@ class AnalysisReport(BaseModel):
     proposals: list[Proposal]
     floors_updated: dict[str, dict[str, Any]]
     reliability_checks: list[dict[str, Any]]
+    score_proposals_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +299,244 @@ def _check_validation_noise(
 
 
 # ---------------------------------------------------------------------------
+# Score-based classifiers (read from task_scores SQLite table)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DB_PATH = Path.home() / "projects" / "data" / "llm_observability.db"
+
+
+def _load_scores_by_task(
+    db_path: str | Path,
+    project: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read task_scores from SQLite, group by task, ordered by timestamp.
+
+    Returns {} if DB doesn't exist or has no task_scores table.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        query = "SELECT * FROM task_scores ORDER BY timestamp"
+        params: list[Any] = []
+        if project:
+            query = "SELECT * FROM task_scores WHERE project = ? ORDER BY timestamp"
+            params = [project]
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+    except Exception:
+        logger.debug("_load_scores_by_task failed", exc_info=True)
+        return {}
+
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        d = dict(row)
+        task = d.get("task") or "unknown"
+        groups[task].append(d)
+    return dict(groups)
+
+
+def _check_prompt_drift(
+    task_id: str,
+    scores: list[dict[str, Any]],
+    cwd: str | None = None,
+) -> Proposal | None:
+    """Detect score drops correlated with prompt file changes.
+
+    Groups scores by git_commit, compares mean scores between consecutive
+    commits. If drop > 0.15 AND git diff contains prompt files → proposal.
+    Requires >=2 scores per commit to avoid noise.
+    """
+    # Group by git_commit
+    by_commit: dict[str, list[float]] = defaultdict(list)
+    commit_order: list[str] = []
+    for s in scores:
+        commit = s.get("git_commit")
+        if not commit:
+            continue
+        if commit not in by_commit:
+            commit_order.append(commit)
+        by_commit[commit].append(s["overall_score"])
+
+    if len(commit_order) < 2:
+        return None
+
+    # Check consecutive pairs
+    for i in range(len(commit_order) - 1):
+        prev_commit = commit_order[i]
+        curr_commit = commit_order[i + 1]
+        prev_scores = by_commit[prev_commit]
+        curr_scores = by_commit[curr_commit]
+
+        if len(prev_scores) < 2 or len(curr_scores) < 2:
+            continue
+
+        prev_mean = mean(prev_scores)
+        curr_mean = mean(curr_scores)
+        drop = prev_mean - curr_mean
+
+        if drop <= 0.15:
+            continue
+
+        # Check if diff contains prompt files
+        diff_files = get_diff_files(prev_commit, curr_commit, cwd=cwd)
+        categories = classify_diff_files(diff_files)
+        if PROMPT_CHANGE not in categories:
+            continue
+
+        prompt_files = [
+            f for f in diff_files
+            if "prompts" in f.split("/") or (f.endswith(".yaml") and "prompts" in f)
+        ]
+
+        return Proposal(
+            proposal_id=_make_id("drift", task_id),
+            timestamp=_now(),
+            category=IssueCategory.PROMPT_DRIFT,
+            task_id=task_id,
+            graph_id="scores",
+            evidence={
+                "prev_commit": prev_commit,
+                "curr_commit": curr_commit,
+                "prev_mean_score": round(prev_mean, 4),
+                "curr_mean_score": round(curr_mean, 4),
+                "score_drop": round(drop, 4),
+                "changed_prompt_files": prompt_files,
+            },
+            risk="medium",
+            action="review_prompt_change",
+            auto_apply=False,
+        )
+
+    return None
+
+
+def _check_data_quality(
+    task_id: str,
+    scores: list[dict[str, Any]],
+) -> Proposal | None:
+    """Detect dimensions consistently scoring <= 2/5.
+
+    Checks last N scores for any dimension with 3+ consecutive low scores.
+    """
+    if len(scores) < 3:
+        return None
+
+    recent = scores[-10:]  # Look at last 10
+
+    # Parse dimensions from each score
+    dim_series: dict[str, list[int]] = defaultdict(list)
+    for s in recent:
+        dims_raw = s.get("dimensions")
+        if not dims_raw:
+            continue
+        if isinstance(dims_raw, str):
+            try:
+                dims = json.loads(dims_raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        else:
+            dims = dims_raw
+        for dim_name, score_val in dims.items():
+            if isinstance(score_val, (int, float)):
+                dim_series[dim_name].append(int(score_val))
+
+    weak_dims: dict[str, float] = {}
+    for dim_name, values in dim_series.items():
+        if len(values) < 3:
+            continue
+        # Check for 3+ consecutive low scores at end
+        consecutive_low = 0
+        for v in reversed(values):
+            if v <= 2:
+                consecutive_low += 1
+            else:
+                break
+        if consecutive_low >= 3:
+            weak_dims[dim_name] = round(mean(values[-consecutive_low:]), 2)
+
+    if not weak_dims:
+        return None
+
+    return Proposal(
+        proposal_id=_make_id("dataqual", task_id),
+        timestamp=_now(),
+        category=IssueCategory.DATA_QUALITY,
+        task_id=task_id,
+        graph_id="scores",
+        evidence={
+            "weak_dimensions": weak_dims,
+            "scores_analyzed": len(recent),
+        },
+        risk="medium",
+        action="investigate_weak_dimension",
+        auto_apply=False,
+    )
+
+
+def _check_measurement_error(
+    task_id: str,
+    scores: list[dict[str, Any]],
+) -> Proposal | None:
+    """Detect unreliable judge — high variance within same (rubric, git_commit) group.
+
+    If variance > 0.3 within a group of 3+ scores → judge is unreliable.
+    """
+    # Group by (rubric, git_commit)
+    groups: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for s in scores:
+        rubric = s.get("rubric", "")
+        commit = s.get("git_commit", "")
+        if not rubric:
+            continue
+        groups[(rubric, commit)].append(s["overall_score"])
+
+    for (rubric, commit), values in groups.items():
+        if len(values) < 3:
+            continue
+        var = variance(values)
+        if var > 0.3:
+            return Proposal(
+                proposal_id=_make_id("measerr", task_id),
+                timestamp=_now(),
+                category=IssueCategory.MEASUREMENT_ERROR,
+                task_id=task_id,
+                graph_id="scores",
+                evidence={
+                    "rubric": rubric,
+                    "git_commit": commit or None,
+                    "scores": [round(v, 4) for v in values],
+                    "variance": round(var, 4),
+                },
+                risk="high",
+                action="recalibrate_rubric",
+                auto_apply=False,
+            )
+
+    return None
+
+
+def _generate_score_proposals(
+    scores_by_task: dict[str, list[dict[str, Any]]],
+    cwd: str | None = None,
+) -> list[Proposal]:
+    """Run all score classifiers across all tasks, collect proposals."""
+    proposals: list[Proposal] = []
+    for task_id, scores in scores_by_task.items():
+        for checker in (
+            lambda tid, s: _check_prompt_drift(tid, s, cwd=cwd),
+            _check_data_quality,
+            _check_measurement_error,
+        ):
+            proposal = checker(task_id, scores)
+            if proposal is not None:
+                proposals.append(proposal)
+    return proposals
+
+
+# ---------------------------------------------------------------------------
 # Scorer reliability check
 # ---------------------------------------------------------------------------
 
@@ -411,12 +653,49 @@ def _update_floors(
 # ---------------------------------------------------------------------------
 
 
+def analyze_scores(
+    *,
+    db_path: str | Path | None = None,
+    project: str | None = None,
+    proposals_log: str | Path | None = None,
+    cwd: str | None = None,
+) -> list[Proposal]:
+    """Standalone entry point for score-only analysis.
+
+    Reads from task_scores SQLite, runs score classifiers, writes proposals.
+
+    Args:
+        db_path: Path to observability SQLite DB.
+        project: Filter scores to this project.
+        proposals_log: Path to proposals.jsonl (appended to).
+        cwd: Working directory for git operations.
+
+    Returns:
+        List of proposals from score analysis.
+    """
+    if db_path is None:
+        db_path = _DEFAULT_DB_PATH
+    db_path = Path(db_path)
+
+    if proposals_log is None:
+        proposals_log = Path.home() / "projects" / "data" / "task_graph" / "proposals.jsonl"
+    else:
+        proposals_log = Path(proposals_log)
+
+    scores_by_task = _load_scores_by_task(db_path, project=project)
+    proposals = _generate_score_proposals(scores_by_task, cwd=cwd)
+
+    _append_proposals(proposals_log, proposals)
+    return proposals
+
+
 def analyze_run(
     report: ExecutionReport,
     *,
     experiment_log: str | Path | None = None,
     proposals_log: str | Path | None = None,
     floors_path: str | Path | None = None,
+    db_path: str | Path | None = None,
 ) -> AnalysisReport:
     """Analyze a completed graph run and generate improvement proposals.
 
@@ -425,6 +704,7 @@ def analyze_run(
         experiment_log: Path to experiments.jsonl (for historical context).
         proposals_log: Path to proposals.jsonl (appended to).
         floors_path: Path to model_floors.json.
+        db_path: Path to observability SQLite DB for score analysis.
 
     Returns:
         AnalysisReport with proposals and updated floors.
@@ -445,6 +725,14 @@ def analyze_run(
     proposals = _generate_proposals(by_task)
     floors = _update_floors(by_task, floors_path)
 
+    # Score-based proposals
+    score_proposals: list[Proposal] = []
+    effective_db = Path(db_path) if db_path else _DEFAULT_DB_PATH
+    if effective_db.exists():
+        scores_by_task = _load_scores_by_task(effective_db)
+        score_proposals = _generate_score_proposals(scores_by_task)
+        proposals.extend(score_proposals)
+
     # Write proposals
     _append_proposals(proposals_log, proposals)
 
@@ -454,6 +742,7 @@ def analyze_run(
         proposals=proposals,
         floors_updated=floors,
         reliability_checks=[],
+        score_proposals_count=len(score_proposals),
     )
 
 
@@ -462,11 +751,18 @@ def analyze_history(
     experiment_log: str | Path | None = None,
     proposals_log: str | Path | None = None,
     floors_path: str | Path | None = None,
+    db_path: str | Path | None = None,
 ) -> AnalysisReport:
     """Standalone analysis of historical experiment logs.
 
     Same as analyze_run but doesn't need an ExecutionReport —
     reads everything from the experiment log.
+
+    Args:
+        experiment_log: Path to experiments.jsonl.
+        proposals_log: Path to proposals.jsonl (appended to).
+        floors_path: Path to model_floors.json.
+        db_path: Path to observability SQLite DB for score analysis.
     """
     if experiment_log is None:
         experiment_log = Path.home() / "projects" / "data" / "task_graph" / "experiments.jsonl"
@@ -483,6 +779,14 @@ def analyze_history(
     proposals = _generate_proposals(by_task)
     floors = _update_floors(by_task, floors_path)
 
+    # Score-based proposals
+    score_proposals: list[Proposal] = []
+    effective_db = Path(db_path) if db_path else _DEFAULT_DB_PATH
+    if effective_db.exists():
+        scores_by_task = _load_scores_by_task(effective_db)
+        score_proposals = _generate_score_proposals(scores_by_task)
+        proposals.extend(score_proposals)
+
     _append_proposals(proposals_log, proposals)
 
     return AnalysisReport(
@@ -491,6 +795,7 @@ def analyze_history(
         proposals=proposals,
         floors_updated=floors,
         reliability_checks=[],
+        score_proposals_count=len(score_proposals),
     )
 
 

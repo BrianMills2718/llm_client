@@ -9,11 +9,11 @@ import pytest
 
 from llm_client import io_log
 from llm_client.scoring import (
+    CriterionScore,
     Rubric,
     RubricCriterion,
     ScoreResult,
     _JudgeOutput,
-    CriterionScore,
     ascore_output,
     list_rubrics,
     load_rubric,
@@ -367,3 +367,56 @@ class TestLogScore:
 
         scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
         assert not scores_file.exists()
+
+
+class TestScoreResultGitCommit:
+    def test_git_commit_field(self):
+        sr = ScoreResult(
+            rubric="test",
+            overall_score=0.75,
+            dimensions={"a": 4},
+            git_commit="abc1234",
+        )
+        assert sr.git_commit == "abc1234"
+
+    def test_git_commit_default_none(self):
+        sr = ScoreResult(
+            rubric="test",
+            overall_score=0.75,
+            dimensions={"a": 4},
+        )
+        assert sr.git_commit is None
+
+    @pytest.mark.asyncio
+    async def test_git_commit_passed_through(self, tmp_path):
+        """git_commit flows from ascore_output to ScoreResult and DB."""
+        # mock-ok: Testing pass-through, not the LLM
+        from llm_client.scoring import _JudgeOutput, CriterionScore
+
+        judge_output = _JudgeOutput(
+            scores=[
+                CriterionScore(criterion="completeness", score=4, reasoning="ok"),
+                CriterionScore(criterion="accuracy", score=4, reasoning="ok"),
+                CriterionScore(criterion="source_diversity", score=4, reasoning="ok"),
+                CriterionScore(criterion="actionability", score=4, reasoning="ok"),
+                CriterionScore(criterion="coherence", score=4, reasoning="ok"),
+            ]
+        )
+        mock_meta = MagicMock(cost=0.0)
+
+        with patch("llm_client.client.acall_llm_structured", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = (judge_output, mock_meta)
+            result = await ascore_output(
+                "test",
+                "research_quality",
+                judge_model="gpt-5-nano",
+                git_commit="xyz7890",
+            )
+
+        assert result.git_commit == "xyz7890"
+
+        # Check DB
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT git_commit FROM task_scores").fetchone()
+        assert row[0] == "xyz7890"
+        db.close()

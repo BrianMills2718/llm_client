@@ -786,7 +786,7 @@ results = run_validators([
 Reads experiment logs, classifies failures, generates improvement proposals, maintains cumulative model floors.
 
 ```python
-from llm_client import analyze_run, analyze_history, IssueCategory
+from llm_client import analyze_run, analyze_history, analyze_scores, IssueCategory
 
 # After a graph run
 report = analyze_run(execution_report)
@@ -795,9 +795,21 @@ for p in report.proposals:
 
 # Standalone historical analysis
 report = analyze_history(experiment_log="path/to/experiments.jsonl")
+
+# Score-only analysis (reads task_scores from SQLite, correlates with git diffs)
+proposals = analyze_scores(db_path="path/to/observability.db")
+
+# Both analyze_run and analyze_history accept db_path to merge score proposals
+report = analyze_history(experiment_log="...", db_path="path/to/observability.db")
+print(report.score_proposals_count)  # how many came from score analysis
 ```
 
-**8 failure categories**: `MODEL_OVERKILL`, `MODEL_UNDERKILL`, `PROMPT_DRIFT`, `VALIDATION_NOISE`, `TOOL_GAP`, `STUCK_LOOP`, `DATA_QUALITY`, `MEASUREMENT_ERROR`.
+**8 failure categories** (7 implemented, `TOOL_GAP` deferred):
+- Experiment-based (4): `MODEL_OVERKILL`, `MODEL_UNDERKILL`, `STUCK_LOOP`, `VALIDATION_NOISE`
+- Score-based (3): `PROMPT_DRIFT` (git-correlated), `DATA_QUALITY` (weak dimensions), `MEASUREMENT_ERROR` (judge variance)
+- Deferred: `TOOL_GAP` (needs tool-call logs)
+
+**Git correlation**: Scores auto-capture `git_commit` (via `git_utils.get_git_head()`). The `PROMPT_DRIFT` classifier compares scores across commits and checks `git diff` for prompt file changes.
 
 **Risk levels**: `low` (auto-apply), `medium` (apply on next run, revert if fails), `high` (human review).
 
@@ -852,7 +864,7 @@ python -m llm_client scores --rubric research_quality --days 7
 python -m llm_client scores --trend                    # daily averages
 ```
 
-Scores are dual-written to `task_scores` SQLite table and `scores.jsonl`. `ScoreResult` fields: `.rubric`, `.overall_score`, `.dimensions`, `.reasoning`, `.judge_model`, `.method`, `.cost`, `.latency_s`.
+Scores are dual-written to `task_scores` SQLite table and `scores.jsonl`. `ScoreResult` fields: `.rubric`, `.overall_score`, `.dimensions`, `.reasoning`, `.judge_model`, `.method`, `.cost`, `.latency_s`, `.git_commit`. The `git_commit` is auto-captured from HEAD when logging scores (pass explicitly to override).
 
 ## Tests
 

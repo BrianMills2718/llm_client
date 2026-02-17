@@ -123,7 +123,18 @@ from llm_client.analyzer import (
     Proposal,
     analyze_history,
     analyze_run,
+    analyze_scores,
     check_scorer_reliability,
+)
+from llm_client.git_utils import (
+    CODE_CHANGE,
+    CONFIG_CHANGE,
+    PROMPT_CHANGE,
+    RUBRIC_CHANGE,
+    TEST_CHANGE,
+    classify_diff_files,
+    get_diff_files,
+    get_git_head,
 )
 
 from llm_client.mcp_agent import (
@@ -265,7 +276,17 @@ __all__ = [
     "Proposal",
     "analyze_history",
     "analyze_run",
+    "analyze_scores",
     "check_scorer_reliability",
+    # git_utils
+    "CODE_CHANGE",
+    "CONFIG_CHANGE",
+    "PROMPT_CHANGE",
+    "RUBRIC_CHANGE",
+    "TEST_CHANGE",
+    "classify_diff_files",
+    "get_diff_files",
+    "get_git_head",
     # tool_utils
     "callable_to_openai_tool",
     "prepare_direct_tools",

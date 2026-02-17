@@ -132,6 +132,7 @@ class ExperimentRecord(BaseModel):
     outcome: str  # "confirmed" | "hypothesis_rejected" | "error"
     prior_tier: int | None = None
     learning: str | None = None
+    git_commit: str | None = None
 
 
 class ExecutionReport(BaseModel):
@@ -583,6 +584,8 @@ async def _execute_task(
 
 def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecord:
     """Create an experiment record from a task result."""
+    from llm_client.git_utils import get_git_head
+
     task = graph.tasks[tr.task_id]
     if tr.status == TaskStatus.COMPLETED:
         outcome = "confirmed"
@@ -612,6 +615,7 @@ def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecor
             "cost_per_second": round(tr.cost_usd / tr.duration_s, 6) if tr.duration_s > 0 else 0,
         },
         outcome=outcome,
+        git_commit=get_git_head(),
     )
 
 

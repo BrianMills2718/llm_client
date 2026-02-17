@@ -84,6 +84,7 @@ class ScoreResult(BaseModel):
     method: str = "llm_judge"
     cost: float = 0.0
     latency_s: float = 0.0
+    git_commit: str | None = None
 
 
 # Pydantic model for structured judge output
@@ -171,6 +172,7 @@ async def ascore_output(
     output_model: str | None = None,
     agent_spec: str | None = None,
     prompt_id: str | None = None,
+    git_commit: str | None = None,
 ) -> ScoreResult:
     """Score a task output against a rubric.
 
@@ -268,6 +270,7 @@ async def ascore_output(
         method=method,
         cost=judge_cost,
         latency_s=round(latency, 3),
+        git_commit=git_commit,
     )
 
     # Log to observability DB
@@ -287,6 +290,7 @@ async def ascore_output(
         latency_s=latency,
         task=task,
         trace_id=trace_id,
+        git_commit=git_commit,
     )
 
     return result
