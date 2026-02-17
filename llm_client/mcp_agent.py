@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TURNS: int = 20
 """Maximum tool-calling loop iterations before forcing a final answer."""
 
+TURN_WARNING_THRESHOLD: int = 3
+"""Inject a 'wrap up' system message this many turns before max_turns."""
+
 DEFAULT_MCP_INIT_TIMEOUT: float = 30.0
 """Seconds to wait for each MCP server subprocess to initialize."""
 
@@ -556,6 +559,20 @@ async def _agent_loop(
             "Agent turn %d/%d: %d tool calls",
             turn + 1, max_turns, len(result.tool_calls),
         )
+
+        # Turn countdown: warn agent when it's running low on turns
+        remaining = max_turns - (turn + 1)
+        if remaining == TURN_WARNING_THRESHOLD:
+            countdown_msg = {
+                "role": "user",
+                "content": (
+                    f"[SYSTEM: You have {remaining} turns remaining. "
+                    "Submit your best answer now based on the evidence you have. "
+                    "Do not search for more information.]"
+                ),
+            }
+            messages.append(countdown_msg)
+            agent_result.conversation_trace.append(countdown_msg)
     else:
         # max_turns exhausted — one final call without tools to get an answer
         logger.warning(
