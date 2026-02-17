@@ -92,6 +92,7 @@ class MCPAgentResult:
     turns: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    conversation_trace: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -473,13 +474,34 @@ async def _agent_loop(
         if not result.tool_calls:
             final_content = result.content
             final_finish_reason = result.finish_reason
+            # Capture final assistant message in trace
+            if result.content:
+                agent_result.conversation_trace.append({
+                    "role": "assistant",
+                    "content": result.content,
+                })
             break
 
         # Append assistant message with tool calls
-        messages.append({
+        assistant_msg = {
             "role": "assistant",
             "content": result.content or None,
             "tool_calls": result.tool_calls,
+        }
+        messages.append(assistant_msg)
+
+        # Capture assistant message in trace (with tool call names for readability)
+        agent_result.conversation_trace.append({
+            "role": "assistant",
+            "content": result.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.get("id", ""),
+                    "name": tc.get("function", {}).get("name", ""),
+                    "arguments": tc.get("function", {}).get("arguments", ""),
+                }
+                for tc in result.tool_calls
+            ],
         })
 
         # Execute tool calls
@@ -488,6 +510,14 @@ async def _agent_loop(
         )
         agent_result.tool_calls.extend(records)
         messages.extend(tool_messages)
+
+        # Capture tool results in trace
+        for tmsg in tool_messages:
+            agent_result.conversation_trace.append({
+                "role": "tool",
+                "tool_call_id": tmsg.get("tool_call_id", ""),
+                "content": tmsg.get("content", ""),
+            })
 
         logger.debug(
             "MCP agent turn %d/%d: %d tool calls",
@@ -509,6 +539,12 @@ async def _agent_loop(
         agent_result.total_input_tokens += inp
         agent_result.total_output_tokens += out
         agent_result.turns += 1
+        # Capture forced final answer in trace
+        if final_content:
+            agent_result.conversation_trace.append({
+                "role": "assistant",
+                "content": final_content,
+            })
 
     agent_result.metadata["total_cost"] = total_cost
     return final_content, final_finish_reason

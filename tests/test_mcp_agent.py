@@ -242,6 +242,11 @@ class TestAcallWithMcp:
             assert isinstance(result.raw_response, MCPAgentResult)
             assert result.raw_response.turns == 1
             assert result.raw_response.tool_calls == []
+            # No tool calls → trace has just the final assistant message
+            trace = result.raw_response.conversation_trace
+            assert len(trace) == 1
+            assert trace[0]["role"] == "assistant"
+            assert trace[0]["content"] == "Paris"
 
     async def test_multi_turn_with_tool_calls(self) -> None:
         """LLM calls a tool, gets result, then answers."""
@@ -299,6 +304,16 @@ class TestAcallWithMcp:
             assert agent_result.tool_calls[0].server == "srv"
             assert agent_result.tool_calls[0].result is not None
             assert agent_result.tool_calls[0].error is None
+
+            # Verify conversation trace captures all messages
+            trace = agent_result.conversation_trace
+            assert len(trace) == 3  # assistant(tool_call) + tool_result + assistant(answer)
+            assert trace[0]["role"] == "assistant"
+            assert len(trace[0]["tool_calls"]) == 1
+            assert trace[0]["tool_calls"][0]["name"] == "search"
+            assert trace[1]["role"] == "tool"
+            assert trace[2]["role"] == "assistant"
+            assert trace[2]["content"] == "Paris"
 
             # Verify the session.call_tool was called correctly
             mock_session.call_tool.assert_called_once_with(
