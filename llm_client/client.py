@@ -738,8 +738,14 @@ def _is_responses_api_model(model: str) -> bool:
     GPT-5 models use OpenAI's Responses API which has different parameters
     and response format than the Chat Completions API. This function
     detects them so call_llm/acall_llm can route automatically.
+
+    OpenRouter proxies use Chat Completions API even for GPT-5 models,
+    so we exclude them.
     """
-    return "gpt-5" in model.lower()
+    lower = model.lower()
+    if lower.startswith("openrouter/"):
+        return False
+    return "gpt-5" in lower
 
 
 def _is_agent_model(model: str) -> bool:

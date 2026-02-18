@@ -42,8 +42,8 @@ class TestGetModel:
 
     def test_bulk_cheap_returns_cheapest(self):
         model = get_model("bulk_cheap", available_only=False)
-        # gpt-5-nano is cheapest at $0.14
-        assert model == "gpt-5-nano"
+        # gpt-5-nano is cheapest at $0.14 (via OpenRouter)
+        assert model == "openrouter/openai/gpt-5-nano"
 
     def test_graph_building_returns_cheapest_structured(self):
         model = get_model("graph_building", available_only=False)
@@ -51,8 +51,8 @@ class TestGetModel:
         # gpt-5-nano (intel=27) fails intel check
         # gemini-2.5-flash-lite (intel=28) fails intel check
         # grok-4.1-fast (intel=39, cost=0.28) or deepseek (intel=42, cost=0.32)
-        # grok-4.1-fast at $0.28 wins
-        assert model == "xai/grok-4.1-fast"
+        # grok-4.1-fast at $0.28 wins (via OpenRouter)
+        assert model == "openrouter/x-ai/grok-4.1-fast"
 
     def test_agent_reasoning_filters_high_intelligence(self):
         model = get_model("agent_reasoning", available_only=False)
@@ -96,19 +96,19 @@ class TestGetModel:
             get_model("impossible", available_only=False)
 
     def test_available_only_filters_by_env_var(self):
-        # Only set DEEPSEEK_API_KEY
+        # Only set OPENROUTER_API_KEY (most non-Gemini models use OpenRouter)
         env = {
-            "DEEPSEEK_API_KEY": "test-key",
+            "OPENROUTER_API_KEY": "test-key",
             "OPENAI_API_KEY": "",
             "GEMINI_API_KEY": "",
             "XAI_API_KEY": "",
+            "DEEPSEEK_API_KEY": "",
         }
         with patch.dict(os.environ, env, clear=False):
-            # Remove keys that might be set
-            for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY"]:
+            for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "DEEPSEEK_API_KEY"]:
                 os.environ.pop(k, None)
             model = get_model("bulk_cheap", available_only=True)
-            assert model == "deepseek/deepseek-chat"
+            assert model == "openrouter/openai/gpt-5-nano"
 
     def test_available_only_no_keys_raises(self):
         env_clear = {
@@ -116,6 +116,7 @@ class TestGetModel:
             "OPENAI_API_KEY": "",
             "GEMINI_API_KEY": "",
             "XAI_API_KEY": "",
+            "OPENROUTER_API_KEY": "",
         }
         with patch.dict(os.environ, env_clear, clear=False):
             for k in env_clear:
