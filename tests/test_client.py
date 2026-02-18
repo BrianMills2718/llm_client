@@ -921,6 +921,41 @@ class TestResponsesAPIDetection:
         assert _is_responses_api_model("anthropic/claude-sonnet-4-5-20250929") is False
 
 
+class TestToolSchemaConversion:
+    """Tests for ChatCompletions → Responses API tool schema conversion."""
+
+    def test_nested_format_flattened(self) -> None:
+        from llm_client.client import _convert_tools_for_responses_api
+        tools = [{"type": "function", "function": {"name": "foo", "description": "d", "parameters": {}}}]
+        result = _convert_tools_for_responses_api(tools)
+        assert result == [{"type": "function", "name": "foo", "description": "d", "parameters": {}}]
+
+    def test_already_flat_passthrough(self) -> None:
+        from llm_client.client import _convert_tools_for_responses_api
+        tools = [{"type": "function", "name": "foo", "description": "d", "parameters": {}}]
+        result = _convert_tools_for_responses_api(tools)
+        assert result == tools
+
+    def test_multiple_tools(self) -> None:
+        from llm_client.client import _convert_tools_for_responses_api
+        tools = [
+            {"type": "function", "function": {"name": "a", "description": "x", "parameters": {}}},
+            {"type": "function", "function": {"name": "b", "description": "y", "parameters": {"type": "object"}}},
+        ]
+        result = _convert_tools_for_responses_api(tools)
+        assert len(result) == 2
+        assert result[0]["name"] == "a"
+        assert result[1]["name"] == "b"
+        assert result[1]["parameters"] == {"type": "object"}
+
+    def test_idempotent(self) -> None:
+        from llm_client.client import _convert_tools_for_responses_api
+        tools = [{"type": "function", "function": {"name": "foo", "description": "d", "parameters": {}}}]
+        once = _convert_tools_for_responses_api(tools)
+        twice = _convert_tools_for_responses_api(once)
+        assert once == twice
+
+
 class TestMessageConversion:
     """Tests for converting messages to responses API input."""
 
@@ -1035,6 +1070,31 @@ class TestResponsesAPIRouting:
         assert "response_format" not in kwargs
         assert "text" in kwargs
         assert kwargs["text"]["format"]["type"] == "json_schema"
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_converts_tools_to_flat_format(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """Tools passed to GPT-5 should be flattened from ChatCompletions to Responses API format."""
+        mock_resp.return_value = _mock_responses_api_response()
+        chat_completions_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search entities",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                },
+            }
+        ]
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], tools=chat_completions_tools)
+        kwargs = mock_resp.call_args.kwargs
+        tools = kwargs["tools"]
+        assert len(tools) == 1
+        # Should be flat (Responses API format), not nested
+        assert "function" not in tools[0], "tools should be flattened for Responses API"
+        assert tools[0]["name"] == "search"
+        assert tools[0]["description"] == "Search entities"
+        assert tools[0]["parameters"]["properties"]["q"]["type"] == "string"
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")

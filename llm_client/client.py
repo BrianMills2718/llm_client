@@ -931,6 +931,27 @@ def _convert_response_format_for_responses(
     return {"format": {"type": "text"}}
 
 
+def _convert_tools_for_responses_api(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert tool schemas from ChatCompletions to Responses API format.
+
+    ChatCompletions: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+    Responses API:   {"type": "function", "name": ..., "description": ..., "parameters": ...}
+
+    Idempotent — already-flat schemas pass through unchanged.
+    """
+    converted = []
+    for tool in tools:
+        if "function" in tool and isinstance(tool["function"], dict):
+            flat = {"type": tool.get("type", "function")}
+            flat.update(tool["function"])
+            converted.append(flat)
+        else:
+            converted.append(tool)
+    return converted
+
+
 def _prepare_responses_kwargs(
     model: str,
     messages: list[dict[str, Any]],
@@ -970,6 +991,12 @@ def _prepare_responses_kwargs(
     for key in ("max_tokens", "max_output_tokens", "messages",
                 "reasoning_effort", "thinking", "temperature"):
         kwargs.pop(key, None)
+
+    # Convert tools from ChatCompletions format to Responses API format.
+    # ChatCompletions: {"type": "function", "function": {"name": ..., ...}}
+    # Responses API:   {"type": "function", "name": ..., ...}
+    if "tools" in kwargs:
+        kwargs["tools"] = _convert_tools_for_responses_api(kwargs["tools"])
 
     resp_kwargs.update(kwargs)
     return resp_kwargs
