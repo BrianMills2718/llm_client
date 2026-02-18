@@ -117,6 +117,7 @@ _DEFAULT_MODELS: list[dict[str, Any]] = [
         "cost": 0.175,
         "context": 1_000_000,
         "structured_output": True,
+        "tool_calling": False,
         "tags": ["cheapest-google"],
     },
     {

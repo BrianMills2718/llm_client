@@ -761,9 +761,13 @@ _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
         "GPT-5 is cheaper and smarter. There is no reason to use GPT-4o.",
     ),
     "o1-mini": (
-        "o4-mini",
-        "o1-mini is superseded by o4-mini ($1.10/$4.40) which is better at "
-        "reasoning. o1-mini should not be used for new work.",
+        "o3-mini",
+        "o1-mini is deprecated. Use o3-mini for reasoning tasks.",
+    ),
+    "o4-mini": (
+        "o3-mini",
+        "o4-mini was retired by OpenAI on Feb 16, 2026. Use o3-mini "
+        "for reasoning tasks or gpt-5-mini for general tasks.",
     ),
     "o1-pro": (
         "o3",
