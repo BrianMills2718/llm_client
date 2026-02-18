@@ -102,6 +102,8 @@ class MCPAgentResult:
     turns: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cached_tokens: int = 0
+    total_cache_creation_tokens: int = 0
     conversation_trace: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -179,15 +181,18 @@ def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _extract_usage(usage: dict[str, Any]) -> tuple[int, int]:
-    """Extract (input_tokens, output_tokens) from usage dict.
+def _extract_usage(usage: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Extract (input_tokens, output_tokens, cached_tokens, cache_creation_tokens) from usage dict.
 
     Handles both OpenAI convention (prompt_tokens/completion_tokens)
     and Anthropic convention (input_tokens/output_tokens).
+    Extracts provider-level prompt caching details when available.
     """
     inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
     out = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-    return int(inp), int(out)
+    cached = usage.get("cached_tokens") or 0
+    cache_creation = usage.get("cache_creation_tokens") or 0
+    return int(inp), int(out), int(cached), int(cache_creation)
 
 
 def _truncate(text: str, max_length: int) -> str:
@@ -441,15 +446,20 @@ async def _acall_with_mcp(
         raise ValueError("Either mcp_servers or mcp_sessions must be provided")
 
     # Cost is accumulated during _agent_loop via agent_result metadata
-    return LLMCallResult(
-        content=final_content,
-        usage={
+    usage = {
             "input_tokens": agent_result.total_input_tokens,
             "output_tokens": agent_result.total_output_tokens,
             "total_tokens": (
                 agent_result.total_input_tokens + agent_result.total_output_tokens
             ),
-        },
+        }
+    if agent_result.total_cached_tokens:
+        usage["cached_tokens"] = agent_result.total_cached_tokens
+    if agent_result.total_cache_creation_tokens:
+        usage["cache_creation_tokens"] = agent_result.total_cache_creation_tokens
+    return LLMCallResult(
+        content=final_content,
+        usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
         model=model,
         finish_reason=final_finish_reason,
@@ -489,9 +499,11 @@ async def _agent_loop(
         )
 
         # Accumulate usage
-        inp, out = _extract_usage(result.usage or {})
+        inp, out, cached, cache_create = _extract_usage(result.usage or {})
         agent_result.total_input_tokens += inp
         agent_result.total_output_tokens += out
+        agent_result.total_cached_tokens += cached
+        agent_result.total_cache_creation_tokens += cache_create
         total_cost += result.cost
 
         # No tool calls → done
@@ -585,9 +597,11 @@ async def _agent_loop(
         final_content = final_result.content
         final_finish_reason = final_result.finish_reason
         total_cost += final_result.cost
-        inp, out = _extract_usage(final_result.usage or {})
+        inp, out, cached, cache_create = _extract_usage(final_result.usage or {})
         agent_result.total_input_tokens += inp
         agent_result.total_output_tokens += out
+        agent_result.total_cached_tokens += cached
+        agent_result.total_cache_creation_tokens += cache_create
         agent_result.turns += 1
         # Capture forced final answer in trace
         if final_content:
@@ -649,15 +663,20 @@ async def _acall_with_tools(
         agent_result, _direct_executor, max_turns, tool_result_max_length, timeout, kwargs,
     )
 
-    return LLMCallResult(
-        content=final_content,
-        usage={
+    usage = {
             "input_tokens": agent_result.total_input_tokens,
             "output_tokens": agent_result.total_output_tokens,
             "total_tokens": (
                 agent_result.total_input_tokens + agent_result.total_output_tokens
             ),
-        },
+        }
+    if agent_result.total_cached_tokens:
+        usage["cached_tokens"] = agent_result.total_cached_tokens
+    if agent_result.total_cache_creation_tokens:
+        usage["cache_creation_tokens"] = agent_result.total_cache_creation_tokens
+    return LLMCallResult(
+        content=final_content,
+        usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
         model=model,
         finish_reason=final_finish_reason,
