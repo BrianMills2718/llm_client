@@ -88,7 +88,7 @@ from llm_client.errors import (
 )
 
 from llm_client.io_log import configure as configure_logging
-from llm_client.io_log import import_jsonl, log_embedding
+from llm_client.io_log import get_completed_traces, import_jsonl, log_embedding, lookup_result
 from llm_client.models import (
     ModelInfo,
     TaskProfile,
@@ -241,6 +241,8 @@ __all__ = [
     "configure_logging",
     "import_jsonl",
     "log_embedding",
+    "lookup_result",
+    "get_completed_traces",
     "render_prompt",
     "strip_fences",
     "ModelInfo",

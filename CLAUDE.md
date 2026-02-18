@@ -625,7 +625,7 @@ configure_logging(project="my_project")             # override project name
 configure_logging(data_root="/tmp/llm_logs")        # override data root
 ```
 
-Each record contains: `timestamp`, `model`, `messages` (truncated), `response` (truncated), `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`, `task`, `trace_id`.
+Each record contains: `timestamp`, `model`, `messages`, `response`, `usage`, `cost`, `finish_reason`, `latency_s`, `error`, `caller`, `task`, `trace_id`. Full content stored — no truncation.
 
 Pass `task="extraction"` to tag log records for performance tracking. Pass `trace_id="my_trace_123"` to correlate all LLM/embedding calls within a single query or pipeline run.
 

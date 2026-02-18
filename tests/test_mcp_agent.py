@@ -94,28 +94,45 @@ class TestMcpToolToOpenai:
 
 class TestExtractUsage:
     def test_openai_convention(self) -> None:
-        inp, out = _extract_usage({"prompt_tokens": 100, "completion_tokens": 50})
+        inp, out, cached, cache_create = _extract_usage({"prompt_tokens": 100, "completion_tokens": 50})
         assert inp == 100
         assert out == 50
+        assert cached == 0
+        assert cache_create == 0
 
     def test_anthropic_convention(self) -> None:
-        inp, out = _extract_usage({"input_tokens": 200, "output_tokens": 75})
+        inp, out, cached, cache_create = _extract_usage({"input_tokens": 200, "output_tokens": 75})
         assert inp == 200
         assert out == 75
 
     def test_empty_usage(self) -> None:
-        inp, out = _extract_usage({})
+        inp, out, cached, cache_create = _extract_usage({})
         assert inp == 0
         assert out == 0
+        assert cached == 0
+        assert cache_create == 0
 
     def test_input_tokens_takes_priority(self) -> None:
         """input_tokens is checked before prompt_tokens."""
-        inp, out = _extract_usage({
+        inp, out, cached, cache_create = _extract_usage({
             "input_tokens": 300,
             "prompt_tokens": 100,
             "output_tokens": 50,
         })
         assert inp == 300
+
+    def test_cached_tokens(self) -> None:
+        """Provider-level prompt caching fields are extracted."""
+        inp, out, cached, cache_create = _extract_usage({
+            "input_tokens": 500,
+            "output_tokens": 100,
+            "cached_tokens": 400,
+            "cache_creation_tokens": 50,
+        })
+        assert inp == 500
+        assert out == 100
+        assert cached == 400
+        assert cache_create == 50
 
 
 class TestTruncate:
@@ -556,6 +573,8 @@ class TestRouting:
                 [{"role": "user", "content": "Q"}],
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
                 max_turns=5,
+                task="test",
+                trace_id="test_non_agent_mcp_routing",
             )
 
             mock_loop.assert_called_once()
@@ -577,6 +596,8 @@ class TestRouting:
                 "codex",
                 [{"role": "user", "content": "Q"}],
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                task="test",
+                trace_id="test_agent_model_skips_loop",
             )
 
             mock_loop.assert_not_called()
@@ -605,6 +626,8 @@ class TestRouting:
             result = await acall_llm(
                 "gemini/gemini-3-flash-preview",
                 [{"role": "user", "content": "Q"}],
+                task="test",
+                trace_id="test_no_mcp_normal_routing",
             )
 
             mock_loop.assert_not_called()
@@ -619,6 +642,8 @@ class TestRouting:
                 "gemini/gemini-3-flash-preview",
                 [{"role": "user", "content": "Q"}],
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                task="test",
+                trace_id="test_sync_call_llm_with_mcp",
             )
 
             # _run_sync wraps the async call
@@ -637,6 +662,8 @@ class TestRouting:
                 mcp_init_timeout=60.0,
                 tool_result_max_length=10000,
                 temperature=0.5,  # regular litellm kwarg
+                task="test",
+                trace_id="test_mcp_kwargs_popped",
             )
 
             call_kwargs = mock_loop.call_args.kwargs

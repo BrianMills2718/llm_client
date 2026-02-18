@@ -66,7 +66,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_returns_result(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_returns_result")
         assert isinstance(result, LLMCallResult)
         assert result.content == "Hello!"
         assert result.cost == 0.001
@@ -77,7 +77,7 @@ class TestCallLLM:
     def test_num_retries_not_passed_to_litellm(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """num_retries controls our retry loop, not litellm's internal retry."""
         mock_comp.return_value = _mock_response()
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=5)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=5, task="test", trace_id="test_num_retries")
         kwargs = mock_comp.call_args.kwargs
         assert "num_retries" not in kwargs
 
@@ -85,7 +85,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_reasoning_effort_for_claude(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
+        call_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high", task="test", trace_id="test_reasoning_claude")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["reasoning_effort"] == "high"
 
@@ -93,7 +93,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_reasoning_effort_ignored_for_non_claude(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], reasoning_effort="high", task="test", trace_id="test_reasoning_non_claude")
         kwargs = mock_comp.call_args.kwargs
         assert "reasoning_effort" not in kwargs
 
@@ -101,13 +101,13 @@ class TestCallLLM:
     def test_raises_on_error(self, mock_comp: MagicMock) -> None:
         mock_comp.side_effect = Exception("API down")
         with pytest.raises(Exception, match="API down"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_raises_error")
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")
     def test_extracts_usage(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_extracts_usage")
         assert result.usage["prompt_tokens"] == 10
         assert result.usage["completion_tokens"] == 5
         assert result.usage["total_tokens"] == 15
@@ -116,7 +116,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_cost_fallback(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_cost_fallback")
         assert result.cost > 0  # Fallback estimate
         assert result.cost == 15 * 0.000001  # total_tokens * $1/M
 
@@ -128,6 +128,8 @@ class TestCallLLM:
             "gpt-4",
             [{"role": "user", "content": "Hi"}],
             api_base="https://openrouter.ai/api/v1",
+            task="test",
+            trace_id="test_api_base_passed",
         )
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
@@ -136,7 +138,7 @@ class TestCallLLM:
     @patch("llm_client.client.litellm.completion")
     def test_api_base_omitted_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_api_base_omitted")
         kwargs = mock_comp.call_args.kwargs
         assert "api_base" not in kwargs
 
@@ -149,7 +151,7 @@ class TestCallLLMWithTools:
     def test_passes_tools(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        call_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools)
+        call_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools, task="test", trace_id="test_passes_tools")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["tools"] == tools
 
@@ -164,7 +166,7 @@ class TestCallLLMWithTools:
         mock_comp.return_value = _mock_response(tool_calls=[mock_tc])
 
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
-        result = call_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools)
+        result = call_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools, task="test", trace_id="test_extracts_tool_calls")
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["function"]["name"] == "get_weather"
 
@@ -178,6 +180,8 @@ class TestCallLLMWithTools:
             [{"role": "user", "content": "Hi"}],
             tools,
             api_base="https://openrouter.ai/api/v1",
+            task="test",
+            trace_id="test_tools_api_base",
         )
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
@@ -191,7 +195,7 @@ class TestAcallLLM:
     @patch("llm_client.client.litellm.acompletion")
     async def test_returns_result(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_returns_result")
         assert isinstance(result, LLMCallResult)
         assert result.content == "Hello!"
         assert result.cost == 0.001
@@ -202,7 +206,7 @@ class TestAcallLLM:
     @patch("llm_client.client.litellm.acompletion")
     async def test_passes_kwargs(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
-        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=5, timeout=120)
+        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=5, timeout=120, task="test", trace_id="test_async_passes_kwargs")
         kwargs = mock_acomp.call_args.kwargs
         assert "num_retries" not in kwargs
         assert kwargs["timeout"] == 120
@@ -212,7 +216,7 @@ class TestAcallLLM:
     @patch("llm_client.client.litellm.acompletion")
     async def test_reasoning_effort_for_claude(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
-        await acall_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high")
+        await acall_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high", task="test", trace_id="test_async_reasoning_claude")
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["reasoning_effort"] == "high"
 
@@ -225,6 +229,8 @@ class TestAcallLLM:
             "gpt-4",
             [{"role": "user", "content": "Hi"}],
             api_base="https://openrouter.ai/api/v1",
+            task="test",
+            trace_id="test_async_api_base",
         )
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
@@ -234,7 +240,7 @@ class TestAcallLLM:
     async def test_raises_on_error(self, mock_acomp: MagicMock) -> None:
         mock_acomp.side_effect = Exception("API down")
         with pytest.raises(Exception, match="API down"):
-            await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_raises_error")
 
 
 class TestAcallLLMStructured:
@@ -261,6 +267,8 @@ class TestAcallLLMStructured:
             "gpt-4",
             [{"role": "user", "content": "I love this!"}],
             response_model=Sentiment,
+            task="test",
+            trace_id="test_async_structured_returns",
         )
         assert result.label == "positive"
         assert result.score == 0.95
@@ -288,6 +296,8 @@ class TestAcallLLMStructured:
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             api_base="https://openrouter.ai/api/v1",
+            task="test",
+            trace_id="test_async_structured_api_base",
         )
         call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
         assert call_kwargs["api_base"] == "https://openrouter.ai/api/v1"
@@ -302,7 +312,7 @@ class TestAcallLLMWithTools:
     async def test_passes_tools(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        await acall_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools)
+        await acall_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools, task="test", trace_id="test_async_tools_passes")
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["tools"] == tools
 
@@ -318,7 +328,7 @@ class TestAcallLLMWithTools:
         mock_acomp.return_value = _mock_response(tool_calls=[mock_tc])
 
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
-        result = await acall_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools)
+        result = await acall_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools, task="test", trace_id="test_async_tools_extracts")
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["function"]["name"] == "get_weather"
 
@@ -330,7 +340,7 @@ class TestFinishReasonAndRawResponse:
     @patch("llm_client.client.litellm.completion")
     def test_finish_reason_extracted(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response(finish_reason="stop")
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_finish_reason")
         assert result.finish_reason == "stop"
 
     @patch("llm_client.client.litellm.completion")
@@ -338,7 +348,7 @@ class TestFinishReasonAndRawResponse:
         """Truncated responses should raise immediately (not retry)."""
         mock_comp.return_value = _mock_response(finish_reason="length")
         with pytest.raises(LLMError, match="truncated"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_finish_length")
         assert mock_comp.call_count == 1  # No retry on truncation
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
@@ -346,14 +356,14 @@ class TestFinishReasonAndRawResponse:
     def test_raw_response_included(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         resp = _mock_response()
         mock_comp.return_value = resp
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_raw_response")
         assert result.raw_response is resp
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
     def test_raw_response_excluded_from_repr(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_raw_repr")
         assert "raw_response" not in repr(result)
 
     @pytest.mark.asyncio
@@ -361,7 +371,7 @@ class TestFinishReasonAndRawResponse:
     @patch("llm_client.client.litellm.acompletion")
     async def test_async_finish_reason_extracted(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response(finish_reason="stop")
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_finish_reason")
         assert result.finish_reason == "stop"
 
     @pytest.mark.asyncio
@@ -370,7 +380,7 @@ class TestFinishReasonAndRawResponse:
         """Async: truncated responses should raise immediately."""
         mock_acomp.return_value = _mock_response(finish_reason="length")
         with pytest.raises(LLMError, match="truncated"):
-            await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_finish_length")
         assert mock_acomp.call_count == 1
 
     @pytest.mark.asyncio
@@ -379,7 +389,7 @@ class TestFinishReasonAndRawResponse:
     async def test_async_raw_response_included(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         resp = _mock_response()
         mock_acomp.return_value = resp
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_raw_response")
         assert result.raw_response is resp
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
@@ -401,6 +411,8 @@ class TestFinishReasonAndRawResponse:
             "gpt-4",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_structured_finish_reason",
         )
         assert meta.finish_reason == "stop"
         assert meta.raw_response is raw_resp
@@ -418,7 +430,7 @@ class TestSmartRetry:
         good = _mock_response(content="Hello!")
         mock_comp.side_effect = [empty, good]
 
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_retry_empty")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
         mock_sleep.assert_called_once()
@@ -433,7 +445,7 @@ class TestSmartRetry:
             _mock_response(),
         ]
 
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_retry_transient")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
@@ -443,7 +455,7 @@ class TestSmartRetry:
         mock_comp.side_effect = Exception("invalid api key")
 
         with pytest.raises(Exception, match="invalid api key"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_non_retryable")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.time.sleep")
@@ -453,7 +465,7 @@ class TestSmartRetry:
         mock_comp.side_effect = Exception("timeout")
 
         with pytest.raises(Exception, match="timeout"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_exhausted_retries")
         assert mock_comp.call_count == 3  # initial + 2 retries
 
     @patch("llm_client.client.time.sleep")
@@ -466,7 +478,7 @@ class TestSmartRetry:
             _mock_response(),
         ]
 
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_retry_json_parse")
         assert result.content == "Hello!"
 
     @pytest.mark.asyncio
@@ -479,7 +491,7 @@ class TestSmartRetry:
         good = _mock_response(content="Hello!")
         mock_acomp.side_effect = [empty, good]
 
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_async_retry_empty")
         assert result.content == "Hello!"
         assert mock_acomp.call_count == 2
 
@@ -494,7 +506,7 @@ class TestSmartRetry:
             _mock_response(),
         ]
 
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_async_retry_transient")
         assert result.content == "Hello!"
 
     @patch("llm_client.client.time.sleep")
@@ -522,6 +534,8 @@ class TestSmartRetry:
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             num_retries=2,
+            task="test",
+            trace_id="test_structured_retry_transient",
         )
         assert result.name == "test"
         assert mock_client.chat.completions.create_with_completion.call_count == 2
@@ -539,7 +553,7 @@ class TestSmartRetry:
         mock_comp.return_value = resp
 
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
-        result = call_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools)
+        result = call_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools, task="test", trace_id="test_tool_calls_no_retry")
         assert result.tool_calls[0]["function"]["name"] == "get_weather"
         assert mock_comp.call_count == 1  # No retry
 
@@ -561,7 +575,7 @@ class TestSmartRetry:
         good = _mock_response(content="Hello!")
         mock_comp.side_effect = [bogus, good]
 
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_bogus_tool_calls")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2  # Retried once
 
@@ -577,7 +591,7 @@ class TestNonRetryableErrors:
             "Incorrect API key provided", model="gpt-4", llm_provider="openai",
         )
         with pytest.raises(LLMAuthError):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_auth_error")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.litellm.completion")
@@ -588,7 +602,7 @@ class TestNonRetryableErrors:
             current_cost=10.0, max_budget=5.0,
         )
         with pytest.raises(LLMQuotaExhaustedError):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_budget_exceeded")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.litellm.completion")
@@ -599,7 +613,7 @@ class TestNonRetryableErrors:
             "content filtered", model="gpt-4", llm_provider="openai",
         )
         with pytest.raises(LLMContentFilterError):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_content_policy")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.litellm.completion")
@@ -610,7 +624,7 @@ class TestNonRetryableErrors:
             "Model not found", model="gpt-99", llm_provider="openai",
         )
         with pytest.raises(LLMModelNotFoundError):
-            call_llm("gpt-99", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-99", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_not_found")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.litellm.completion")
@@ -622,7 +636,7 @@ class TestNonRetryableErrors:
             model="gpt-4", llm_provider="openai",
         )
         with pytest.raises(LLMQuotaExhaustedError):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_quota_exceeded")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.time.sleep")
@@ -638,7 +652,7 @@ class TestNonRetryableErrors:
             ),
             _mock_response(),
         ]
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_transient_rate_limit")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
@@ -647,7 +661,7 @@ class TestNonRetryableErrors:
         """Generic Exception with quota/billing message should not retry."""
         mock_comp.side_effect = Exception("insufficient quota for this request")
         with pytest.raises(Exception, match="insufficient quota"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_generic_quota")
         assert mock_comp.call_count == 1
 
 
@@ -658,7 +672,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.completion")
     def test_gemini_3_gets_thinking_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}])
+        call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini3_thinking")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
@@ -666,7 +680,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.completion")
     def test_gemini_4_gets_thinking_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gemini/gemini-4-pro", [{"role": "user", "content": "Hi"}])
+        call_llm("gemini/gemini-4-pro", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini4_thinking")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
@@ -674,7 +688,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.completion")
     def test_non_thinking_model_no_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
-        call_llm("gemini/gemini-2.0-flash-lite", [{"role": "user", "content": "Hi"}])
+        call_llm("gemini/gemini-2.0-flash-lite", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_non_thinking")
         kwargs = mock_comp.call_args.kwargs
         assert "thinking" not in kwargs
 
@@ -684,7 +698,7 @@ class TestThinkingModelDetection:
         """User-provided thinking config should not be overridden."""
         mock_comp.return_value = _mock_response()
         custom = {"type": "enabled", "budget_tokens": 1000}
-        call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], thinking=custom)
+        call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], thinking=custom, task="test", trace_id="test_thinking_not_overridden")
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["thinking"] == custom
 
@@ -693,7 +707,7 @@ class TestThinkingModelDetection:
     @patch("llm_client.client.litellm.acompletion")
     async def test_async_gemini_3_gets_thinking_config(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         mock_acomp.return_value = _mock_response()
-        await acall_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}])
+        await acall_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_gemini3_thinking")
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
@@ -716,6 +730,8 @@ class TestThinkingModelDetection:
             "gemini/gemini-3-flash",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_structured_gemini3_thinking",
         )
         call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
         assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
@@ -797,6 +813,8 @@ class TestGPT5TemperatureStripping:
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             temperature=0.5,
+            task="test",
+            trace_id="test_gpt5_strips_temp",
         )
         call_kwargs = mock_resp.call_args.kwargs
         # _prepare_responses_kwargs strips temperature for GPT-5
@@ -819,6 +837,8 @@ class TestGPT5TemperatureStripping:
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             temperature=0.5,
+            task="test",
+            trace_id="test_non_gpt5_keeps_temp",
         )
         call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["temperature"] == 0.5
@@ -836,7 +856,7 @@ class TestConfigurableBackoff:
             Exception("rate limit exceeded"),
             _mock_response(),
         ]
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1, task="test", trace_id="test_custom_base_delay")
         assert mock_sleep.call_count == 1
         # base_delay=0.1, attempt=0, so delay should be small (0.05-0.15)
         actual_delay = mock_sleep.call_args[0][0]
@@ -853,7 +873,7 @@ class TestConfigurableBackoff:
             Exception("rate limit exceeded"),
             _mock_response(),
         ]
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=4, base_delay=100.0, max_delay=5.0)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=4, base_delay=100.0, max_delay=5.0, task="test", trace_id="test_custom_max_delay")
         for call in mock_sleep.call_args_list:
             assert call[0][0] <= 5.0
 
@@ -867,7 +887,7 @@ class TestConfigurableBackoff:
             Exception("rate limit exceeded"),
             _mock_response(),
         ]
-        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1, max_delay=1.0)
+        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, base_delay=0.1, max_delay=1.0, task="test", trace_id="test_async_custom_backoff")
         assert mock_sleep.call_count == 1
         actual_delay = mock_sleep.call_args[0][0]
         assert actual_delay <= 1.0
@@ -1025,7 +1045,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_routes_to_responses(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """GPT-5 models should use litellm.responses(), not completion()."""
         mock_resp.return_value = _mock_responses_api_response()
-        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_routes")
         assert result.content == "Hello from GPT-5!"
         assert result.model == "gpt-5-mini"
         assert result.finish_reason == "stop"
@@ -1036,7 +1056,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_passes_input_not_messages(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """Responses API receives 'input' string, not 'messages' list."""
         mock_resp.return_value = _mock_responses_api_response()
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}])
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}], task="test", trace_id="test_gpt5_input")
         kwargs = mock_resp.call_args.kwargs
         assert "input" in kwargs
         assert "User: Hello" in kwargs["input"]
@@ -1047,7 +1067,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_strips_max_tokens(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """max_tokens should be stripped for GPT-5 (reasoning tokens issue)."""
         mock_resp.return_value = _mock_responses_api_response()
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096)
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096, task="test", trace_id="test_gpt5_strips_max")
         kwargs = mock_resp.call_args.kwargs
         assert "max_tokens" not in kwargs
         assert "max_output_tokens" not in kwargs
@@ -1065,7 +1085,7 @@ class TestResponsesAPIRouting:
                 "schema": {"type": "object"},
             },
         }
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], response_format=response_format)
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], response_format=response_format, task="test", trace_id="test_gpt5_resp_format")
         kwargs = mock_resp.call_args.kwargs
         assert "response_format" not in kwargs
         assert "text" in kwargs
@@ -1086,7 +1106,7 @@ class TestResponsesAPIRouting:
                 },
             }
         ]
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], tools=chat_completions_tools)
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], tools=chat_completions_tools, task="test", trace_id="test_gpt5_flat_tools")
         kwargs = mock_resp.call_args.kwargs
         tools = kwargs["tools"]
         assert len(tools) == 1
@@ -1101,7 +1121,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_strips_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """GPT-5 responses API does not support temperature — should be stripped."""
         mock_resp.return_value = _mock_responses_api_response()
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], temperature=0.5)
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], temperature=0.5, task="test", trace_id="test_gpt5_strips_temp")
         kwargs = mock_resp.call_args.kwargs
         assert "temperature" not in kwargs
 
@@ -1112,7 +1132,7 @@ class TestResponsesAPIRouting:
         mock_resp.return_value = _mock_responses_api_response(
             input_tokens=100, output_tokens=50, total_tokens=150,
         )
-        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_usage")
         assert result.usage["prompt_tokens"] == 100
         assert result.usage["completion_tokens"] == 50
         assert result.usage["total_tokens"] == 150
@@ -1123,7 +1143,7 @@ class TestResponsesAPIRouting:
         """raw_response should contain the original responses API object."""
         resp = _mock_responses_api_response()
         mock_resp.return_value = resp
-        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_raw_resp")
         assert result.raw_response is resp
 
     @patch("llm_client.client.litellm.responses")
@@ -1131,7 +1151,7 @@ class TestResponsesAPIRouting:
         """Empty response from GPT-5 should raise ValueError (retryable)."""
         mock_resp.return_value = _mock_responses_api_response(output_text="")
         with pytest.raises(LLMError, match="Empty content"):
-            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_empty")
 
     @patch("llm_client.client.litellm.responses")
     def test_gpt5_incomplete_status_raises(self, mock_resp: MagicMock) -> None:
@@ -1142,7 +1162,7 @@ class TestResponsesAPIRouting:
         resp.incomplete_details = details
         mock_resp.return_value = resp
         with pytest.raises(LLMError, match="truncated"):
-            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+            call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_incomplete")
 
     @patch("llm_client.client.time.sleep")
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
@@ -1153,7 +1173,7 @@ class TestResponsesAPIRouting:
             Exception("rate limit exceeded"),
             _mock_responses_api_response(),
         ]
-        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_gpt5_retry_transient")
         assert result.content == "Hello from GPT-5!"
         assert mock_resp.call_count == 2
 
@@ -1162,7 +1182,7 @@ class TestResponsesAPIRouting:
     def test_gpt5_api_base_passed(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """api_base should be passed through for GPT-5 models."""
         mock_resp.return_value = _mock_responses_api_response()
-        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], api_base="https://custom.api/v1")
+        call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], api_base="https://custom.api/v1", task="test", trace_id="test_gpt5_api_base")
         kwargs = mock_resp.call_args.kwargs
         assert kwargs["api_base"] == "https://custom.api/v1"
 
@@ -1171,7 +1191,7 @@ class TestResponsesAPIRouting:
     def test_non_gpt5_still_uses_completion(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Non-GPT-5 models should still use litellm.completion()."""
         mock_comp.return_value = _mock_response()
-        result = call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}])
+        result = call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_non_gpt5_completion")
         assert result.content == "Hello!"
         mock_comp.assert_called_once()
 
@@ -1185,7 +1205,7 @@ class TestAsyncResponsesAPIRouting:
     async def test_async_gpt5_routes_to_aresponses(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
         """Async GPT-5 should use litellm.aresponses()."""
         mock_aresp.return_value = _mock_responses_api_response()
-        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_gpt5_routes")
         assert result.content == "Hello from GPT-5!"
         assert result.model == "gpt-5-mini"
         mock_aresp.assert_called_once()
@@ -1196,7 +1216,7 @@ class TestAsyncResponsesAPIRouting:
     async def test_async_gpt5_passes_input(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
         """Async responses API should receive 'input', not 'messages'."""
         mock_aresp.return_value = _mock_responses_api_response()
-        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}])
+        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hello"}], task="test", trace_id="test_async_gpt5_input")
         kwargs = mock_aresp.call_args.kwargs
         assert "input" in kwargs
         assert "User: Hello" in kwargs["input"]
@@ -1207,7 +1227,7 @@ class TestAsyncResponsesAPIRouting:
     async def test_async_gpt5_strips_max_tokens(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
         """Async: max_tokens should be stripped for GPT-5."""
         mock_aresp.return_value = _mock_responses_api_response()
-        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096)
+        await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], max_tokens=4096, task="test", trace_id="test_async_gpt5_strips_max")
         kwargs = mock_aresp.call_args.kwargs
         assert "max_tokens" not in kwargs
 
@@ -1221,7 +1241,7 @@ class TestAsyncResponsesAPIRouting:
             Exception("service unavailable"),
             _mock_responses_api_response(),
         ]
-        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2)
+        result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_async_gpt5_retries")
         assert result.content == "Hello from GPT-5!"
         assert mock_aresp.call_count == 2
 
@@ -1231,7 +1251,7 @@ class TestAsyncResponsesAPIRouting:
     async def test_async_non_gpt5_still_uses_acompletion(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
         """Async non-GPT-5 should still use litellm.acompletion()."""
         mock_acomp.return_value = _mock_response()
-        result = await acall_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}])
+        result = await acall_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_non_gpt5")
         assert result.content == "Hello!"
         mock_acomp.assert_called_once()
 
@@ -1257,6 +1277,8 @@ class TestRetryOn:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             retry_on=["flux capacitor"],
+            task="test",
+            trace_id="test_retry_on_extends",
         )
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
@@ -1274,6 +1296,8 @@ class TestRetryOn:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             retry_on=["custom pattern"],
+            task="test",
+            trace_id="test_retry_on_defaults",
         )
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
@@ -1292,6 +1316,8 @@ class TestRetryOn:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             retry_on=["flux capacitor"],
+            task="test",
+            trace_id="test_async_retry_on",
         )
         assert result.content == "Hello!"
         assert mock_acomp.call_count == 2
@@ -1319,6 +1345,8 @@ class TestOnRetry:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             on_retry=callback,
+            task="test",
+            trace_id="test_on_retry_args",
         )
         callback.assert_called_once()
         args = callback.call_args[0]
@@ -1336,6 +1364,8 @@ class TestOnRetry:
         call_llm(
             "gpt-4", [{"role": "user", "content": "Hi"}],
             on_retry=callback,
+            task="test",
+            trace_id="test_on_retry_success",
         )
         callback.assert_not_called()
 
@@ -1354,6 +1384,8 @@ class TestOnRetry:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             on_retry=callback,
+            task="test",
+            trace_id="test_async_on_retry",
         )
         callback.assert_called_once()
         args = callback.call_args[0]
@@ -1379,13 +1411,13 @@ class TestCache:
 
         # First call populates the cache
         mock_comp.return_value = _mock_response(content="First")
-        result1 = call_llm("gpt-4", messages, cache=cache)
+        result1 = call_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_cache_hit")
         assert result1.content == "First"
         assert mock_comp.call_count == 1
 
         # Second call with same args should hit cache
         mock_comp.return_value = _mock_response(content="Second")
-        result2 = call_llm("gpt-4", messages, cache=cache)
+        result2 = call_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_cache_hit")
         assert result2.content == "First"  # cached
         assert mock_comp.call_count == 1  # no additional call
 
@@ -1395,12 +1427,12 @@ class TestCache:
         """Cache miss should call LLM and store the result."""
         cache = LRUCache()
         mock_comp.return_value = _mock_response(content="Fresh")
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_cache_miss")
         assert result.content == "Fresh"
         assert mock_comp.call_count == 1
 
         # Verify it's actually in the cache by calling again
-        result2 = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache)
+        result2 = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_cache_miss")
         assert result2.content == "Fresh"
         assert mock_comp.call_count == 1
 
@@ -1409,8 +1441,8 @@ class TestCache:
     def test_cache_not_used_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Default behavior (cache=None) should always call LLM."""
         mock_comp.return_value = _mock_response()
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_cache_none_1")
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_cache_none_2")
         assert mock_comp.call_count == 2
 
     def test_lru_cache_eviction(self) -> None:
@@ -1439,11 +1471,11 @@ class TestCache:
         messages = [{"role": "user", "content": "Hi"}]
 
         mock_acomp.return_value = _mock_response(content="Cached")
-        result1 = await acall_llm("gpt-4", messages, cache=cache)
+        result1 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_async_cache")
         assert result1.content == "Cached"
         assert mock_acomp.call_count == 1
 
-        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        result2 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_async_cache")
         assert result2.content == "Cached"
         assert mock_acomp.call_count == 1
 
@@ -1466,6 +1498,7 @@ class TestCache:
 
         result1, meta1 = call_llm_structured(
             "gpt-4", messages, response_model=Item, cache=cache,
+            task="test", trace_id="test_cache_structured",
         )
         assert result1.name == "test"
         assert mock_client.chat.completions.create_with_completion.call_count == 1
@@ -1473,6 +1506,7 @@ class TestCache:
         # Second call should hit cache
         result2, meta2 = call_llm_structured(
             "gpt-4", messages, response_model=Item, cache=cache,
+            task="test", trace_id="test_cache_structured",
         )
         assert result2.name == "test"
         assert mock_client.chat.completions.create_with_completion.call_count == 1
@@ -1560,7 +1594,7 @@ class TestRetryPolicy:
         ]
         policy = RetryPolicy(max_retries=5, base_delay=0.01, max_delay=0.05)
         # num_retries=0 would fail without policy override
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=0, retry=policy)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=0, retry=policy, task="test", trace_id="test_policy_overrides")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 4
 
@@ -1572,7 +1606,7 @@ class TestRetryPolicy:
         mock_comp.side_effect = [Exception("timeout"), _mock_response()]
         cb = MagicMock()
         policy = RetryPolicy(max_retries=2, on_retry=cb)
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_policy_callback")
         cb.assert_called_once()
 
     @patch("llm_client.client.time.sleep")
@@ -1582,7 +1616,7 @@ class TestRetryPolicy:
         """Custom backoff function on RetryPolicy should be used."""
         mock_comp.side_effect = [Exception("timeout"), _mock_response()]
         policy = RetryPolicy(max_retries=2, backoff=fixed_backoff, base_delay=0.42)
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_policy_backoff")
         assert mock_sleep.call_args[0][0] == 0.42
 
     @patch("llm_client.client.time.sleep")
@@ -1596,7 +1630,7 @@ class TestRetryPolicy:
         ]
         # This error would NOT match any built-in pattern, but should_retry says yes
         policy = RetryPolicy(max_retries=2, should_retry=lambda e: "xyz" in str(e))
-        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_policy_should_retry")
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
@@ -1608,7 +1642,7 @@ class TestRetryPolicy:
         # "rate limit" normally retries, but should_retry always says no
         policy = RetryPolicy(max_retries=5, should_retry=lambda e: False)
         with pytest.raises(Exception, match="rate limit"):
-            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+            call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_policy_reject")
         assert mock_comp.call_count == 1  # no retry
 
     @pytest.mark.asyncio
@@ -1619,7 +1653,7 @@ class TestRetryPolicy:
         """RetryPolicy should work with async functions."""
         mock_acomp.side_effect = [Exception("timeout"), _mock_response()]
         policy = RetryPolicy(max_retries=3, backoff=linear_backoff, base_delay=0.1)
-        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_async_policy")
         assert result.content == "Hello!"
         assert mock_acomp.call_count == 2
 
@@ -1685,6 +1719,8 @@ class TestFallbackModels:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=1,
             fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_fallback_exhausted",
         )
         assert result.content == "From fallback"
         assert result.model == "gpt-3.5-turbo"
@@ -1699,6 +1735,8 @@ class TestFallbackModels:
         result = call_llm(
             "gpt-4", [{"role": "user", "content": "Hi"}],
             fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_no_fallback",
         )
         assert result.content == "Primary OK"
         assert result.model == "gpt-4"
@@ -1720,6 +1758,8 @@ class TestFallbackModels:
             num_retries=1,
             fallback_models=["gpt-3.5-turbo"],
             on_fallback=callback,
+            task="test",
+            trace_id="test_on_fallback_cb",
         )
         callback.assert_called_once()
         args = callback.call_args[0]
@@ -1737,6 +1777,8 @@ class TestFallbackModels:
                 "gpt-4", [{"role": "user", "content": "Hi"}],
                 num_retries=0,
                 fallback_models=["gpt-3.5-turbo"],
+                task="test",
+                trace_id="test_all_fallbacks_fail",
             )
         assert mock_comp.call_count == 2  # primary + 1 fallback
 
@@ -1754,6 +1796,8 @@ class TestFallbackModels:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=0,
             fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+            task="test",
+            trace_id="test_multiple_fallbacks",
         )
         assert result.content == "Third model"
         assert result.model == "ollama/llama3"
@@ -1772,6 +1816,8 @@ class TestFallbackModels:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=0,
             fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_async_fallback",
         )
         assert result.content == "Async fallback"
 
@@ -1788,6 +1834,8 @@ class TestFallbackModels:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=2,
             fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_fallback_non_retryable",
         )
         assert result.content == "Fallback OK"
         assert mock_comp.call_count == 2  # 1 attempt on primary (no retry), 1 on fallback
@@ -1809,7 +1857,7 @@ class TestHooks:
         before = MagicMock()
         hooks = Hooks(before_call=before)
         messages = [{"role": "user", "content": "Hi"}]
-        call_llm("gpt-4", messages, hooks=hooks)
+        call_llm("gpt-4", messages, hooks=hooks, task="test", trace_id="test_before_call")
         before.assert_called_once()
         args = before.call_args[0]
         assert args[0] == "gpt-4"
@@ -1822,7 +1870,7 @@ class TestHooks:
         mock_comp.return_value = _mock_response()
         after = MagicMock()
         hooks = Hooks(after_call=after)
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_after_call")
         after.assert_called_once()
         result = after.call_args[0][0]
         assert isinstance(result, LLMCallResult)
@@ -1839,7 +1887,7 @@ class TestHooks:
         ]
         on_error = MagicMock()
         hooks = Hooks(on_error=on_error)
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, hooks=hooks)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, hooks=hooks, task="test", trace_id="test_on_error_hook")
         on_error.assert_called_once()
         args = on_error.call_args[0]
         assert isinstance(args[0], Exception)
@@ -1850,7 +1898,7 @@ class TestHooks:
     def test_hooks_not_called_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """No errors when hooks is None (default)."""
         mock_comp.return_value = _mock_response()
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}])  # should not raise
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_hooks_none")  # should not raise
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
@@ -1859,7 +1907,7 @@ class TestHooks:
         mock_comp.return_value = _mock_response()
         after = MagicMock()
         hooks = Hooks(after_call=after)  # before_call and on_error are None
-        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        call_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_hooks_partial")
         after.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1871,7 +1919,7 @@ class TestHooks:
         before = MagicMock()
         after = MagicMock()
         hooks = Hooks(before_call=before, after_call=after)
-        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_async_hooks")
         before.assert_called_once()
         after.assert_called_once()
 
@@ -1897,6 +1945,8 @@ class TestHooks:
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
             hooks=hooks,
+            task="test",
+            trace_id="test_hooks_structured",
         )
         before.assert_called_once()
         after.assert_called_once()
@@ -1934,12 +1984,12 @@ class TestAsyncCachePolicy:
 
         # First call — cache miss, calls LLM
         mock_acomp.return_value = _mock_response(content="Fresh")
-        result1 = await acall_llm("gpt-4", messages, cache=cache)
+        result1 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_async_cache_get_set")
         assert result1.content == "Fresh"
         assert mock_acomp.call_count == 1
 
         # Second call — cache hit
-        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        result2 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_async_cache_get_set")
         assert result2.content == "Fresh"
         assert mock_acomp.call_count == 1  # no additional call
 
@@ -1952,8 +2002,8 @@ class TestAsyncCachePolicy:
         messages = [{"role": "user", "content": "Hi"}]
 
         mock_acomp.return_value = _mock_response(content="Sync cached")
-        result1 = await acall_llm("gpt-4", messages, cache=cache)
-        result2 = await acall_llm("gpt-4", messages, cache=cache)
+        result1 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_sync_cache_in_async")
+        result2 = await acall_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_sync_cache_in_async")
         assert result1.content == "Sync cached"
         assert result2.content == "Sync cached"
         assert mock_acomp.call_count == 1
@@ -1985,7 +2035,7 @@ class TestStreamLLM:
         chunks = _mock_stream_chunks(["Hello", " ", "world!"])
         mock_comp.return_value = iter(chunks)
 
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_chunks")
         collected = list(stream)
         assert collected == ["Hello", " ", "world!"]
 
@@ -1996,7 +2046,7 @@ class TestStreamLLM:
         chunks = _mock_stream_chunks(["Hello", "!"])
         mock_comp.return_value = iter(chunks)
 
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_result")
         for _ in stream:
             pass
         result = stream.result
@@ -2011,7 +2061,7 @@ class TestStreamLLM:
         chunks = _mock_stream_chunks(["Hi"])
         mock_comp.return_value = iter(chunks)
 
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_before_iter")
         with pytest.raises(RuntimeError, match="not yet consumed"):
             _ = stream.result
 
@@ -2027,7 +2077,7 @@ class TestStreamLLM:
         mock_builder.return_value = complete
 
         with patch("llm_client.client._compute_cost", return_value=0.005):
-            stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+            stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_usage")
             list(stream)
             assert stream.result.usage["total_tokens"] == 15
             assert stream.result.cost == 0.005
@@ -2039,7 +2089,7 @@ class TestStreamLLM:
         chunks = _mock_stream_chunks(["Hi"])
         mock_comp.return_value = iter(chunks)
 
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], temperature=0.5)
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], temperature=0.5, task="test", trace_id="test_stream_kwargs")
         list(stream)
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["stream"] is True
@@ -2055,7 +2105,7 @@ class TestStreamLLM:
         before = MagicMock()
         after = MagicMock()
         hooks = Hooks(before_call=before, after_call=after)
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_stream_hooks")
         before.assert_called_once()
         after.assert_not_called()  # not yet consumed
 
@@ -2079,7 +2129,7 @@ class TestAstreamLLM:
 
         mock_acomp.return_value = async_iter()
 
-        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_astream_chunks")
         collected = []
         async for chunk in stream:
             collected.append(chunk)
@@ -2098,7 +2148,7 @@ class TestAstreamLLM:
 
         mock_acomp.return_value = async_iter()
 
-        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_astream_result")
         async for _ in stream:
             pass
         result = stream.result
@@ -2127,7 +2177,7 @@ class TestBatchCalls:
         msgs_list = [
             [{"role": "user", "content": f"Q{i}"}] for i in range(3)
         ]
-        results = await acall_llm_batch("gpt-4", msgs_list)
+        results = await acall_llm_batch("gpt-4", msgs_list, task="test", trace_id="test_batch_basic")
         assert len(results) == 3
         assert all(isinstance(r, LLMCallResult) for r in results)
         # Order preserved
@@ -2158,7 +2208,7 @@ class TestBatchCalls:
         original_acomp.side_effect = tracked_call
 
         msgs_list = [[{"role": "user", "content": f"Q{i}"}] for i in range(10)]
-        results = await acall_llm_batch("gpt-4", msgs_list, max_concurrent=3)
+        results = await acall_llm_batch("gpt-4", msgs_list, max_concurrent=3, task="test", trace_id="test_batch_concurrency")
         assert len(results) == 10
         assert max_active <= 3
 
@@ -2176,6 +2226,8 @@ class TestBatchCalls:
                 "gpt-4",
                 [[{"role": "user", "content": f"Q{i}"}] for i in range(3)],
                 return_exceptions=True,
+                task="test",
+                trace_id="test_batch_return_exc",
             )
         assert isinstance(results[0], LLMCallResult)
         assert isinstance(results[1], Exception)
@@ -2191,6 +2243,8 @@ class TestBatchCalls:
                 "gpt-4",
                 [[{"role": "user", "content": "Q"}]],
                 return_exceptions=False,
+                task="test",
+                trace_id="test_batch_raises",
             )
 
     @pytest.mark.asyncio
@@ -2204,6 +2258,8 @@ class TestBatchCalls:
             "gpt-4",
             [[{"role": "user", "content": "Q"}]],
             on_item_complete=lambda idx, res: completed.append((idx, res)),
+            task="test",
+            trace_id="test_batch_on_complete",
         )
         assert len(completed) == 1
         assert completed[0][0] == 0
@@ -2220,6 +2276,8 @@ class TestBatchCalls:
                 "gpt-4",
                 [[{"role": "user", "content": "Q"}]],
                 on_item_error=lambda idx, err: errors.append((idx, err)),
+                task="test",
+                trace_id="test_batch_on_error",
             )
         assert len(errors) == 1
         assert errors[0][0] == 0
@@ -2240,6 +2298,8 @@ class TestBatchCalls:
             hooks=hooks,
             cache=cache,
             timeout=120,
+            task="test",
+            trace_id="test_batch_forwards",
         )
         before.assert_called_once()
         # timeout forwarded
@@ -2254,6 +2314,8 @@ class TestBatchCalls:
         results = call_llm_batch(
             "gpt-4",
             [[{"role": "user", "content": "Q1"}], [{"role": "user", "content": "Q2"}]],
+            task="test",
+            trace_id="test_batch_sync",
         )
         assert len(results) == 2
         assert results[0].content == "Sync OK"
@@ -2261,7 +2323,7 @@ class TestBatchCalls:
     @pytest.mark.asyncio
     async def test_acall_llm_batch_empty(self) -> None:
         """Empty list returns empty list."""
-        results = await acall_llm_batch("gpt-4", [])
+        results = await acall_llm_batch("gpt-4", [], task="test", trace_id="test_batch_empty")
         assert results == []
 
     @pytest.mark.asyncio
@@ -2285,6 +2347,8 @@ class TestBatchCalls:
             "gpt-4",
             [[{"role": "user", "content": "Extract"}]] * 2,
             response_model=Item,
+            task="test",
+            trace_id="test_structured_batch",
         )
         assert len(results) == 2
         for item, meta in results:
@@ -2311,7 +2375,7 @@ class TestBatchCalls:
         mock_acomp.side_effect = variable_delay
 
         msgs_list = [[{"role": "user", "content": f"Q{i}"}] for i in range(3)]
-        results = await acall_llm_batch("gpt-4", msgs_list)
+        results = await acall_llm_batch("gpt-4", msgs_list, task="test", trace_id="test_batch_order")
         assert "Q0" in results[0].content
         assert "Q1" in results[1].content
         assert "Q2" in results[2].content
@@ -2335,7 +2399,7 @@ class TestStreamRetryFallback:
             Exception("rate limit exceeded"),
             iter(chunks),
         ]
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_stream_retry")
         collected = list(stream)
         assert collected == ["Hello"]
         assert mock_comp.call_count == 2
@@ -2346,7 +2410,7 @@ class TestStreamRetryFallback:
         """Non-retryable error raises immediately."""
         mock_comp.side_effect = Exception("invalid api key")
         with pytest.raises(Exception, match="invalid api key"):
-            stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+            stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_stream_non_retryable")
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.time.sleep")
@@ -2364,6 +2428,8 @@ class TestStreamRetryFallback:
             "gpt-4", [{"role": "user", "content": "Hi"}],
             num_retries=1,
             fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_stream_fallback",
         )
         collected = list(stream)
         assert collected == ["Fallback!"]
@@ -2385,7 +2451,7 @@ class TestStreamRetryFallback:
             Exception("rate limit exceeded"),
             async_iter(),
         ]
-        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2)
+        stream = await astream_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_astream_retry")
         collected = []
         async for chunk in stream:
             collected.append(chunk)
@@ -2404,7 +2470,7 @@ class TestStreamRetryFallback:
         ]
         from llm_client import RetryPolicy, fixed_backoff
         policy = RetryPolicy(max_retries=3, backoff=fixed_backoff, base_delay=0.01)
-        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy)
+        stream = stream_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_stream_retry_policy")
         collected = list(stream)
         assert collected == ["OK"]
         assert mock_sleep.call_args[0][0] == 0.01
@@ -2426,7 +2492,7 @@ class TestStreamWithTools:
         mock_comp.return_value = iter(chunks)
 
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        stream = stream_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools)
+        stream = stream_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools, task="test", trace_id="test_stream_tools_passes")
         list(stream)
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["tools"] == tools
@@ -2448,7 +2514,7 @@ class TestStreamWithTools:
         mock_builder.return_value = complete
 
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
-        stream = stream_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools)
+        stream = stream_llm_with_tools("gpt-4", [{"role": "user", "content": "Weather?"}], tools, task="test", trace_id="test_stream_tools_extract")
         list(stream)
         assert len(stream.result.tool_calls) == 1
         assert stream.result.tool_calls[0]["function"]["name"] == "get_weather"
@@ -2468,7 +2534,7 @@ class TestStreamWithTools:
         mock_acomp.return_value = async_iter()
 
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
-        stream = await astream_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools)
+        stream = await astream_llm_with_tools("gpt-4", [{"role": "user", "content": "Hi"}], tools, task="test", trace_id="test_astream_tools")
         collected = []
         async for chunk in stream:
             collected.append(chunk)
@@ -2498,6 +2564,8 @@ class TestGPT5StructuredOutput:
             "gpt-5-mini",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_gpt5_structured_resp",
         )
         assert result.name == "test"
         assert isinstance(meta, LLMCallResult)
@@ -2516,6 +2584,8 @@ class TestGPT5StructuredOutput:
             "gpt-5-mini",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_gpt5_structured_schema",
         )
         kwargs = mock_resp.call_args.kwargs
         assert "text" in kwargs
@@ -2541,6 +2611,8 @@ class TestGPT5StructuredOutput:
             "gpt-5-mini",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_async_gpt5_structured",
         )
         assert result.name == "async_test"
         mock_aresp.assert_called_once()
@@ -2558,6 +2630,8 @@ class TestGPT5StructuredOutput:
             "deepseek/deepseek-chat",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_native_schema",
         )
         assert result.name == "test"
         call_kwargs = mock_completion.call_args.kwargs
@@ -2584,6 +2658,8 @@ class TestGPT5StructuredOutput:
             "gpt-3.5-turbo",
             [{"role": "user", "content": "Extract"}],
             response_model=Item,
+            task="test",
+            trace_id="test_instructor_fallback",
         )
         assert result.name == "test"
         mock_from_litellm.assert_called_once()  # instructor was used
@@ -2701,19 +2777,19 @@ class TestModelDeprecation:
         """GPT-4o should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+                call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o")
 
     def test_gpt4o_mini_warns(self):
         """GPT-4o-mini should trigger its own deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o-mini"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}])
+                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini")
 
     def test_gpt4o_mini_does_not_trigger_gpt4o_pattern(self):
         """gpt-4o-mini should NOT also trigger the gpt-4o warning (exception logic)."""
         with pytest.warns(DeprecationWarning) as record:
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}])
+                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini_only")
         # Should only have one warning, and it should mention gpt-4o-mini specifically
         assert len(record) == 1
         assert "gpt-4o-mini" in str(record[0].message)
@@ -2722,19 +2798,19 @@ class TestModelDeprecation:
         """Claude 3 Haiku should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("anthropic/claude-3-haiku-20240307", [{"role": "user", "content": "hi"}])
+                call_llm("anthropic/claude-3-haiku-20240307", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_claude3")
 
     def test_gemini_15_warns(self):
         """Gemini 1.5 should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gemini/gemini-1.5-flash", [{"role": "user", "content": "hi"}])
+                call_llm("gemini/gemini-1.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini15")
 
     def test_o1_pro_warns(self):
         """o1-pro should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("o1-pro", [{"role": "user", "content": "hi"}])
+                call_llm("o1-pro", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_o1pro")
 
     def test_current_model_no_warning(self):
         """Current models should NOT trigger any deprecation warning."""
@@ -2742,8 +2818,7 @@ class TestModelDeprecation:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             with patch("litellm.completion", return_value=_mock_response()):
-                # These should all pass without DeprecationWarning
-                call_llm("anthropic/claude-sonnet-4-5-20250929", [{"role": "user", "content": "hi"}])
+                call_llm("anthropic/claude-sonnet-4-5-20250929", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_current")
 
     def test_deepseek_no_warning(self):
         """DeepSeek V3.2 should NOT trigger deprecation warning."""
@@ -2751,7 +2826,7 @@ class TestModelDeprecation:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "hi"}])
+                call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_deepseek")
 
     def test_gemini_25_no_warning(self):
         """Gemini 2.5+ should NOT trigger deprecation warning."""
@@ -2759,13 +2834,13 @@ class TestModelDeprecation:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "hi"}])
+                call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini25")
 
     def test_warning_message_contains_stop_instruction(self):
         """Warning message should contain the LLM-agent-directed STOP instruction."""
         with pytest.warns(DeprecationWarning) as record:
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+                call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_stop_msg")
         msg = str(record[0].message)
         assert "STOP" in msg
         assert "DO NOT USE THIS MODEL" in msg
@@ -2784,6 +2859,7 @@ class TestModelDeprecation:
                 call_llm_structured(
                     "gpt-4o", [{"role": "user", "content": "hi"}],
                     response_model=_Entity,
+                    task="test", trace_id="test_depr_structured",
                 )
 
     @pytest.mark.asyncio
@@ -2791,10 +2867,10 @@ class TestModelDeprecation:
         """acall_llm should also check for deprecated models."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
-                await acall_llm("gpt-4o", [{"role": "user", "content": "hi"}])
+                await acall_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_async")
 
     def test_mistral_large_warns(self):
         """Mistral Large should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("mistral/mistral-large-latest", [{"role": "user", "content": "hi"}])
+                call_llm("mistral/mistral-large-latest", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_mistral")

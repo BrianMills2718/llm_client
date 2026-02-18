@@ -47,6 +47,7 @@ import hashlib
 import inspect
 import json as _json
 import logging
+import os
 import random
 import re
 import threading
@@ -60,7 +61,7 @@ from pydantic import BaseModel
 
 from llm_client import io_log as _io_log
 
-from llm_client.errors import wrap_error
+from llm_client.errors import LLMModelNotFoundError, wrap_error
 
 logger = logging.getLogger(__name__)
 
@@ -669,13 +670,27 @@ def _is_thinking_model(model: str) -> bool:
 
 
 def _extract_usage(response: Any) -> dict[str, Any]:
-    """Extract token usage dict from litellm response."""
+    """Extract token usage dict from litellm response.
+
+    Includes provider-level prompt caching details when available
+    (OpenAI cached_tokens, DeepSeek prompt_cache_hit_tokens,
+    Anthropic cache_read_input_tokens).
+    """
     usage = response.usage
-    return {
+    result = {
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
         "total_tokens": usage.total_tokens,
     }
+    # Extract prompt caching details (litellm normalizes all providers
+    # into prompt_tokens_details.cached_tokens)
+    ptd = getattr(usage, "prompt_tokens_details", None)
+    if ptd is not None:
+        cached = getattr(ptd, "cached_tokens", None) or 0
+        cache_creation = getattr(ptd, "cache_creation_tokens", None) or 0
+        result["cached_tokens"] = cached
+        result["cache_creation_tokens"] = cache_creation
+    return result
 
 
 def _compute_cost(response: Any) -> float:
@@ -819,17 +834,26 @@ _DEPRECATED_MODEL_EXCEPTIONS: set[str] = {
 
 
 def _check_model_deprecation(model: str) -> None:
-    """Emit a loud warning if the model is outclassed.
+    """Emit a loud warning (or raise) if the model is outclassed.
 
     The warning text is intentionally aggressive because it may be read by
     an LLM agent that needs to STOP and ask the user before proceeding.
+
+    Set ``LLM_CLIENT_STRICT_MODELS=1`` to raise ``LLMModelNotFoundError``
+    instead of warning. This is recommended for benchmarks and CI.
     """
     lower = model.lower()
+    strict = os.environ.get("LLM_CLIENT_STRICT_MODELS", "").strip() == "1"
     for pattern, (replacement, reason) in _DEPRECATED_MODELS.items():
         if pattern in lower:
             # Check exceptions (e.g., don't flag gpt-4o-mini under gpt-4o)
             if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
                 continue
+            if strict:
+                raise LLMModelNotFoundError(
+                    f"BANNED MODEL: {model}. {reason} Use instead: {replacement}. "
+                    f"(LLM_CLIENT_STRICT_MODELS=1 is set — deprecated models are blocked.)"
+                )
             warning_msg = (
                 f"\n{'=' * 72}\n"
                 f"WARNING: DEPRECATED MODEL DETECTED: {model}\n"
@@ -848,6 +872,27 @@ def _check_model_deprecation(model: str) -> None:
             import warnings
             warnings.warn(warning_msg, DeprecationWarning, stacklevel=3)
             return
+
+
+def _require_tags(task: str | None, trace_id: str | None) -> None:
+    """Enforce that every LLM call has task and trace_id for observability.
+
+    Only active when ``LLM_CLIENT_REQUIRE_TAGS=1`` is set.
+    """
+    if os.environ.get("LLM_CLIENT_REQUIRE_TAGS", "").strip() != "1":
+        return
+    missing = []
+    if not task:
+        missing.append("task")
+    if not trace_id:
+        missing.append("trace_id")
+    if missing:
+        raise ValueError(
+            f"Missing required kwargs: {', '.join(missing)}. "
+            f"Every call_llm/acall_llm call must include task= (what kind of work) "
+            f"and trace_id= (deterministic ID for this unit of work). "
+            f"This enables cross-project observability and resume capability."
+        )
 
 
 def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -1003,14 +1048,25 @@ def _prepare_responses_kwargs(
 
 
 def _extract_responses_usage(response: Any) -> dict[str, Any]:
-    """Extract token usage from responses() API response."""
+    """Extract token usage from responses() API response.
+
+    Responses API uses input_tokens/output_tokens and input_tokens_details
+    (vs prompt_tokens/completion_tokens and prompt_tokens_details in Chat Completions).
+    """
     usage = getattr(response, "usage", None)
     if usage is not None:
-        return {
+        result = {
             "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
             "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
             "total_tokens": getattr(usage, "total_tokens", 0) or 0,
         }
+        # Responses API: input_tokens_details.cached_tokens
+        itd = getattr(usage, "input_tokens_details", None)
+        if itd is not None:
+            cached = getattr(itd, "cached_tokens", None) or 0
+            if cached:
+                result["cached_tokens"] = cached
+        return result
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
@@ -1301,6 +1357,7 @@ def call_llm(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -1334,6 +1391,8 @@ def call_llm(
         from llm_client.agents import _run_sync
         mcp_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
+        remaining["task"] = task
+        remaining["trace_id"] = trace_id
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
@@ -1351,6 +1410,8 @@ def call_llm(
         from llm_client.agents import _run_sync
         tool_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
+        remaining["task"] = task
+        remaining["trace_id"] = trace_id
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
@@ -1503,6 +1564,7 @@ def call_llm_structured(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
     if _is_agent_model(model):
         from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
@@ -1854,6 +1916,7 @@ async def acall_llm(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -1886,6 +1949,8 @@ async def acall_llm(
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
         mcp_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
+        remaining["task"] = task
+        remaining["trace_id"] = trace_id
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
@@ -1902,6 +1967,8 @@ async def acall_llm(
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
         tool_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
+        remaining["task"] = task
+        remaining["trace_id"] = trace_id
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
@@ -2054,6 +2121,7 @@ async def acall_llm_structured(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
     if _is_agent_model(model):
         from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
@@ -2690,6 +2758,7 @@ def stream_llm(
     _check_model_deprecation(model)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -2777,6 +2846,7 @@ async def astream_llm(
     _check_model_deprecation(model)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
+    _require_tags(task, trace_id)
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)

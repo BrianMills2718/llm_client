@@ -181,18 +181,18 @@ class TestCacheRejection:
     def test_cache_with_agent_raises_sync(self) -> None:
         cache = LRUCache(maxsize=10)
         with pytest.raises(ValueError, match="Caching not supported for agent models"):
-            call_llm("claude-code", [{"role": "user", "content": "Hi"}], cache=cache)
+            call_llm("claude-code", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_cache_rejection_sync")
 
     @pytest.mark.asyncio
     async def test_cache_with_agent_raises_async(self) -> None:
         cache = LRUCache(maxsize=10)
         with pytest.raises(ValueError, match="Caching not supported for agent models"):
-            await acall_llm("claude-code", [{"role": "user", "content": "Hi"}], cache=cache)
+            await acall_llm("claude-code", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_cache_rejection_async")
 
     def test_cache_with_codex_raises_sync(self) -> None:
         cache = LRUCache(maxsize=10)
         with pytest.raises(ValueError, match="Caching not supported for agent models"):
-            call_llm("codex", [{"role": "user", "content": "Hi"}], cache=cache)
+            call_llm("codex", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_cache_codex_sync")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +211,7 @@ class TestAgentGuards:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             call_llm_with_tools(
                 "claude-code", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_call_tools",
             )
 
     @pytest.mark.asyncio
@@ -218,12 +219,14 @@ class TestAgentGuards:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             await acall_llm_with_tools(
                 "claude-code", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_acall_tools",
             )
 
     def test_stream_llm_with_tools(self) -> None:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             stream_llm_with_tools(
                 "claude-code", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_stream_tools",
             )
 
     @pytest.mark.asyncio
@@ -231,6 +234,7 @@ class TestAgentGuards:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             await astream_llm_with_tools(
                 "claude-code", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_astream_tools",
             )
 
     def test_openai_agents_guard(self) -> None:
@@ -238,6 +242,7 @@ class TestAgentGuards:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             stream_llm_with_tools(
                 "openai-agents/gpt-5", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_openai_agents",
             )
 
     def test_codex_with_tools(self) -> None:
@@ -245,6 +250,7 @@ class TestAgentGuards:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             call_llm_with_tools(
                 "codex", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_guard_codex_tools",
             )
 
 
@@ -347,7 +353,7 @@ class TestAgentCallMocked:
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_call_llm_agent_sync(self) -> None:
-        result = call_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}])
+        result = call_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_agent_call_sync")
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
         assert result.cost == 0.005
@@ -357,7 +363,7 @@ class TestAgentCallMocked:
     @pytest.mark.usefixtures("_mock_agent_sdk")
     @pytest.mark.asyncio
     async def test_acall_llm_agent_async(self) -> None:
-        result = await acall_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}])
+        result = await acall_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_agent_call_async")
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
         assert result.cost == 0.005
@@ -373,6 +379,7 @@ class TestAgentCallMocked:
         )
         result = call_llm(
             "claude-code", [{"role": "user", "content": "Hi"}], hooks=hooks,
+            task="test", trace_id="test_agent_hooks",
         )
         assert len(before_calls) == 1
         assert before_calls[0] == "claude-code"
@@ -383,6 +390,7 @@ class TestAgentCallMocked:
     def test_agent_with_model_suffix(self) -> None:
         result = call_llm(
             "claude-code/opus", [{"role": "user", "content": "Hi"}],
+            task="test", trace_id="test_agent_model_suffix",
         )
         assert result.model == "claude-code/opus"
 
@@ -470,6 +478,7 @@ class TestAgentFallback:
                 "claude-code",
                 [{"role": "user", "content": "Hi"}],
                 fallback_models=["gpt-4o"],
+                task="test", trace_id="test_agent_fallback",
             )
         assert result.content == "Fallback response"
         assert result.model == "gpt-4o"
@@ -483,6 +492,7 @@ class TestOpenAIAgentsGuard:
             call_llm(
                 "openai-agents/gpt-5",
                 [{"role": "user", "content": "Hi"}],
+                task="test", trace_id="test_openai_agents_guard",
             )
 
 
@@ -524,6 +534,7 @@ class TestAgentStructured:
             "claude-code",
             [{"role": "user", "content": "Info about Tokyo"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_structured_sync",
         )
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
@@ -539,6 +550,7 @@ class TestAgentStructured:
             "claude-code",
             [{"role": "user", "content": "Info about Tokyo"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_structured_async",
         )
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
@@ -558,6 +570,7 @@ class TestAgentStructured:
             [{"role": "user", "content": "Info about Tokyo"}],
             response_model=_CityInfo,
             hooks=hooks,
+            task="test", trace_id="test_structured_hooks",
         )
         assert len(before_calls) == 1
         assert len(after_calls) == 1
@@ -580,6 +593,7 @@ class TestAgentStructured:
             "claude-code",
             [{"role": "user", "content": "Info about Paris"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_structured_fallback_field",
         )
         assert parsed.name == "Paris"
         assert parsed.country == "France"
@@ -595,7 +609,7 @@ class TestAgentStream:
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_stream_llm_sync(self) -> None:
-        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_sync")
         chunks: list[str] = []
         for chunk in stream:
             chunks.append(chunk)
@@ -609,7 +623,7 @@ class TestAgentStream:
     @pytest.mark.usefixtures("_mock_agent_sdk")
     @pytest.mark.asyncio
     async def test_astream_llm_async(self) -> None:
-        stream = await astream_llm("claude-code", [{"role": "user", "content": "Hi"}])
+        stream = await astream_llm("claude-code", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_astream_async")
         chunks: list[str] = []
         async for chunk in stream:
             chunks.append(chunk)
@@ -621,7 +635,7 @@ class TestAgentStream:
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_stream_result_before_consume_raises(self) -> None:
-        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_before_consume")
         with pytest.raises(RuntimeError, match="not yet consumed"):
             _ = stream.result
 
@@ -635,6 +649,7 @@ class TestAgentStream:
         )
         stream = stream_llm(
             "claude-code", [{"role": "user", "content": "Hi"}], hooks=hooks,
+            task="test", trace_id="test_stream_hooks",
         )
         for _ in stream:
             pass
@@ -655,7 +670,7 @@ class TestAgentStream:
         fake_mod.query = _multi_query  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_mod)
 
-        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("claude-code", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_stream_multi_messages")
         chunks = list(stream)
         assert len(chunks) == 2
         assert chunks[0] == "First. "
@@ -676,7 +691,7 @@ class TestAgentBatch:
             [{"role": "user", "content": f"What is {i}+{i}?"}]
             for i in range(3)
         ]
-        results = call_llm_batch("claude-code", messages_list, max_concurrent=3)
+        results = call_llm_batch("claude-code", messages_list, max_concurrent=3, task="test", trace_id="test_batch_sync")
         assert len(results) == 3
         for r in results:
             assert isinstance(r, LLMCallResult)
@@ -690,7 +705,7 @@ class TestAgentBatch:
             [{"role": "user", "content": f"What is {i}+{i}?"}]
             for i in range(2)
         ]
-        results = await acall_llm_batch("claude-code", messages_list)
+        results = await acall_llm_batch("claude-code", messages_list, task="test", trace_id="test_batch_async")
         assert len(results) == 2
         for r in results:
             assert isinstance(r, LLMCallResult)
@@ -703,7 +718,7 @@ class TestAgentBatch:
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_batch_empty_list(self) -> None:
-        results = call_llm_batch("claude-code", [])
+        results = call_llm_batch("claude-code", [], task="test", trace_id="test_batch_empty")
         assert results == []
 
 
@@ -853,12 +868,13 @@ class TestCodexGuards:
     def test_cache_rejected(self) -> None:
         cache = LRUCache(maxsize=10)
         with pytest.raises(ValueError, match="Caching not supported"):
-            call_llm("codex", [{"role": "user", "content": "Hi"}], cache=cache)
+            call_llm("codex", [{"role": "user", "content": "Hi"}], cache=cache, task="test", trace_id="test_codex_cache_rejected")
 
     def test_tools_rejected(self) -> None:
         with pytest.raises(NotImplementedError, match="built-in tools"):
             call_llm_with_tools(
                 "codex/gpt-5", [{"role": "user", "content": "Hi"}], tools=[],
+                task="test", trace_id="test_codex_tools_rejected",
             )
 
 
@@ -870,7 +886,7 @@ class TestCodexGuards:
 class TestCodexCall:
     @pytest.mark.usefixtures("_mock_codex_sdk")
     def test_call_llm_sync(self) -> None:
-        result = call_llm("codex", [{"role": "user", "content": "What is 2+2?"}])
+        result = call_llm("codex", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_codex_call_sync")
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
         assert result.model == "codex"
@@ -879,7 +895,7 @@ class TestCodexCall:
     @pytest.mark.usefixtures("_mock_codex_sdk")
     @pytest.mark.asyncio
     async def test_acall_llm_async(self) -> None:
-        result = await acall_llm("codex", [{"role": "user", "content": "What is 2+2?"}])
+        result = await acall_llm("codex", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_codex_call_async")
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
         assert result.finish_reason == "stop"
@@ -892,7 +908,7 @@ class TestCodexCall:
             before_call=lambda m, msgs, kw: before_calls.append(m),
             after_call=lambda r: after_calls.append(r),
         )
-        result = call_llm("codex", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        result = call_llm("codex", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_codex_hooks")
         assert len(before_calls) == 1
         assert before_calls[0] == "codex"
         assert len(after_calls) == 1
@@ -900,7 +916,7 @@ class TestCodexCall:
 
     @pytest.mark.usefixtures("_mock_codex_sdk")
     def test_model_suffix(self) -> None:
-        result = call_llm("codex/gpt-5", [{"role": "user", "content": "Hi"}])
+        result = call_llm("codex/gpt-5", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_codex_model_suffix")
         assert result.model == "codex/gpt-5"
 
 
@@ -933,6 +949,7 @@ class TestCodexStructured:
             "codex",
             [{"role": "user", "content": "Info about Tokyo"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_codex_structured_sync",
         )
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
@@ -947,6 +964,7 @@ class TestCodexStructured:
             "codex",
             [{"role": "user", "content": "Info about Tokyo"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_codex_structured_async",
         )
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
@@ -970,6 +988,7 @@ class TestCodexStructured:
             "codex",
             [{"role": "user", "content": "Info about Berlin"}],
             response_model=_CityInfo,
+            task="test", trace_id="test_codex_structured_fenced",
         )
         assert parsed.name == "Berlin"
         assert parsed.country == "Germany"
@@ -983,7 +1002,7 @@ class TestCodexStructured:
 class TestCodexStream:
     @pytest.mark.usefixtures("_mock_codex_sdk")
     def test_stream_sync(self) -> None:
-        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_codex_stream_sync")
         chunks: list[str] = []
         for chunk in stream:
             chunks.append(chunk)
@@ -996,7 +1015,7 @@ class TestCodexStream:
     @pytest.mark.usefixtures("_mock_codex_sdk")
     @pytest.mark.asyncio
     async def test_astream_async(self) -> None:
-        stream = await astream_llm("codex", [{"role": "user", "content": "Hi"}])
+        stream = await astream_llm("codex", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_codex_astream_async")
         chunks: list[str] = []
         async for chunk in stream:
             chunks.append(chunk)
@@ -1013,7 +1032,7 @@ class TestCodexStream:
             before_call=lambda m, msgs, kw: before_calls.append(m),
             after_call=lambda r: after_calls.append(r),
         )
-        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}], hooks=hooks)
+        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}], hooks=hooks, task="test", trace_id="test_codex_stream_hooks")
         for _ in stream:
             pass
         assert len(before_calls) == 1
@@ -1035,7 +1054,7 @@ class TestCodexStream:
         monkeypatch.setitem(sys.modules, "openai_codex_sdk", fake_mod)
         monkeypatch.setitem(sys.modules, "openai_codex_sdk.codex", codex_submod)
 
-        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}])
+        stream = stream_llm("codex", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_codex_stream_multi")
         chunks = list(stream)
         assert len(chunks) == 2
         assert chunks[0] == "First. "
@@ -1054,7 +1073,7 @@ class TestCodexBatch:
             [{"role": "user", "content": f"What is {i}+{i}?"}]
             for i in range(3)
         ]
-        results = call_llm_batch("codex", messages_list, max_concurrent=3)
+        results = call_llm_batch("codex", messages_list, max_concurrent=3, task="test", trace_id="test_codex_batch_sync")
         assert len(results) == 3
         for r in results:
             assert isinstance(r, LLMCallResult)
@@ -1067,7 +1086,7 @@ class TestCodexBatch:
             [{"role": "user", "content": f"What is {i}+{i}?"}]
             for i in range(2)
         ]
-        results = await acall_llm_batch("codex", messages_list)
+        results = await acall_llm_batch("codex", messages_list, task="test", trace_id="test_codex_batch_async")
         assert len(results) == 2
 
 
@@ -1112,6 +1131,7 @@ class TestCodexFallback:
                 "codex",
                 [{"role": "user", "content": "Hi"}],
                 fallback_models=["gpt-4o"],
+                task="test", trace_id="test_codex_fallback",
             )
         assert result.content == "Fallback response"
         assert result.model == "gpt-4o"
@@ -1212,6 +1232,7 @@ class TestCodexMcpServers:
                     "args": ["hello"],
                 },
             },
+            task="test", trace_id="test_codex_mcp_e2e",
         )
         assert isinstance(result, LLMCallResult)
         assert result.content  # got an answer

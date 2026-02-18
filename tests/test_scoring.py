@@ -238,6 +238,7 @@ class TestAscoreOutput:
                 output="Test",
                 rubric="research_quality",
                 task="jsonl_test",
+                trace_id="test_jsonl_write",
                 judge_model="gpt-5-nano",
             )
 
@@ -266,7 +267,7 @@ class TestAscoreOutput:
 
         with patch("llm_client.client.acall_llm_structured", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = (judge_output, mock_meta)
-            result = await ascore_output("test", "research_quality", judge_model="gpt-5-nano")
+            result = await ascore_output("test", "research_quality", task="test", trace_id="test_weighted_score", judge_model="gpt-5-nano")
 
         assert result.overall_score == 1.0
 
@@ -287,7 +288,7 @@ class TestAscoreOutput:
 
         with patch("llm_client.client.acall_llm_structured", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = (judge_output, mock_meta)
-            result = await ascore_output("test", "research_quality", judge_model="gpt-5-nano")
+            result = await ascore_output("test", "research_quality", task="test", trace_id="test_minimum_score", judge_model="gpt-5-nano")
 
         assert result.overall_score == 0.0
 
@@ -306,7 +307,7 @@ class TestAscoreOutput:
 
         with patch("llm_client.client.acall_llm_structured", new_callable=AsyncMock) as mock_call:
             mock_call.return_value = (judge_output, mock_meta)
-            result = await ascore_output("test", rubric, judge_model="gpt-5-nano")
+            result = await ascore_output("test", rubric, task="test", trace_id="test_rubric_object", judge_model="gpt-5-nano")
 
         assert result.rubric == "custom"
         assert result.dimensions["quality"] == 4
@@ -409,6 +410,8 @@ class TestScoreResultGitCommit:
             result = await ascore_output(
                 "test",
                 "research_quality",
+                task="test",
+                trace_id="test_git_commit",
                 judge_model="gpt-5-nano",
                 git_commit="xyz7890",
             )

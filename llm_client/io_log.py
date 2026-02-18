@@ -99,8 +99,6 @@ def log_call(
         finish_reason = None
         if result is not None:
             response_content = getattr(result, "content", None)
-            if isinstance(response_content, str) and len(response_content) > 5000:
-                response_content = response_content[:5000] + f"...[truncated {len(result.content)} chars]"
             usage = getattr(result, "usage", None)
             cost = getattr(result, "cost", None)
             finish_reason = getattr(result, "finish_reason", None)
@@ -545,16 +543,71 @@ def log_score(
 
 def _truncate_messages(
     messages: list[dict[str, Any]] | None,
-    max_content: int = 2000,
 ) -> list[dict[str, Any]] | None:
-    """Truncate message content for storage."""
+    """Deep-copy messages for storage (full content, no truncation)."""
     if messages is None:
         return None
-    out: list[dict[str, Any]] = []
-    for m in messages:
-        m2 = dict(m)
-        content = m2.get("content")
-        if isinstance(content, str) and len(content) > max_content:
-            m2["content"] = content[:max_content] + f"...[truncated {len(content)} chars]"
-        out.append(m2)
-    return out
+    return [dict(m) for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# Resume / lookup functions
+# ---------------------------------------------------------------------------
+
+
+def lookup_result(trace_id: str) -> dict[str, Any] | None:
+    """Look up a successful LLM call by trace_id.
+
+    Returns a dict with response, model, cost, latency_s, finish_reason,
+    prompt_tokens, completion_tokens — or None if no successful call found.
+    """
+    db = _get_db()
+    if db is None:
+        return None
+    row = db.execute(
+        "SELECT response, model, cost, latency_s, finish_reason, "
+        "prompt_tokens, completion_tokens, timestamp "
+        "FROM llm_calls WHERE trace_id = ? AND error IS NULL "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (trace_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "response": row[0],
+        "model": row[1],
+        "cost": row[2],
+        "latency_s": row[3],
+        "finish_reason": row[4],
+        "prompt_tokens": row[5],
+        "completion_tokens": row[6],
+        "timestamp": row[7],
+    }
+
+
+def get_completed_traces(
+    *,
+    project: str | None = None,
+    task: str | None = None,
+) -> set[str]:
+    """Return all trace_ids that have at least one successful call.
+
+    Filter by project and/or task to scope results.
+    """
+    db = _get_db()
+    if db is None:
+        return set()
+    clauses = ["error IS NULL", "trace_id IS NOT NULL"]
+    params: list[str] = []
+    if project is not None:
+        clauses.append("project = ?")
+        params.append(project)
+    if task is not None:
+        clauses.append("task = ?")
+        params.append(task)
+    where = " AND ".join(clauses)
+    rows = db.execute(
+        f"SELECT DISTINCT trace_id FROM llm_calls WHERE {where}",  # noqa: S608
+        params,
+    ).fetchall()
+    return {r[0] for r in rows}

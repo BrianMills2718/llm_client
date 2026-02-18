@@ -289,6 +289,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "What is 6*7?"}],
                 python_tools=[add],
+                task="test",
+                trace_id="test_single_turn_no_tool_calls",
             )
 
             assert result.content == "42"
@@ -318,6 +320,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "What is 3+4?"}],
                 python_tools=[add, async_search],
+                task="test",
+                trace_id="test_tool_call_then_answer",
             )
 
             assert result.content == "The answer is 7"
@@ -349,6 +353,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "Search for Paris"}],
                 python_tools=[async_search],
+                task="test",
+                trace_id="test_async_tool_call",
             )
 
             assert result.content == "Paris is the capital"
@@ -374,6 +380,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "Do something"}],
                 python_tools=[failing_tool],
+                task="test",
+                trace_id="test_tool_error_propagates",
             )
 
             assert result.content == "The tool failed"
@@ -387,6 +395,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "Q"}],
                 python_tools=[],
+                task="test",
+                trace_id="test_empty_tools_raises",
             )
 
     async def test_usage_accumulates(self) -> None:
@@ -413,6 +423,8 @@ class TestAcallWithTools:
                 "test-model",
                 [{"role": "user", "content": "1+2?"}],
                 python_tools=[add],
+                task="test",
+                trace_id="test_usage_accumulates",
             )
 
             assert result.usage["input_tokens"] == 300
@@ -434,6 +446,8 @@ class TestAcallWithTools:
                 [{"role": "user", "content": "Q"}],
                 python_tools=[add],
                 max_turns=2,
+                task="test",
+                trace_id="test_max_turns_forces_answer",
             )
 
             assert result.content == "forced"
@@ -458,6 +472,8 @@ class TestPythonToolsRouting:
                 [{"role": "user", "content": "Q"}],
                 python_tools=[add],
                 max_turns=5,
+                task="test",
+                trace_id="test_routes_to_tool_loop",
             )
 
             mock_loop.assert_called_once()
