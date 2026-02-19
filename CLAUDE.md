@@ -700,6 +700,24 @@ get_cost(project="sam_gov", since="2026-02-01")  # project cost this month
 
 At least one filter is required. Returns `float` (USD). Used internally by `max_budget` enforcement.
 
+## MCP Server (llm-observability)
+
+9 tools for any MCP-capable agent (OpenClaw, Codex CLI, Claude Code):
+
+| Tool | What |
+|------|------|
+| `query_cost` | Cumulative cost by trace/task/project/date |
+| `list_recent_traces` | Trace rollup with cost, call count, models |
+| `get_trace_detail` | Per-call breakdown for a trace |
+| `query_performance` | Model cost/quality stats from logged calls |
+| `list_models` | Available models with task suitability |
+| `list_rubrics` | Available scoring rubrics |
+| `score_output` | LLM-as-judge scoring against YAML rubrics |
+| `analyze_scores` | Self-improvement analyzer (failure classification) |
+| `get_budget_status` | Remaining budget for a trace |
+
+Server: `llm_client_mcp_server.py`. Registered in both Claude Code (`mcp.json`) and Codex CLI (`config.toml`).
+
 ## Model Registry + Task-Based Selection
 
 Centralized model matrix — no more hardcoded model strings. Each model has intelligence/speed/cost attributes. Task profiles define requirements and sort preferences.
