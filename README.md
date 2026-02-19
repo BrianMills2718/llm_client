@@ -61,6 +61,23 @@ Structured-output provider notes:
   schemas well (for example `openrouter/openai/gpt-5-mini`) via
   `fallback_models=[...]` at call sites.
 
+### Execution mode contract
+
+`execution_mode` enforces model capabilities before dispatch, so incompatible
+model/kwargs combinations fail fast with `LLMCapabilityError`.
+
+- `text` (default): regular completion calls.
+- `structured`: structured extraction intent.
+- `workspace_agent`: requires agent models (`codex`, `claude-code`,
+  `openai-agents/*`) and supports agent kwargs like `working_directory`,
+  `approval_policy`, `cwd`, `permission_mode`.
+- `workspace_tools`: requires non-agent models and one of `python_tools`,
+  `mcp_servers`, or `mcp_sessions`.
+
+For code-generation/editing workflows that depend on workspace side effects,
+always set `execution_mode="workspace_agent"` to prevent accidental routing to
+chat-only models.
+
 ### Tool calling
 
 ```python

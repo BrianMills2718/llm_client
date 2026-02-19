@@ -839,7 +839,10 @@ def _validate_execution_contract(
                 "or mcp_servers/mcp_sessions."
             )
 
-    agent_only = sorted(k for k in kwargs if k in _AGENT_ONLY_KWARGS)
+    # max_turns is valid for non-agent models when using MCP/python_tools
+    has_tool_loop = any(k in kwargs for k in ("mcp_servers", "mcp_sessions", "python_tools"))
+    check_set = _AGENT_ONLY_KWARGS - {"max_turns"} if has_tool_loop else _AGENT_ONLY_KWARGS
+    agent_only = sorted(k for k in kwargs if k in check_set)
     if agent_only:
         non_agent = [m for m in models if not _is_agent_model(m)]
         if non_agent:
@@ -2026,6 +2029,7 @@ def call_llm_with_tools(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        execution_mode=execution_mode,
         tools=tools,
         **kwargs,
     )
@@ -2600,6 +2604,7 @@ async def acall_llm_with_tools(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    execution_mode: ExecutionMode = "text",
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm_with_tools.
@@ -2640,6 +2645,7 @@ async def acall_llm_with_tools(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        execution_mode=execution_mode,
         tools=tools,
         **kwargs,
     )

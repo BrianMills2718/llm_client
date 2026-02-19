@@ -520,6 +520,23 @@ result = call_llm("anthropic/claude-opus-4", messages)   # Raw Anthropic API
 | `codex/gpt-5` | Codex SDK | gpt-5 | General-purpose, not coding-optimized. |
 | `openai-agents/*` | Reserved | NotImplementedError | |
 
+### Execution Mode Contract
+
+`execution_mode` is a capability contract checked before dispatch.
+Incompatible model/kwargs combinations raise `LLMCapabilityError` early
+(including fallback models), instead of failing after long retries.
+
+- `text` (default): regular completion calls.
+- `structured`: structured extraction intent.
+- `workspace_agent`: requires agent models (`codex`, `claude-code`,
+  `openai-agents/*`) and allows agent-only kwargs (`working_directory`,
+  `approval_policy`, `cwd`, `permission_mode`, etc.).
+- `workspace_tools`: requires non-agent models and one of `python_tools`,
+  `mcp_servers`, or `mcp_sessions`.
+
+For compile/generation paths that rely on in-place workspace edits, set
+`execution_mode="workspace_agent"` explicitly.
+
 ### Agent-specific kwargs
 
 Pass these through `call_llm` `**kwargs`:

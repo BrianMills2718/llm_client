@@ -374,6 +374,7 @@ tasks:
     assert "approval_policy" not in captured_kwargs
     assert "working_directory" not in captured_kwargs
     assert "cwd" not in captured_kwargs
+    assert captured_kwargs.get("execution_mode") == "text"
 
 
 @pytest.mark.asyncio
@@ -412,6 +413,91 @@ tasks:
     assert captured_kwargs.get("approval_policy") == "never"
     assert captured_kwargs.get("working_directory") == str(tmp_path.resolve())
     assert "cwd" not in captured_kwargs
+    assert captured_kwargs.get("execution_mode") == "workspace_agent"
+
+
+@pytest.mark.asyncio
+async def test_codex_skip_git_repo_check_passthrough(tmp_path: Path):
+    """Codex tasks can opt into skip_git_repo_check in graph YAML."""
+    content = f"""
+graph:
+  id: codex_skip_git_repo_check
+  description: "Codex skip git repo check passthrough"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 4
+    agent: codex
+    model: codex
+    prompt: "Hello"
+    working_directory: {tmp_path}
+    skip_git_repo_check: true
+"""
+    f = tmp_path / "codex_skip_git_repo_check.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("approval_policy") == "never"
+    assert captured_kwargs.get("skip_git_repo_check") is True
+    assert captured_kwargs.get("working_directory") == str(tmp_path.resolve())
+    assert captured_kwargs.get("execution_mode") == "workspace_agent"
+
+
+@pytest.mark.asyncio
+async def test_non_agent_mcp_sets_workspace_tools_mode(tmp_path: Path):
+    """Non-agent MCP tasks should declare workspace_tools execution mode."""
+    content = """
+graph:
+  id: non_agent_mcp_mode
+  description: "Non-agent MCP execution mode"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 2
+    agent: codex
+    model: gemini/gemini-2.5-flash
+    prompt: "Use MCP tool"
+    mcp_servers: [demo_server]
+"""
+    f = tmp_path / "non_agent_mcp_mode.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall), \
+         patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+        report = await run_graph(
+            graph,
+            experiment_log=tmp_path / "exp.jsonl",
+            mcp_server_configs={
+                "demo_server": {"command": "python", "args": ["server.py"]},
+            },
+        )
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("execution_mode") == "workspace_tools"
+    assert "mcp_servers" in captured_kwargs
 
 
 # ---------------------------------------------------------------------------

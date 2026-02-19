@@ -69,6 +69,7 @@ class TaskDef(BaseModel):
     model: str | None = None  # Override difficulty router
     investigate_first: list[str] = []
     timeout: int = 300  # Per-task timeout in seconds
+    skip_git_repo_check: bool = False  # Codex-only: bypass trusted-repo guard
 
 
 class GraphMeta(BaseModel):
@@ -485,6 +486,7 @@ async def _execute_task(
         "trace_id": f"taskgraph.{graph.meta.id}.{task.id}.wave{wave_idx}",
         "max_budget": 0,  # Unlimited per-task; graph-level budget TBD
         "num_retries": 0,  # Agent calls have side effects; no auto-retry
+        "execution_mode": "workspace_agent" if model_is_agent else "text",
     }
 
     # MCP servers
@@ -501,6 +503,8 @@ async def _execute_task(
                 )
         if mcp_configs:
             kwargs["mcp_servers"] = mcp_configs
+            if not model_is_agent:
+                kwargs["execution_mode"] = "workspace_tools"
 
     # Working directory
     wd = task.working_directory or working_directory
@@ -516,6 +520,8 @@ async def _execute_task(
         kwargs.setdefault("permission_mode", "bypassPermissions")
     elif model.startswith("codex"):
         kwargs.setdefault("approval_policy", "never")
+        if task.skip_git_repo_check:
+            kwargs["skip_git_repo_check"] = True
 
     # --- DISPATCHED → RUNNING ---
     logger.info(

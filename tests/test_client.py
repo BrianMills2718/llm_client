@@ -1976,6 +1976,42 @@ class TestExecutionModeContracts:
                 max_budget=0,
             )
 
+    def test_workspace_tools_requires_non_agent_model(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="workspace_tools"):
+            call_llm(
+                "codex",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_tools",
+                python_tools=[lambda x: x],
+                task="test",
+                trace_id="test_workspace_tools_non_agent_required",
+                max_budget=0,
+            )
+
+    def test_workspace_tools_requires_tooling_inputs(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="requires python_tools"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_tools",
+                task="test",
+                trace_id="test_workspace_tools_requires_inputs",
+                max_budget=0,
+            )
+
+    def test_workspace_tools_rejects_agent_fallback(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="Incompatible models"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_tools",
+                python_tools=[lambda x: x],
+                fallback_models=["codex"],
+                task="test",
+                trace_id="test_workspace_tools_fallback",
+                max_budget=0,
+            )
+
 
 class TestResponsesAPIRouting:
     """Tests for _is_responses_api_model explicit set."""
