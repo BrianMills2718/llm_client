@@ -389,6 +389,76 @@ def analyze_scores(project: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Experiments
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def list_experiment_runs(
+    dataset: str | None = None,
+    model: str | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List experiment runs with summary metrics.
+
+    Args:
+        dataset: Filter to this dataset (e.g. "HotpotQA", "MuSiQue").
+        model: Filter to this model.
+        project: Filter to this project.
+        since: Only show runs since this ISO date.
+        limit: Max runs to return (default 50).
+
+    Returns:
+        JSON list of runs with: run_id, dataset, model, n_items,
+        summary_metrics, total_cost, wall_time_s, status.
+    """
+    runs = io_log.get_runs(
+        dataset=dataset, model=model, project=project,
+        since=since, limit=limit,
+    )
+    return json.dumps(runs, indent=2)
+
+
+@mcp.tool()
+def get_experiment_detail(run_id: str) -> str:
+    """Get per-item detail for an experiment run.
+
+    Args:
+        run_id: The run to inspect.
+
+    Returns:
+        JSON with run summary and per-item results including
+        metrics, predicted/gold, cost, latency, errors.
+    """
+    items = io_log.get_run_items(run_id)
+    runs = io_log.get_runs(limit=1000)
+    run_info = next((r for r in runs if r["run_id"] == run_id), None)
+    return json.dumps({
+        "run": run_info,
+        "items": items,
+    }, indent=2)
+
+
+@mcp.tool()
+def compare_experiments(run_ids: list[str]) -> str:
+    """Compare 2+ experiment runs side-by-side.
+
+    Shows summary_metrics for each run and deltas from the first
+    run (baseline). Useful for A/B testing models or configurations.
+
+    Args:
+        run_ids: List of 2+ run IDs to compare.
+
+    Returns:
+        JSON with runs array and deltas_from_first array.
+    """
+    result = io_log.compare_runs(run_ids)
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Budget Status
 # ---------------------------------------------------------------------------
 

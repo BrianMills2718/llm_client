@@ -26,6 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -260,6 +261,41 @@ CREATE TABLE IF NOT EXISTS task_scores (
     latency_s REAL,
     git_commit TEXT
 );
+
+CREATE TABLE IF NOT EXISTS experiment_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    dataset TEXT NOT NULL,
+    model TEXT NOT NULL,
+    config TEXT,
+    metrics_schema TEXT,
+    n_items INTEGER DEFAULT 0,
+    n_completed INTEGER DEFAULT 0,
+    n_errors INTEGER DEFAULT 0,
+    summary_metrics TEXT,
+    total_cost REAL DEFAULT 0.0,
+    wall_time_s REAL,
+    git_commit TEXT,
+    status TEXT DEFAULT 'running'
+);
+
+CREATE TABLE IF NOT EXISTS experiment_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    metrics TEXT NOT NULL,
+    predicted TEXT,
+    gold TEXT,
+    latency_s REAL,
+    cost REAL,
+    n_tool_calls INTEGER,
+    error TEXT,
+    extra TEXT,
+    UNIQUE(run_id, item_id)
+);
 """
 
 _INDEXES_SQL = """
@@ -279,6 +315,13 @@ CREATE INDEX IF NOT EXISTS idx_scores_project ON task_scores(project);
 CREATE INDEX IF NOT EXISTS idx_scores_trace_id ON task_scores(trace_id);
 CREATE INDEX IF NOT EXISTS idx_scores_timestamp ON task_scores(timestamp);
 CREATE INDEX IF NOT EXISTS idx_scores_git_commit ON task_scores(git_commit);
+CREATE INDEX IF NOT EXISTS idx_expr_dataset ON experiment_runs(dataset);
+CREATE INDEX IF NOT EXISTS idx_expr_model ON experiment_runs(model);
+CREATE INDEX IF NOT EXISTS idx_expr_project ON experiment_runs(project);
+CREATE INDEX IF NOT EXISTS idx_expr_timestamp ON experiment_runs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_expr_git_commit ON experiment_runs(git_commit);
+CREATE INDEX IF NOT EXISTS idx_expri_run_id ON experiment_items(run_id);
+CREATE INDEX IF NOT EXISTS idx_expri_item_id ON experiment_items(item_id);
 """
 
 
@@ -752,3 +795,404 @@ def get_trace_tree(
         })
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Experiment logging
+# ---------------------------------------------------------------------------
+
+
+def start_run(
+    *,
+    dataset: str,
+    model: str,
+    config: dict[str, Any] | None = None,
+    metrics_schema: list[str] | None = None,
+    run_id: str | None = None,
+    git_commit: str | None = None,
+    project: str | None = None,
+) -> str:
+    """Register an experiment run. Returns run_id.
+
+    Args:
+        dataset: Dataset name (e.g. "HotpotQA", "MuSiQue").
+        model: Model used (e.g. "gemini/gemini-3-flash").
+        config: Run configuration (backend, mode, timeout, etc.).
+        metrics_schema: Metric names items will report (e.g. ["em", "f1", "llm_em"]).
+        run_id: Explicit run ID. Auto-generated UUID if None.
+        git_commit: Git SHA. Auto-captured from HEAD if None.
+        project: Project name override. Uses _get_project() if None.
+
+    Returns:
+        The run_id string.
+    """
+    if run_id is None:
+        run_id = uuid.uuid4().hex[:12]
+
+    if git_commit is None:
+        from llm_client.git_utils import get_git_head
+        git_commit = get_git_head()
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    proj = project or _get_project()
+
+    # JSONL append
+    try:
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "run_start",
+            "run_id": run_id,
+            "timestamp": timestamp,
+            "project": proj,
+            "dataset": dataset,
+            "model": model,
+            "config": config,
+            "metrics_schema": metrics_schema,
+            "git_commit": git_commit,
+        }
+        with open(d / "experiments.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        logger.debug("io_log.start_run JSONL write failed", exc_info=True)
+
+    # SQLite write
+    try:
+        db = _get_db()
+        db.execute(
+            """INSERT INTO experiment_runs
+               (run_id, timestamp, project, dataset, model, config,
+                metrics_schema, git_commit, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')""",
+            (
+                run_id, timestamp, proj, dataset, model,
+                json.dumps(config, default=str) if config else None,
+                json.dumps(metrics_schema) if metrics_schema else None,
+                git_commit,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log.start_run DB write failed", exc_info=True)
+
+    return run_id
+
+
+def log_item(
+    *,
+    run_id: str,
+    item_id: str,
+    metrics: dict[str, Any],
+    predicted: str | None = None,
+    gold: str | None = None,
+    latency_s: float | None = None,
+    cost: float | None = None,
+    n_tool_calls: int | None = None,
+    error: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Log one item result. Dual-write SQLite + JSONL. Never raises."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    # JSONL append
+    try:
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "item",
+            "run_id": run_id,
+            "item_id": item_id,
+            "timestamp": timestamp,
+            "metrics": metrics,
+            "predicted": predicted,
+            "gold": gold,
+            "latency_s": round(latency_s, 3) if latency_s is not None else None,
+            "cost": cost,
+            "n_tool_calls": n_tool_calls,
+            "error": error,
+            "extra": extra,
+        }
+        with open(d / "experiments.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        logger.debug("io_log.log_item JSONL write failed", exc_info=True)
+
+    # SQLite write
+    try:
+        db = _get_db()
+        db.execute(
+            """INSERT OR REPLACE INTO experiment_items
+               (run_id, item_id, timestamp, metrics, predicted, gold,
+                latency_s, cost, n_tool_calls, error, extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id, item_id, timestamp,
+                json.dumps(metrics, default=str),
+                predicted, gold,
+                round(latency_s, 3) if latency_s is not None else None,
+                cost, n_tool_calls, error,
+                json.dumps(extra, default=str) if extra else None,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log.log_item DB write failed", exc_info=True)
+
+
+def finish_run(
+    *,
+    run_id: str,
+    summary_metrics: dict[str, Any] | None = None,
+    status: str = "completed",
+    wall_time_s: float | None = None,
+) -> dict[str, Any]:
+    """Finalize run. Auto-aggregates metrics from items if summary_metrics not provided.
+
+    Returns the final run record as a dict.
+    """
+    db = _get_db()
+
+    # Fetch items for this run
+    item_rows = db.execute(
+        "SELECT metrics, cost, error FROM experiment_items WHERE run_id = ?",
+        (run_id,),
+    ).fetchall()
+
+    n_items = len(item_rows)
+    n_errors = sum(1 for r in item_rows if r[2] is not None)
+    n_completed = n_items - n_errors
+    total_cost = sum(r[1] or 0.0 for r in item_rows)
+
+    # Auto-aggregate metrics if not provided
+    if summary_metrics is None:
+        # Get metrics_schema from run
+        schema_row = db.execute(
+            "SELECT metrics_schema FROM experiment_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        schema: list[str] = []
+        if schema_row and schema_row[0]:
+            schema = json.loads(schema_row[0])
+
+        summary_metrics = {}
+        for metric_name in schema:
+            values = []
+            for r in item_rows:
+                m = json.loads(r[0])
+                v = m.get(metric_name)
+                if v is not None:
+                    values.append(float(v))
+            if values:
+                summary_metrics[f"avg_{metric_name}"] = round(
+                    100.0 * sum(values) / len(values), 2
+                )
+
+    # Update run record
+    try:
+        db.execute(
+            """UPDATE experiment_runs
+               SET n_items = ?, n_completed = ?, n_errors = ?,
+                   summary_metrics = ?, total_cost = ?,
+                   wall_time_s = ?, status = ?
+               WHERE run_id = ?""",
+            (
+                n_items, n_completed, n_errors,
+                json.dumps(summary_metrics, default=str) if summary_metrics else None,
+                round(total_cost, 6),
+                round(wall_time_s, 1) if wall_time_s is not None else None,
+                status, run_id,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log.finish_run DB update failed", exc_info=True)
+
+    # JSONL append
+    try:
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "run_finish",
+            "run_id": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "n_items": n_items,
+            "n_completed": n_completed,
+            "n_errors": n_errors,
+            "summary_metrics": summary_metrics,
+            "total_cost": round(total_cost, 6),
+            "wall_time_s": round(wall_time_s, 1) if wall_time_s is not None else None,
+            "status": status,
+        }
+        with open(d / "experiments.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        logger.debug("io_log.finish_run JSONL write failed", exc_info=True)
+
+    # Return the full run record
+    row = db.execute(
+        """SELECT run_id, timestamp, project, dataset, model, config,
+                  metrics_schema, n_items, n_completed, n_errors,
+                  summary_metrics, total_cost, wall_time_s, git_commit, status
+           FROM experiment_runs WHERE run_id = ?""",
+        (run_id,),
+    ).fetchone()
+
+    if row is None:
+        return {"run_id": run_id, "status": status}
+
+    return {
+        "run_id": row[0],
+        "timestamp": row[1],
+        "project": row[2],
+        "dataset": row[3],
+        "model": row[4],
+        "config": json.loads(row[5]) if row[5] else None,
+        "metrics_schema": json.loads(row[6]) if row[6] else None,
+        "n_items": row[7],
+        "n_completed": row[8],
+        "n_errors": row[9],
+        "summary_metrics": json.loads(row[10]) if row[10] else None,
+        "total_cost": row[11],
+        "wall_time_s": row[12],
+        "git_commit": row[13],
+        "status": row[14],
+    }
+
+
+def get_runs(
+    *,
+    dataset: str | None = None,
+    model: str | None = None,
+    project: str | None = None,
+    since: str | date | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Query experiment runs, newest first."""
+    db = _get_db()
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if dataset is not None:
+        clauses.append("dataset = ?")
+        params.append(dataset)
+    if model is not None:
+        clauses.append("model = ?")
+        params.append(model)
+    if project is not None:
+        clauses.append("project = ?")
+        params.append(project)
+    if since is not None:
+        since_str = since.isoformat() if isinstance(since, date) else since
+        clauses.append("timestamp >= ?")
+        params.append(since_str)
+
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+
+    rows = db.execute(
+        f"""SELECT run_id, timestamp, project, dataset, model,
+                   n_items, n_completed, n_errors,
+                   summary_metrics, total_cost, wall_time_s,
+                   git_commit, status
+            FROM experiment_runs
+            {where}
+            ORDER BY timestamp DESC
+            LIMIT ?""",  # noqa: S608
+        params,
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        results.append({
+            "run_id": r[0],
+            "timestamp": r[1],
+            "project": r[2],
+            "dataset": r[3],
+            "model": r[4],
+            "n_items": r[5],
+            "n_completed": r[6],
+            "n_errors": r[7],
+            "summary_metrics": json.loads(r[8]) if r[8] else None,
+            "total_cost": r[9],
+            "wall_time_s": r[10],
+            "git_commit": r[11],
+            "status": r[12],
+        })
+    return results
+
+
+def get_run_items(run_id: str) -> list[dict[str, Any]]:
+    """All items for a run, ordered by timestamp."""
+    db = _get_db()
+
+    rows = db.execute(
+        """SELECT item_id, timestamp, metrics, predicted, gold,
+                  latency_s, cost, n_tool_calls, error, extra
+           FROM experiment_items
+           WHERE run_id = ?
+           ORDER BY timestamp""",
+        (run_id,),
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        results.append({
+            "item_id": r[0],
+            "timestamp": r[1],
+            "metrics": json.loads(r[2]) if r[2] else {},
+            "predicted": r[3],
+            "gold": r[4],
+            "latency_s": r[5],
+            "cost": r[6],
+            "n_tool_calls": r[7],
+            "error": r[8],
+            "extra": json.loads(r[9]) if r[9] else None,
+        })
+    return results
+
+
+def compare_runs(run_ids: list[str]) -> dict[str, Any]:
+    """Side-by-side summary_metrics for 2+ runs, with deltas from first run."""
+    if len(run_ids) < 2:
+        raise ValueError("compare_runs requires at least 2 run_ids.")
+
+    db = _get_db()
+    runs = []
+    for rid in run_ids:
+        row = db.execute(
+            """SELECT run_id, dataset, model, n_items, n_completed, n_errors,
+                      summary_metrics, total_cost, wall_time_s, status, timestamp
+               FROM experiment_runs WHERE run_id = ?""",
+            (rid,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Run not found: {rid}")
+        runs.append({
+            "run_id": row[0],
+            "dataset": row[1],
+            "model": row[2],
+            "n_items": row[3],
+            "n_completed": row[4],
+            "n_errors": row[5],
+            "summary_metrics": json.loads(row[6]) if row[6] else {},
+            "total_cost": row[7],
+            "wall_time_s": row[8],
+            "status": row[9],
+            "timestamp": row[10],
+        })
+
+    # Compute deltas from first run (baseline)
+    baseline = runs[0]["summary_metrics"]
+    deltas = []
+    for run in runs[1:]:
+        d: dict[str, float] = {}
+        for k, v in run["summary_metrics"].items():
+            if k in baseline and isinstance(v, (int, float)) and isinstance(baseline[k], (int, float)):
+                d[k] = round(v - baseline[k], 2)
+        deltas.append(d)
+
+    return {
+        "runs": runs,
+        "deltas_from_first": deltas,
+    }

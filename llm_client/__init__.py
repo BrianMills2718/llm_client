@@ -90,7 +90,20 @@ from llm_client.errors import (
 
 from llm_client.io_log import configure as configure_logging
 from llm_client.rate_limit import configure as configure_rate_limit
-from llm_client.io_log import get_completed_traces, get_cost, get_trace_tree, import_jsonl, log_embedding, lookup_result
+from llm_client.io_log import (
+    compare_runs,
+    finish_run,
+    get_completed_traces,
+    get_cost,
+    get_run_items,
+    get_runs,
+    get_trace_tree,
+    import_jsonl,
+    log_embedding,
+    log_item,
+    lookup_result,
+    start_run,
+)
 from llm_client.models import (
     ModelInfo,
     TaskProfile,
@@ -247,6 +260,13 @@ __all__ = [
     "lookup_result",
     "get_completed_traces",
     "get_cost",
+    # experiment logging
+    "start_run",
+    "log_item",
+    "finish_run",
+    "get_runs",
+    "get_run_items",
+    "compare_runs",
     "render_prompt",
     "strip_fences",
     "ModelInfo",

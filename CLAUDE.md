@@ -766,9 +766,29 @@ get_cost(project="sam_gov", since="2026-02-01")  # project cost this month
 
 At least one filter is required. Returns `float` (USD). Used internally by `max_budget` enforcement.
 
+### Experiment logging
+
+Centralized experiment run tracking. Callers declare metrics upfront, log per-item results, and get auto-aggregated summaries alongside cost/trace data.
+
+```python
+from llm_client import start_run, log_item, finish_run, get_runs, compare_runs
+
+rid = start_run(dataset="MuSiQue", model="o4-mini", metrics_schema=["em", "f1", "llm_em"])
+log_item(run_id=rid, item_id="q1", metrics={"em": 1, "f1": 0.85, "llm_em": 1},
+         predicted="Alice", gold="Alice", cost=0.01, latency_s=5.2)
+result = finish_run(run_id=rid, wall_time_s=45.0)  # auto-computes avg_em, avg_f1, avg_llm_em
+
+runs = get_runs(dataset="MuSiQue")           # query runs
+comparison = compare_runs([rid1, rid2])        # side-by-side with deltas
+```
+
+CLI: `python -m llm_client experiments`, `--dataset`, `--compare RUN1 RUN2`, `--detail RUN_ID`, `--format json`.
+
+Dual-written to `experiments.jsonl` + SQLite (`experiment_runs` / `experiment_items` tables). Never raises — logging failures are silently dropped.
+
 ## MCP Server (llm-observability)
 
-10 tools for any MCP-capable agent (OpenClaw, Codex CLI, Claude Code):
+13 tools for any MCP-capable agent (OpenClaw, Codex CLI, Claude Code):
 
 | Tool | What |
 |------|------|
@@ -782,6 +802,9 @@ At least one filter is required. Returns `float` (USD). Used internally by `max_
 | `score_output` | LLM-as-judge scoring against YAML rubrics |
 | `analyze_scores` | Self-improvement analyzer (failure classification) |
 | `get_budget_status` | Remaining budget for a trace |
+| `list_experiment_runs` | Query experiment runs with summary metrics |
+| `get_experiment_detail` | Per-item detail for an experiment run |
+| `compare_experiments` | Side-by-side comparison of 2+ runs |
 
 Server: `llm_client_mcp_server.py`. Registered in both Claude Code (`mcp.json`) and Codex CLI (`config.toml`).
 

@@ -15,6 +15,12 @@ Usage:
     python -m llm_client scores --rubric research_quality --group-by model
     python -m llm_client scores --task sam_gov_research --trend
 
+    python -m llm_client experiments                   # recent experiment runs
+    python -m llm_client experiments --dataset MuSiQue  # filter by dataset
+    python -m llm_client experiments --compare RUN1 RUN2  # side-by-side
+    python -m llm_client experiments --detail RUN_ID    # per-item breakdown
+    python -m llm_client experiments --format json      # machine-readable
+
     python -m llm_client backfill                      # import JSONL → SQLite
     python -m llm_client backfill --clear              # wipe + reimport
 """
@@ -443,6 +449,160 @@ def cmd_scores(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# experiments subcommand
+# ---------------------------------------------------------------------------
+
+
+def cmd_experiments(args: argparse.Namespace) -> None:
+    from llm_client import io_log
+
+    if args.compare:
+        _cmd_experiments_compare(args)
+        return
+
+    if args.detail:
+        _cmd_experiments_detail(args)
+        return
+
+    # List runs
+    runs = io_log.get_runs(
+        dataset=args.dataset,
+        model=args.model,
+        project=args.project,
+        since=args.since,
+        limit=args.limit,
+    )
+
+    if args.format == "json":
+        print(json.dumps(runs, indent=2))
+        return
+
+    if not runs:
+        print("No experiment runs found.")
+        return
+
+    headers = ["Run ID", "Dataset", "Model", "Items", "Status", "Metrics", "Cost", "Wall", "Time"]
+    col_widths = [max(len(h), 6) for h in headers]
+
+    display_rows = []
+    for r in runs:
+        rid = r["run_id"][:12]
+        ds = (r["dataset"] or "-")[:20]
+        mdl = (r["model"] or "-")[:25]
+        items = f"{r['n_completed'] or 0}/{r['n_items'] or 0}"
+        status = r["status"] or "-"
+
+        # Format summary metrics compactly
+        sm = r.get("summary_metrics") or {}
+        metrics_str = "  ".join(f"{k}={v}" for k, v in sm.items()) if sm else "-"
+        if len(metrics_str) > 40:
+            metrics_str = metrics_str[:37] + "..."
+
+        cost = _format_cost(r.get("total_cost"))
+        wall = f"{r['wall_time_s']:.0f}s" if r.get("wall_time_s") else "-"
+        ts = r["timestamp"][:16] if r.get("timestamp") else "-"
+
+        row = (rid, ds, mdl, items, status, metrics_str, cost, wall, ts)
+        display_rows.append(row)
+        for i, v in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(v)))
+
+    print("\nExperiment Runs:")
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print(fmt.format(*headers))
+    print("─" * (sum(col_widths) + 2 * (len(col_widths) - 1)))
+    for row in display_rows:
+        print(fmt.format(*row))
+
+
+def _cmd_experiments_compare(args: argparse.Namespace) -> None:
+    from llm_client import io_log
+
+    try:
+        result = io_log.compare_runs(args.compare)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2))
+        return
+
+    runs = result["runs"]
+    deltas = result["deltas_from_first"]
+
+    # Header
+    print("\nExperiment Comparison:")
+    print("─" * 70)
+    for i, r in enumerate(runs):
+        label = "BASELINE" if i == 0 else f"vs base"
+        sm = r.get("summary_metrics") or {}
+        metrics_str = "  ".join(f"{k}={v}" for k, v in sm.items())
+        print(f"  [{r['run_id'][:12]}] {r['dataset']} / {r['model']}")
+        print(f"    {r['n_completed']}/{r['n_items']} items  ${r['total_cost']:.4f}  {label}")
+        print(f"    {metrics_str}")
+        if i > 0 and deltas[i - 1]:
+            delta_str = "  ".join(
+                f"{k}={v:+.2f}" for k, v in deltas[i - 1].items()
+            )
+            print(f"    Deltas: {delta_str}")
+        print()
+
+
+def _cmd_experiments_detail(args: argparse.Namespace) -> None:
+    from llm_client import io_log
+
+    run_id = args.detail
+    items = io_log.get_run_items(run_id)
+
+    if args.format == "json":
+        print(json.dumps(items, indent=2))
+        return
+
+    if not items:
+        print(f"No items found for run {run_id}")
+        return
+
+    # Get run info
+    runs = io_log.get_runs(limit=1000)
+    run_info = next((r for r in runs if r["run_id"] == run_id), None)
+    if run_info:
+        print(f"\nRun: {run_id}")
+        print(f"  Dataset: {run_info['dataset']}  Model: {run_info['model']}  Status: {run_info['status']}")
+        sm = run_info.get("summary_metrics") or {}
+        if sm:
+            print(f"  Summary: {'  '.join(f'{k}={v}' for k, v in sm.items())}")
+        print()
+
+    headers = ["Item", "Metrics", "Predicted", "Gold", "Cost", "Latency", "Error"]
+    col_widths = [max(len(h), 6) for h in headers]
+
+    display_rows = []
+    for it in items:
+        iid = str(it["item_id"])[:10]
+        m = it.get("metrics") or {}
+        metrics_str = " ".join(f"{k}={v}" for k, v in m.items())
+        if len(metrics_str) > 30:
+            metrics_str = metrics_str[:27] + "..."
+        pred = (it.get("predicted") or "-")[:30]
+        gold = (it.get("gold") or "-")[:30]
+        cost = _format_cost(it.get("cost"))
+        lat = f"{it['latency_s']:.1f}s" if it.get("latency_s") else "-"
+        err = (it.get("error") or "")[:20]
+
+        row = (iid, metrics_str, pred, gold, cost, lat, err)
+        display_rows.append(row)
+        for i, v in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(v)))
+
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print(fmt.format(*headers))
+    print("─" * (sum(col_widths) + 2 * (len(col_widths) - 1)))
+    for row in display_rows:
+        print(fmt.format(*row))
+
+
+# ---------------------------------------------------------------------------
 # backfill subcommand
 # ---------------------------------------------------------------------------
 
@@ -534,6 +694,17 @@ def main() -> None:
     scores_p.add_argument("--trend", action="store_true", help="Show daily score trend instead of aggregates")
     scores_p.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
+    # experiments
+    exp_p = sub.add_parser("experiments", help="List and compare experiment runs")
+    exp_p.add_argument("--dataset", help="Filter to a dataset")
+    exp_p.add_argument("--model", help="Filter to a model")
+    exp_p.add_argument("--project", help="Filter to a project")
+    exp_p.add_argument("--since", help="Only show runs since this ISO date")
+    exp_p.add_argument("--limit", type=int, default=50, help="Max runs to show")
+    exp_p.add_argument("--compare", nargs="+", metavar="RUN_ID", help="Compare 2+ run IDs side-by-side")
+    exp_p.add_argument("--detail", metavar="RUN_ID", help="Show per-item detail for a run")
+    exp_p.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
+
     # backfill
     backfill_p = sub.add_parser("backfill", help="Import JSONL logs into SQLite")
     backfill_p.add_argument("--clear", action="store_true", help="Wipe DB before importing (avoids dupes)")
@@ -550,6 +721,8 @@ def main() -> None:
         cmd_traces(args)
     elif args.command == "scores":
         cmd_scores(args)
+    elif args.command == "experiments":
+        cmd_experiments(args)
     elif args.command == "backfill":
         cmd_backfill(args)
 
