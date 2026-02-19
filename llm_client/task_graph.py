@@ -270,6 +270,15 @@ def _resolve_templates(
     return _TEMPLATE_RE.sub(_replace, text)
 
 
+def _is_agent_model_family(model: str) -> bool:
+    """True when model routes through an agent SDK."""
+    return (
+        model.startswith("codex")
+        or model.startswith("claude-code")
+        or model.startswith("openai-agents")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core execution
 # ---------------------------------------------------------------------------
@@ -432,6 +441,7 @@ async def _execute_task(
     # --- Model selection ---
     effective_tier = get_effective_tier(task.id, task.difficulty, model_floors)
     model = get_model_for_difficulty(effective_tier, override_model=task.model)
+    model_is_agent = _is_agent_model_family(model) if model is not None else False
 
     if model is None:
         # Tier 0: scripted task, just run validation
@@ -494,17 +504,17 @@ async def _execute_task(
 
     # Working directory
     wd = task.working_directory or working_directory
-    if wd:
+    if wd and model_is_agent:
         wd_expanded = str(Path(wd).expanduser().resolve())
-        if task.agent == "codex" or task.agent.startswith("codex/"):
+        if model.startswith("codex"):
             kwargs["working_directory"] = wd_expanded
-        elif task.agent.startswith("claude-code"):
+        elif model.startswith("claude-code"):
             kwargs["cwd"] = wd_expanded
 
     # Agent permission modes — headless dispatch needs full autonomy
-    if task.agent.startswith("claude-code"):
+    if model.startswith("claude-code"):
         kwargs.setdefault("permission_mode", "bypassPermissions")
-    elif task.agent == "codex" or task.agent.startswith("codex/"):
+    elif model.startswith("codex"):
         kwargs.setdefault("approval_policy", "never")
 
     # --- DISPATCHED → RUNNING ---

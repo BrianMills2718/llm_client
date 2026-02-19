@@ -146,6 +146,12 @@ tasks:
       brief: ~/.openclaw/workspace/briefs/nightly_{date}.md
 ```
 
+Model override semantics:
+- `model` controls runtime family (agent SDK vs provider model), not the `agent` label.
+- If `model` starts with `codex` or `claude-code`, agent SDK kwargs are applied.
+- If `model` is a provider model (for example `gemini/gemini-2.5-flash`), the task runs through standard `llm_client` completion/tool-loop routing and agent-only kwargs are not injected.
+- This allows mixed graphs like `gemini -> codex -> claude-code` in one DAG.
+
 ### Experiment Record (JSONL)
 
 Written per-task to `~/projects/data/task_graph/experiments.jsonl`:

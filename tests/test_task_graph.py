@@ -333,6 +333,88 @@ async def test_run_graph_agent_error(simple_yaml: Path, tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Agent/non-agent kwargs routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_model_override_non_agent_strips_agent_kwargs(tmp_path: Path):
+    """Gemini override should not inherit Codex-only kwargs."""
+    content = f"""
+graph:
+  id: non_agent_override
+  description: "Model override routes to non-agent runtime"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 1
+    agent: codex
+    model: gemini/gemini-2.5-flash
+    prompt: "Hello"
+    working_directory: {tmp_path}
+"""
+    f = tmp_path / "non_agent_override.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall), \
+         patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert "approval_policy" not in captured_kwargs
+    assert "working_directory" not in captured_kwargs
+    assert "cwd" not in captured_kwargs
+
+
+@pytest.mark.asyncio
+async def test_model_override_agent_keeps_agent_kwargs(tmp_path: Path):
+    """Codex override should keep Codex runtime kwargs."""
+    content = f"""
+graph:
+  id: agent_override
+  description: "Model override routes to codex runtime"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 1
+    agent: codex
+    model: codex/gpt-5
+    prompt: "Hello"
+    working_directory: {tmp_path}
+"""
+    f = tmp_path / "agent_override.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("approval_policy") == "never"
+    assert captured_kwargs.get("working_directory") == str(tmp_path.resolve())
+    assert "cwd" not in captured_kwargs
+
+
+# ---------------------------------------------------------------------------
 # Task execution with investigation questions
 # ---------------------------------------------------------------------------
 
