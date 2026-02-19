@@ -204,8 +204,21 @@ async def execute_direct_tool_calls(
                 if isinstance(arguments_str, str)
                 else arguments_str
             )
-        except _json.JSONDecodeError:
-            arguments = {}
+        except _json.JSONDecodeError as exc:
+            logger.error("Failed to parse tool call arguments for %s: %s", tool_name, str(arguments_str)[:200])
+            record = MCPToolCallRecord(
+                server="__direct__",
+                tool=tool_name,
+                arguments={},
+                error=f"JSON parse error: {exc}",
+            )
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": f"ERROR: Invalid JSON arguments: {exc}",
+            })
+            records.append(record)
+            continue
 
         record = MCPToolCallRecord(
             server="__direct__",

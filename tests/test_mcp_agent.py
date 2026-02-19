@@ -198,14 +198,17 @@ def _make_llm_result(
     usage: dict[str, Any] | None = None,
     cost: float = 0.001,
     finish_reason: str = "stop",
+    model: str = "test-model",
+    warnings: list[str] | None = None,
 ) -> LLMCallResult:
     return LLMCallResult(
         content=content,
         usage=usage or {"input_tokens": 100, "output_tokens": 50},
         cost=cost,
-        model="test-model",
+        model=model,
         tool_calls=tool_calls or [],
         finish_reason=finish_reason,
+        warnings=warnings or [],
     )
 
 
@@ -679,3 +682,111 @@ class TestRouting:
             assert call_kwargs["tool_result_max_length"] == 10000
             # Regular kwargs also present (passed through)
             assert call_kwargs["temperature"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Warnings, sticky fallback, models_used
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestAgentDiagnostics:
+    """Tests for warnings, models_used, and sticky fallback in agent loop."""
+
+    async def test_sticky_fallback(self) -> None:
+        """When inner call returns a different model (fallback), remaining turns use it."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        call_count = 0
+
+        async def mock_executor(
+            tool_calls: list[dict[str, Any]], max_len: int,
+        ) -> tuple[list, list]:
+            records = [MCPToolCallRecord(server="s", tool="t", arguments={}, result="ok")]
+            msgs = [{"role": "tool", "tool_call_id": "tc1", "content": "result"}]
+            return records, msgs
+
+        async def mock_inner_acall(model, messages, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: tool call, but model fell back
+                return _make_llm_result(
+                    content="",
+                    model="fallback-model",
+                    tool_calls=[{
+                        "id": "tc1",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }],
+                    finish_reason="tool_calls",
+                    warnings=["FALLBACK: test-model -> fallback-model (Exception: error)"],
+                )
+            else:
+                # Second call: final answer with sticky model
+                return _make_llm_result(content="answer", model="fallback-model")
+
+        agent_result = MCPAgentResult()
+
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "t"}}],
+                agent_result, mock_executor, 5, 50000, 60, {},
+            )
+
+        assert content == "answer"
+        assert "fallback-model" in agent_result.models_used
+        assert any("STICKY_FALLBACK" in w for w in agent_result.warnings)
+        # Verify inner calls used the sticky model on turn 2
+        assert call_count == 2
+
+    async def test_warnings_propagated_from_turns(self) -> None:
+        """Per-turn warnings from inner acall_llm accumulate in MCPAgentResult."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        async def mock_executor(tc, ml):
+            records = [MCPToolCallRecord(server="s", tool="t", arguments={}, result="ok")]
+            msgs = [{"role": "tool", "tool_call_id": "tc1", "content": "result"}]
+            return records, msgs
+
+        results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{"id": "tc1", "function": {"name": "t", "arguments": "{}"}}],
+                finish_reason="tool_calls",
+                warnings=["RETRY 1/3: test-model (Exception: rate limit)"],
+            ),
+            _make_llm_result(content="done", warnings=["RETRY 1/3: test-model (Exception: timeout)"]),
+        ]
+
+        agent_result = MCPAgentResult()
+
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=results):
+            await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "t"}}],
+                agent_result, mock_executor, 5, 50000, 60, {},
+            )
+
+        assert len(agent_result.warnings) == 2
+        assert "rate limit" in agent_result.warnings[0]
+        assert "timeout" in agent_result.warnings[1]
+
+    async def test_models_used_tracked(self) -> None:
+        """models_used set tracks all models that responded."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        result = _make_llm_result(content="ok", model="gemini/gemini-2.5-flash")
+        agent_result = MCPAgentResult()
+
+        with patch("llm_client.mcp_agent._inner_acall_llm", return_value=result):
+            await _agent_loop(
+                "gemini/gemini-2.5-flash",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "t"}}],
+                agent_result, AsyncMock(), 5, 50000, 60, {},
+            )
+
+        assert "gemini/gemini-2.5-flash" in agent_result.models_used

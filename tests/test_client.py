@@ -1865,6 +1865,91 @@ class TestFallbackModels:
         assert result.content == "Fallback OK"
         assert mock_comp.call_count == 2  # 1 attempt on primary (no retry), 1 on fallback
 
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_fallback_populates_warnings(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Fallback should populate result.warnings with FALLBACK message."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),
+            Exception("rate limit"),
+            _mock_response(content="Fallback OK"),
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=1,
+            fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="test_fallback_warnings",
+            max_budget=0,
+        )
+        assert result.content == "Fallback OK"
+        assert len(result.warnings) >= 2  # at least 1 retry + 1 fallback
+        assert any("RETRY" in w for w in result.warnings)
+        assert any("FALLBACK" in w for w in result.warnings)
+        assert any("gpt-4" in w and "gpt-3.5-turbo" in w for w in result.warnings)
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_retry_populates_warnings(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Retries should populate result.warnings with RETRY messages."""
+        mock_comp.side_effect = [
+            Exception("rate limit"),
+            _mock_response(content="OK after retry"),
+        ]
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_retry_warnings",
+            max_budget=0,
+        )
+        assert result.content == "OK after retry"
+        assert len(result.warnings) == 1
+        assert "RETRY 1/3" in result.warnings[0]
+        assert "gpt-4" in result.warnings[0]
+        assert "rate limit" in result.warnings[0]
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_no_warnings_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+        """Clean call should have empty warnings."""
+        mock_comp.return_value = _mock_response(content="Clean")
+        result = call_llm(
+            "gpt-4", [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="test_no_warnings",
+            max_budget=0,
+        )
+        assert result.content == "Clean"
+        assert result.warnings == []
+
+
+class TestResponsesAPIRouting:
+    """Tests for _is_responses_api_model explicit set."""
+
+    def test_excludes_openrouter(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("openrouter/openai/gpt-5-mini") is False
+
+    def test_excludes_any_provider_prefix(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("azure/gpt-5") is False
+        assert _is_responses_api_model("custom/gpt-5-mini") is False
+
+    def test_matches_bare_gpt5(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5") is True
+        assert _is_responses_api_model("gpt-5-mini") is True
+        assert _is_responses_api_model("gpt-5-nano") is True
+
+    def test_no_substring_match(self) -> None:
+        """Ensure 'gpt-5' substring in non-GPT-5 model names doesn't match."""
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5-turbo-custom") is False
+        assert _is_responses_api_model("my-gpt-5") is False
+
 
 # ---------------------------------------------------------------------------
 # Hooks tests

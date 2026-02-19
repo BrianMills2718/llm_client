@@ -106,6 +106,10 @@ class MCPAgentResult:
     total_cache_creation_tokens: int = 0
     conversation_trace: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    """Diagnostic warnings accumulated across turns (retries, fallbacks, sticky model switches)."""
+    models_used: set[str] = field(default_factory=set)
+    """Set of model strings actually used during the agent loop (tracks fallback switches)."""
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +309,21 @@ async def _execute_tool_calls(
                 if isinstance(arguments_str, str)
                 else arguments_str
             )
-        except _json.JSONDecodeError:
-            arguments = {}
+        except _json.JSONDecodeError as exc:
+            logger.error("Failed to parse tool call arguments for %s: %s", tool_name, str(arguments_str)[:200])
+            record = MCPToolCallRecord(
+                server=tool_to_server.get(tool_name) or "unknown",
+                tool=tool_name,
+                arguments={},
+                error=f"JSON parse error: {exc}",
+            )
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": f"ERROR: Invalid JSON arguments: {exc}",
+            })
+            records.append(record)
+            continue
 
         server_name = tool_to_server.get(tool_name)
         record = MCPToolCallRecord(
@@ -464,6 +481,7 @@ async def _acall_with_mcp(
         model=model,
         finish_reason=final_finish_reason,
         raw_response=agent_result,
+        warnings=agent_result.warnings,
     )
 
 
@@ -490,13 +508,28 @@ async def _agent_loop(
     total_cost = 0.0
     final_content = ""
     final_finish_reason = "stop"
+    effective_model = model
 
     for turn in range(max_turns):
         agent_result.turns = turn + 1
 
         result = await _inner_acall_llm(
-            model, messages, timeout=timeout, tools=openai_tools, **kwargs,
+            effective_model, messages, timeout=timeout, tools=openai_tools, **kwargs,
         )
+
+        # Track per-turn diagnostics
+        agent_result.models_used.add(result.model)
+        if result.warnings:
+            agent_result.warnings.extend(result.warnings)
+
+        # Sticky fallback: if inner call fell back to a different model,
+        # use that model for remaining turns (avoids re-hitting dead primary).
+        if result.model != effective_model:
+            agent_result.warnings.append(
+                f"STICKY_FALLBACK: {effective_model} failed, "
+                f"using {result.model} for remaining turns"
+            )
+            effective_model = result.model
 
         # Accumulate usage
         inp, out, cached, cache_create = _extract_usage(result.usage or {})
@@ -592,8 +625,11 @@ async def _agent_loop(
             max_turns,
         )
         final_result = await _inner_acall_llm(
-            model, messages, timeout=timeout, **kwargs,
+            effective_model, messages, timeout=timeout, **kwargs,
         )
+        agent_result.models_used.add(final_result.model)
+        if final_result.warnings:
+            agent_result.warnings.extend(final_result.warnings)
         final_content = final_result.content
         final_finish_reason = final_result.finish_reason
         total_cost += final_result.cost
@@ -681,4 +717,5 @@ async def _acall_with_tools(
         model=model,
         finish_reason=final_finish_reason,
         raw_response=agent_result,
+        warnings=agent_result.warnings,
     )

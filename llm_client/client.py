@@ -742,6 +742,8 @@ def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+_RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
+
 def _is_responses_api_model(model: str) -> bool:
     """Check if model requires litellm.responses() instead of completion().
 
@@ -749,13 +751,14 @@ def _is_responses_api_model(model: str) -> bool:
     and response format than the Chat Completions API. This function
     detects them so call_llm/acall_llm can route automatically.
 
-    OpenRouter proxies use Chat Completions API even for GPT-5 models,
-    so we exclude them.
+    Only bare OpenAI model names match. Provider-prefixed models
+    (openrouter/openai/gpt-5, azure/gpt-5, etc.) use Chat Completions API.
     """
     lower = model.lower()
-    if lower.startswith("openrouter/"):
+    # Any provider prefix means proxied → Chat Completions, not Responses API
+    if "/" in lower:
         return False
-    return "gpt-5" in lower
+    return lower in _RESPONSES_API_MODELS
 
 
 def _is_agent_model(model: str) -> bool:
@@ -1089,8 +1092,7 @@ def _extract_responses_usage(response: Any) -> dict[str, Any]:
         itd = getattr(usage, "input_tokens_details", None)
         if itd is not None:
             cached = getattr(itd, "cached_tokens", None) or 0
-            if cached:
-                result["cached_tokens"] = cached
+            result["cached_tokens"] = cached  # Always include, even if 0
         return result
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 

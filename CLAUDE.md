@@ -113,7 +113,7 @@ Fourteen functions (7 sync + 7 async):
 
 Also exported: `LLMError`, `LLMRateLimitError`, `LLMQuotaExhaustedError`, `LLMAuthError`, `LLMContentFilterError`, `LLMTransientError`, `LLMModelNotFoundError`, `classify_error`, `wrap_error` (see [Structured Error Types](#structured-error-types)).
 
-`LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
+`LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`, `.warnings`
 
 `call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout` (60s), `num_retries` (2), `reasoning_effort` (Claude only), `api_base` (optional), `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any litellm kwargs.
 
