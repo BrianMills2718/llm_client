@@ -661,6 +661,24 @@ How it works: tool schemas are embedded in the system prompt, the model responds
 
 Only applies to `python_tools=` (direct backend). MCP tool calling requires native `tool_calls` in the response and is not shimmed. Models with `tool_calling: False` in the registry trigger the shim; unknown models default to native tool calling.
 
+## Per-Provider Rate Limiting
+
+Built-in per-provider concurrency limiting prevents overwhelming any single API when running batch calls, concurrent tasks, or multi-agent workflows. Enabled by default — no configuration needed.
+
+```python
+from llm_client import configure_rate_limit
+
+# View/change defaults
+configure_rate_limit(limits={"google": 10, "openai": 20})  # override limits
+configure_rate_limit(enabled=False)                         # disable entirely
+```
+
+Default concurrent request limits: openai=50, google=30, anthropic=20, openrouter=40, deepseek=20, xai=20, ollama=5, together=20, agent=999 (agents manage their own concurrency).
+
+Provider is auto-detected from the model string (`gemini/` → google, `gpt-` → openai, etc.). Configure via `LLM_CLIENT_RATE_LIMITS` env var (JSON) or `configure_rate_limit()`.
+
+Rate limiting wraps only the actual litellm call — retries and fallbacks don't re-acquire the semaphore. Both sync (`threading.Semaphore`) and async (`asyncio.Semaphore`) paths are supported.
+
 ## Installation
 
 ```bash

@@ -89,6 +89,7 @@ from llm_client.errors import (
 )
 
 from llm_client.io_log import configure as configure_logging
+from llm_client.rate_limit import configure as configure_rate_limit
 from llm_client.io_log import get_completed_traces, get_cost, get_trace_tree, import_jsonl, log_embedding, lookup_result
 from llm_client.models import (
     ModelInfo,

@@ -60,6 +60,7 @@ import litellm
 from pydantic import BaseModel
 
 from llm_client import io_log as _io_log
+from llm_client import rate_limit as _rate_limit
 
 from llm_client.errors import LLMBudgetExceededError, LLMModelNotFoundError, wrap_error
 
@@ -1514,10 +1515,12 @@ def call_llm(
                             timeout=timeout, **kwargs,
                         )
                     elif use_responses:
-                        response = litellm.responses(**call_kwargs)
+                        with _rate_limit.acquire(current_model):
+                            response = litellm.responses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model, warnings=_warnings)
                     else:
-                        response = litellm.completion(**call_kwargs)
+                        with _rate_limit.acquire(current_model):
+                            response = litellm.completion(**call_kwargs)
                         result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("call_llm succeeded after %d retries", attempt)
@@ -1667,7 +1670,8 @@ def call_llm_structured(
 
                 for attempt in range(r.max_retries + 1):
                     try:
-                        response = litellm.responses(**resp_kwargs)
+                        with _rate_limit.acquire(current_model):
+                            response = litellm.responses(**resp_kwargs)
                         raw_content = getattr(response, "output_text", None) or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (responses API structured)")
@@ -1734,7 +1738,8 @@ def call_llm_structured(
 
                 for attempt in range(r.max_retries + 1):
                     try:
-                        response = litellm.completion(**base_kwargs)
+                        with _rate_limit.acquire(current_model):
+                            response = litellm.completion(**base_kwargs)
                         raw_content = response.choices[0].message.content or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (native JSON schema structured)")
@@ -2111,10 +2116,12 @@ async def acall_llm(
                             timeout=timeout, **kwargs,
                         )
                     elif use_responses:
-                        response = await litellm.aresponses(**call_kwargs)
+                        async with _rate_limit.aacquire(current_model):
+                            response = await litellm.aresponses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model, warnings=_warnings)
                     else:
-                        response = await litellm.acompletion(**call_kwargs)
+                        async with _rate_limit.aacquire(current_model):
+                            response = await litellm.acompletion(**call_kwargs)
                         result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("acall_llm succeeded after %d retries", attempt)
@@ -2264,7 +2271,8 @@ async def acall_llm_structured(
 
                 for attempt in range(r.max_retries + 1):
                     try:
-                        response = await litellm.aresponses(**resp_kwargs)
+                        async with _rate_limit.aacquire(current_model):
+                            response = await litellm.aresponses(**resp_kwargs)
                         raw_content = getattr(response, "output_text", None) or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (responses API structured)")
@@ -2331,7 +2339,8 @@ async def acall_llm_structured(
 
                 for attempt in range(r.max_retries + 1):
                     try:
-                        response = await litellm.acompletion(**base_kwargs)
+                        async with _rate_limit.aacquire(current_model):
+                            response = await litellm.acompletion(**base_kwargs)
                         raw_content = response.choices[0].message.content or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (native JSON schema structured)")
@@ -2898,7 +2907,8 @@ def stream_llm(
         try:
             for attempt in range(r.max_retries + 1):
                 try:
-                    response = litellm.completion(**call_kwargs)
+                    with _rate_limit.acquire(current_model):
+                        response = litellm.completion(**call_kwargs)
                     if attempt > 0:
                         logger.info("stream_llm succeeded after %d retries", attempt)
                     return LLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
@@ -2997,7 +3007,8 @@ async def astream_llm(
         try:
             for attempt in range(r.max_retries + 1):
                 try:
-                    response = await litellm.acompletion(**call_kwargs)
+                    async with _rate_limit.aacquire(current_model):
+                        response = await litellm.acompletion(**call_kwargs)
                     if attempt > 0:
                         logger.info("astream_llm succeeded after %d retries", attempt)
                     return AsyncLLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
@@ -3195,7 +3206,8 @@ def embed(
 
     _check_model_deprecation(model)
     try:
-        response = litellm.embedding(**call_kwargs)
+        with _rate_limit.acquire(model):
+            response = litellm.embedding(**call_kwargs)
 
         embeddings = [item["embedding"] for item in response.data]
         usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
@@ -3250,7 +3262,8 @@ async def aembed(
 
     _check_model_deprecation(model)
     try:
-        response = await litellm.aembedding(**call_kwargs)
+        async with _rate_limit.aacquire(model):
+            response = await litellm.aembedding(**call_kwargs)
 
         embeddings = [item["embedding"] for item in response.data]
         usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
