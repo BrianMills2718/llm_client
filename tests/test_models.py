@@ -124,6 +124,118 @@ class TestGetModel:
             with pytest.raises(RuntimeError, match="No models qualify"):
                 get_model("extraction", available_only=True)
 
+    def test_use_performance_false_ignores_db(self):
+        """use_performance=False returns same as static selection."""
+        model = get_model("extraction", available_only=False, use_performance=False)
+        assert model == "gemini/gemini-3-flash"
+
+
+# ---------------------------------------------------------------------------
+# Performance-based demotion
+# ---------------------------------------------------------------------------
+
+
+class TestPerformanceDemotion:
+    """Tests for get_model() with real performance data from observability DB."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path):
+        """Isolate SQLite DB per test."""
+        from llm_client import io_log
+        old_db_path = io_log._db_path
+        old_db_conn = io_log._db_conn
+        old_enabled = io_log._enabled
+        old_project = io_log._project
+
+        io_log._enabled = True
+        io_log._db_path = tmp_path / "test_perf.db"
+        io_log._db_conn = None
+        io_log._project = "test"
+
+        yield
+
+        if io_log._db_conn is not None:
+            io_log._db_conn.close()
+        io_log._db_path = old_db_path
+        io_log._db_conn = old_db_conn
+        io_log._enabled = old_enabled
+        io_log._project = old_project
+
+    def _insert_calls(self, model, task, success_count, error_count):
+        """Insert fake calls into the observability DB."""
+        from unittest.mock import MagicMock
+        from llm_client import io_log
+
+        for _ in range(success_count):
+            result = MagicMock(
+                content="ok", usage={"prompt_tokens": 10, "total_tokens": 20},
+                cost=0.001, finish_reason="stop",
+            )
+            io_log.log_call(model=model, result=result, latency_s=1.0, task=task)
+
+        for _ in range(error_count):
+            io_log.log_call(model=model, error=RuntimeError("fail"), latency_s=0.5, task=task)
+
+    def test_demotes_high_error_rate_model(self):
+        """Model with >15% error rate gets demoted behind alternatives."""
+        # gemini-3-flash (intel=46) normally wins extraction
+        # Give it 50% error rate
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 5, 5)
+        # gpt-5 (intel=45) is reliable
+        self._insert_calls("openrouter/openai/gpt-5", "extraction", 20, 0)
+
+        model = get_model("extraction", available_only=False)
+        assert model == "openrouter/openai/gpt-5"
+
+    def test_no_demotion_below_min_calls(self):
+        """Models with fewer than min_calls aren't penalized."""
+        # gemini-3-flash has 100% error rate but only 3 calls
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 0, 3)
+
+        model = get_model("extraction", available_only=False, min_calls=10)
+        assert model == "gemini/gemini-3-flash"
+
+    def test_no_demotion_below_threshold(self):
+        """Models with error rate below threshold aren't penalized."""
+        # gemini-3-flash has 10% error rate (below 15% threshold)
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 18, 2)
+
+        model = get_model("extraction", available_only=False)
+        assert model == "gemini/gemini-3-flash"
+
+    def test_all_unreliable_preserves_prefer_order(self):
+        """When ALL qualifying models are unreliable, original prefer order is kept."""
+        # All 5 models that qualify for extraction (structured_output + intel>=35)
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 5, 10)
+        self._insert_calls("openrouter/openai/gpt-5", "extraction", 5, 10)
+        self._insert_calls("openrouter/deepseek/deepseek-chat", "extraction", 5, 10)
+        self._insert_calls("openrouter/openai/gpt-5-mini", "extraction", 5, 10)
+        self._insert_calls("openrouter/x-ai/grok-4.1-fast", "extraction", 5, 10)
+
+        model = get_model("extraction", available_only=False)
+        # gemini-3-flash (intel=46) still wins by static prefer
+        assert model == "gemini/gemini-3-flash"
+
+    def test_no_performance_data_neutral(self):
+        """Models with no performance data are not penalized."""
+        # No data inserted — all models have no performance history
+        model = get_model("extraction", available_only=False)
+        assert model == "gemini/gemini-3-flash"
+
+    def test_custom_threshold(self):
+        """Custom error_threshold is respected."""
+        # gemini-3-flash has 10% error rate
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 18, 2)
+        self._insert_calls("openrouter/openai/gpt-5", "extraction", 20, 0)
+
+        # Default threshold (15%) — not demoted
+        model = get_model("extraction", available_only=False, error_threshold=0.15)
+        assert model == "gemini/gemini-3-flash"
+
+        # Stricter threshold (5%) — demoted
+        model = get_model("extraction", available_only=False, error_threshold=0.05)
+        assert model == "openrouter/openai/gpt-5"
+
 
 # ---------------------------------------------------------------------------
 # list_models

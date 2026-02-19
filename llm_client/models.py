@@ -277,13 +277,31 @@ def _reset_config() -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_model(task: str, *, available_only: bool = True) -> str:
+def get_model(
+    task: str,
+    *,
+    available_only: bool = True,
+    use_performance: bool = True,
+    performance_days: int = 7,
+    min_calls: int = 10,
+    error_threshold: float = 0.15,
+) -> str:
     """Get the best model for a task category.
 
+    Selects based on static attributes (intelligence, cost, speed) from the
+    registry, then optionally demotes models with high error rates based on
+    real observability data.
+
     Args:
-        task: Task name (e.g., "extraction", "bulk_cheap", "synthesis")
-        available_only: If True, only consider models whose API key env var
-            is set in ``os.environ``. Set to False to see the theoretical best.
+        task: Task name (e.g., "extraction", "bulk_cheap", "synthesis").
+        available_only: Only consider models whose API key env var is set.
+        use_performance: Consult observability DB to demote unreliable models.
+        performance_days: Look-back window for performance data (default 7).
+        min_calls: Minimum call count before performance data affects ranking.
+            Models with fewer calls are not penalized (insufficient data).
+        error_threshold: Error rate above which a model is considered unreliable
+            (default 0.15 = 15%). Unreliable models are ranked after reliable
+            ones, preserving relative order within each group.
 
     Returns:
         The ``litellm_id`` of the winning model.
@@ -321,8 +339,18 @@ def get_model(task: str, *, available_only: bool = True) -> str:
             f"require={profile.require.model_dump()})"
         )
 
-    # Sort by prefer keys
+    # Sort by prefer keys (static attributes)
     candidates = _sort_by_prefer(candidates, profile.prefer)
+
+    # Demote unreliable models based on real performance data
+    if use_performance and len(candidates) > 1:
+        candidates = _demote_unreliable(
+            candidates, task,
+            days=performance_days,
+            min_calls=min_calls,
+            error_threshold=error_threshold,
+        )
+
     return candidates[0].litellm_id
 
 
@@ -541,6 +569,62 @@ def supports_tool_calling(litellm_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _demote_unreliable(
+    candidates: list[ModelInfo],
+    task: str,
+    *,
+    days: int,
+    min_calls: int,
+    error_threshold: float,
+) -> list[ModelInfo]:
+    """Stable-partition candidates: reliable first, unreliable last.
+
+    Queries the observability DB for error rates by model+task over the
+    look-back window. Models with error_rate > threshold AND call_count >=
+    min_calls are moved to the back. Relative order within each group
+    (reliable / unreliable) is preserved from the prefer-sorted input.
+
+    Returns candidates unchanged if no performance data or all models
+    are equally reliable/unreliable.
+    """
+    try:
+        perf = _query_performance_sql(task=task, days=days)
+    except Exception:
+        return candidates
+
+    if not perf:
+        return candidates
+
+    # Build lookup: litellm_id → (error_rate, call_count)
+    # Performance DB stores the model string as-is from the call
+    error_by_model: dict[str, tuple[float, int]] = {}
+    for row in perf:
+        error_by_model[row["model"]] = (row["error_rate"], row["call_count"])
+
+    def is_unreliable(m: ModelInfo) -> bool:
+        info = error_by_model.get(m.litellm_id)
+        if info is None:
+            return False  # no data = no penalty
+        error_rate, call_count = info
+        return call_count >= min_calls and error_rate > error_threshold
+
+    reliable = [c for c in candidates if not is_unreliable(c)]
+    unreliable = [c for c in candidates if is_unreliable(c)]
+
+    if not reliable:
+        return candidates  # all unreliable — don't change order
+
+    if unreliable:
+        demoted_names = [m.name for m in unreliable]
+        chosen = reliable[0].name
+        logger.info(
+            "get_model(%s): demoted %s (high error rate), selected %s",
+            task, demoted_names, chosen,
+        )
+
+    return reliable + unreliable
 
 
 def _sort_by_prefer(models: list[ModelInfo], prefer: list[str]) -> list[ModelInfo]:

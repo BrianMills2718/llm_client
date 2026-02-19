@@ -769,27 +769,35 @@ Server: `llm_client_mcp_server.py`. Registered in both Claude Code (`mcp.json`) 
 
 ## Model Registry + Task-Based Selection
 
-Centralized model matrix — no more hardcoded model strings. Each model has intelligence/speed/cost attributes. Task profiles define requirements and sort preferences.
+Centralized model matrix — no more hardcoded model strings. Each model has intelligence/speed/cost attributes. Task profiles define requirements and sort preferences. `get_model()` consults real performance data from the observability DB to demote unreliable models automatically.
 
 ```python
 from llm_client import get_model, list_models, query_performance
 
-# Task-based selection
-model = get_model("extraction")      # → "gemini/gemini-3-flash" (highest intelligence w/ structured output)
-model = get_model("bulk_cheap")      # → "gpt-5-nano" (cheapest)
-model = get_model("graph_building")  # → "xai/grok-4.1-fast" (cheapest w/ structured + min intel)
+# Task-based selection (considers both static attributes + real error rates)
+model = get_model("extraction")      # → best model that's actually reliable for extraction
+model = get_model("bulk_cheap")      # → cheapest available model
+model = get_model("graph_building")  # → cheapest with structured output + min intel
+
+# Static-only selection (ignore performance data)
+model = get_model("extraction", use_performance=False)
+
+# Custom reliability thresholds
+model = get_model("extraction",
+    error_threshold=0.05,   # stricter: demote at 5% error rate (default 15%)
+    min_calls=20,           # more data needed before penalizing (default 10)
+    performance_days=14,    # longer look-back window (default 7)
+)
 
 # Use with call_llm — task kwarg tags the log for performance tracking
 result = call_llm(get_model("synthesis"), messages, task="synthesis")
 
-# Introspection
-for m in list_models():
-    print(f'{m["name"]:25s} intel={m["intelligence"]}  cost=${m["cost"]:.2f}')
-
 # Performance analytics from logged calls
 perf = query_performance(task="extraction", days=7)
-# → [{"task": "extraction", "model": "...", "call_count": 142, "total_cost": 0.83, ...}]
+# → [{"task": "extraction", "model": "...", "call_count": 142, "total_cost": 0.83, "error_rate": 0.02, ...}]
 ```
+
+**How performance-based routing works**: After sorting candidates by static prefer keys (intelligence, cost, speed), `get_model()` queries the observability DB for error rates over the last 7 days. Models with error_rate > 15% AND 10+ calls are stably partitioned behind reliable alternatives. If all models are unreliable, the original static order is preserved. Models with no performance data are treated as neutral (no penalty).
 
 ### Default models (8)
 
