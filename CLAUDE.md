@@ -111,7 +111,7 @@ Fourteen functions (7 sync + 7 async):
 | `stream_llm(model, messages, **kwargs)` | `astream_llm(...)` | Streaming with retry/fallback |
 | `stream_llm_with_tools(model, messages, tools, **kwargs)` | `astream_llm_with_tools(...)` | Streaming with tools |
 
-Also exported: `LLMError`, `LLMRateLimitError`, `LLMQuotaExhaustedError`, `LLMAuthError`, `LLMContentFilterError`, `LLMTransientError`, `LLMModelNotFoundError`, `classify_error`, `wrap_error` (see [Structured Error Types](#structured-error-types)).
+Also exported: `LLMError`, `LLMRateLimitError`, `LLMQuotaExhaustedError`, `LLMAuthError`, `LLMContentFilterError`, `LLMTransientError`, `LLMModelNotFoundError`, `LLMBudgetExceededError`, `classify_error`, `wrap_error` (see [Structured Error Types](#structured-error-types)).
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`, `.warnings`
 
@@ -120,6 +120,38 @@ Also exported: `LLMError`, `LLMRateLimitError`, `LLMQuotaExhaustedError`, `LLMAu
 `stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks`, plus litellm kwargs. No `cache` param (caching streams doesn't make sense).
 
 `*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions` (False), `on_item_complete`, `on_item_error`.
+
+### Required kwargs (mandatory on every call)
+
+Every `call_llm` / `acall_llm` variant **requires** three kwargs:
+
+| Kwarg | Purpose | Example |
+|-------|---------|---------|
+| `task=` | What kind of work (tags observability DB) | `"extraction"`, `"synthesis"`, `"scoring"` |
+| `trace_id=` | Correlates all calls in a unit of work | `"sam_gov_research_abc123"` |
+| `max_budget=` | Cost limit in USD for this trace (0 = unlimited) | `0`, `1.0`, `5.0` |
+
+Omitting any of these raises `ValueError`. This is intentional — every call must be tagged for the multi-agent coordinator to track and control costs.
+
+```python
+# Budget enforcement: scoped to trace_id
+result = await acall_llm("gpt-5-mini", messages,
+    task="extraction",
+    trace_id="my_pipeline_run_123",
+    max_budget=2.0,  # raises LLMBudgetExceededError when trace exceeds $2.00
+)
+
+# Unlimited budget (for development / testing)
+result = call_llm("gpt-5-mini", messages, task="test", trace_id="dev", max_budget=0)
+```
+
+`get_cost()` queries cumulative cost from the observability DB:
+```python
+from llm_client import get_cost
+
+spent = get_cost(trace_id="my_pipeline_run_123")  # total USD for this trace
+spent = get_cost(task="extraction", since="2026-02-18")  # all extraction today
+```
 
 ### RetryPolicy (reusable retry configuration)
 
@@ -261,10 +293,14 @@ Note: `RateLimitError` (429) without quota keywords is treated as transient and 
 After all retries and fallbacks are exhausted, the final error is wrapped in a structured `LLMError` subclass. Callers can catch specific failure modes:
 
 ```python
-from llm_client import LLMQuotaExhaustedError, LLMRateLimitError, LLMAuthError, LLMError
+from llm_client import LLMQuotaExhaustedError, LLMBudgetExceededError, LLMRateLimitError, LLMAuthError, LLMError
 
 try:
-    result = await acall_llm("gpt-5-mini", messages, fallback_models=["gemini/gemini-2.5-flash"])
+    result = await acall_llm("gpt-5-mini", messages, fallback_models=["gemini/gemini-2.5-flash"],
+                              task="extraction", trace_id="my_trace", max_budget=5.0)
+except LLMBudgetExceededError:
+    # Trace exceeded max_budget — stop this pipeline
+    ...
 except LLMQuotaExhaustedError:
     # All models exhausted their quota — switch provider or abort
     ...
@@ -289,6 +325,7 @@ Error hierarchy (all subclass `LLMError` which subclasses `Exception`):
 | `LLMContentFilterError` | Content policy violation | No |
 | `LLMModelNotFoundError` | 404 — model doesn't exist | No |
 | `LLMTransientError` | 500/502/503, timeout, connection | Yes |
+| `LLMBudgetExceededError` | Trace exceeded max_budget | No |
 | `LLMError` | Base class / uncategorized | Varies |
 
 The `original` attribute on any `LLMError` holds the underlying exception (e.g., the raw litellm error). The `classify_error()` and `wrap_error()` functions are also exported for manual use.
@@ -649,6 +686,19 @@ python -m llm_client backfill --clear              # wipe + reimport
 ```
 
 Also available as `llm-cost` CLI command after `pip install -e .`.
+
+### Programmatic cost queries
+
+```python
+from llm_client import get_cost
+
+get_cost(trace_id="my_trace_123")           # total cost for a trace
+get_cost(task="extraction")                  # all extraction calls ever
+get_cost(task="extraction", since="2026-02-18")  # extraction calls today
+get_cost(project="sam_gov", since="2026-02-01")  # project cost this month
+```
+
+At least one filter is required. Returns `float` (USD). Used internally by `max_budget` enforcement.
 
 ## Model Registry + Task-Based Selection
 
