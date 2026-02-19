@@ -35,6 +35,7 @@ from llm_client import (
 )
 from llm_client.errors import (
     LLMAuthError,
+    LLMCapabilityError,
     LLMContentFilterError,
     LLMError,
     LLMModelNotFoundError,
@@ -1926,6 +1927,56 @@ class TestFallbackModels:
         assert result.warnings == []
 
 
+class TestExecutionModeContracts:
+    """Capability-contract guards for model/kwargs compatibility."""
+
+    def test_workspace_agent_requires_agent_model_sync(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="workspace_agent"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_agent",
+                task="test",
+                trace_id="test_workspace_agent_sync",
+                max_budget=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_workspace_agent_requires_agent_model_async(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="workspace_agent"):
+            await acall_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_agent",
+                task="test",
+                trace_id="test_workspace_agent_async",
+                max_budget=0,
+            )
+
+    def test_workspace_agent_rejects_non_agent_fallback(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="Incompatible models"):
+            call_llm(
+                "codex",
+                [{"role": "user", "content": "Hi"}],
+                execution_mode="workspace_agent",
+                fallback_models=["gpt-4o"],
+                task="test",
+                trace_id="test_workspace_agent_fallback",
+                max_budget=0,
+            )
+
+    def test_agent_only_kwargs_rejected_for_non_agent(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="agent-only kwargs"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                working_directory="/tmp",
+                task="test",
+                trace_id="test_agent_kwargs_non_agent",
+                max_budget=0,
+            )
+
+
 class TestResponsesAPIRouting:
     """Tests for _is_responses_api_model explicit set."""
 
@@ -2787,6 +2838,47 @@ class TestGPT5StructuredOutput:
         )
         assert result.name == "test"
         mock_from_litellm.assert_called_once()  # instructor was used
+
+    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_schema_rejection_falls_back_to_instructor(
+        self,
+        mock_completion: MagicMock,
+        mock_from_litellm: MagicMock,
+        mock_cost: MagicMock,
+        mock_supports: MagicMock,
+    ) -> None:
+        """Provider schema rejection should fall through to instructor fallback."""
+
+        class Item(BaseModel):
+            name: str
+
+        mock_completion.side_effect = Exception(
+            "INVALID_ARGUMENT: response_schema nesting depth exceeds limit"
+        )
+
+        parsed = Item(name="fallback")
+        raw_resp = _mock_response()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        result, meta = call_llm_structured(
+            "gemini/gemini-2.5-flash-lite",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            task="test",
+            trace_id="test_schema_rejection_fallback",
+            max_budget=0,
+        )
+
+        assert result.name == "fallback"
+        assert meta.model == "gemini/gemini-2.5-flash-lite"
+        mock_completion.assert_called_once()
+        mock_from_litellm.assert_called_once()
 
 
 class TestStrictJsonSchema:

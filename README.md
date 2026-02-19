@@ -51,6 +51,16 @@ print(sentiment.score)  # 0.95
 print(meta.cost)        # 0.0004
 ```
 
+Structured-output provider notes:
+- Some Gemini models can reject deeply nested JSON schemas with
+  `INVALID_ARGUMENT` (nesting depth), and tool-mode may return empty choices
+  for certain requests.
+- `call_llm_structured` automatically falls back from native schema routing to
+  instructor-based structured parsing when this happens.
+- For high-reliability extraction, set a fallback model that handles deep
+  schemas well (for example `openrouter/openai/gpt-5-mini`) via
+  `fallback_models=[...]` at call sites.
+
 ### Tool calling
 
 ```python
@@ -195,7 +205,7 @@ Fourteen functions (7 sync + 7 async):
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), plus any `**kwargs` passed through to `litellm.completion`.
+`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
 
 `stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
 

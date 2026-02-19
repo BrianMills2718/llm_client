@@ -54,7 +54,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
 
 import litellm
 from pydantic import BaseModel
@@ -62,7 +62,12 @@ from pydantic import BaseModel
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
 
-from llm_client.errors import LLMBudgetExceededError, LLMModelNotFoundError, wrap_error
+from llm_client.errors import (
+    LLMBudgetExceededError,
+    LLMCapabilityError,
+    LLMModelNotFoundError,
+    wrap_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +215,8 @@ _RETRYABLE_PATTERNS = [
     "connection error",
     "network error",
     "service unavailable",
+    "unavailable",
+    "high demand",
     "internal server error",
     "server error",
     "overloaded",
@@ -773,6 +780,74 @@ def _is_agent_model(model: str) -> bool:
         if lower == prefix or lower.startswith(prefix + "/"):
             return True
     return False
+
+
+ExecutionMode = Literal["text", "structured", "workspace_agent", "workspace_tools"]
+_VALID_EXECUTION_MODES: frozenset[str] = frozenset(
+    {"text", "structured", "workspace_agent", "workspace_tools"}
+)
+_AGENT_ONLY_KWARGS: frozenset[str] = frozenset(
+    {
+        "allowed_tools",
+        "cwd",
+        "max_turns",
+        "permission_mode",
+        "max_budget_usd",
+        "sandbox_mode",
+        "working_directory",
+        "approval_policy",
+        "model_reasoning_effort",
+        "network_access_enabled",
+        "web_search_enabled",
+        "additional_directories",
+        "skip_git_repo_check",
+        "codex_home",
+    }
+)
+
+
+def _validate_execution_contract(
+    *,
+    models: list[str],
+    execution_mode: str,
+    kwargs: dict[str, Any],
+    caller: str,
+) -> None:
+    """Validate model/kwargs capability compatibility before dispatch."""
+    if execution_mode not in _VALID_EXECUTION_MODES:
+        valid = ", ".join(sorted(_VALID_EXECUTION_MODES))
+        raise ValueError(f"Invalid execution_mode={execution_mode!r}. Valid values: {valid}")
+
+    if execution_mode == "workspace_agent":
+        non_agent = [m for m in models if not _is_agent_model(m)]
+        if non_agent:
+            raise LLMCapabilityError(
+                f"{caller}: execution_mode='workspace_agent' requires agent models "
+                f"(codex/claude-code/openai-agents). Incompatible models: {non_agent}"
+            )
+
+    if execution_mode == "workspace_tools":
+        agent_models = [m for m in models if _is_agent_model(m)]
+        if agent_models:
+            raise LLMCapabilityError(
+                f"{caller}: execution_mode='workspace_tools' requires non-agent models. "
+                f"Incompatible models: {agent_models}"
+            )
+        if not any(k in kwargs for k in ("python_tools", "mcp_servers", "mcp_sessions")):
+            raise LLMCapabilityError(
+                f"{caller}: execution_mode='workspace_tools' requires python_tools "
+                "or mcp_servers/mcp_sessions."
+            )
+
+    agent_only = sorted(k for k in kwargs if k in _AGENT_ONLY_KWARGS)
+    if agent_only:
+        non_agent = [m for m in models if not _is_agent_model(m)]
+        if non_agent:
+            raise LLMCapabilityError(
+                f"{caller}: agent-only kwargs {agent_only} are incompatible with "
+                f"non-agent model(s) {non_agent}. Use codex/claude-code or remove "
+                "agent-only kwargs."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1339,6 +1414,7 @@ def call_llm(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    execution_mode: ExecutionMode = "text",
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM. Routes by model string: litellm, Responses API, or Agent SDK.
@@ -1373,6 +1449,9 @@ def call_llm(
         fallback_models: Models to try if the primary model fails all retries
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
+        execution_mode: Capability contract for this call:
+            ``"text"`` (default), ``"structured"``, ``"workspace_agent"``,
+            or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm.completion
                   (e.g., temperature, max_tokens, stream).
                   For GPT-5 models, response_format is automatically
@@ -1418,6 +1497,16 @@ def call_llm(
         _inner_named["api_base"] = api_base
     if hooks is not None:
         _inner_named["hooks"] = hooks
+    if execution_mode != "text":
+        _inner_named["execution_mode"] = execution_mode
+
+    models = [model] + (fallback_models or [])
+    _validate_execution_contract(
+        models=models,
+        execution_mode=execution_mode,
+        kwargs=kwargs,
+        caller="call_llm",
+    )
 
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
@@ -1467,7 +1556,6 @@ def call_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
-    models = [model] + (fallback_models or [])
     last_error: Exception | None = None
     _warnings: list[str] = []
 
@@ -1897,6 +1985,7 @@ def call_llm_with_tools(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    execution_mode: ExecutionMode = "text",
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
@@ -1964,6 +2053,7 @@ async def acall_llm(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    execution_mode: ExecutionMode = "text",
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm. Same three-tier routing (Agent SDK / Responses API / Completions).
@@ -1982,6 +2072,9 @@ async def acall_llm(
         fallback_models: Models to try if the primary model fails all retries
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
+        execution_mode: Capability contract for this call:
+            ``"text"`` (default), ``"structured"``, ``"workspace_agent"``,
+            or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm
 
     Returns:
@@ -2021,6 +2114,16 @@ async def acall_llm(
         _inner_named["api_base"] = api_base
     if hooks is not None:
         _inner_named["hooks"] = hooks
+    if execution_mode != "text":
+        _inner_named["execution_mode"] = execution_mode
+
+    models = [model] + (fallback_models or [])
+    _validate_execution_contract(
+        models=models,
+        execution_mode=execution_mode,
+        kwargs=kwargs,
+        caller="acall_llm",
+    )
 
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
@@ -2068,7 +2171,6 @@ async def acall_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
-    models = [model] + (fallback_models or [])
     last_error: Exception | None = None
     _warnings: list[str] = []
 

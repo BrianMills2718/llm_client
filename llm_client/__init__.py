@@ -77,6 +77,7 @@ _load_api_keys()
 
 from llm_client.errors import (
     LLMAuthError,
+    LLMCapabilityError,
     LLMBudgetExceededError,
     LLMContentFilterError,
     LLMError,
@@ -211,6 +212,7 @@ from llm_client.client import (
 
 __all__ = [
     "LLMAuthError",
+    "LLMCapabilityError",
     "LLMBudgetExceededError",
     "LLMContentFilterError",
     "LLMError",

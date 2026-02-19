@@ -32,6 +32,27 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# JSON helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    """Extract the first valid JSON object from text that may have trailing garbage."""
+    # Find the first '{' and use a decoder to parse just that object
+    start = text.find("{")
+    if start == -1:
+        return None
+    decoder = _json.JSONDecoder()
+    try:
+        obj, _ = decoder.raw_decode(text, start)
+        if isinstance(obj, dict):
+            return obj
+    except _json.JSONDecodeError:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # System-prompt generation
 # ---------------------------------------------------------------------------
 
@@ -139,19 +160,26 @@ async def _acall_with_tool_shim(
 
         raw_content = (result.content or "").strip()
 
-        # Parse the JSON response
+        # Parse the JSON response — try full content first, then extract first object
         try:
             parsed = _json.loads(raw_content)
-        except _json.JSONDecodeError as exc:
-            logger.warning(
-                "Tool shim turn %d: JSON parse error: %s (content: %.200s)",
-                turn + 1, exc, raw_content,
-            )
+        except _json.JSONDecodeError:
+            # Model may emit valid JSON followed by trailing garbage.
+            # Try to extract the first complete JSON object.
+            parsed = _extract_first_json_object(raw_content)
+            if parsed is not None:
+                msg = f"SHIM_JSON_RECOVERED: turn {turn + 1} had trailing garbage, extracted first JSON object"
+                logger.info(msg)
+                agent_result.warnings.append(msg)
+        if parsed is None:
+            msg = f"SHIM_JSON_ERROR: turn {turn + 1} unparseable (content: {raw_content[:200]})"
+            logger.warning(msg)
+            agent_result.warnings.append(msg)
             messages.append({"role": "assistant", "content": raw_content})
             messages.append({
                 "role": "user",
                 "content": (
-                    f"Your response was not valid JSON: {exc}. "
+                    "Your response was not valid JSON. "
                     "Please respond with valid JSON matching the required format."
                 ),
             })
@@ -215,9 +243,9 @@ async def _acall_with_tool_shim(
             continue
 
         # Unknown action — nudge the model
-        logger.warning(
-            "Tool shim turn %d: unknown action %r", turn + 1, action,
-        )
+        msg = f"SHIM_UNKNOWN_ACTION: turn {turn + 1} action={action!r}"
+        logger.warning(msg)
+        agent_result.warnings.append(msg)
         messages.append({"role": "assistant", "content": raw_content})
         messages.append({
             "role": "user",
