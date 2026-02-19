@@ -614,6 +614,22 @@ async with MCPSessionPool(mcp_servers) as pool:
 
 MCP loop kwargs: `mcp_servers`, `mcp_sessions`, `max_turns` (20), `mcp_init_timeout` (30s), `tool_result_max_length` (50k chars).
 
+### Tool Calling Shim (for models without native tool support)
+
+Models like `gemini-2.5-flash-lite` support structured output but return empty content when `tools=` is passed. The shim emulates tool calling transparently for `python_tools=` workflows:
+
+```python
+# Same interface — routing is automatic based on model registry
+result = await acall_llm("gemini/gemini-2.5-flash-lite", messages,
+    python_tools=[search_fn, lookup_fn],
+    max_turns=10,
+)
+```
+
+How it works: tool schemas are embedded in the system prompt, the model responds with JSON (`response_format=json_object`), and the shim parses `{"action": "tool_call", ...}` or `{"action": "final_answer", ...}` to drive the loop. Callers get the same `LLMCallResult` — the shim is invisible.
+
+Only applies to `python_tools=` (direct backend). MCP tool calling requires native `tool_calls` in the response and is not shimmed. Models with `tool_calling: False` in the registry trigger the shim; unknown models default to native tool calling.
+
 ## Installation
 
 ```bash
@@ -749,7 +765,7 @@ perf = query_performance(task="extraction", days=7)
 | deepseek-chat | deepseek/deepseek-chat | 42 | 36 | $0.32 | Bulk default |
 | gemini-3-flash | gemini/gemini-3-flash | 46 | 207 | $1.13 | Best mid-tier |
 | gemini-2.5-flash | gemini/gemini-2.5-flash | 34 | 152 | $0.68 | Free tier |
-| gemini-2.5-flash-lite | gemini/gemini-2.5-flash-lite | 28 | 250 | $0.175 | Cheapest Google |
+| gemini-2.5-flash-lite | gemini/gemini-2.5-flash-lite | 28 | 250 | $0.175 | Cheapest Google, tool shim |
 | gpt-5-mini | gpt-5-mini | 41 | 127 | $0.69 | Reliable structured |
 | gpt-5 | gpt-5 | 45 | 98 | $3.44 | Frontier |
 | gpt-5-nano | gpt-5-nano | 27 | 141 | $0.14 | Cheapest OpenAI |

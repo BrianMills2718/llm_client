@@ -1442,6 +1442,7 @@ def call_llm(
             raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
         from llm_client.agents import _run_sync
+        from llm_client.models import supports_tool_calling
         tool_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
         remaining["task"] = task
@@ -1450,9 +1451,15 @@ def call_llm(
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
-        result = _run_sync(_acall_with_tools(
-            model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
-        ))
+        if not supports_tool_calling(model):
+            from llm_client.tool_shim import _acall_with_tool_shim
+            result = _run_sync(_acall_with_tool_shim(
+                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+            ))
+        else:
+            result = _run_sync(_acall_with_tools(
+                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+            ))
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
@@ -2032,6 +2039,7 @@ async def acall_llm(
         if "mcp_servers" in kwargs or "mcp_sessions" in kwargs:
             raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
+        from llm_client.models import supports_tool_calling
         tool_kw: dict[str, Any] = {}
         remaining = dict(kwargs)
         remaining["task"] = task
@@ -2040,9 +2048,15 @@ async def acall_llm(
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
-        result = await _acall_with_tools(
-            model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
-        )
+        if not supports_tool_calling(model):
+            from llm_client.tool_shim import _acall_with_tool_shim
+            result = await _acall_with_tool_shim(
+                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+            )
+        else:
+            result = await _acall_with_tools(
+                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+            )
         _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 

@@ -47,6 +47,7 @@ class ModelInfo(BaseModel):
     cost: float  # blended $/1M tokens
     context: int
     structured_output: bool
+    tool_calling: bool = True
     tags: list[str] = []
 
 
@@ -521,6 +522,20 @@ def _query_performance_jsonl(
         })
 
     return result
+
+
+def supports_tool_calling(litellm_id: str) -> bool:
+    """Check if a model supports native tool/function calling.
+
+    Returns False only for models explicitly marked ``tool_calling: False``
+    in the registry.  Unknown models (not in registry) are assumed capable.
+    """
+    config = _load_config()
+    for m in config["models"]:
+        entry = m if isinstance(m, dict) else m.model_dump()
+        if entry.get("litellm_id") == litellm_id:
+            return entry.get("tool_calling", True)
+    return True  # unknown models assumed capable
 
 
 # ---------------------------------------------------------------------------
