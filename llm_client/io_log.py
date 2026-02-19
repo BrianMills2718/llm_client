@@ -26,7 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -344,7 +344,7 @@ def _write_call_to_db(
             (
                 timestamp, _get_project(), model,
                 json.dumps(messages, default=str) if messages else None,
-                response[:5000] if isinstance(response, str) and len(response) > 5000 else response,
+                response,
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, finish_reason, latency_s, error, caller, task, trace_id,
             ),
@@ -611,3 +611,54 @@ def get_completed_traces(
         params,
     ).fetchall()
     return {r[0] for r in rows}
+
+
+def get_cost(
+    *,
+    trace_id: str | None = None,
+    task: str | None = None,
+    project: str | None = None,
+    since: str | date | None = None,
+) -> float:
+    """Query cumulative cost from the observability DB.
+
+    At least one filter must be provided. Combines LLM call costs and
+    embedding costs. Returns total cost in USD (0.0 if no records found).
+
+    Args:
+        trace_id: Sum cost for this trace_id.
+        task: Sum cost for this task name.
+        project: Sum cost for this project.
+        since: Only include records on or after this date (ISO string or date).
+    """
+    if not any([trace_id, task, project, since]):
+        raise ValueError("At least one filter (trace_id, task, project, since) is required.")
+    try:
+        db = _get_db()
+    except Exception:
+        return 0.0
+
+    total = 0.0
+    for table in ("llm_calls", "embeddings"):
+        clauses: list[str] = ["error IS NULL"]
+        params: list[str] = []
+        if trace_id is not None:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if task is not None:
+            clauses.append("task = ?")
+            params.append(task)
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(project)
+        if since is not None:
+            since_str = since.isoformat() if isinstance(since, date) else since
+            clauses.append("timestamp >= ?")
+            params.append(since_str)
+        where = " AND ".join(clauses)
+        row = db.execute(
+            f"SELECT COALESCE(SUM(cost), 0) FROM {table} WHERE {where}",  # noqa: S608
+            params,
+        ).fetchone()
+        total += row[0] if row else 0.0
+    return total

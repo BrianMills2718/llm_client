@@ -63,6 +63,7 @@ def test_batch_sync() -> None:
         max_concurrent=3,
         task="test",
         trace_id="test_1a_batch_sync",
+        max_budget=0,
     )
     elapsed = time.time() - t0
     for i, r in enumerate(results):
@@ -88,6 +89,7 @@ async def test_batch_async() -> None:
         on_item_complete=lambda idx, res: completed_indices.append(idx),
         task="test",
         trace_id="test_1b_batch_async",
+        max_budget=0,
     )
     elapsed = time.time() - t0
     for i, r in enumerate(results):
@@ -119,6 +121,7 @@ def test_gpt5_structured() -> None:
             response_model=CityInfo,
             task="test",
             trace_id="test_2a_gpt5_structured",
+            max_budget=0,
         )
         print(f"  Parsed: name={result.name}, country={result.country}, pop={result.population_millions}M")
         print(f"  Cost: ${meta.cost:.6f}, tokens: {meta.usage}")
@@ -139,6 +142,7 @@ async def test_gpt5_structured_async() -> None:
             response_model=CityInfo,
             task="test",
             trace_id="test_2b_gpt5_structured_async",
+            max_budget=0,
         )
         print(f"  Parsed: name={result.name}, country={result.country}, pop={result.population_millions}M")
         print(f"  Cost: ${meta.cost:.6f}")
@@ -162,6 +166,7 @@ def test_gemini_structured() -> None:
             response_model=CityInfo,
             task="test",
             trace_id="test_2c_gemini_structured",
+            max_budget=0,
         )
         print(f"  Parsed: name={result.name}, country={result.country}, pop={result.population_millions}M")
         print(f"  Cost: ${meta.cost:.6f}, tokens: {meta.usage}")
@@ -186,6 +191,7 @@ def test_stream_retry() -> None:
         fallback_models=["gemini/gemini-2.0-flash"],
         task="test",
         trace_id="test_3_stream_retry",
+        max_budget=0,
     )
     chunks: list[str] = []
     for chunk in stream:
@@ -224,6 +230,7 @@ def test_stream_with_tools() -> None:
         tools,
         task="test",
         trace_id="test_4_stream_with_tools",
+        max_budget=0,
     )
     chunks: list[str] = []
     for chunk in stream:
@@ -269,7 +276,7 @@ WEATHER_TOOLS = [{
 
 def test_call_llm_basic() -> None:
     _header("5a. call_llm basic (gemini-flash)")
-    result = call_llm(GEMINI, [{"role": "user", "content": "Reply with just the word 'pong'"}], task="test", trace_id="test_5a_call_llm_basic")
+    result = call_llm(GEMINI, [{"role": "user", "content": "Reply with just the word 'pong'"}], task="test", trace_id="test_5a_call_llm_basic", max_budget=0)
     assert isinstance(result, LLMCallResult), f"Expected LLMCallResult, got {type(result)}"
     assert len(result.content) > 0, "Empty content"
     assert result.usage.get("total_tokens", 0) > 0, f"No usage: {result.usage}"
@@ -282,7 +289,7 @@ def test_call_llm_basic() -> None:
 @pytest.mark.asyncio
 async def test_acall_llm_basic() -> None:
     _header("5b. acall_llm basic (gemini-flash)")
-    result = await acall_llm(GEMINI, [{"role": "user", "content": "Reply with just the word 'pong'"}], task="test", trace_id="test_5b_acall_llm_basic")
+    result = await acall_llm(GEMINI, [{"role": "user", "content": "Reply with just the word 'pong'"}], task="test", trace_id="test_5b_acall_llm_basic", max_budget=0)
     assert isinstance(result, LLMCallResult)
     assert len(result.content) > 0
     assert result.usage.get("total_tokens", 0) > 0
@@ -299,6 +306,7 @@ def test_call_llm_with_tools() -> None:
         WEATHER_TOOLS,
         task="test",
         trace_id="test_5c_call_llm_with_tools",
+        max_budget=0,
     )
     assert isinstance(result, LLMCallResult)
     print(f"  tool_calls={result.tool_calls}")
@@ -323,6 +331,7 @@ async def test_acall_llm_with_tools() -> None:
         WEATHER_TOOLS,
         task="test",
         trace_id="test_5d_acall_llm_with_tools",
+        max_budget=0,
     )
     assert isinstance(result, LLMCallResult)
     print(f"  tool_calls={result.tool_calls}")
@@ -341,7 +350,7 @@ def test_structured_batch() -> None:
     ]
     results = call_llm_structured_batch(
         GEMINI, messages_list, response_model=CityInfo, max_concurrent=3,
-        task="test", trace_id="test_5e_structured_batch",
+        task="test", trace_id="test_5e_structured_batch", max_budget=0,
     )
     assert len(results) == 3
     for i, item in enumerate(results):
@@ -361,6 +370,7 @@ async def test_astream_llm() -> None:
         [{"role": "user", "content": "Say 'hello world' and nothing else"}],
         task="test",
         trace_id="test_5f_astream_llm",
+        max_budget=0,
     )
     chunks: list[str] = []
     async for chunk in stream:
@@ -383,6 +393,7 @@ async def test_astream_llm_with_tools() -> None:
         WEATHER_TOOLS,
         task="test",
         trace_id="test_5g_astream_llm_with_tools",
+        max_budget=0,
     )
     chunks: list[str] = []
     async for chunk in stream:
@@ -418,6 +429,7 @@ def test_fallback_real() -> None:
         on_fallback=on_fallback,
         task="test",
         trace_id="test_6_fallback_real",
+        max_budget=0,
     )
     assert isinstance(result, LLMCallResult)
     assert len(result.content) > 0
@@ -455,6 +467,7 @@ def test_retry_policy_real() -> None:
         on_fallback=lambda failed, err, next_m: fallback_log.append(next_m),
         task="test",
         trace_id="test_7_retry_policy_real",
+        max_budget=0,
     )
     assert isinstance(result, LLMCallResult)
     assert len(result.content) > 0
@@ -486,6 +499,7 @@ def test_batch_partial_failure() -> None:
         num_retries=0,
         task="test",
         trace_id="test_8a_batch_partial_failure",
+        max_budget=0,
     )
     assert len(results) == 3
     for i, r in enumerate(results):
@@ -510,6 +524,7 @@ def test_batch_on_item_error() -> None:
         on_item_error=lambda idx, err: error_log.append((idx, type(err).__name__)),
         task="test",
         trace_id="test_8b_batch_on_item_error",
+        max_budget=0,
     )
     assert len(results) == 2
     assert len(error_log) == 2, f"Expected 2 error callbacks, got {len(error_log)}"
@@ -536,10 +551,10 @@ def test_cache_prevents_duplicate_calls() -> None:
     hooks = Hooks(before_call=count_before)
     messages = [{"role": "user", "content": "Reply with just the word 'cached'"}]
 
-    result1 = call_llm(GEMINI, messages, cache=cache, hooks=hooks, task="test", trace_id="test_9_cache_call1")
+    result1 = call_llm(GEMINI, messages, cache=cache, hooks=hooks, task="test", trace_id="test_9_cache_call1", max_budget=0)
     assert before_call_count == 1, f"before_call should have fired once, got {before_call_count}"
 
-    result2 = call_llm(GEMINI, messages, cache=cache, hooks=hooks, task="test", trace_id="test_9_cache_call2")
+    result2 = call_llm(GEMINI, messages, cache=cache, hooks=hooks, task="test", trace_id="test_9_cache_call2", max_budget=0)
     # Cache hit — before_call should NOT fire again
     assert before_call_count == 1, f"before_call fired again on cache hit: {before_call_count}"
     assert result1.content == result2.content, "Cached result differs"
@@ -570,6 +585,7 @@ def test_hooks_real() -> None:
         hooks=hooks,
         task="test",
         trace_id="test_10_hooks_real",
+        max_budget=0,
     )
     assert isinstance(result, LLMCallResult)
     assert len(before_log) == 1, f"before_call fired {len(before_log)} times"
@@ -596,6 +612,7 @@ def test_finish_reason_length() -> None:
             max_tokens=5,
             task="test",
             trace_id="test_11_finish_reason_length",
+            max_budget=0,
         )
         assert False, "Expected RuntimeError for truncation, but call succeeded"
     except LLMError as e:
@@ -617,6 +634,7 @@ def test_gpt5_basic_completion() -> None:
             [{"role": "user", "content": "Reply with just the word 'hello'"}],
             task="test",
             trace_id="test_12a_gpt5_basic",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert len(result.content) > 0
@@ -654,6 +672,7 @@ def test_gpt5_json_format() -> None:
             },
             task="test",
             trace_id="test_12b_gpt5_json_format",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert len(result.content) > 0
@@ -681,6 +700,7 @@ def test_claude_code_basic() -> None:
             max_turns=1,
             task="test",
             trace_id="test_13a_claude_code_basic",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content, f"Expected '4' in: {result.content[:200]}"
@@ -703,6 +723,7 @@ def test_claude_code_with_model() -> None:
             max_turns=1,
             task="test",
             trace_id="test_13b_claude_code_with_model",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert "paris" in result.content.lower(), f"Expected 'paris' in: {result.content[:200]}"
@@ -726,6 +747,7 @@ def test_claude_code_structured() -> None:
             max_turns=1,
             task="test",
             trace_id="test_13c_claude_code_structured",
+            max_budget=0,
         )
         assert isinstance(parsed, CityInfo)
         assert "tokyo" in parsed.name.lower(), f"Expected 'tokyo' in name: {parsed.name}"
@@ -748,6 +770,7 @@ def test_claude_code_stream() -> None:
             max_turns=1,
             task="test",
             trace_id="test_13d_claude_code_stream",
+            max_budget=0,
         )
         chunks: list[str] = []
         for chunk in stream:
@@ -774,7 +797,7 @@ def test_claude_code_batch() -> None:
         ]
         results = call_llm_batch(
             "claude-code", messages_list, max_concurrent=2, max_turns=1,
-            task="test", trace_id="test_13e_claude_code_batch",
+            task="test", trace_id="test_13e_claude_code_batch", max_budget=0,
         )
         assert len(results) == 2
         for i, r in enumerate(results):
@@ -800,6 +823,7 @@ def test_codex_basic() -> None:
             [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
             task="test",
             trace_id="test_14a_codex_basic",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content, f"Expected '4' in: {result.content[:200]}"
@@ -821,6 +845,7 @@ def test_codex_with_model() -> None:
             [{"role": "user", "content": "What is the capital of France? Reply with just the city name."}],
             task="test",
             trace_id="test_14b_codex_with_model",
+            max_budget=0,
         )
         assert isinstance(result, LLMCallResult)
         assert "paris" in result.content.lower(), f"Expected 'paris' in: {result.content[:200]}"
@@ -843,6 +868,7 @@ def test_codex_structured() -> None:
             response_model=CityInfo,
             task="test",
             trace_id="test_14c_codex_structured",
+            max_budget=0,
         )
         assert isinstance(parsed, CityInfo)
         assert "tokyo" in parsed.name.lower(), f"Expected 'tokyo' in name: {parsed.name}"
@@ -864,6 +890,7 @@ def test_codex_stream() -> None:
             [{"role": "user", "content": "What is 3+3? Reply with just the number."}],
             task="test",
             trace_id="test_14d_codex_stream",
+            max_budget=0,
         )
         chunks: list[str] = []
         for chunk in stream:
@@ -888,7 +915,7 @@ def test_codex_batch() -> None:
             [{"role": "user", "content": "What is 1+1? Reply with just the number."}],
             [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
         ]
-        results = call_llm_batch("codex", messages_list, max_concurrent=2, task="test", trace_id="test_14e_codex_batch")
+        results = call_llm_batch("codex", messages_list, max_concurrent=2, task="test", trace_id="test_14e_codex_batch", max_budget=0)
         assert len(results) == 2
         for i, r in enumerate(results):
             assert isinstance(r, LLMCallResult), f"Item {i} is {type(r)}: {r}"

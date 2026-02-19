@@ -77,6 +77,7 @@ _load_api_keys()
 
 from llm_client.errors import (
     LLMAuthError,
+    LLMBudgetExceededError,
     LLMContentFilterError,
     LLMError,
     LLMModelNotFoundError,
@@ -88,7 +89,7 @@ from llm_client.errors import (
 )
 
 from llm_client.io_log import configure as configure_logging
-from llm_client.io_log import get_completed_traces, import_jsonl, log_embedding, lookup_result
+from llm_client.io_log import get_completed_traces, get_cost, import_jsonl, log_embedding, lookup_result
 from llm_client.models import (
     ModelInfo,
     TaskProfile,
@@ -196,6 +197,7 @@ from llm_client.client import (
 
 __all__ = [
     "LLMAuthError",
+    "LLMBudgetExceededError",
     "LLMContentFilterError",
     "LLMError",
     "LLMModelNotFoundError",
@@ -243,6 +245,7 @@ __all__ = [
     "log_embedding",
     "lookup_result",
     "get_completed_traces",
+    "get_cost",
     "render_prompt",
     "strip_fences",
     "ModelInfo",

@@ -575,6 +575,7 @@ class TestRouting:
                 max_turns=5,
                 task="test",
                 trace_id="test_non_agent_mcp_routing",
+                max_budget=0,
             )
 
             mock_loop.assert_called_once()
@@ -598,6 +599,7 @@ class TestRouting:
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
                 task="test",
                 trace_id="test_agent_model_skips_loop",
+                max_budget=0,
             )
 
             mock_loop.assert_not_called()
@@ -628,6 +630,7 @@ class TestRouting:
                 [{"role": "user", "content": "Q"}],
                 task="test",
                 trace_id="test_no_mcp_normal_routing",
+                max_budget=0,
             )
 
             mock_loop.assert_not_called()
@@ -644,6 +647,7 @@ class TestRouting:
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
                 task="test",
                 trace_id="test_sync_call_llm_with_mcp",
+                max_budget=0,
             )
 
             # _run_sync wraps the async call
@@ -664,6 +668,7 @@ class TestRouting:
                 temperature=0.5,  # regular litellm kwarg
                 task="test",
                 trace_id="test_mcp_kwargs_popped",
+                max_budget=0,
             )
 
             call_kwargs = mock_loop.call_args.kwargs

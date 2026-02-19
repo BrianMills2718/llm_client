@@ -61,7 +61,7 @@ from pydantic import BaseModel
 
 from llm_client import io_log as _io_log
 
-from llm_client.errors import LLMModelNotFoundError, wrap_error
+from llm_client.errors import LLMBudgetExceededError, LLMModelNotFoundError, wrap_error
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,10 @@ class LLMCallResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
     raw_response: Any = field(default=None, repr=False)
+    warnings: list[str] = field(default_factory=list)
+    """Diagnostic warnings accumulated during retry/fallback/routing.
+    Empty list on clean calls. Populated with RETRY/FALLBACK/STICKY_FALLBACK
+    messages when non-obvious decisions occurred."""
     full_text: str | None = field(default=None, repr=False)
     """For agent SDKs: full conversation text (all assistant messages).
     ``content`` holds only the final assistant message.
@@ -484,6 +488,7 @@ class LLMStream:
         messages: list[dict[str, Any]] | None = None,
         task: str | None = None,
         trace_id: str | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -491,6 +496,7 @@ class LLMStream:
         self._messages = messages
         self._task = task
         self._trace_id = trace_id
+        self._warnings = warnings or []
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -537,6 +543,7 @@ class LLMStream:
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
+            warnings=self._warnings,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -567,6 +574,7 @@ class AsyncLLMStream:
         messages: list[dict[str, Any]] | None = None,
         task: str | None = None,
         trace_id: str | None = None,
+        warnings: list[str] | None = None,
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -574,6 +582,7 @@ class AsyncLLMStream:
         self._messages = messages
         self._task = task
         self._trace_id = trace_id
+        self._warnings = warnings or []
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -620,6 +629,7 @@ class AsyncLLMStream:
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
+            warnings=self._warnings,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -880,24 +890,33 @@ def _check_model_deprecation(model: str) -> None:
             return
 
 
-def _require_tags(task: str | None, trace_id: str | None) -> None:
-    """Enforce that every LLM call has task and trace_id for observability.
-
-    Only active when ``LLM_CLIENT_REQUIRE_TAGS=1`` is set.
-    """
-    if os.environ.get("LLM_CLIENT_REQUIRE_TAGS", "").strip() != "1":
-        return
+def _require_tags(task: str | None, trace_id: str | None, max_budget: float | None) -> None:
+    """Enforce that every LLM call has task, trace_id, and max_budget."""
     missing = []
     if not task:
         missing.append("task")
     if not trace_id:
         missing.append("trace_id")
+    if max_budget is None:
+        missing.append("max_budget")
     if missing:
         raise ValueError(
             f"Missing required kwargs: {', '.join(missing)}. "
-            f"Every call_llm/acall_llm call must include task= (what kind of work) "
-            f"and trace_id= (deterministic ID for this unit of work). "
-            f"This enables cross-project observability and resume capability."
+            f"Every call_llm/acall_llm call must include task= (what kind of work), "
+            f"trace_id= (deterministic ID for this unit of work), and "
+            f"max_budget= (cost limit in USD, 0 for unlimited)."
+        )
+
+
+def _check_budget(trace_id: str, max_budget: float) -> None:
+    """Check if trace has exceeded its budget. Raises LLMBudgetExceededError."""
+    if max_budget <= 0:
+        return
+    spent = _io_log.get_cost(trace_id=trace_id)
+    if spent >= max_budget:
+        raise LLMBudgetExceededError(
+            f"Budget exceeded for trace {trace_id}: "
+            f"${spent:.4f} spent >= ${max_budget:.4f} limit"
         )
 
 
@@ -1107,6 +1126,7 @@ def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> float:
 def _build_result_from_responses(
     response: Any,
     model: str,
+    warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Build LLMCallResult from a responses() API response."""
     # Use litellm's output_text convenience property
@@ -1149,6 +1169,7 @@ def _build_result_from_responses(
         tool_calls=[],
         finish_reason=finish_reason,
         raw_response=response,
+        warnings=warnings or [],
     )
 
 
@@ -1251,6 +1272,7 @@ def _prepare_call_kwargs(
 def _build_result_from_response(
     response: Any,
     model: str,
+    warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Extract all fields from a litellm response into LLMCallResult."""
     content: str = response.choices[0].message.content or ""
@@ -1288,6 +1310,7 @@ def _build_result_from_response(
         tool_calls=tool_calls,
         finish_reason=finish_reason,
         raw_response=response,
+        warnings=warnings or [],
     )
 
 
@@ -1363,7 +1386,9 @@ def call_llm(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -1399,6 +1424,7 @@ def call_llm(
         remaining = dict(kwargs)
         remaining["task"] = task
         remaining["trace_id"] = trace_id
+        remaining["max_budget"] = max_budget
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
@@ -1418,6 +1444,7 @@ def call_llm(
         remaining = dict(kwargs)
         remaining["task"] = task
         remaining["trace_id"] = trace_id
+        remaining["max_budget"] = max_budget
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
@@ -1432,6 +1459,7 @@ def call_llm(
         raise ValueError("Caching not supported for agent models — they have side effects.")
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
 
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
@@ -1478,10 +1506,10 @@ def call_llm(
                         )
                     elif use_responses:
                         response = litellm.responses(**call_kwargs)
-                        result = _build_result_from_responses(response, current_model)
+                        result = _build_result_from_responses(response, current_model, warnings=_warnings)
                     else:
                         response = litellm.completion(**call_kwargs)
-                        result = _build_result_from_response(response, current_model)
+                        result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("call_llm succeeded after %d retries", attempt)
                     if hooks and hooks.after_call:
@@ -1499,6 +1527,10 @@ def call_llm(
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
+                    _warnings.append(
+                        f"RETRY {attempt + 1}/{effective_retries + 1}: "
+                        f"{current_model} ({type(e).__name__}: {e})"
+                    )
                     logger.warning(
                         "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1,
@@ -1514,6 +1546,10 @@ def call_llm(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
@@ -1570,7 +1606,9 @@ def call_llm_structured(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
@@ -1585,6 +1623,7 @@ def call_llm_structured(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
 
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
@@ -1634,7 +1673,7 @@ def call_llm_structured(
                         llm_result = LLMCallResult(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason="stop",
-                            raw_response=response,
+                            raw_response=response, warnings=_warnings,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -1651,6 +1690,10 @@ def call_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1, r.max_retries + 1, delay, e,
@@ -1698,7 +1741,7 @@ def call_llm_structured(
                         llm_result = LLMCallResult(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason=finish_reason,
-                            raw_response=response,
+                            raw_response=response, warnings=_warnings,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -1723,6 +1766,10 @@ def call_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1, r.max_retries + 1, delay, e,
@@ -1767,6 +1814,7 @@ def call_llm_structured(
                             model=current_model,
                             finish_reason=finish_reason,
                             raw_response=completion_response,
+                            warnings=_warnings,
                         )
 
                         if hooks and hooks.after_call:
@@ -1784,6 +1832,10 @@ def call_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1,
@@ -1799,6 +1851,10 @@ def call_llm_structured(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
@@ -1922,7 +1978,9 @@ async def acall_llm(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -1957,6 +2015,7 @@ async def acall_llm(
         remaining = dict(kwargs)
         remaining["task"] = task
         remaining["trace_id"] = trace_id
+        remaining["max_budget"] = max_budget
         for k in MCP_LOOP_KWARGS:
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
@@ -1975,6 +2034,7 @@ async def acall_llm(
         remaining = dict(kwargs)
         remaining["task"] = task
         remaining["trace_id"] = trace_id
+        remaining["max_budget"] = max_budget
         for k in TOOL_LOOP_KWARGS:
             if k in remaining:
                 tool_kw[k] = remaining.pop(k)
@@ -1989,6 +2049,7 @@ async def acall_llm(
         raise ValueError("Caching not supported for agent models — they have side effects.")
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
 
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
@@ -2035,10 +2096,10 @@ async def acall_llm(
                         )
                     elif use_responses:
                         response = await litellm.aresponses(**call_kwargs)
-                        result = _build_result_from_responses(response, current_model)
+                        result = _build_result_from_responses(response, current_model, warnings=_warnings)
                     else:
                         response = await litellm.acompletion(**call_kwargs)
-                        result = _build_result_from_response(response, current_model)
+                        result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("acall_llm succeeded after %d retries", attempt)
                     if hooks and hooks.after_call:
@@ -2056,6 +2117,10 @@ async def acall_llm(
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
+                    _warnings.append(
+                        f"RETRY {attempt + 1}/{effective_retries + 1}: "
+                        f"{current_model} ({type(e).__name__}: {e})"
+                    )
                     logger.warning(
                         "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1,
@@ -2071,6 +2136,10 @@ async def acall_llm(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
@@ -2127,7 +2196,9 @@ async def acall_llm_structured(
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
@@ -2142,6 +2213,7 @@ async def acall_llm_structured(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
 
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
@@ -2191,7 +2263,7 @@ async def acall_llm_structured(
                         llm_result = LLMCallResult(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason="stop",
-                            raw_response=response,
+                            raw_response=response, warnings=_warnings,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2208,6 +2280,10 @@ async def acall_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1, r.max_retries + 1, delay, e,
@@ -2255,7 +2331,7 @@ async def acall_llm_structured(
                         llm_result = LLMCallResult(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason=finish_reason,
-                            raw_response=response,
+                            raw_response=response, warnings=_warnings,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2280,6 +2356,10 @@ async def acall_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1, r.max_retries + 1, delay, e,
@@ -2324,6 +2404,7 @@ async def acall_llm_structured(
                             model=current_model,
                             finish_reason=finish_reason,
                             raw_response=completion_response,
+                            warnings=_warnings,
                         )
 
                         if hooks and hooks.after_call:
@@ -2341,6 +2422,10 @@ async def acall_llm_structured(
                         delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
+                        _warnings.append(
+                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                            f"{current_model} ({type(e).__name__}: {e})"
+                        )
                         logger.warning(
                             "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
                             attempt + 1,
@@ -2356,6 +2441,10 @@ async def acall_llm_structured(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
@@ -2764,13 +2853,16 @@ def stream_llm(
     _check_model_deprecation(model)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
@@ -2793,7 +2885,7 @@ def stream_llm(
                     response = litellm.completion(**call_kwargs)
                     if attempt > 0:
                         logger.info("stream_llm succeeded after %d retries", attempt)
-                    return LLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id)
+                    return LLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
@@ -2803,6 +2895,10 @@ def stream_llm(
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
+                    _warnings.append(
+                        f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                        f"{current_model} ({type(e).__name__}: {e})"
+                    )
                     logger.warning(
                         "stream_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1, r.max_retries + 1, delay, e,
@@ -2815,6 +2911,10 @@ def stream_llm(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )
@@ -2852,13 +2952,16 @@ async def astream_llm(
     _check_model_deprecation(model)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
-    _require_tags(task, trace_id)
+    max_budget: float | None = kwargs.pop("max_budget", None)
+    _require_tags(task, trace_id, max_budget)
+    _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = [model] + (fallback_models or [])
     last_error: Exception | None = None
+    _warnings: list[str] = []
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
@@ -2881,7 +2984,7 @@ async def astream_llm(
                     response = await litellm.acompletion(**call_kwargs)
                     if attempt > 0:
                         logger.info("astream_llm succeeded after %d retries", attempt)
-                    return AsyncLLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id)
+                    return AsyncLLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
@@ -2891,6 +2994,10 @@ async def astream_llm(
                     delay = backoff_fn(attempt, r.base_delay, r.max_delay)
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
+                    _warnings.append(
+                        f"RETRY {attempt + 1}/{r.max_retries + 1}: "
+                        f"{current_model} ({type(e).__name__}: {e})"
+                    )
                     logger.warning(
                         "astream_llm attempt %d/%d failed (retrying in %.1fs): %s",
                         attempt + 1, r.max_retries + 1, delay, e,
@@ -2903,6 +3010,10 @@ async def astream_llm(
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
                     on_fallback(current_model, e, next_model)
+                _warnings.append(
+                    f"FALLBACK: {current_model} -> {next_model} "
+                    f"({type(e).__name__}: {e})"
+                )
                 logger.warning(
                     "Falling back from %s to %s: %s", current_model, next_model, e,
                 )

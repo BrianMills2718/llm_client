@@ -473,6 +473,7 @@ async def _execute_task(
         "timeout": task.timeout,
         "task": f"taskgraph:{task.id}",
         "trace_id": f"taskgraph.{graph.meta.id}.{task.id}.wave{wave_idx}",
+        "max_budget": 0,  # Unlimited per-task; graph-level budget TBD
         "num_retries": 0,  # Agent calls have side effects; no auto-retry
     }
 

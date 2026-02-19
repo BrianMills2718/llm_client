@@ -49,6 +49,10 @@ class LLMModelNotFoundError(LLMError):
     """Model doesn't exist (404)."""
 
 
+class LLMBudgetExceededError(LLMError):
+    """Trace has exceeded its max_budget — no more calls allowed."""
+
+
 # Patterns that indicate permanent quota exhaustion (not transient rate limit).
 _QUOTA_PATTERNS = [
     "quota",

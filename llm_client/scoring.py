@@ -238,6 +238,7 @@ async def ascore_output(
         response_model=_JudgeOutput,
         task="scoring",
         trace_id=trace_id,
+        max_budget=0,
     )
     latency = time.monotonic() - t0
     judge_cost = meta.cost or 0.0

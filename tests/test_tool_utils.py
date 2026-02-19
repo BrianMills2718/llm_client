@@ -474,6 +474,7 @@ class TestPythonToolsRouting:
                 max_turns=5,
                 task="test",
                 trace_id="test_routes_to_tool_loop",
+                max_budget=0,
             )
 
             mock_loop.assert_called_once()
