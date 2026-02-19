@@ -403,6 +403,93 @@ class TestLogScoreGitCommit:
         assert "git_commit" in cols
 
 
+# ---------------------------------------------------------------------------
+# get_cost — trace_prefix
+# ---------------------------------------------------------------------------
+
+
+class TestGetCostTracePrefix:
+    def _insert_call(self, tmp_path, trace_id, cost):
+        result = MagicMock(
+            content="x", usage={"prompt_tokens": 1, "total_tokens": 2},
+            cost=cost, finish_reason="stop",
+        )
+        io_log.log_call(model="gpt-5", result=result, latency_s=0.1, trace_id=trace_id, task="t")
+
+    def test_prefix_sums_parent_and_children(self, tmp_path):
+        self._insert_call(tmp_path, "dispatch.abc", 1.0)
+        self._insert_call(tmp_path, "dispatch.abc/child_1", 0.5)
+        self._insert_call(tmp_path, "dispatch.abc/child_2", 0.3)
+        self._insert_call(tmp_path, "dispatch.other", 9.0)  # different prefix
+
+        cost = io_log.get_cost(trace_prefix="dispatch.abc")
+        assert abs(cost - 1.8) < 0.001
+
+    def test_prefix_no_match(self, tmp_path):
+        self._insert_call(tmp_path, "foo/bar", 1.0)
+        cost = io_log.get_cost(trace_prefix="nope")
+        assert cost == 0.0
+
+    def test_prefix_exact_only(self, tmp_path):
+        self._insert_call(tmp_path, "exact", 2.0)
+        cost = io_log.get_cost(trace_prefix="exact")
+        assert abs(cost - 2.0) < 0.001
+
+    def test_prefix_and_trace_id_exclusive(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            io_log.get_cost(trace_id="a", trace_prefix="b")
+
+
+# ---------------------------------------------------------------------------
+# get_trace_tree
+# ---------------------------------------------------------------------------
+
+
+class TestGetTraceTree:
+    def _insert_call(self, tmp_path, trace_id, cost, task="t"):
+        result = MagicMock(
+            content="x", usage={"prompt_tokens": 1, "total_tokens": 2},
+            cost=cost, finish_reason="stop",
+        )
+        io_log.log_call(model="gpt-5", result=result, latency_s=0.1, trace_id=trace_id, task=task)
+
+    def test_returns_parent_and_children(self, tmp_path):
+        self._insert_call(tmp_path, "dispatch.abc", 1.0)
+        self._insert_call(tmp_path, "dispatch.abc/child_1", 0.5)
+        self._insert_call(tmp_path, "dispatch.abc/child_2", 0.3)
+        self._insert_call(tmp_path, "dispatch.other", 9.0)
+
+        tree = io_log.get_trace_tree("dispatch.abc")
+        trace_ids = {t["trace_id"] for t in tree}
+        assert trace_ids == {"dispatch.abc", "dispatch.abc/child_1", "dispatch.abc/child_2"}
+
+    def test_depth_field(self, tmp_path):
+        self._insert_call(tmp_path, "root", 1.0)
+        self._insert_call(tmp_path, "root/a", 0.5)
+        self._insert_call(tmp_path, "root/a/b", 0.2)
+
+        tree = io_log.get_trace_tree("root")
+        by_id = {t["trace_id"]: t for t in tree}
+        assert by_id["root"]["depth"] == 0
+        assert by_id["root/a"]["depth"] == 1
+        assert by_id["root/a/b"]["depth"] == 2
+
+    def test_empty_tree(self, tmp_path):
+        tree = io_log.get_trace_tree("nonexistent")
+        assert tree == []
+
+    def test_rollup_fields(self, tmp_path):
+        self._insert_call(tmp_path, "p/child", 0.5, task="extraction")
+        self._insert_call(tmp_path, "p/child", 0.3, task="extraction")  # same trace, 2 calls
+
+        tree = io_log.get_trace_tree("p")
+        assert len(tree) == 1
+        t = tree[0]
+        assert t["call_count"] == 2
+        assert abs(t["total_cost_usd"] - 0.8) < 0.001
+        assert t["task"] == "extraction"
+
+
 class TestConfigure:
     def test_configure_db_path(self, tmp_path):
         new_db = tmp_path / "custom.db"

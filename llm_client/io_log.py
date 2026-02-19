@@ -26,7 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -616,6 +616,7 @@ def get_completed_traces(
 def get_cost(
     *,
     trace_id: str | None = None,
+    trace_prefix: str | None = None,
     task: str | None = None,
     project: str | None = None,
     since: str | date | None = None,
@@ -626,13 +627,18 @@ def get_cost(
     embedding costs. Returns total cost in USD (0.0 if no records found).
 
     Args:
-        trace_id: Sum cost for this trace_id.
+        trace_id: Sum cost for this exact trace_id.
+        trace_prefix: Sum cost for this trace_id and all children
+            (matched with ``trace_id = prefix OR trace_id LIKE prefix/%``).
+            Mutually exclusive with trace_id.
         task: Sum cost for this task name.
         project: Sum cost for this project.
         since: Only include records on or after this date (ISO string or date).
     """
-    if not any([trace_id, task, project, since]):
-        raise ValueError("At least one filter (trace_id, task, project, since) is required.")
+    if trace_id is not None and trace_prefix is not None:
+        raise ValueError("trace_id and trace_prefix are mutually exclusive.")
+    if not any([trace_id, trace_prefix, task, project, since]):
+        raise ValueError("At least one filter (trace_id, trace_prefix, task, project, since) is required.")
     try:
         db = _get_db()
     except Exception:
@@ -645,6 +651,9 @@ def get_cost(
         if trace_id is not None:
             clauses.append("trace_id = ?")
             params.append(trace_id)
+        if trace_prefix is not None:
+            clauses.append("(trace_id = ? OR trace_id LIKE ?)")
+            params.extend([trace_prefix, trace_prefix + "/%"])
         if task is not None:
             clauses.append("task = ?")
             params.append(task)
@@ -662,3 +671,84 @@ def get_cost(
         ).fetchone()
         total += row[0] if row else 0.0
     return total
+
+
+def get_trace_tree(
+    trace_prefix: str,
+    *,
+    days: int = 7,
+) -> list[dict[str, Any]]:
+    """Roll up child traces under a parent prefix.
+
+    Hierarchical trace_ids use ``/`` as separator:
+    ``"openclaw.morning_brief/sam_gov_research_abc"``
+
+    Given prefix ``"openclaw.morning_brief"``, returns every distinct
+    trace_id starting with that prefix, with cost/call/error rollup.
+
+    Args:
+        trace_prefix: The parent trace_id prefix (matched with ``LIKE prefix/%``
+            and also the exact prefix itself).
+        days: Look-back window (default 7).
+
+    Returns:
+        List of dicts sorted by last_seen descending. Each dict has:
+        trace_id, project, task, total_cost_usd, call_count, error_count,
+        first_seen, last_seen, models_used, depth (0 = exact match, 1+ = children).
+    """
+    db = _get_db()
+    if db is None:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_iso = cutoff.isoformat()
+
+    # Match exact prefix OR anything under it (prefix/...)
+    like_pattern = trace_prefix + "/%"
+
+    rows = db.execute(
+        """SELECT
+            trace_id,
+            COALESCE(project, 'unknown') as project,
+            COALESCE(task, 'untagged') as task,
+            ROUND(SUM(CASE WHEN error IS NULL THEN cost ELSE 0 END), 6) as total_cost,
+            COUNT(*) as call_count,
+            SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as error_count,
+            MIN(timestamp) as first_seen,
+            MAX(timestamp) as last_seen,
+            GROUP_CONCAT(DISTINCT model) as models_used
+        FROM llm_calls
+        WHERE trace_id IS NOT NULL
+          AND (trace_id = ? OR trace_id LIKE ?)
+          AND timestamp >= ?
+        GROUP BY trace_id
+        ORDER BY MAX(timestamp) DESC""",
+        (trace_prefix, like_pattern, cutoff_iso),
+    ).fetchall()
+
+    prefix_len = len(trace_prefix)
+    result = []
+    for r in rows:
+        tid = r[0]
+        # depth: 0 = exact match, 1 = direct child, 2+ = deeper
+        if tid == trace_prefix:
+            depth = 0
+        else:
+            # tid starts with prefix/ — count remaining slashes + 1
+            suffix = tid[prefix_len + 1:]  # skip the /
+            depth = suffix.count("/") + 1
+
+        result.append({
+            "trace_id": tid,
+            "depth": depth,
+            "project": r[1],
+            "task": r[2],
+            "total_cost_usd": r[3],
+            "call_count": r[4],
+            "error_count": r[5],
+            "first_seen": r[6],
+            "last_seen": r[7],
+            "models_used": r[8].split(",") if r[8] else [],
+        })
+
+    return result

@@ -33,6 +33,7 @@ mcp = FastMCP("llm-observability")
 @mcp.tool()
 def query_cost(
     trace_id: str | None = None,
+    trace_prefix: str | None = None,
     task: str | None = None,
     project: str | None = None,
     since: str | None = None,
@@ -42,7 +43,10 @@ def query_cost(
     At least one filter required. Combines LLM call and embedding costs.
 
     Args:
-        trace_id: Cost for a specific trace (pipeline run).
+        trace_id: Cost for a specific trace (exact match).
+        trace_prefix: Cost for a trace and all its children (hierarchical).
+            E.g. "openclaw.morning_brief" sums parent + all child traces.
+            Mutually exclusive with trace_id.
         task: Cost for a task category (e.g. "extraction", "scoring").
         project: Cost for a project (e.g. "sam_gov", "Digimon_for_KG_application").
         since: Only include records on or after this ISO date (e.g. "2026-02-18").
@@ -52,6 +56,7 @@ def query_cost(
     """
     cost = io_log.get_cost(
         trace_id=trace_id,
+        trace_prefix=trace_prefix,
         task=task,
         project=project,
         since=since,
@@ -60,8 +65,8 @@ def query_cost(
         "total_cost_usd": round(cost, 6),
         "filters": {
             k: v for k, v in {
-                "trace_id": trace_id, "task": task,
-                "project": project, "since": since,
+                "trace_id": trace_id, "trace_prefix": trace_prefix,
+                "task": task, "project": project, "since": since,
             }.items() if v is not None
         },
     })
@@ -197,6 +202,51 @@ def get_trace_detail(trace_id: str) -> str:
             "duration_s": None,  # would need parsing timestamps
         },
         "calls": calls,
+    }, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical Traces
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_trace_tree(
+    trace_prefix: str,
+    days: int = 7,
+) -> str:
+    """Roll up child traces under a parent prefix.
+
+    Hierarchical trace_ids use "/" as separator. For example, when
+    OpenClaw dispatches a morning brief that spawns sam_gov research:
+
+        trace_id = "openclaw.morning_brief/sam_gov_research_abc123"
+
+    Querying prefix "openclaw.morning_brief" returns the parent trace
+    plus all children, with per-trace cost/call/error rollup and a
+    depth field (0 = parent, 1 = direct child, etc.) plus a summary.
+
+    Args:
+        trace_prefix: The parent trace_id prefix.
+        days: Look-back window (default 7).
+
+    Returns:
+        JSON with: summary (total_cost, total_calls, child_count) and
+        traces list with per-trace breakdown.
+    """
+    traces = io_log.get_trace_tree(trace_prefix, days=days)
+    total_cost = sum(t["total_cost_usd"] or 0 for t in traces)
+    total_calls = sum(t["call_count"] for t in traces)
+    total_errors = sum(t["error_count"] for t in traces)
+    return json.dumps({
+        "prefix": trace_prefix,
+        "summary": {
+            "total_cost_usd": round(total_cost, 6),
+            "total_calls": total_calls,
+            "total_errors": total_errors,
+            "trace_count": len(traces),
+        },
+        "traces": traces,
     }, indent=2)
 
 

@@ -128,7 +128,7 @@ Every `call_llm` / `acall_llm` variant **requires** three kwargs:
 | Kwarg | Purpose | Example |
 |-------|---------|---------|
 | `task=` | What kind of work (tags observability DB) | `"extraction"`, `"synthesis"`, `"scoring"` |
-| `trace_id=` | Correlates all calls in a unit of work | `"sam_gov_research_abc123"` |
+| `trace_id=` | Correlates all calls in a unit of work (supports hierarchy via `/`) | `"sam_gov_research_abc123"` |
 | `max_budget=` | Cost limit in USD for this trace (0 = unlimited) | `0`, `1.0`, `5.0` |
 
 Omitting any of these raises `ValueError`. This is intentional — every call must be tagged for the multi-agent coordinator to track and control costs.
@@ -151,7 +151,38 @@ from llm_client import get_cost
 
 spent = get_cost(trace_id="my_pipeline_run_123")  # total USD for this trace
 spent = get_cost(task="extraction", since="2026-02-18")  # all extraction today
+spent = get_cost(trace_prefix="openclaw.morning_brief")  # parent + all children
 ```
+
+### Hierarchical trace_ids
+
+Use `/` to express parent-child trace relationships. When a coordinator dispatches
+sub-tasks, each child trace_id starts with the parent prefix:
+
+```python
+# Coordinator creates a dispatch trace
+parent = "openclaw.morning_brief"
+result = await acall_llm(..., trace_id=parent, ...)
+
+# Child tasks use parent/ prefix
+child_1 = await acall_llm(..., trace_id=f"{parent}/sam_gov_research_abc", ...)
+child_2 = await acall_llm(..., trace_id=f"{parent}/twitter_scan_def", ...)
+```
+
+Query the full tree:
+```python
+from llm_client import get_trace_tree
+
+tree = get_trace_tree("openclaw.morning_brief", days=7)
+# Returns: [{"trace_id": "openclaw.morning_brief", "depth": 0, "total_cost_usd": ..., ...},
+#           {"trace_id": "openclaw.morning_brief/sam_gov_research_abc", "depth": 1, ...}, ...]
+
+# Or just the total cost for parent + all children:
+total = get_cost(trace_prefix="openclaw.morning_brief")
+```
+
+Convention: use `.` for namespace (project, task type) and `/` for hierarchy (parent/child).
+Budget enforcement uses exact `trace_id` match — children have independent budgets.
 
 ### RetryPolicy (reusable retry configuration)
 
@@ -709,6 +740,7 @@ Also available as `llm-cost` CLI command after `pip install -e .`.
 from llm_client import get_cost
 
 get_cost(trace_id="my_trace_123")           # total cost for a trace
+get_cost(trace_prefix="openclaw.morning")    # parent + all child traces
 get_cost(task="extraction")                  # all extraction calls ever
 get_cost(task="extraction", since="2026-02-18")  # extraction calls today
 get_cost(project="sam_gov", since="2026-02-01")  # project cost this month
@@ -718,13 +750,14 @@ At least one filter is required. Returns `float` (USD). Used internally by `max_
 
 ## MCP Server (llm-observability)
 
-9 tools for any MCP-capable agent (OpenClaw, Codex CLI, Claude Code):
+10 tools for any MCP-capable agent (OpenClaw, Codex CLI, Claude Code):
 
 | Tool | What |
 |------|------|
-| `query_cost` | Cumulative cost by trace/task/project/date |
+| `query_cost` | Cumulative cost by trace/task/project/date (supports `trace_prefix` for hierarchy) |
 | `list_recent_traces` | Trace rollup with cost, call count, models |
 | `get_trace_detail` | Per-call breakdown for a trace |
+| `get_trace_tree` | Hierarchical rollup — parent trace + all children with depth |
 | `query_performance` | Model cost/quality stats from logged calls |
 | `list_models` | Available models with task suitability |
 | `list_rubrics` | Available scoring rubrics |
