@@ -1451,6 +1451,7 @@ class TestAgentDiagnostics:
                 False,
                 50000,
                 max_message_chars=60,
+                suppress_control_loop_calls=True,
                 timeout=60,
                 kwargs={},
             )
@@ -1590,6 +1591,7 @@ class TestAgentDiagnostics:
                 False,
                 50000,
                 max_message_chars=60,
+                suppress_control_loop_calls=True,
                 timeout=60,
                 kwargs={},
             )

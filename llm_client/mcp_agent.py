@@ -104,6 +104,9 @@ DEFAULT_ENFORCE_TOOL_CONTRACTS: bool = False
 DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE: bool = True
 """When enabled with contracts, expose only currently composable tools per turn."""
 
+DEFAULT_SUPPRESS_CONTROL_LOOP_CALLS: bool = False
+"""When enabled, suppress repeated submit/todo control calls after validation failures."""
+
 DEFAULT_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
 """Default artifact kinds available before any tool call."""
 
@@ -119,6 +122,7 @@ MCP_LOOP_KWARGS = frozenset({
     "max_message_chars",
     "enforce_tool_contracts",
     "progressive_tool_disclosure",
+    "suppress_control_loop_calls",
     "tool_contracts",
     "initial_artifacts",
     "initial_bindings",
@@ -134,6 +138,7 @@ TOOL_LOOP_KWARGS = frozenset({
     "max_message_chars",
     "enforce_tool_contracts",
     "progressive_tool_disclosure",
+    "suppress_control_loop_calls",
     "tool_contracts",
     "initial_artifacts",
     "initial_bindings",
@@ -902,6 +907,7 @@ async def _acall_with_mcp(
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
     progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
+    suppress_control_loop_calls: bool = DEFAULT_SUPPRESS_CONTROL_LOOP_CALLS,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     initial_bindings: dict[str, Any] | None = None,
@@ -929,6 +935,7 @@ async def _acall_with_mcp(
         tool_result_max_length: Max chars per tool result (truncated if longer)
         enforce_tool_contracts: If True, reject tool calls violating tool contracts.
         progressive_tool_disclosure: If True, hide tools whose contracts are not currently satisfiable.
+        suppress_control_loop_calls: If True, suppress repeated submit/todo control calls.
         tool_contracts: Optional per-tool composability contracts.
         initial_artifacts: Artifact kinds available before any tool call.
         initial_bindings: Binding state available before any tool call.
@@ -972,6 +979,7 @@ async def _acall_with_mcp(
             max_message_chars,
             enforce_tool_contracts,
             progressive_tool_disclosure,
+            suppress_control_loop_calls,
             tool_contracts,
             initial_artifacts,
             initial_bindings,
@@ -1014,6 +1022,7 @@ async def _acall_with_mcp(
                 max_message_chars,
                 enforce_tool_contracts,
                 progressive_tool_disclosure,
+                suppress_control_loop_calls,
                 tool_contracts,
                 initial_artifacts,
                 initial_bindings,
@@ -1059,6 +1068,7 @@ async def _agent_loop(
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
     progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
+    suppress_control_loop_calls: bool = DEFAULT_SUPPRESS_CONTROL_LOOP_CALLS,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     initial_bindings: dict[str, Any] | None = None,
@@ -1632,49 +1642,24 @@ async def _agent_loop(
         suppressed_records: list[MCPToolCallRecord] = []
         suppressed_tool_messages: list[dict[str, Any]] = []
         filtered_tool_calls: list[dict[str, Any]] = []
-        for tc in tool_calls_to_execute:
-            tool_name = tc.get("function", {}).get("name", "")
-            tc_id = tc.get("id", "")
-            parsed_args = _extract_tool_call_args(tc) or {}
+        if suppress_control_loop_calls:
+            for tc in tool_calls_to_execute:
+                tool_name = tc.get("function", {}).get("name", "")
+                tc_id = tc.get("id", "")
+                parsed_args = _extract_tool_call_args(tc) or {}
 
-            if tool_name == "submit_answer" and submit_requires_todo_progress:
-                unresolved_hint = (
-                    f" Unfinished TODOs currently blocking submit: {', '.join(pending_submit_todo_ids)}. "
-                    "Call todo_update(todo_id=<id>, status='done' with evidence_refs/confidence) "
-                    "or status='blocked' with a concise note, then retry submit."
-                    if pending_submit_todo_ids else
-                    ""
-                )
-                err = (
-                    "submit_answer suppressed: TODO state has not changed since the last unfinished-TODO "
-                    "submission failure. Call todo_update(...) or todo_list() to unblock first."
-                    + unresolved_hint
-                )
-                suppressed_records.append(
-                    MCPToolCallRecord(
-                        server="__agent__",
-                        tool=tool_name,
-                        arguments=parsed_args,
-                        error=err,
+                if tool_name == "submit_answer" and submit_requires_todo_progress:
+                    unresolved_hint = (
+                        f" Unfinished TODOs currently blocking submit: {', '.join(pending_submit_todo_ids)}. "
+                        "Call todo_update(todo_id=<id>, status='done' with evidence_refs/confidence) "
+                        "or status='blocked' with a concise note, then retry submit."
+                        if pending_submit_todo_ids else
+                        ""
                     )
-                )
-                suppressed_tool_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": _json.dumps({"error": err}),
-                })
-                continue
-
-            if tool_name == "todo_update":
-                todo_id = str(parsed_args.get("todo_id", "")).strip()
-                status = str(parsed_args.get("status", "")).strip().lower()
-                if (
-                    todo_id and status == "done"
-                    and todo_done_error_streak.get(todo_id, 0) >= 2
-                ):
                     err = (
-                        "todo_update(done) suppressed: repeated completion failures for this TODO. "
-                        "Change strategy first (status='blocked' or upstream bridge repair) before retrying done."
+                        "submit_answer suppressed: TODO state has not changed since the last unfinished-TODO "
+                        "submission failure. Call todo_update(...) or todo_list() to unblock first."
+                        + unresolved_hint
                     )
                     suppressed_records.append(
                         MCPToolCallRecord(
@@ -1691,7 +1676,35 @@ async def _agent_loop(
                     })
                     continue
 
-            filtered_tool_calls.append(tc)
+                if tool_name == "todo_update":
+                    todo_id = str(parsed_args.get("todo_id", "")).strip()
+                    status = str(parsed_args.get("status", "")).strip().lower()
+                    if (
+                        todo_id and status == "done"
+                        and todo_done_error_streak.get(todo_id, 0) >= 2
+                    ):
+                        err = (
+                            "todo_update(done) suppressed: repeated completion failures for this TODO. "
+                            "Change strategy first (status='blocked' or upstream bridge repair) before retrying done."
+                        )
+                        suppressed_records.append(
+                            MCPToolCallRecord(
+                                server="__agent__",
+                                tool=tool_name,
+                                arguments=parsed_args,
+                                error=err,
+                            )
+                        )
+                        suppressed_tool_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": _json.dumps({"error": err}),
+                        })
+                        continue
+
+                filtered_tool_calls.append(tc)
+        else:
+            filtered_tool_calls = list(tool_calls_to_execute)
 
         tool_calls_to_execute = filtered_tool_calls
         pending_control_loop_msg: dict[str, Any] | None = None
@@ -2207,6 +2220,7 @@ async def _agent_loop(
     agent_result.metadata["context_compacted_chars"] = context_compacted_chars
     agent_result.metadata["enforce_tool_contracts"] = enforce_tool_contracts
     agent_result.metadata["progressive_tool_disclosure"] = progressive_tool_disclosure
+    agent_result.metadata["suppress_control_loop_calls"] = suppress_control_loop_calls
     agent_result.metadata["tool_contract_rejections"] = contract_rejected_calls
     agent_result.metadata["tool_contract_violation_events"] = contract_violation_events
     agent_result.metadata["tool_contracts_declared"] = sorted(normalized_tool_contracts.keys())
@@ -2263,6 +2277,7 @@ async def _acall_with_tools(
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
     progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
+    suppress_control_loop_calls: bool = DEFAULT_SUPPRESS_CONTROL_LOOP_CALLS,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     initial_bindings: dict[str, Any] | None = None,
@@ -2283,6 +2298,7 @@ async def _acall_with_tools(
         require_tool_reasoning: If True, reject tool calls missing tool_reasoning.
         tool_result_max_length: Max chars per tool result.
         progressive_tool_disclosure: If True, hide tools whose contracts are not currently satisfiable.
+        suppress_control_loop_calls: If True, suppress repeated submit/todo control calls.
         initial_bindings: Binding state available before any tool call.
         timeout: Per-turn LLM call timeout.
         **kwargs: Passed through to acall_llm.
@@ -2318,6 +2334,7 @@ async def _acall_with_tools(
         max_message_chars,
         enforce_tool_contracts,
         progressive_tool_disclosure,
+        suppress_control_loop_calls,
         tool_contracts,
         initial_artifacts,
         initial_bindings,
