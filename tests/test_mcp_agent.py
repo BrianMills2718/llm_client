@@ -1312,3 +1312,144 @@ class TestAgentDiagnostics:
             for record in agent_result.tool_calls
             if record.tool == "submit_answer"
         )
+
+    async def test_submit_needs_revision_is_not_treated_as_success(self) -> None:
+        """submit_answer status=needs_revision must not terminate the loop as submitted."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            tool_name = tool_calls[0]["function"]["name"]
+            if tool_name == "submit_answer" and executor_call_count == 1:
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="submit_answer",
+                            arguments={"reasoning": "r1", "answer": "first"},
+                            result='{"status":"needs_revision","validation_error":{"reason_code":"unfinished_todos","message":"todo_2 pending"}}',
+                        ),
+                    ],
+                    [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "tc_submit_1",
+                            "content": '{"status":"needs_revision","validation_error":{"reason_code":"unfinished_todos","message":"todo_2 pending"}}',
+                        }
+                    ],
+                )
+            if tool_name == "todo_update":
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="todo_update",
+                            arguments={"todo_id": "todo_2", "status": "done"},
+                            result='{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
+                        ),
+                    ],
+                    [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "tc_todo_done",
+                            "content": '{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
+                        }
+                    ],
+                )
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="submit_answer",
+                        arguments={"reasoning": "r2", "answer": "second"},
+                        result='{"status":"submitted","answer":"second"}',
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_submit_2",
+                        "content": '{"status":"submitted","answer":"second"}',
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_1",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r1","answer":"first","tool_reasoning":"submit attempt 1"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_2",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r2","answer":"second","tool_reasoning":"submit attempt 2 (should be suppressed)"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_todo_done",
+                    "function": {
+                        "name": "todo_update",
+                        "arguments": '{"todo_id":"todo_2","status":"done","tool_reasoning":"mark todo done after evidence"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_3",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r3","answer":"second","tool_reasoning":"final submit"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "submit_answer"}}],
+                agent_result,
+                mock_executor,
+                6,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "second"
+        assert finish == "submitted"
+        # 1st submit executed, 2nd submit suppressed, todo_update executed, final submit executed
+        assert executor_call_count == 3
+        assert any(
+            record.tool == "submit_answer" and "suppressed" in (record.error or "")
+            for record in agent_result.tool_calls
+        )
+        assert any(
+            msg.get("role") == "user" and "submit_answer failed" in msg.get("content", "")
+            for msg in agent_result.conversation_trace
+        )

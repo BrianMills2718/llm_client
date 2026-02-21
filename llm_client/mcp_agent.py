@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -381,6 +382,27 @@ def _tool_error_signature(error: str) -> str:
     return text[:160]
 
 
+def _extract_unfinished_todo_ids(error_text: str) -> list[str]:
+    """Extract TODO IDs from submit/todo validation messages."""
+    text = (error_text or "").strip()
+    if not text:
+        return []
+    # Common shape: "Unfinished TODOs: todo_2, todo_3."
+    match = re.search(r"unfinished\s+todos?\s*:\s*([^\n]+)", text, flags=re.IGNORECASE)
+    segment = match.group(1) if match else text
+    found = re.findall(r"\btodo_[A-Za-z0-9_-]+\b", segment)
+    # Preserve order while de-duplicating.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in found:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _extract_tool_call_args(tc: dict[str, Any]) -> dict[str, Any] | None:
     """Parse function-call arguments as dict when possible."""
     raw = tc.get("function", {}).get("arguments", {})
@@ -394,6 +416,17 @@ def _extract_tool_call_args(tc: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _parse_record_result_json(record: MCPToolCallRecord) -> dict[str, Any] | None:
+    """Best-effort parse of JSON tool result payloads."""
+    if not record.result or not isinstance(record.result, str):
+        return None
+    try:
+        parsed = _json.loads(record.result)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _set_tool_call_args(tc: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
@@ -975,6 +1008,7 @@ async def _agent_loop(
     )
     submit_answer_succeeded = False
     force_final_reason: str | None = None
+    pending_submit_todo_ids: list[str] = []
 
     kwargs = dict(kwargs or {})
 
@@ -1339,9 +1373,17 @@ async def _agent_loop(
             parsed_args = _extract_tool_call_args(tc) or {}
 
             if tool_name == "submit_answer" and submit_requires_todo_progress:
+                unresolved_hint = (
+                    f" Unfinished TODOs currently blocking submit: {', '.join(pending_submit_todo_ids)}. "
+                    "Call todo_update(todo_id=<id>, status='done' with evidence_refs/confidence) "
+                    "or status='blocked' with a concise note, then retry submit."
+                    if pending_submit_todo_ids else
+                    ""
+                )
                 err = (
                     "submit_answer suppressed: TODO state has not changed since the last unfinished-TODO "
                     "submission failure. Call todo_update(...) or todo_list() to unblock first."
+                    + unresolved_hint
                 )
                 suppressed_records.append(
                     MCPToolCallRecord(
@@ -1476,19 +1518,34 @@ async def _agent_loop(
                 submit_error_this_turn = True
                 submit_errors.append(str(record.error))
                 continue
+            parsed = _parse_record_result_json(record)
+            if parsed is not None:
+                status = str(parsed.get("status", "")).strip().lower()
+                if status and status not in {"submitted", "ok", "success"}:
+                    submit_error_this_turn = True
+                    validation = parsed.get("validation_error")
+                    reason_code = ""
+                    detail = ""
+                    if isinstance(validation, dict):
+                        reason_code = str(validation.get("reason_code", "")).strip()
+                        detail = str(validation.get("message", "")).strip()
+                    err_parts = [f"submit_answer not accepted (status={status})"]
+                    if reason_code:
+                        err_parts.append(f"reason_code={reason_code}")
+                    if detail:
+                        err_parts.append(detail)
+                    submit_errors.append(" | ".join(err_parts))
+                    continue
+
             submit_answer_succeeded = True
             arg_answer = record.arguments.get("answer") if isinstance(record.arguments, dict) else None
             if isinstance(arg_answer, str) and arg_answer.strip():
                 submitted_answer_value = arg_answer.strip()
                 continue
-            if record.result:
-                try:
-                    parsed = _json.loads(record.result)
-                    parsed_answer = parsed.get("answer") if isinstance(parsed, dict) else None
-                    if isinstance(parsed_answer, str) and parsed_answer.strip():
-                        submitted_answer_value = parsed_answer.strip()
-                except Exception:
-                    pass
+            if isinstance(parsed, dict):
+                parsed_answer = parsed.get("answer")
+                if isinstance(parsed_answer, str) and parsed_answer.strip():
+                    submitted_answer_value = parsed_answer.strip()
 
         todo_progress_this_turn = False
         for record in records:
@@ -1497,7 +1554,10 @@ async def _agent_loop(
             args = record.arguments if isinstance(record.arguments, dict) else {}
             todo_id = str(args.get("todo_id", "")).strip()
             status = str(args.get("status", "")).strip().lower()
-            if record.error:
+            parsed = _parse_record_result_json(record)
+            result_status = str(parsed.get("status", "")).strip().lower() if isinstance(parsed, dict) else ""
+            needs_revision = result_status == "needs_revision"
+            if record.error or needs_revision:
                 if todo_id and status == "done":
                     todo_done_error_streak[todo_id] = todo_done_error_streak.get(todo_id, 0) + 1
                 continue
@@ -1512,12 +1572,35 @@ async def _agent_loop(
                 ("todo" in err.lower()) or ("unfinished" in err.lower())
                 for err in submit_errors
             )
+            pending_submit_todo_ids = []
+            for err in submit_errors:
+                pending_submit_todo_ids.extend(_extract_unfinished_todo_ids(err))
+            # Keep stable order and uniqueness
+            if pending_submit_todo_ids:
+                deduped_ids: list[str] = []
+                seen_ids: set[str] = set()
+                for todo_id in pending_submit_todo_ids:
+                    key = todo_id.lower()
+                    if key in seen_ids:
+                        continue
+                    seen_ids.add(key)
+                    deduped_ids.append(todo_id)
+                pending_submit_todo_ids = deduped_ids
             refusal_blocked = any(
                 ("refusal-style" in err.lower()) or ("not acceptable" in err.lower())
                 for err in submit_errors
             )
             if todo_blocked and not todo_progress_this_turn:
                 submit_requires_todo_progress = True
+            todo_fix_hint = ""
+            if pending_submit_todo_ids:
+                todo_fix_hint = (
+                    " Unfinished TODO IDs: "
+                    + ", ".join(pending_submit_todo_ids)
+                    + ". For each unresolved leaf TODO, call "
+                    "todo_update(todo_id=<id>, status='blocked', note='why evidence is insufficient') "
+                    "or mark done with evidence refs before submit."
+                )
             retry_submit_msg = {
                 "role": "user",
                 "content": (
@@ -1528,6 +1611,7 @@ async def _agent_loop(
                         if todo_blocked else
                         ""
                     )
+                    + todo_fix_hint
                     + (
                         "Do NOT use refusal text (cannot, unknown, insufficient, no such, not found). "
                         "Submit the single best factual guess from retrieved evidence. "
@@ -1540,6 +1624,8 @@ async def _agent_loop(
             }
             messages.append(retry_submit_msg)
             agent_result.conversation_trace.append(retry_submit_msg)
+        elif todo_progress_this_turn:
+            pending_submit_todo_ids = []
 
         # Repeated tool-error detection: nudge strategy change instead of
         # repeatedly retrying near-identical invalid calls.
