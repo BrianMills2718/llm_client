@@ -55,6 +55,44 @@ def get_diff_files(commit_a: str, commit_b: str, cwd: str | None = None) -> list
         return []
 
 
+def get_working_tree_files(cwd: str | None = None) -> list[str]:
+    """Return files changed in the current working tree (staged/unstaged/untracked)."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=cwd,
+        )
+        if result.returncode != 0:
+            logger.debug("git status failed: %s", result.stderr.strip())
+            return []
+
+        files: list[str] = []
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.rstrip()
+            if len(line) < 4:
+                continue
+            path_part = line[3:]
+            # Rename/Copies appear as "old/path -> new/path"; keep destination path.
+            if " -> " in path_part:
+                path_part = path_part.split(" -> ", 1)[1]
+            if path_part:
+                files.append(path_part)
+
+        # Preserve order while de-duplicating.
+        return list(dict.fromkeys(files))
+    except Exception:
+        logger.debug("get_working_tree_files failed", exc_info=True)
+        return []
+
+
+def is_git_dirty(cwd: str | None = None) -> bool:
+    """Return True when the working tree has local modifications or untracked files."""
+    return bool(get_working_tree_files(cwd=cwd))
+
+
 def classify_diff_files(files: list[str]) -> set[str]:
     """Classify changed files into change type categories by path heuristics."""
     categories: set[str] = set()

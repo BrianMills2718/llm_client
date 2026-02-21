@@ -48,6 +48,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TURNS: int = 20
 """Maximum tool-calling loop iterations before forcing a final answer."""
 
+DEFAULT_MAX_TOOL_CALLS: int | None = 20
+"""Maximum tool calls before forcing a final answer. None disables tool budgeting."""
+
+TOOL_REASONING_FIELD: str = "tool_reasoning"
+"""Optional argument every tool call can include for action-level observability."""
+
+DEFAULT_REQUIRE_TOOL_REASONING: bool = False
+"""Hard-fail tool calls missing tool_reasoning when enabled."""
+
+BUDGET_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset({
+    "todo_create",
+    "todo_update",
+    "todo_list",
+    "todo_reset",
+    "submit_answer",
+})
+"""Tools exempt from max_tool_calls budgeting (planning + final submit)."""
+
+AUTO_REASONING_TOOL_DEFAULTS: dict[str, str] = {
+    "todo_reset": "Reset TODO state for the current question before planning/execution.",
+    "todo_list": "Read TODO states to decide the next unblock action.",
+}
+"""Deterministic fallback reasoning for idempotent planning tools."""
+
 TURN_WARNING_THRESHOLD: int = 3
 """Inject a 'wrap up' system message this many turns before max_turns."""
 
@@ -57,20 +81,41 @@ DEFAULT_MCP_INIT_TIMEOUT: float = 30.0
 DEFAULT_TOOL_RESULT_MAX_LENGTH: int = 50_000
 """Maximum character length for a single tool result. Longer results are truncated."""
 
+DEFAULT_MAX_MESSAGE_CHARS: int = 260_000
+"""Soft cap for serialized message-history size; old tool outputs are compacted above this."""
+
+DEFAULT_ENFORCE_TOOL_CONTRACTS: bool = False
+"""When enabled, reject tool calls that violate declared composability contracts."""
+
+DEFAULT_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
+"""Default artifact kinds available before any tool call."""
+
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
     "mcp_servers",
     "mcp_sessions",
     "max_turns",
+    "max_tool_calls",
+    "require_tool_reasoning",
     "mcp_init_timeout",
     "tool_result_max_length",
+    "max_message_chars",
+    "enforce_tool_contracts",
+    "tool_contracts",
+    "initial_artifacts",
 })
 
 # Kwargs consumed by the direct tool loop
 TOOL_LOOP_KWARGS = frozenset({
     "python_tools",
     "max_turns",
+    "max_tool_calls",
+    "require_tool_reasoning",
     "tool_result_max_length",
+    "max_message_chars",
+    "enforce_tool_contracts",
+    "tool_contracts",
+    "initial_artifacts",
 })
 
 
@@ -86,6 +131,8 @@ class MCPToolCallRecord:
     server: str
     tool: str
     arguments: dict[str, Any]
+    tool_reasoning: str | None = None
+    arg_coercions: list[dict[str, Any]] = field(default_factory=list)
     result: str | None = None
     error: str | None = None
     latency_s: float = 0.0
@@ -170,12 +217,34 @@ def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
     MCP: {"name": "foo", "description": "...", "inputSchema": {...}}
     OpenAI: {"type": "function", "function": {"name": "foo", "description": "...", "parameters": {...}}}
     """
+    parameters = dict(tool.inputSchema or {"type": "object", "properties": {}})
+    if not isinstance(parameters, dict):
+        parameters = {"type": "object", "properties": {}}
+    parameters.setdefault("type", "object")
+    properties = parameters.setdefault("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+        parameters["properties"] = properties
+    properties.setdefault(
+        TOOL_REASONING_FIELD,
+        {
+            "type": "string",
+            "description": "Why this specific tool call is needed right now.",
+        },
+    )
+    required = parameters.get("required")
+    if not isinstance(required, list):
+        required = []
+    if TOOL_REASONING_FIELD not in required:
+        required.append(TOOL_REASONING_FIELD)
+    parameters["required"] = required
+
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description or "",
-            "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+            "parameters": parameters,
         },
     }
 
@@ -204,6 +273,282 @@ def _truncate(text: str, max_length: int) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length] + f"\n... [truncated at {max_length} chars]"
+
+
+def _message_char_length(message: dict[str, Any]) -> int:
+    """Best-effort serialized length for one chat message."""
+    try:
+        return len(_json.dumps(message, ensure_ascii=False, default=str))
+    except Exception:
+        return len(str(message))
+
+
+def _compact_tool_history_for_context(
+    messages: list[dict[str, Any]],
+    max_message_chars: int,
+) -> tuple[int, int, int]:
+    """Compact verbose historical tool outputs when message history grows too large.
+
+    Returns (compacted_message_count, chars_saved, resulting_chars).
+    """
+    if max_message_chars <= 0:
+        total = sum(_message_char_length(m) for m in messages if isinstance(m, dict))
+        return 0, 0, total
+
+    total_chars = sum(_message_char_length(m) for m in messages if isinstance(m, dict))
+    if total_chars <= max_message_chars:
+        return 0, 0, total_chars
+
+    target_chars = max(int(max_message_chars * 0.75), 32_000)
+    compacted = 0
+    saved = 0
+    replacement = (
+        '{"notice":"Earlier tool result compacted to fit context window. '
+        'Re-run the tool if this evidence is needed again."}'
+    )
+    replacement_len = len(replacement)
+
+    for msg in messages:
+        if total_chars <= target_chars:
+            break
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or len(content) <= 512:
+            continue
+        old_len = len(content)
+        if old_len <= replacement_len:
+            continue
+        msg["content"] = replacement
+        delta = old_len - replacement_len
+        total_chars -= delta
+        saved += delta
+        compacted += 1
+
+    return compacted, saved, total_chars
+
+
+def _is_budget_exempt_tool(tool_name: str) -> bool:
+    """Return True when tool is excluded from max_tool_calls accounting."""
+    return tool_name in BUDGET_EXEMPT_TOOL_NAMES
+
+
+def _count_budgeted_records(records: list[MCPToolCallRecord]) -> int:
+    """Count tool calls that consume max_tool_calls budget."""
+    return sum(1 for r in records if not _is_budget_exempt_tool(r.tool))
+
+
+def _count_budgeted_tool_calls(tool_calls: list[dict[str, Any]]) -> int:
+    """Count proposed LLM tool calls that consume max_tool_calls budget."""
+    used = 0
+    for tc in tool_calls:
+        tool_name = tc.get("function", {}).get("name", "")
+        if tool_name and not _is_budget_exempt_tool(tool_name):
+            used += 1
+    return used
+
+
+def _trim_tool_calls_to_budget(
+    tool_calls: list[dict[str, Any]],
+    budget_remaining: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep all budget-exempt tools and trim only budgeted tools over cap."""
+    kept: list[dict[str, Any]] = []
+    kept_budgeted = 0
+    dropped_budgeted = 0
+    for tc in tool_calls:
+        tool_name = tc.get("function", {}).get("name", "")
+        if _is_budget_exempt_tool(tool_name):
+            kept.append(tc)
+            continue
+        if kept_budgeted < budget_remaining:
+            kept.append(tc)
+            kept_budgeted += 1
+        else:
+            dropped_budgeted += 1
+    return kept, dropped_budgeted
+
+
+def _tool_error_signature(error: str) -> str:
+    """Normalize tool error text so repeated failures can be detected."""
+    text = (error or "").strip().lower()
+    if not text:
+        return "unknown error"
+    # Keep stable semantic portion while avoiding noisy prefixes.
+    if ":" in text:
+        text = text.split(":", 1)[1].strip() or text
+    text = " ".join(text.split())
+    return text[:160]
+
+
+def _extract_tool_call_args(tc: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse function-call arguments as dict when possible."""
+    raw = tc.get("function", {}).get("arguments", {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = _json.loads(raw)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _set_tool_call_args(tc: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of tc with updated function arguments preserving argument wire type."""
+    out = dict(tc)
+    fn = dict(out.get("function", {}))
+    raw = fn.get("arguments", {})
+    if isinstance(raw, str):
+        fn["arguments"] = _json.dumps(args)
+    else:
+        fn["arguments"] = args
+    out["function"] = fn
+    return out
+
+
+def _autofill_tool_reasoning(
+    tc: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Autofill tool_reasoning for select deterministic tools when omitted."""
+    tool_name = tc.get("function", {}).get("name", "")
+    fallback = AUTO_REASONING_TOOL_DEFAULTS.get(tool_name)
+    if not fallback:
+        return tc, False
+
+    args = _extract_tool_call_args(tc)
+    if not isinstance(args, dict):
+        return tc, False
+
+    existing = args.get(TOOL_REASONING_FIELD)
+    if isinstance(existing, str) and existing.strip():
+        return tc, False
+
+    patched_args = dict(args)
+    patched_args[TOOL_REASONING_FIELD] = fallback
+    return _set_tool_call_args(tc, patched_args), True
+
+
+def _normalize_artifact_kind(kind: Any) -> str | None:
+    """Normalize artifact kind labels (e.g., SlotKind names) to upper snake case strings."""
+    if isinstance(kind, str):
+        normalized = kind.strip().upper()
+        return normalized or None
+    return None
+
+
+def _normalize_tool_contracts(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize raw tool contract payload into a predictable dict shape."""
+    if not isinstance(raw, dict):
+        return {}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for tool_name, spec in raw.items():
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            continue
+        if not isinstance(spec, dict):
+            continue
+
+        requires_all = {
+            k for k in (
+                _normalize_artifact_kind(v) for v in (spec.get("requires_all") or [])
+            )
+            if k
+        }
+        requires_any = {
+            k for k in (
+                _normalize_artifact_kind(v) for v in (spec.get("requires_any") or [])
+            )
+            if k
+        }
+        produces = {
+            k for k in (
+                _normalize_artifact_kind(v) for v in (spec.get("produces") or [])
+            )
+            if k
+        }
+
+        normalized[tool_name.strip()] = {
+            "requires_all": requires_all,
+            "requires_any": requires_any,
+            "produces": produces,
+            "is_control": bool(spec.get("is_control", False)),
+        }
+
+    return normalized
+
+
+def _effective_contract_requirements(
+    tool_name: str,
+    contract: dict[str, Any],
+    parsed_args: dict[str, Any] | None,
+) -> tuple[set[str], set[str]]:
+    """Resolve dynamic per-call requirements for selected tools."""
+    requires_all = set(contract.get("requires_all") or set())
+    requires_any = set(contract.get("requires_any") or set())
+
+    args = parsed_args or {}
+
+    if tool_name == "chunk_get_text":
+        has_chunk_ids = bool(args.get("chunk_id")) or bool(args.get("chunk_ids"))
+        has_entity_ids = bool(args.get("entity_ids")) or bool(args.get("entity_names"))
+        if has_chunk_ids and not has_entity_ids:
+            return {"CHUNK_SET"}, set()
+        if has_entity_ids and not has_chunk_ids:
+            return {"ENTITY_SET"}, set()
+        if has_chunk_ids and has_entity_ids:
+            return {"CHUNK_SET", "ENTITY_SET"}, set()
+
+    return requires_all, requires_any
+
+
+def _validate_tool_contract_call(
+    *,
+    tool_name: str,
+    contract: dict[str, Any],
+    parsed_args: dict[str, Any] | None,
+    available_artifacts: set[str],
+) -> tuple[bool, str]:
+    """Validate whether a tool call is composable given currently available artifacts."""
+    if contract.get("is_control"):
+        return True, ""
+
+    requires_all, requires_any = _effective_contract_requirements(
+        tool_name, contract, parsed_args,
+    )
+
+    missing_all = sorted(requires_all - available_artifacts)
+    if missing_all:
+        return (
+            False,
+            f"{tool_name} requires all of {sorted(requires_all)}; missing {missing_all}",
+        )
+
+    if requires_any and not (requires_any & available_artifacts):
+        return (
+            False,
+            f"{tool_name} requires one of {sorted(requires_any)}; available {sorted(available_artifacts)}",
+        )
+
+    return True, ""
+
+
+def _contract_outputs(contract: dict[str, Any] | None) -> set[str]:
+    """Return declared artifact outputs for a tool contract."""
+    if not isinstance(contract, dict):
+        return set()
+    return set(contract.get("produces") or set())
+
+
+def _is_responses_api_raw_response(raw_response: Any) -> bool:
+    """Best-effort check for Responses API objects (vs chat completions)."""
+    if raw_response is None:
+        return False
+    has_output = hasattr(raw_response, "output")
+    has_choices = hasattr(raw_response, "choices")
+    return bool(has_output and not has_choices)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +633,7 @@ async def _execute_tool_calls(
     sessions: dict[str, Any],
     tool_to_server: dict[str, str],
     max_result_length: int,
+    require_tool_reasoning: bool = DEFAULT_REQUIRE_TOOL_REASONING,
 ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
     """Execute tool calls against MCP servers.
 
@@ -326,11 +672,32 @@ async def _execute_tool_calls(
             continue
 
         server_name = tool_to_server.get(tool_name)
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        tool_reasoning_raw = arguments.pop(TOOL_REASONING_FIELD, None)
+        tool_reasoning = None
+        if isinstance(tool_reasoning_raw, str):
+            stripped = tool_reasoning_raw.strip()
+            if stripped:
+                tool_reasoning = stripped
+
         record = MCPToolCallRecord(
             server=server_name or "unknown",
             tool=tool_name,
             arguments=arguments,
+            tool_reasoning=tool_reasoning,
         )
+
+        if require_tool_reasoning and not tool_reasoning:
+            record.error = f"Missing required argument: {TOOL_REASONING_FIELD}"
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": _json.dumps({"error": record.error}),
+            })
+            records.append(record)
+            continue
 
         t0 = time.monotonic()
         if server_name is None:
@@ -387,8 +754,14 @@ async def _acall_with_mcp(
     *,
     mcp_sessions: MCPSessionPool | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
+    max_tool_calls: int | None = DEFAULT_MAX_TOOL_CALLS,
+    require_tool_reasoning: bool = DEFAULT_REQUIRE_TOOL_REASONING,
     mcp_init_timeout: float = DEFAULT_MCP_INIT_TIMEOUT,
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
+    enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    tool_contracts: dict[str, dict[str, Any]] | None = None,
+    initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     timeout: int = 60,
     **kwargs: Any,
 ) -> LLMCallResult:
@@ -407,8 +780,13 @@ async def _acall_with_mcp(
         mcp_sessions: Pre-started MCPSessionPool for server reuse across calls.
             When provided, servers are NOT started/stopped per call.
         max_turns: Maximum loop iterations
+        max_tool_calls: Maximum tool calls before final forced answer. None disables.
+        require_tool_reasoning: If True, reject tool calls missing tool_reasoning.
         mcp_init_timeout: Seconds to wait for server startup
         tool_result_max_length: Max chars per tool result (truncated if longer)
+        enforce_tool_contracts: If True, reject tool calls violating tool contracts.
+        tool_contracts: Optional per-tool composability contracts.
+        initial_artifacts: Artifact kinds available before any tool call.
         timeout: Per-turn LLM call timeout
         **kwargs: Passed through to acall_llm (retry, hooks, etc.)
     """
@@ -430,11 +808,28 @@ async def _acall_with_mcp(
         async def _mcp_executor(
             tool_calls: list[dict[str, Any]], max_len: int,
         ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
-            return await _execute_tool_calls(tool_calls, sessions, tool_to_server, max_len)
+            return await _execute_tool_calls(
+                tool_calls,
+                sessions,
+                tool_to_server,
+                max_len,
+                require_tool_reasoning=require_tool_reasoning,
+            )
 
         final_content, final_finish_reason = await _agent_loop(
             model, messages, openai_tools,
-            agent_result, _mcp_executor, max_turns, tool_result_max_length, timeout, kwargs,
+            agent_result,
+            _mcp_executor,
+            max_turns,
+            max_tool_calls,
+            require_tool_reasoning,
+            tool_result_max_length,
+            max_message_chars,
+            enforce_tool_contracts,
+            tool_contracts,
+            initial_artifacts,
+            timeout,
+            kwargs,
         )
         total_cost = sum(r.latency_s for r in agent_result.tool_calls)  # placeholder; real cost tracked below
 
@@ -453,11 +848,28 @@ async def _acall_with_mcp(
             async def _mcp_executor(
                 tool_calls: list[dict[str, Any]], max_len: int,
             ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
-                return await _execute_tool_calls(tool_calls, sessions, tool_to_server, max_len)
+                return await _execute_tool_calls(
+                    tool_calls,
+                    sessions,
+                    tool_to_server,
+                    max_len,
+                    require_tool_reasoning=require_tool_reasoning,
+                )
 
             final_content, final_finish_reason = await _agent_loop(
                 model, messages, openai_tools,
-                agent_result, _mcp_executor, max_turns, tool_result_max_length, timeout, kwargs,
+                agent_result,
+                _mcp_executor,
+                max_turns,
+                max_tool_calls,
+                require_tool_reasoning,
+                tool_result_max_length,
+                max_message_chars,
+                enforce_tool_contracts,
+                tool_contracts,
+                initial_artifacts,
+                timeout,
+                kwargs,
             )
     else:
         raise ValueError("Either mcp_servers or mcp_sessions must be provided")
@@ -492,9 +904,15 @@ async def _agent_loop(
     agent_result: MCPAgentResult,
     executor: Any,  # Callable[[list, int], Awaitable[tuple[list[MCPToolCallRecord], list[dict]]]]
     max_turns: int,
+    max_tool_calls: int | None,
+    require_tool_reasoning: bool,
     tool_result_max_length: int,
-    timeout: int,
-    kwargs: dict[str, Any],
+    max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
+    enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    tool_contracts: dict[str, dict[str, Any]] | None = None,
+    initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
+    timeout: int = 60,
+    kwargs: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Core agent loop shared by MCP, direct-tool, and session-pool paths.
 
@@ -509,9 +927,110 @@ async def _agent_loop(
     final_content = ""
     final_finish_reason = "stop"
     effective_model = model
+    tool_call_counts: dict[str, int] = {}
+    tool_loop_nudges: dict[str, int] = {}
+    tool_error_counts: dict[tuple[str, str], int] = {}
+    tool_error_nudges: dict[tuple[str, str], int] = {}
+    submit_requires_todo_progress = False
+    todo_done_error_streak: dict[str, int] = {}
+    control_loop_suppressed_calls = 0
+    last_budget_remaining: int | None = None
+    rejected_missing_reasoning_calls = 0
+    tool_call_turns_total = 0
+    tool_call_empty_text_turns = 0
+    responses_tool_call_empty_text_turns = 0
+    tool_arg_coercions = 0
+    tool_arg_coercion_calls = 0
+    tool_arg_validation_rejections = 0
+    context_compactions = 0
+    context_compacted_messages = 0
+    context_compacted_chars = 0
+    contract_rejected_calls = 0
+    contract_violation_events: list[dict[str, Any]] = []
+    normalized_tool_contracts = _normalize_tool_contracts(tool_contracts)
+    if initial_artifacts is None:
+        initial_artifacts = DEFAULT_INITIAL_ARTIFACTS
+    available_artifacts = {
+        k for k in (_normalize_artifact_kind(v) for v in initial_artifacts) if k
+    }
+    if not available_artifacts:
+        available_artifacts = set(DEFAULT_INITIAL_ARTIFACTS)
+    initial_artifact_snapshot = sorted(available_artifacts)
+    artifact_timeline: list[dict[str, Any]] = [{
+        "turn": 0,
+        "phase": "initial",
+        "available_artifacts": list(initial_artifact_snapshot),
+    }]
+    if enforce_tool_contracts and not normalized_tool_contracts:
+        warning = (
+            "TOOL_CONTRACTS: enforce_tool_contracts=True but no contracts were provided; "
+            "composability validation is skipped."
+        )
+        agent_result.warnings.append(warning)
+        logger.warning(warning)
+    requires_submit_answer = any(
+        t.get("function", {}).get("name") == "submit_answer"
+        for t in openai_tools
+        if isinstance(t, dict)
+    )
+    submit_answer_succeeded = False
+    force_final_reason: str | None = None
+
+    kwargs = dict(kwargs or {})
+
+    if (
+        "max_tokens" not in kwargs
+        and "max_completion_tokens" not in kwargs
+    ):
+        # Tool-calling turns do not need long free-form completions; smaller
+        # completions reduce context-window pressure on long agent traces.
+        kwargs = dict(kwargs)
+        kwargs["max_completion_tokens"] = 4096
 
     for turn in range(max_turns):
+        if max_tool_calls is not None:
+            budgeted_calls_used = _count_budgeted_records(agent_result.tool_calls)
+            remaining_tool_calls = max_tool_calls - budgeted_calls_used
+            if remaining_tool_calls <= 0:
+                force_final_reason = "max_tool_calls"
+                logger.warning(
+                    "Agent loop exhausted max_tool_calls=%d after %d turns (%d budgeted, %d total tool calls); forcing final answer",
+                    max_tool_calls,
+                    turn,
+                    budgeted_calls_used,
+                    len(agent_result.tool_calls),
+                )
+                break
+            if remaining_tool_calls != last_budget_remaining:
+                budget_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[SYSTEM: Retrieval-tool budget: {budgeted_calls_used}/{max_tool_calls} used, "
+                        f"{remaining_tool_calls} remaining. Plan carefully. "
+                        f"Budget-exempt tools: {', '.join(sorted(BUDGET_EXEMPT_TOOL_NAMES))}. "
+                        "If you already have enough evidence, submit your answer now.]"
+                    ),
+                }
+                messages.append(budget_msg)
+                agent_result.conversation_trace.append(budget_msg)
+                last_budget_remaining = remaining_tool_calls
+
         agent_result.turns = turn + 1
+
+        compacted_count, compacted_chars, current_chars = _compact_tool_history_for_context(
+            messages, max_message_chars,
+        )
+        if compacted_count:
+            context_compactions += 1
+            context_compacted_messages += compacted_count
+            context_compacted_chars += compacted_chars
+            warning = (
+                "CONTEXT_COMPACTION: compacted "
+                f"{compacted_count} tool message(s), saved ~{compacted_chars} chars "
+                f"(history ~{current_chars} chars)"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
 
         result = await _inner_acall_llm(
             effective_model, messages, timeout=timeout, tools=openai_tools, **kwargs,
@@ -541,6 +1060,34 @@ async def _agent_loop(
 
         # No tool calls → done
         if not result.tool_calls:
+            remaining_turns = max_turns - (turn + 1)
+            if requires_submit_answer and not submit_answer_succeeded and remaining_turns > 0:
+                # Benchmark loops require explicit submit_answer() so scorers can
+                # reliably parse the final answer from tool calls.
+                if result.content:
+                    draft_msg = {
+                        "role": "assistant",
+                        "content": result.content,
+                    }
+                    messages.append(draft_msg)
+                    agent_result.conversation_trace.append(draft_msg)
+
+                submit_nudge = {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: Do NOT answer in plain text. You MUST call "
+                        "submit_answer(reasoning, answer) now. Use a short factual "
+                        "answer (<=8 words). No additional searches.]"
+                    ),
+                }
+                messages.append(submit_nudge)
+                agent_result.conversation_trace.append(submit_nudge)
+                logger.warning(
+                    "Agent loop: model returned plain text without submit_answer on turn %d/%d; nudging explicit submission.",
+                    turn + 1, max_turns,
+                )
+                continue
+
             final_content = result.content
             final_finish_reason = result.finish_reason
             # Log visibility: empty content on first turn is almost always a model failure
@@ -566,10 +1113,106 @@ async def _agent_loop(
             break
 
         # Append assistant message with tool calls
+        tool_calls_this_turn = list(result.tool_calls)
+        autofilled_reasoning_tools: list[str] = []
+        patched_calls: list[dict[str, Any]] = []
+        for tc in tool_calls_this_turn:
+            patched, changed = _autofill_tool_reasoning(tc)
+            if changed:
+                name = patched.get("function", {}).get("name", "")
+                if name:
+                    autofilled_reasoning_tools.append(name)
+            patched_calls.append(patched)
+        tool_calls_this_turn = patched_calls
+        if autofilled_reasoning_tools:
+            agent_result.warnings.append(
+                "OBSERVABILITY: auto-filled missing tool_reasoning on tools: "
+                + ", ".join(autofilled_reasoning_tools)
+            )
+        tool_call_turns_total += 1
+        if not (result.content or "").strip():
+            tool_call_empty_text_turns += 1
+            is_responses_turn = _is_responses_api_raw_response(result.raw_response)
+            if is_responses_turn:
+                responses_tool_call_empty_text_turns += 1
+            logger.info(
+                "Agent loop metric: turn %d/%d model=%s returned %d tool call(s) with empty assistant text%s",
+                turn + 1,
+                max_turns,
+                result.model,
+                len(tool_calls_this_turn),
+                " [responses-api]" if is_responses_turn else "",
+            )
+
+        if max_tool_calls is not None:
+            budgeted_used = _count_budgeted_records(agent_result.tool_calls)
+            remaining_tool_calls = max_tool_calls - budgeted_used
+            budgeted_requested = _count_budgeted_tool_calls(tool_calls_this_turn)
+            if budgeted_requested > remaining_tool_calls:
+                tool_calls_this_turn, dropped = _trim_tool_calls_to_budget(
+                    tool_calls_this_turn,
+                    max(remaining_tool_calls, 0),
+                )
+                trim_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[SYSTEM: Retrieval-tool budget allows only {remaining_tool_calls} more budgeted call(s). "
+                        f"Ignored {dropped} over-budget retrieval call(s). "
+                        f"Budget-exempt tools ({', '.join(sorted(BUDGET_EXEMPT_TOOL_NAMES))}) are still allowed.]"
+                    ),
+                }
+                messages.append(trim_msg)
+                agent_result.conversation_trace.append(trim_msg)
+                logger.warning(
+                    "Agent loop trimmed %d over-budget retrieval call(s) on turn %d; budget remaining=%d",
+                    dropped,
+                    turn + 1,
+                    remaining_tool_calls,
+                )
+
+        missing_reasoning_tools: list[str] = []
+        missing_reasoning_call_ids: set[str] = set()
+        for tc in tool_calls_this_turn:
+            fn = tc.get("function", {})
+            tc_name = fn.get("name", "")
+            tc_id = tc.get("id", "")
+            tc_args = _extract_tool_call_args(tc)
+            if not isinstance(tc_args, dict):
+                missing_reasoning_tools.append(tc_name or "<unknown>")
+                if tc_id:
+                    missing_reasoning_call_ids.add(tc_id)
+                continue
+            tc_reasoning = tc_args.get(TOOL_REASONING_FIELD)
+            if not isinstance(tc_reasoning, str) or not tc_reasoning.strip():
+                missing_reasoning_tools.append(tc_name or "<unknown>")
+                if tc_id:
+                    missing_reasoning_call_ids.add(tc_id)
+
+        if missing_reasoning_tools:
+            reasoning_nudge = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Observability requirement: every tool call must include "
+                    f"'{TOOL_REASONING_FIELD}' with one concise sentence explaining why this call is needed."
+                    + (
+                        " Calls without it are rejected."
+                        if require_tool_reasoning else
+                        ""
+                    )
+                    + "]"
+                ),
+            }
+            messages.append(reasoning_nudge)
+            agent_result.conversation_trace.append(reasoning_nudge)
+            agent_result.warnings.append(
+                "OBSERVABILITY: missing tool_reasoning on tools: "
+                + ", ".join(missing_reasoning_tools)
+            )
+
         assistant_msg = {
             "role": "assistant",
             "content": result.content or None,
-            "tool_calls": result.tool_calls,
+            "tool_calls": tool_calls_this_turn,
         }
         messages.append(assistant_msg)
 
@@ -583,14 +1226,381 @@ async def _agent_loop(
                     "name": tc.get("function", {}).get("name", ""),
                     "arguments": tc.get("function", {}).get("arguments", ""),
                 }
-                for tc in result.tool_calls
+                for tc in tool_calls_this_turn
             ],
         })
 
-        # Execute tool calls via executor
-        records, tool_messages = await executor(result.tool_calls, tool_result_max_length)
+        tool_calls_to_execute = tool_calls_this_turn
+        pending_repair_msg: dict[str, Any] | None = None
+        if require_tool_reasoning and missing_reasoning_call_ids:
+            tool_calls_to_execute = [
+                tc for tc in tool_calls_this_turn
+                if tc.get("id", "") not in missing_reasoning_call_ids
+            ]
+
+            rejected_missing_reasoning_calls += len(missing_reasoning_call_ids)
+            rejected_tool_messages: list[dict[str, Any]] = []
+            for tc in tool_calls_this_turn:
+                tc_id = tc.get("id", "")
+                if tc_id not in missing_reasoning_call_ids:
+                    continue
+                rejected_tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": _json.dumps({
+                        "error": f"Missing required argument: {TOOL_REASONING_FIELD}",
+                    }),
+                })
+            messages.extend(rejected_tool_messages)
+            for tmsg in rejected_tool_messages:
+                agent_result.conversation_trace.append({
+                    "role": "tool",
+                    "tool_call_id": tmsg.get("tool_call_id", ""),
+                    "content": tmsg.get("content", ""),
+                })
+
+            pending_repair_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: One or more tool calls were rejected because "
+                    f"'{TOOL_REASONING_FIELD}' was missing. Re-issue corrected tool calls "
+                    "only if still needed.]"
+                ),
+            }
+
+        contract_rejected_records: list[MCPToolCallRecord] = []
+        contract_rejected_messages: list[dict[str, Any]] = []
+        pending_contract_msg: dict[str, Any] | None = None
+        if enforce_tool_contracts and normalized_tool_contracts:
+            filtered_contract_calls: list[dict[str, Any]] = []
+            for tc in tool_calls_to_execute:
+                tool_name = tc.get("function", {}).get("name", "")
+                tc_id = tc.get("id", "")
+                parsed_args = _extract_tool_call_args(tc)
+                contract = normalized_tool_contracts.get(tool_name)
+                if not isinstance(contract, dict):
+                    filtered_contract_calls.append(tc)
+                    continue
+
+                is_valid, reason = _validate_tool_contract_call(
+                    tool_name=tool_name,
+                    contract=contract,
+                    parsed_args=parsed_args,
+                    available_artifacts=available_artifacts,
+                )
+                if is_valid:
+                    filtered_contract_calls.append(tc)
+                    continue
+
+                contract_rejected_calls += 1
+                err = f"Tool contract violation: {reason}"
+                contract_violation_events.append({
+                    "turn": turn + 1,
+                    "tool": tool_name or "<unknown>",
+                    "reason": reason,
+                    "available_artifacts": sorted(available_artifacts),
+                    "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
+                })
+                contract_rejected_records.append(
+                    MCPToolCallRecord(
+                        server="__contract__",
+                        tool=tool_name or "<unknown>",
+                        arguments=parsed_args if isinstance(parsed_args, dict) else {},
+                        error=err,
+                    )
+                )
+                contract_rejected_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": _json.dumps({"error": err}),
+                })
+
+            tool_calls_to_execute = filtered_contract_calls
+            if contract_rejected_records:
+                pending_contract_msg = {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: One or more tool calls were rejected by tool composability contracts. "
+                        f"Use tools compatible with available artifacts: {sorted(available_artifacts)}. "
+                        "Adjust plan and try again.]"
+                    ),
+                }
+
+        # Control-loop suppression for repeated invalid control actions:
+        # 1) block repeated submit_answer attempts until TODO state changes;
+        # 2) block repeated todo_update(done) retries on the same TODO after
+        #    repeated validation failures.
+        suppressed_records: list[MCPToolCallRecord] = []
+        suppressed_tool_messages: list[dict[str, Any]] = []
+        filtered_tool_calls: list[dict[str, Any]] = []
+        for tc in tool_calls_to_execute:
+            tool_name = tc.get("function", {}).get("name", "")
+            tc_id = tc.get("id", "")
+            parsed_args = _extract_tool_call_args(tc) or {}
+
+            if tool_name == "submit_answer" and submit_requires_todo_progress:
+                err = (
+                    "submit_answer suppressed: TODO state has not changed since the last unfinished-TODO "
+                    "submission failure. Call todo_update(...) or todo_list() to unblock first."
+                )
+                suppressed_records.append(
+                    MCPToolCallRecord(
+                        server="__agent__",
+                        tool=tool_name,
+                        arguments=parsed_args,
+                        error=err,
+                    )
+                )
+                suppressed_tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": _json.dumps({"error": err}),
+                })
+                continue
+
+            if tool_name == "todo_update":
+                todo_id = str(parsed_args.get("todo_id", "")).strip()
+                status = str(parsed_args.get("status", "")).strip().lower()
+                if (
+                    todo_id and status == "done"
+                    and todo_done_error_streak.get(todo_id, 0) >= 2
+                ):
+                    err = (
+                        "todo_update(done) suppressed: repeated completion failures for this TODO. "
+                        "Change strategy first (status='blocked' or upstream bridge repair) before retrying done."
+                    )
+                    suppressed_records.append(
+                        MCPToolCallRecord(
+                            server="__agent__",
+                            tool=tool_name,
+                            arguments=parsed_args,
+                            error=err,
+                        )
+                    )
+                    suppressed_tool_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": _json.dumps({"error": err}),
+                    })
+                    continue
+
+            filtered_tool_calls.append(tc)
+
+        tool_calls_to_execute = filtered_tool_calls
+        pending_control_loop_msg: dict[str, Any] | None = None
+        if suppressed_records:
+            control_loop_suppressed_calls += len(suppressed_records)
+            pending_control_loop_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Repeated control-call loop detected. Some tool calls were suppressed. "
+                    "Update TODO state or change hypotheses before retrying submit/completion.]"
+                ),
+            }
+
+        # Execute valid tool calls via executor
+        if tool_calls_to_execute:
+            executed_records, executed_tool_messages = await executor(
+                tool_calls_to_execute, tool_result_max_length,
+            )
+        else:
+            executed_records, executed_tool_messages = [], []
+
+        if enforce_tool_contracts and normalized_tool_contracts:
+            for record in executed_records:
+                if record.error:
+                    continue
+                produced = _contract_outputs(normalized_tool_contracts.get(record.tool))
+                if produced:
+                    available_artifacts.update(produced)
+                    artifact_timeline.append({
+                        "turn": turn + 1,
+                        "phase": "tool_success",
+                        "tool": record.tool,
+                        "produced": sorted(produced),
+                        "available_artifacts": sorted(available_artifacts),
+                    })
+
+        records = contract_rejected_records + suppressed_records + executed_records
+        tool_messages = contract_rejected_messages + suppressed_tool_messages + executed_tool_messages
         agent_result.tool_calls.extend(records)
         messages.extend(tool_messages)
+        if pending_repair_msg is not None:
+            messages.append(pending_repair_msg)
+            agent_result.conversation_trace.append(pending_repair_msg)
+        if pending_contract_msg is not None:
+            messages.append(pending_contract_msg)
+            agent_result.conversation_trace.append(pending_contract_msg)
+        if pending_control_loop_msg is not None:
+            messages.append(pending_control_loop_msg)
+            agent_result.conversation_trace.append(pending_control_loop_msg)
+
+        turn_arg_coercions = 0
+        turn_arg_coercion_calls = 0
+        turn_arg_validation_rejections = 0
+        for record in records:
+            coercions = getattr(record, "arg_coercions", None) or []
+            if coercions:
+                turn_arg_coercions += len(coercions)
+                turn_arg_coercion_calls += 1
+            if record.error and "validation error:" in record.error.lower():
+                turn_arg_validation_rejections += 1
+
+        if turn_arg_coercions:
+            tool_arg_coercions += turn_arg_coercions
+            tool_arg_coercion_calls += turn_arg_coercion_calls
+            warning = (
+                "TOOL_ARG_COERCION: turn "
+                f"{turn + 1}/{max_turns} applied {turn_arg_coercions} coercion(s) "
+                f"across {turn_arg_coercion_calls} call(s)"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+        if turn_arg_validation_rejections:
+            tool_arg_validation_rejections += turn_arg_validation_rejections
+            warning = (
+                "TOOL_ARG_VALIDATION: turn "
+                f"{turn + 1}/{max_turns} rejected {turn_arg_validation_rejections} "
+                "tool call(s) due to argument/schema mismatch"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+
+        submitted_answer_value: str | None = None
+        submit_error_this_turn = False
+        submit_errors: list[str] = []
+        for record in records:
+            if record.tool != "submit_answer":
+                continue
+            if record.error:
+                submit_error_this_turn = True
+                submit_errors.append(str(record.error))
+                continue
+            submit_answer_succeeded = True
+            arg_answer = record.arguments.get("answer") if isinstance(record.arguments, dict) else None
+            if isinstance(arg_answer, str) and arg_answer.strip():
+                submitted_answer_value = arg_answer.strip()
+                continue
+            if record.result:
+                try:
+                    parsed = _json.loads(record.result)
+                    parsed_answer = parsed.get("answer") if isinstance(parsed, dict) else None
+                    if isinstance(parsed_answer, str) and parsed_answer.strip():
+                        submitted_answer_value = parsed_answer.strip()
+                except Exception:
+                    pass
+
+        todo_progress_this_turn = False
+        for record in records:
+            if record.tool != "todo_update":
+                continue
+            args = record.arguments if isinstance(record.arguments, dict) else {}
+            todo_id = str(args.get("todo_id", "")).strip()
+            status = str(args.get("status", "")).strip().lower()
+            if record.error:
+                if todo_id and status == "done":
+                    todo_done_error_streak[todo_id] = todo_done_error_streak.get(todo_id, 0) + 1
+                continue
+            todo_progress_this_turn = True
+            if todo_id:
+                todo_done_error_streak[todo_id] = 0
+        if todo_progress_this_turn:
+            submit_requires_todo_progress = False
+
+        if submit_error_this_turn:
+            todo_blocked = any(
+                ("todo" in err.lower()) or ("unfinished" in err.lower())
+                for err in submit_errors
+            )
+            refusal_blocked = any(
+                ("refusal-style" in err.lower()) or ("not acceptable" in err.lower())
+                for err in submit_errors
+            )
+            if todo_blocked and not todo_progress_this_turn:
+                submit_requires_todo_progress = True
+            retry_submit_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: submit_answer failed. "
+                    + (
+                        "Create/update TODOs first: todo_create(...), "
+                        "todo_update(..., status='done'), todo_list(). Then call submit_answer again. "
+                        if todo_blocked else
+                        ""
+                    )
+                    + (
+                        "Do NOT use refusal text (cannot, unknown, insufficient, no such, not found). "
+                        "Submit the single best factual guess from retrieved evidence. "
+                        if refusal_blocked else
+                        ""
+                    )
+                    + "Call submit_answer again with answer as a short fact only "
+                    "(name/date/number/yes/no, <=8 words).]"
+                ),
+            }
+            messages.append(retry_submit_msg)
+            agent_result.conversation_trace.append(retry_submit_msg)
+
+        # Repeated tool-error detection: nudge strategy change instead of
+        # repeatedly retrying near-identical invalid calls.
+        for record in records:
+            if not record.error:
+                continue
+            sig = _tool_error_signature(str(record.error))
+            key = (record.tool, sig)
+            count = tool_error_counts.get(key, 0) + 1
+            tool_error_counts[key] = count
+
+            last_nudged = tool_error_nudges.get(key, 0)
+            if count >= 2 and count > last_nudged:
+                todo_hint = (
+                    " If this is a TODO completion error, reopen upstream TODO(s) "
+                    "and gather new evidence before retrying."
+                    if record.tool == "todo_update" else
+                    ""
+                )
+                err_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[SYSTEM: Repeated tool error from '{record.tool}': {sig}. "
+                        "STOP retrying near-identical calls. Change strategy "
+                        "(new evidence, alternate hypothesis, or upstream repair) before continuing.]"
+                        + todo_hint
+                    ),
+                }
+                messages.append(err_msg)
+                agent_result.conversation_trace.append(err_msg)
+                tool_error_nudges[key] = count
+                logger.warning(
+                    "Loop detection: repeated tool error from '%s' (count=%d): %s",
+                    record.tool, count, sig,
+                )
+
+        # Track tool call frequency for loop detection
+        for tc in tool_calls_to_execute:
+            tc_name = tc.get("function", {}).get("name", "")
+            if tc_name and not _is_budget_exempt_tool(tc_name):
+                tool_call_counts[tc_name] = tool_call_counts.get(tc_name, 0) + 1
+
+        # Loop detection: if same tool called 3+ times, nudge model to switch
+        for tool_name, count in tool_call_counts.items():
+            last_nudged = tool_loop_nudges.get(tool_name, 0)
+            if count >= 3 and count % 3 == 0 and count > last_nudged:
+                loop_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[SYSTEM: You have called '{tool_name}' {count} times. "
+                        "STOP repeating the same searches. Read what you already have. "
+                        "Try a DIFFERENT tool or submit your answer now.]"
+                    ),
+                }
+                messages.append(loop_msg)
+                agent_result.conversation_trace.append(loop_msg)
+                tool_loop_nudges[tool_name] = count
+                logger.warning(
+                    "Loop detection: tool '%s' called %d times on turn %d",
+                    tool_name, count, turn + 1,
+                )
 
         # Capture tool results in trace
         for tmsg in tool_messages:
@@ -600,9 +1610,18 @@ async def _agent_loop(
                 "content": tmsg.get("content", ""),
             })
 
+        if submit_answer_succeeded:
+            final_content = submitted_answer_value or (result.content or "").strip() or "submitted"
+            final_finish_reason = "submitted"
+            logger.info(
+                "Agent loop: submit_answer succeeded on turn %d/%d",
+                turn + 1, max_turns,
+            )
+            break
+
         logger.debug(
             "Agent turn %d/%d: %d tool calls",
-            turn + 1, max_turns, len(result.tool_calls),
+            turn + 1, max_turns, len(tool_calls_this_turn),
         )
 
         # Turn countdown: warn agent when it's running low on turns
@@ -619,11 +1638,47 @@ async def _agent_loop(
             messages.append(countdown_msg)
             agent_result.conversation_trace.append(countdown_msg)
     else:
-        # max_turns exhausted — one final call without tools to get an answer
-        logger.warning(
-            "Agent loop exhausted max_turns=%d, forcing final answer",
-            max_turns,
+        force_final_reason = "max_turns"
+
+    if force_final_reason is not None and not submit_answer_succeeded:
+        if force_final_reason == "max_tool_calls":
+            force_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Tool-call budget exhausted. You MUST give your best answer now "
+                    "using evidence already retrieved. Extract the best name/date/number and answer.]"
+                ),
+            }
+        else:
+            logger.warning(
+                "Agent loop exhausted max_turns=%d, forcing final answer",
+                max_turns,
+            )
+            force_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: All turns exhausted. You MUST give your best answer now "
+                    "based on the evidence you found. Extract any name, date, or number "
+                    "from the tool results. 'I don't know' is NOT acceptable — guess.]"
+                ),
+            }
+
+        messages.append(force_msg)
+        agent_result.conversation_trace.append(force_msg)
+        compacted_count, compacted_chars, current_chars = _compact_tool_history_for_context(
+            messages, max_message_chars,
         )
+        if compacted_count:
+            context_compactions += 1
+            context_compacted_messages += compacted_count
+            context_compacted_chars += compacted_chars
+            warning = (
+                "CONTEXT_COMPACTION: compacted "
+                f"{compacted_count} tool message(s), saved ~{compacted_chars} chars "
+                f"(history ~{current_chars} chars) before forced-final call"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
         final_result = await _inner_acall_llm(
             effective_model, messages, timeout=timeout, **kwargs,
         )
@@ -647,6 +1702,55 @@ async def _agent_loop(
             })
 
     agent_result.metadata["total_cost"] = total_cost
+    agent_result.metadata["max_turns"] = max_turns
+    agent_result.metadata["max_tool_calls"] = max_tool_calls
+    agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
+    agent_result.metadata["budgeted_tool_calls_used"] = _count_budgeted_records(agent_result.tool_calls)
+    agent_result.metadata["budget_exempt_tools"] = sorted(BUDGET_EXEMPT_TOOL_NAMES)
+    agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
+    agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
+    agent_result.metadata["control_loop_suppressed_calls"] = control_loop_suppressed_calls
+    agent_result.metadata["tool_call_turns_total"] = tool_call_turns_total
+    agent_result.metadata["tool_call_empty_text_turns"] = tool_call_empty_text_turns
+    agent_result.metadata["responses_tool_call_empty_text_turns"] = responses_tool_call_empty_text_turns
+    agent_result.metadata["tool_call_empty_text_turn_ratio"] = (
+        (tool_call_empty_text_turns / tool_call_turns_total)
+        if tool_call_turns_total else 0.0
+    )
+    agent_result.metadata["tool_arg_coercions"] = tool_arg_coercions
+    agent_result.metadata["tool_arg_coercion_calls"] = tool_arg_coercion_calls
+    agent_result.metadata["tool_arg_validation_rejections"] = tool_arg_validation_rejections
+    agent_result.metadata["context_compactions"] = context_compactions
+    agent_result.metadata["context_compacted_messages"] = context_compacted_messages
+    agent_result.metadata["context_compacted_chars"] = context_compacted_chars
+    agent_result.metadata["enforce_tool_contracts"] = enforce_tool_contracts
+    agent_result.metadata["tool_contract_rejections"] = contract_rejected_calls
+    agent_result.metadata["tool_contract_violation_events"] = contract_violation_events
+    agent_result.metadata["tool_contracts_declared"] = sorted(normalized_tool_contracts.keys())
+    agent_result.metadata["initial_artifacts"] = initial_artifact_snapshot
+    agent_result.metadata["available_artifacts_final"] = sorted(available_artifacts)
+    agent_result.metadata["artifact_timeline"] = artifact_timeline
+    if tool_call_turns_total > 0:
+        agent_result.warnings.append(
+            "METRIC: tool_call_empty_text_turns="
+            f"{tool_call_empty_text_turns}/{tool_call_turns_total}, "
+            f"responses_tool_call_empty_text_turns={responses_tool_call_empty_text_turns}"
+        )
+    if tool_arg_coercions or tool_arg_validation_rejections:
+        agent_result.warnings.append(
+            "METRIC: tool_arg_coercions="
+            f"{tool_arg_coercions} across {tool_arg_coercion_calls} calls, "
+            f"tool_arg_validation_rejections={tool_arg_validation_rejections}"
+        )
+    logger.info(
+        "Agent loop metrics: tool_call_turns=%d empty_text_tool_call_turns=%d responses_empty_text_tool_call_turns=%d "
+        "tool_arg_coercions=%d tool_arg_validation_rejections=%d",
+        tool_call_turns_total,
+        tool_call_empty_text_turns,
+        responses_tool_call_empty_text_turns,
+        tool_arg_coercions,
+        tool_arg_validation_rejections,
+    )
     return final_content, final_finish_reason
 
 
@@ -661,7 +1765,13 @@ async def _acall_with_tools(
     python_tools: list[Any],
     *,
     max_turns: int = DEFAULT_MAX_TURNS,
+    max_tool_calls: int | None = DEFAULT_MAX_TOOL_CALLS,
+    require_tool_reasoning: bool = DEFAULT_REQUIRE_TOOL_REASONING,
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
+    enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    tool_contracts: dict[str, dict[str, Any]] | None = None,
+    initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     timeout: int = 60,
     **kwargs: Any,
 ) -> LLMCallResult:
@@ -675,6 +1785,8 @@ async def _acall_with_tools(
         messages: Initial messages (system + user).
         python_tools: List of typed Python callables (sync or async).
         max_turns: Maximum loop iterations.
+        max_tool_calls: Maximum tool calls before final forced answer. None disables.
+        require_tool_reasoning: If True, reject tool calls missing tool_reasoning.
         tool_result_max_length: Max chars per tool result.
         timeout: Per-turn LLM call timeout.
         **kwargs: Passed through to acall_llm.
@@ -692,11 +1804,27 @@ async def _acall_with_tools(
     async def _direct_executor(
         tool_calls: list[dict[str, Any]], max_len: int,
     ) -> tuple[list[MCPToolCallRecord], list[dict[str, Any]]]:
-        return await execute_direct_tool_calls(tool_calls, tool_map, max_len)
+        return await execute_direct_tool_calls(
+            tool_calls,
+            tool_map,
+            max_len,
+            require_tool_reasoning=require_tool_reasoning,
+        )
 
     final_content, final_finish_reason = await _agent_loop(
         model, messages, openai_tools,
-        agent_result, _direct_executor, max_turns, tool_result_max_length, timeout, kwargs,
+        agent_result,
+        _direct_executor,
+        max_turns,
+        max_tool_calls,
+        require_tool_reasoning,
+        tool_result_max_length,
+        max_message_chars,
+        enforce_tool_contracts,
+        tool_contracts,
+        initial_artifacts,
+        timeout,
+        kwargs,
     )
 
     usage = {

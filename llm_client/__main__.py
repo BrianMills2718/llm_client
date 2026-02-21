@@ -18,7 +18,11 @@ Usage:
     python -m llm_client experiments                   # recent experiment runs
     python -m llm_client experiments --dataset MuSiQue  # filter by dataset
     python -m llm_client experiments --compare RUN1 RUN2  # side-by-side
+    python -m llm_client experiments --compare-diff RUN1 RUN2  # git diff between run commits
     python -m llm_client experiments --detail RUN_ID    # per-item breakdown
+    python -m llm_client experiments --detail RUN_ID --det-checks default
+    python -m llm_client experiments --detail RUN_ID --review-rubric extraction_quality
+    python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg_llm_em_gte":80}}'
     python -m llm_client experiments --format json      # machine-readable
 
     python -m llm_client backfill                      # import JSONL → SQLite
@@ -107,7 +111,7 @@ def cmd_cost(args: argparse.Namespace) -> None:
     query = f"""
         SELECT {group_sql},
                COUNT(*) as calls,
-               COALESCE(SUM(cost), 0) as total_cost,
+               COALESCE(SUM(COALESCE(marginal_cost, cost)), 0) as total_cost,
                COALESCE(SUM(total_tokens), 0) as total_tokens,
                ROUND(AVG(latency_s), 2) as avg_latency,
                SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors
@@ -251,7 +255,7 @@ def cmd_traces(args: argparse.Namespace) -> None:
     query = """
         SELECT trace_id,
                COUNT(*) as calls,
-               COALESCE(SUM(cost), 0) as total_cost,
+               COALESCE(SUM(COALESCE(marginal_cost, cost)), 0) as total_cost,
                COALESCE(SUM(total_tokens), 0) as total_tokens,
                MIN(timestamp) as first_ts,
                MAX(timestamp) as last_ts
@@ -456,6 +460,10 @@ def cmd_scores(args: argparse.Namespace) -> None:
 def cmd_experiments(args: argparse.Namespace) -> None:
     from llm_client import io_log
 
+    if args.compare_diff:
+        _cmd_experiments_compare_diff(args)
+        return
+
     if args.compare:
         _cmd_experiments_compare(args)
         return
@@ -530,6 +538,7 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
 
     runs = result["runs"]
     deltas = result["deltas_from_first"]
+    item_deltas = result.get("item_deltas_from_first", [])
 
     # Header
     print("\nExperiment Comparison:")
@@ -541,31 +550,178 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
         print(f"  [{r['run_id'][:12]}] {r['dataset']} / {r['model']}")
         print(f"    {r['n_completed']}/{r['n_items']} items  ${r['total_cost']:.4f}  {label}")
         print(f"    {metrics_str}")
+        if r.get("cpu_time_s") is not None:
+            print(
+                f"    CPU: {r['cpu_time_s']:.2f}s"
+                f" (user={r.get('cpu_user_s') or 0:.2f}s sys={r.get('cpu_system_s') or 0:.2f}s)"
+            )
         if i > 0 and deltas[i - 1]:
             delta_str = "  ".join(
                 f"{k}={v:+.2f}" for k, v in deltas[i - 1].items()
             )
             print(f"    Deltas: {delta_str}")
+        if i > 0 and i - 1 < len(item_deltas):
+            item_delta = item_deltas[i - 1]
+            improved = item_delta.get("improved", {})
+            regressed = item_delta.get("regressed", {})
+            em_up = len(improved.get("em", []))
+            em_down = len(regressed.get("em", []))
+            llm_up = len(improved.get("llm_em", []))
+            llm_down = len(regressed.get("llm_em", []))
+            f1_up = len(improved.get("f1", []))
+            f1_down = len(regressed.get("f1", []))
+            shared = item_delta.get("shared_items", 0)
+            unchanged = item_delta.get("unchanged_items", 0)
+            print(
+                "    Item deltas:"
+                f" shared={shared} unchanged={unchanged}"
+                f" | EM +{em_up}/-{em_down}"
+                f" | LLM_EM +{llm_up}/-{llm_down}"
+                f" | F1 +{f1_up}/-{f1_down}"
+            )
+            if em_up or em_down or llm_up or llm_down:
+                em_up_ids = ", ".join(improved.get("em", [])[:8]) or "-"
+                em_down_ids = ", ".join(regressed.get("em", [])[:8]) or "-"
+                llm_up_ids = ", ".join(improved.get("llm_em", [])[:8]) or "-"
+                llm_down_ids = ", ".join(regressed.get("llm_em", [])[:8]) or "-"
+                print(f"      EM up: {em_up_ids}")
+                print(f"      EM down: {em_down_ids}")
+                print(f"      LLM_EM up: {llm_up_ids}")
+                print(f"      LLM_EM down: {llm_down_ids}")
         print()
+
+
+def _cmd_experiments_compare_diff(args: argparse.Namespace) -> None:
+    from llm_client import io_log
+    from llm_client.git_utils import classify_diff_files, get_diff_files
+
+    base_run_id, cand_run_id = args.compare_diff
+    base_run = io_log.get_run(base_run_id)
+    cand_run = io_log.get_run(cand_run_id)
+    if base_run is None:
+        print(f"Error: Run not found: {base_run_id}", file=sys.stderr)
+        sys.exit(1)
+    if cand_run is None:
+        print(f"Error: Run not found: {cand_run_id}", file=sys.stderr)
+        sys.exit(1)
+
+    base_commit = base_run.get("git_commit")
+    cand_commit = cand_run.get("git_commit")
+    if not base_commit or not cand_commit:
+        print(
+            "Error: compare-diff requires both runs to have git_commit metadata.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    files = get_diff_files(base_commit, cand_commit)
+    categories = sorted(classify_diff_files(files))
+
+    payload = {
+        "base_run_id": base_run_id,
+        "candidate_run_id": cand_run_id,
+        "base_commit": base_commit,
+        "candidate_commit": cand_commit,
+        "changed_file_count": len(files),
+        "categories": categories,
+        "changed_files": files,
+    }
+
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+        return
+
+    print("\nExperiment Git Diff:")
+    print("─" * 70)
+    print(f"  Base run:      {base_run_id[:12]} ({base_run.get('dataset')} / {base_run.get('model')})")
+    print(f"  Candidate run: {cand_run_id[:12]} ({cand_run.get('dataset')} / {cand_run.get('model')})")
+    print(f"  Commits:       {base_commit} -> {cand_commit}")
+    print(f"  Files changed: {len(files)}")
+    print(f"  Categories:    {', '.join(categories) if categories else '-'}")
+    if files:
+        print("  Changed files:")
+        for path in files[:200]:
+            print(f"    - {path}")
+        if len(files) > 200:
+            print(f"    ... ({len(files) - 200} more)")
 
 
 def _cmd_experiments_detail(args: argparse.Namespace) -> None:
     from llm_client import io_log
+    from llm_client.experiment_eval import (
+        build_gate_signals,
+        evaluate_gate_policy,
+        load_gate_policy,
+        review_items_with_rubric,
+        run_deterministic_checks_for_items,
+        triage_items,
+    )
 
     run_id = args.detail
     items = io_log.get_run_items(run_id)
-
-    if args.format == "json":
-        print(json.dumps(items, indent=2))
-        return
 
     if not items:
         print(f"No items found for run {run_id}")
         return
 
-    # Get run info
-    runs = io_log.get_runs(limit=1000)
-    run_info = next((r for r in runs if r["run_id"] == run_id), None)
+    run_info = io_log.get_run(run_id)
+    triage_report = triage_items(items)
+
+    deterministic_report = None
+    if args.det_checks and args.det_checks.strip().lower() not in {"none", "off", "0", "false"}:
+        deterministic_report = run_deterministic_checks_for_items(items, checks=args.det_checks)
+
+    review_report = None
+    if args.review_rubric:
+        review_report = review_items_with_rubric(
+            items,
+            rubric=args.review_rubric,
+            judge_model=args.review_model or None,
+            task_prefix=f"experiments.detail.{run_id}",
+            max_items=args.review_max_items if args.review_max_items and args.review_max_items > 0 else None,
+        )
+
+    gate_policy = None
+    gate_report = None
+    if args.gate_policy:
+        gate_policy = load_gate_policy(args.gate_policy)
+        signals = build_gate_signals(
+            run_info=run_info,
+            items=items,
+            deterministic_report=deterministic_report,
+            review_report=review_report,
+        )
+        gate_report = evaluate_gate_policy(policy=gate_policy, signals=signals)
+
+    if args.format == "json":
+        include_bundle = bool(
+            args.include_triage
+            or deterministic_report is not None
+            or review_report is not None
+            or gate_report is not None
+        )
+        if include_bundle:
+            payload = {
+                "run_id": run_id,
+                "run": run_info,
+                "items": items,
+                "triage": triage_report,
+            }
+            if deterministic_report is not None:
+                payload["deterministic_checks"] = deterministic_report
+            if review_report is not None:
+                payload["review"] = review_report
+            if gate_policy is not None:
+                payload["gate_policy"] = gate_policy
+            if gate_report is not None:
+                payload["gate_result"] = gate_report
+            print(json.dumps(payload, indent=2))
+        else:
+            print(json.dumps(items, indent=2))
+        if gate_report is not None and not gate_report.get("passed", False) and args.gate_fail_exit_code:
+            sys.exit(2)
+        return
+
     if run_info:
         print(f"\nRun: {run_id}")
         print(f"  Dataset: {run_info['dataset']}  Model: {run_info['model']}  Status: {run_info['status']}")
@@ -600,6 +756,74 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
     print("─" * (sum(col_widths) + 2 * (len(col_widths) - 1)))
     for row in display_rows:
         print(fmt.format(*row))
+
+    cat_counts = triage_report.get("category_counts") or {}
+    if cat_counts:
+        print("\nTriage:")
+        print("  " + "  ".join(f"{k}={v}" for k, v in cat_counts.items()))
+        flagged = [
+            it for it in (triage_report.get("items") or [])
+            if "clean" not in set(it.get("categories") or [])
+        ]
+        if flagged:
+            print("  Flagged items:")
+            for item in flagged[:12]:
+                cats = ",".join(item.get("categories") or [])
+                print(f"    {item.get('item_id')}: {cats}")
+
+    if deterministic_report is not None:
+        print("\nDeterministic Checks:")
+        print(
+            "  "
+            f"checks={','.join(deterministic_report.get('checks') or [])} "
+            f"pass_rate={deterministic_report.get('pass_rate')} "
+            f"failed_items={deterministic_report.get('n_failed_items')}/{deterministic_report.get('n_items')}"
+        )
+        failed = [it for it in deterministic_report.get("items", []) if it.get("failed_checks", 0) > 0]
+        for item in failed[:12]:
+            reasons = [
+                r.get("reason")
+                for r in item.get("checks", [])
+                if not r.get("passed") and r.get("reason")
+            ]
+            print(f"    {item.get('item_id')}: {' | '.join(reasons[:3])}")
+
+    if review_report is not None:
+        print("\nReview:")
+        print(
+            "  "
+            f"rubric={review_report.get('rubric')} "
+            f"judge={review_report.get('judge_model') or '-'} "
+            f"scored={review_report.get('n_scored')}/{review_report.get('n_items_considered')} "
+            f"avg={review_report.get('avg_overall_score')} "
+            f"failed={review_report.get('n_failed')}"
+        )
+        low_scores = [
+            it for it in review_report.get("items", [])
+            if isinstance(it.get("overall_score"), (int, float))
+        ]
+        low_scores.sort(key=lambda x: float(x.get("overall_score")))
+        for item in low_scores[:10]:
+            print(f"    {item.get('item_id')}: score={item.get('overall_score')}")
+        review_errors = [it for it in review_report.get("items", []) if it.get("error")]
+        for item in review_errors[:10]:
+            print(f"    {item.get('item_id')}: review_error={item.get('error')}")
+
+    if gate_report is not None:
+        verdict = "PASS" if gate_report.get("passed") else "FAIL"
+        print(f"\nGate: {verdict}")
+        for rule in gate_report.get("triggered_fail_if", []):
+            print(
+                "  triggered fail_if:"
+                f" {rule.get('rule')} (actual={rule.get('actual')} {rule.get('operator')} {rule.get('threshold')})"
+            )
+        for rule in gate_report.get("unsatisfied_pass_if", []):
+            print(
+                "  unsatisfied pass_if:"
+                f" {rule.get('rule')} (actual={rule.get('actual')} {rule.get('operator')} {rule.get('threshold')})"
+            )
+        if not gate_report.get("passed", False) and args.gate_fail_exit_code:
+            sys.exit(2)
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +926,24 @@ def main() -> None:
     exp_p.add_argument("--since", help="Only show runs since this ISO date")
     exp_p.add_argument("--limit", type=int, default=50, help="Max runs to show")
     exp_p.add_argument("--compare", nargs="+", metavar="RUN_ID", help="Compare 2+ run IDs side-by-side")
+    exp_p.add_argument("--compare-diff", nargs=2, metavar=("BASE_RUN", "CAND_RUN"),
+                       help="Show git diff (changed files/categories) between two run commits")
     exp_p.add_argument("--detail", metavar="RUN_ID", help="Show per-item detail for a run")
+    exp_p.add_argument("--include-triage", action="store_true",
+                       help="When using --detail --format json, include triage/review bundle payload")
+    exp_p.add_argument("--det-checks", default="none",
+                       help="Deterministic checks for --detail (none|default|comma-separated names)")
+    exp_p.add_argument("--review-rubric",
+                       help="Rubric name/path to run LLM review over item outputs for --detail")
+    exp_p.add_argument("--review-model",
+                       help="Judge model override used with --review-rubric")
+    exp_p.add_argument("--review-max-items", type=int, default=0,
+                       help="Max items to review with --review-rubric (0=all)")
+    exp_p.add_argument("--gate-policy",
+                       help="Gate policy JSON string/path for --detail "
+                            "(supports pass_if/fail_if with _gt/_gte/_lt/_lte/_eq/_neq)")
+    exp_p.add_argument("--gate-fail-exit-code", action="store_true",
+                       help="Exit with code 2 when --gate-policy evaluates to FAIL")
     exp_p.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
     # backfill

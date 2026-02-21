@@ -1,7 +1,9 @@
 """Tests for experiment logging: start_run, log_item, finish_run, queries."""
 
 import json
+import os
 import sqlite3
+import time
 
 import pytest
 
@@ -16,12 +18,23 @@ def _isolate_io_log(tmp_path):
     old_project = io_log._project
     old_db_path = io_log._db_path
     old_db_conn = io_log._db_conn
+    old_run_timers = dict(io_log._run_timers)
+    active_token = io_log._active_experiment_run_id.set(None)
+    feature_profile_token = io_log._active_feature_profile.set(None)
+    old_enforcement_mode = os.environ.get("LLM_CLIENT_EXPERIMENT_ENFORCEMENT")
+    old_task_patterns = os.environ.get("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS")
+    old_feature_profile = os.environ.get("LLM_CLIENT_FEATURE_PROFILE")
+    old_feature_enforcement_mode = os.environ.get("LLM_CLIENT_FEATURE_PROFILE_ENFORCEMENT")
+    old_feature_task_patterns = os.environ.get("LLM_CLIENT_FEATURE_PROFILE_TASK_PATTERNS")
+    old_agent_spec_enforcement_mode = os.environ.get("LLM_CLIENT_AGENT_SPEC_ENFORCEMENT")
+    old_agent_spec_task_patterns = os.environ.get("LLM_CLIENT_AGENT_SPEC_TASK_PATTERNS")
 
     io_log._enabled = True
     io_log._data_root = tmp_path
     io_log._project = "test_project"
     io_log._db_path = tmp_path / "test.db"
     io_log._db_conn = None
+    io_log._run_timers.clear()
 
     yield tmp_path
 
@@ -32,6 +45,39 @@ def _isolate_io_log(tmp_path):
     if io_log._db_conn is not None:
         io_log._db_conn.close()
     io_log._db_conn = old_db_conn
+    io_log._run_timers.clear()
+    io_log._run_timers.update(old_run_timers)
+    io_log._active_experiment_run_id.reset(active_token)
+    io_log._active_feature_profile.reset(feature_profile_token)
+
+    if old_enforcement_mode is None:
+        os.environ.pop("LLM_CLIENT_EXPERIMENT_ENFORCEMENT", None)
+    else:
+        os.environ["LLM_CLIENT_EXPERIMENT_ENFORCEMENT"] = old_enforcement_mode
+    if old_task_patterns is None:
+        os.environ.pop("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS", None)
+    else:
+        os.environ["LLM_CLIENT_EXPERIMENT_TASK_PATTERNS"] = old_task_patterns
+    if old_feature_profile is None:
+        os.environ.pop("LLM_CLIENT_FEATURE_PROFILE", None)
+    else:
+        os.environ["LLM_CLIENT_FEATURE_PROFILE"] = old_feature_profile
+    if old_feature_enforcement_mode is None:
+        os.environ.pop("LLM_CLIENT_FEATURE_PROFILE_ENFORCEMENT", None)
+    else:
+        os.environ["LLM_CLIENT_FEATURE_PROFILE_ENFORCEMENT"] = old_feature_enforcement_mode
+    if old_feature_task_patterns is None:
+        os.environ.pop("LLM_CLIENT_FEATURE_PROFILE_TASK_PATTERNS", None)
+    else:
+        os.environ["LLM_CLIENT_FEATURE_PROFILE_TASK_PATTERNS"] = old_feature_task_patterns
+    if old_agent_spec_enforcement_mode is None:
+        os.environ.pop("LLM_CLIENT_AGENT_SPEC_ENFORCEMENT", None)
+    else:
+        os.environ["LLM_CLIENT_AGENT_SPEC_ENFORCEMENT"] = old_agent_spec_enforcement_mode
+    if old_agent_spec_task_patterns is None:
+        os.environ.pop("LLM_CLIENT_AGENT_SPEC_TASK_PATTERNS", None)
+    else:
+        os.environ["LLM_CLIENT_AGENT_SPEC_TASK_PATTERNS"] = old_agent_spec_task_patterns
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +154,42 @@ class TestStartRun:
         assert row[0] == "abc123"
         db.close()
 
+    def test_provenance_explicit(self, tmp_path):
+        io_log.start_run(
+            dataset="X",
+            model="Y",
+            run_id="prov_test",
+            git_commit="abc123",
+            provenance={"prompt_template_sha256": "deadbeef"},
+        )
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT provenance FROM experiment_runs WHERE run_id = 'prov_test'"
+        ).fetchone()
+        assert row is not None
+        prov = json.loads(row[0]) if row[0] else {}
+        assert prov["prompt_template_sha256"] == "deadbeef"
+        assert prov["git_commit"] == "abc123"
+        assert "git_dirty" in prov
+        db.close()
+
+    def test_feature_profile_in_provenance(self, tmp_path):
+        io_log.start_run(
+            dataset="X",
+            model="Y",
+            run_id="feature_profile_test",
+            feature_profile={"name": "benchmark_strict", "features": {"experiment_context": True}},
+        )
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT provenance FROM experiment_runs WHERE run_id = 'feature_profile_test'"
+        ).fetchone()
+        assert row is not None
+        prov = json.loads(row[0]) if row[0] else {}
+        assert prov["feature_profile"]["name"] == "benchmark_strict"
+        assert prov["feature_profile"]["features"]["experiment_context"] is True
+        db.close()
+
 
 # ---------------------------------------------------------------------------
 # log_item
@@ -179,6 +261,22 @@ class TestLogItem:
         assert extra["tool_calls"] == ["entity_vdb_search", "relationship_onehop"]
         db.close()
 
+    def test_trace_id_persisted(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y")
+        io_log.log_item(
+            run_id=rid,
+            item_id="q1",
+            metrics={"em": 1},
+            trace_id="trace.example.q1",
+        )
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT trace_id FROM experiment_items WHERE run_id = ? AND item_id = 'q1'",
+            (rid,),
+        ).fetchone()
+        assert row[0] == "trace.example.q1"
+        db.close()
+
 
 # ---------------------------------------------------------------------------
 # finish_run
@@ -247,6 +345,32 @@ class TestFinishRun:
         assert finish["run_id"] == rid
         assert finish["status"] == "completed"
 
+    def test_cpu_fields(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y")
+        io_log.log_item(run_id=rid, item_id="q1", metrics={"em": 1}, cost=0.01)
+        result = io_log.finish_run(
+            run_id=rid,
+            wall_time_s=10.0,
+            cpu_time_s=3.25,
+            cpu_user_s=2.5,
+            cpu_system_s=0.75,
+        )
+        assert result["cpu_time_s"] == 3.25
+        assert result["cpu_user_s"] == 2.5
+        assert result["cpu_system_s"] == 0.75
+
+    def test_auto_captures_timing_when_not_provided(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y")
+        io_log.log_item(run_id=rid, item_id="q1", metrics={"em": 1}, cost=0.01)
+        time.sleep(0.12)
+        result = io_log.finish_run(run_id=rid)
+        assert result["wall_time_s"] is not None
+        assert result["wall_time_s"] >= 0.1
+        assert result["cpu_time_s"] is not None
+        assert result["cpu_user_s"] is not None
+        assert result["cpu_system_s"] is not None
+        assert rid not in io_log._run_timers
+
 
 # ---------------------------------------------------------------------------
 # get_runs
@@ -291,6 +415,19 @@ class TestGetRuns:
         assert runs == []
 
 
+class TestGetRun:
+    def test_get_run_by_id(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y", run_id="run_123")
+        row = io_log.get_run(rid)
+        assert row is not None
+        assert row["run_id"] == "run_123"
+        assert row["dataset"] == "X"
+        assert row["model"] == "Y"
+
+    def test_get_run_missing(self, tmp_path):
+        assert io_log.get_run("missing") is None
+
+
 # ---------------------------------------------------------------------------
 # get_run_items
 # ---------------------------------------------------------------------------
@@ -307,6 +444,7 @@ class TestGetRunItems:
         assert items[0]["item_id"] == "q1"
         assert items[0]["metrics"]["em"] == 1
         assert items[1]["predicted"] == "B"
+        assert "trace_id" in items[0]
 
     def test_empty_run(self, tmp_path):
         rid = io_log.start_run(dataset="X", model="Y")
@@ -350,6 +488,24 @@ class TestCompareRuns:
         r1 = io_log.start_run(dataset="X", model="Y")
         with pytest.raises(ValueError, match="Run not found"):
             io_log.compare_runs([r1, "nonexistent"])
+
+    def test_compare_item_deltas(self, tmp_path):
+        r1 = io_log.start_run(dataset="X", model="m1", metrics_schema=["em", "llm_em"])
+        io_log.log_item(run_id=r1, item_id="q1", metrics={"em": 0, "llm_em": 0})
+        io_log.log_item(run_id=r1, item_id="q2", metrics={"em": 1, "llm_em": 1})
+        io_log.finish_run(run_id=r1)
+
+        r2 = io_log.start_run(dataset="X", model="m2", metrics_schema=["em", "llm_em"])
+        io_log.log_item(run_id=r2, item_id="q1", metrics={"em": 1, "llm_em": 1})
+        io_log.log_item(run_id=r2, item_id="q2", metrics={"em": 0, "llm_em": 0})
+        io_log.finish_run(run_id=r2)
+
+        result = io_log.compare_runs([r1, r2])
+        assert "item_deltas_from_first" in result
+        deltas = result["item_deltas_from_first"][0]
+        assert deltas["shared_items"] == 2
+        assert deltas["improved"]["em"] == ["q1"]
+        assert deltas["regressed"]["em"] == ["q2"]
 
 
 # ---------------------------------------------------------------------------
@@ -413,3 +569,153 @@ class TestFullLifecycle:
 
         items = io_log.get_run_items(rid)
         assert len(items) == 3
+
+
+class TestManagedExperimentContext:
+    def test_activate_feature_profile_sets_context_temporarily(self, tmp_path):
+        profile = {"name": "benchmark_strict", "features": {"experiment_context": True}}
+        assert io_log.get_active_feature_profile() is None
+        with io_log.activate_feature_profile(profile):
+            active = io_log.get_active_feature_profile()
+            assert active is not None
+            assert active["name"] == "benchmark_strict"
+            assert active["features"]["experiment_context"] is True
+        assert io_log.get_active_feature_profile() is None
+
+    def test_activate_experiment_run_sets_context_temporarily(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y", run_id="ctx_run")
+        assert io_log.get_active_experiment_run_id() is None
+        with io_log.activate_experiment_run(rid):
+            assert io_log.get_active_experiment_run_id() == rid
+        assert io_log.get_active_experiment_run_id() is None
+
+    def test_experiment_run_context_auto_finishes(self, tmp_path):
+        with io_log.experiment_run(dataset="X", model="Y", run_id="managed_run") as run:
+            assert io_log.get_active_experiment_run_id() == "managed_run"
+            run.log_item(item_id="q1", metrics={"em": 1}, cost=0.01)
+
+        row = io_log.get_run("managed_run")
+        assert row is not None
+        assert row["status"] == "completed"
+        assert row["n_items"] == 1
+        assert io_log.get_active_experiment_run_id() is None
+
+
+class TestExperimentEnforcement:
+    def test_enforcement_warns_without_active_context(self, tmp_path, caplog):
+        io_log.configure_experiment_enforcement(mode="warn", task_patterns=["benchmark"])
+        with caplog.at_level("WARNING"):
+            io_log.enforce_experiment_context("digimon.benchmark", caller="test")
+        assert "no active experiment context was found" in caplog.text
+
+    def test_enforcement_errors_without_active_context(self, tmp_path):
+        io_log.configure_experiment_enforcement(mode="error", task_patterns=["benchmark"])
+        with pytest.raises(ValueError, match="no active experiment context was found"):
+            io_log.enforce_experiment_context("digimon.benchmark", caller="test")
+
+    def test_enforcement_allows_when_active_context_present(self, tmp_path):
+        io_log.configure_experiment_enforcement(mode="error", task_patterns=["benchmark"])
+        rid = io_log.start_run(dataset="X", model="Y")
+        with io_log.activate_experiment_run(rid):
+            io_log.enforce_experiment_context("digimon.benchmark", caller="test")
+
+    def test_enforcement_ignores_non_matching_task(self, tmp_path, caplog):
+        io_log.configure_experiment_enforcement(mode="error", task_patterns=["benchmark"])
+        with caplog.at_level("WARNING"):
+            io_log.enforce_experiment_context("daily.chat", caller="test")
+        assert "no active experiment context" not in caplog.text
+
+
+class TestFeatureProfileEnforcement:
+    def test_profile_enforcement_warns_when_profile_missing(self, tmp_path, caplog):
+        io_log.configure_feature_profile(mode="warn", task_patterns=["benchmark"])
+        with caplog.at_level("WARNING"):
+            io_log.enforce_feature_profile("digimon.benchmark", caller="test")
+        assert "no explicit feature profile was declared" in caplog.text
+
+    def test_profile_enforcement_errors_when_profile_missing(self, tmp_path):
+        io_log.configure_feature_profile(mode="error", task_patterns=["benchmark"])
+        with pytest.raises(ValueError, match="no explicit feature profile was declared"):
+            io_log.enforce_feature_profile("digimon.benchmark", caller="test")
+
+    def test_profile_enforcement_allows_when_profile_present(self, tmp_path):
+        io_log.configure_feature_profile(mode="error", task_patterns=["benchmark"])
+        with io_log.activate_feature_profile("benchmark_strict"):
+            with io_log.activate_experiment_run(io_log.start_run(dataset="X", model="Y")):
+                io_log.enforce_feature_profile("digimon.benchmark", caller="test")
+
+    def test_profile_experiment_context_requirement(self, tmp_path):
+        io_log.configure_feature_profile(mode="error", task_patterns=["benchmark"])
+        with io_log.activate_feature_profile({"name": "strict", "features": {"experiment_context": True}}):
+            with pytest.raises(ValueError, match="requires experiment_context"):
+                io_log.enforce_feature_profile("digimon.benchmark", caller="test")
+
+
+def _write_agent_spec(path):
+    spec = {
+        "prompts": {"benchmark": {"path": "prompts/agent.yaml"}},
+        "tools": [{"name": "chunk_text_search"}, {"name": "submit_answer"}],
+        "artifact_contracts": {
+            "chunk_text_search": {"requires_all": ["QUERY_TEXT"], "produces": ["CHUNK_SET"]},
+            "submit_answer": {"is_control": True},
+        },
+        "answer_schema": {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        },
+        "error_taxonomy": {"canonical": ["tool_unavailable", "tool_runtime_error"]},
+        "observability": {"required_fields": ["trace_id", "tool_calls"]},
+        "evaluation": {"metrics": ["em", "f1", "llm_em"]},
+        "gates": {"fail_if": {"tool_unavailable_gt": 0}},
+    }
+    path.write_text(json.dumps(spec))
+    return path
+
+
+class TestAgentSpecEnforcement:
+    def test_agent_spec_enforcement_errors_when_missing(self, tmp_path):
+        io_log.configure_agent_spec_enforcement(mode="error", task_patterns=["benchmark"])
+        with pytest.raises(ValueError, match="no AgentSpec was declared"):
+            io_log.start_run(dataset="X", model="Y", task="digimon.benchmark")
+
+    def test_agent_spec_enforcement_allows_opt_out_with_reason(self, tmp_path):
+        io_log.configure_agent_spec_enforcement(mode="error", task_patterns=["benchmark"])
+        run_id = io_log.start_run(
+            dataset="X",
+            model="Y",
+            task="digimon.benchmark",
+            allow_missing_agent_spec=True,
+            missing_agent_spec_reason="legacy project migration in progress",
+        )
+        row = io_log.get_run(run_id)
+        assert row is not None
+        prov = row["provenance"]
+        assert prov["agent_spec_opt_out"]["enabled"] is True
+        assert "migration" in prov["agent_spec_opt_out"]["reason"]
+
+    def test_agent_spec_opt_out_requires_reason(self, tmp_path):
+        io_log.configure_agent_spec_enforcement(mode="error", task_patterns=["benchmark"])
+        with pytest.raises(ValueError, match="no missing_agent_spec_reason was provided"):
+            io_log.start_run(
+                dataset="X",
+                model="Y",
+                task="digimon.benchmark",
+                allow_missing_agent_spec=True,
+            )
+
+    def test_agent_spec_summary_stored_in_provenance(self, tmp_path):
+        io_log.configure_agent_spec_enforcement(mode="error", task_patterns=["benchmark"])
+        spec_path = _write_agent_spec(tmp_path / "agent_spec.json")
+        run_id = io_log.start_run(
+            dataset="X",
+            model="Y",
+            task="digimon.benchmark",
+            agent_spec=spec_path,
+        )
+        row = io_log.get_run(run_id)
+        assert row is not None
+        prov = row["provenance"]
+        assert prov["agent_spec"]["summary"]["source"].endswith("agent_spec.json")
+        assert prov["agent_spec"]["summary"]["tool_count"] == 2
+        assert prov["agent_spec"]["summary"]["contract_count"] == 2

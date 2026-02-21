@@ -20,6 +20,9 @@ from typing import Any, Callable
 
 from llm_client.client import LLMCallResult
 from llm_client.mcp_agent import (
+    BUDGET_EXEMPT_TOOL_NAMES,
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_REQUIRE_TOOL_REASONING,
     DEFAULT_MAX_TURNS,
     DEFAULT_TOOL_RESULT_MAX_LENGTH,
     MCPAgentResult,
@@ -106,6 +109,8 @@ async def _acall_with_tool_shim(
     python_tools: list[Callable[..., Any]],
     *,
     max_turns: int = DEFAULT_MAX_TURNS,
+    max_tool_calls: int | None = DEFAULT_MAX_TOOL_CALLS,
+    require_tool_reasoning: bool = DEFAULT_REQUIRE_TOOL_REASONING,
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
     timeout: int = 60,
     **kwargs: Any,
@@ -133,8 +138,40 @@ async def _acall_with_tool_shim(
     final_content = ""
     final_finish_reason = "stop"
     total_cost = 0.0
+    last_budget_remaining: int | None = None
+    force_final_reason: str | None = None
 
     for turn in range(max_turns):
+        if max_tool_calls is not None:
+            budgeted_used = sum(
+                1 for r in agent_result.tool_calls
+                if r.tool not in BUDGET_EXEMPT_TOOL_NAMES
+            )
+            remaining_tool_calls = max_tool_calls - budgeted_used
+            if remaining_tool_calls <= 0:
+                force_final_reason = "max_tool_calls"
+                logger.warning(
+                    "Tool shim exhausted max_tool_calls=%d after %d turns (%d budgeted, %d total tool calls); forcing final answer",
+                    max_tool_calls,
+                    turn,
+                    budgeted_used,
+                    len(agent_result.tool_calls),
+                )
+                break
+            if remaining_tool_calls != last_budget_remaining:
+                budget_msg = {
+                    "role": "user",
+                    "content": (
+                        f"Retrieval-tool budget: {budgeted_used}/{max_tool_calls} used, "
+                        f"{remaining_tool_calls} remaining. "
+                        f"Budget-exempt tools: {', '.join(sorted(BUDGET_EXEMPT_TOOL_NAMES))}. "
+                        "If enough evidence is available, answer now."
+                    ),
+                }
+                messages.append(budget_msg)
+                agent_result.conversation_trace.append(budget_msg)
+                last_budget_remaining = remaining_tool_calls
+
         agent_result.turns = turn + 1
 
         # Call LLM — no tools=, use json_object response format
@@ -218,7 +255,10 @@ async def _acall_with_tool_shim(
             })
 
             records, _ = await execute_direct_tool_calls(
-                [synthetic_tc], tool_map, tool_result_max_length,
+                [synthetic_tc],
+                tool_map,
+                tool_result_max_length,
+                require_tool_reasoning=require_tool_reasoning,
             )
             agent_result.tool_calls.extend(records)
 
@@ -258,13 +298,23 @@ async def _acall_with_tool_shim(
             {"role": "assistant", "content": raw_content}
         )
     else:
-        # max_turns exhausted — one final call without tool prompt to get an answer
-        logger.warning(
-            "Tool shim exhausted max_turns=%d, forcing final answer", max_turns,
-        )
+        force_final_reason = "max_turns"
+
+    if force_final_reason is not None:
+        if force_final_reason == "max_tool_calls":
+            final_prompt = (
+                "Tool-call budget exhausted. Give your best final answer now as plain text."
+            )
+        else:
+            logger.warning(
+                "Tool shim exhausted max_turns=%d, forcing final answer", max_turns,
+            )
+            final_prompt = (
+                "You have used all available turns. Give your final answer now as plain text."
+            )
         messages.append({
             "role": "user",
-            "content": "You have used all available turns. Give your final answer now as plain text.",
+            "content": final_prompt,
         })
         final_result = await _inner_acall_llm(
             model, messages, timeout=timeout, **kwargs,
@@ -283,6 +333,15 @@ async def _acall_with_tool_shim(
         agent_result.turns += 1
 
     agent_result.metadata["total_cost"] = total_cost
+    agent_result.metadata["max_turns"] = max_turns
+    agent_result.metadata["max_tool_calls"] = max_tool_calls
+    agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
+    agent_result.metadata["budgeted_tool_calls_used"] = sum(
+        1 for r in agent_result.tool_calls
+        if r.tool not in BUDGET_EXEMPT_TOOL_NAMES
+    )
+    agent_result.metadata["budget_exempt_tools"] = sorted(BUDGET_EXEMPT_TOOL_NAMES)
+    agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
 
     usage = {
         "input_tokens": agent_result.total_input_tokens,

@@ -37,6 +37,19 @@ from llm_client.client import Hooks, LLMCallResult
 logger = logging.getLogger(__name__)
 
 
+def _agent_billing_mode() -> str:
+    """Resolve billing mode for agent SDK models.
+
+    Modes:
+    - subscription (default): no API USD attribution for claude-code/codex
+    - api: attribute per-call USD when available/estimable
+    """
+    mode = os.environ.get("LLM_CLIENT_AGENT_BILLING_MODE", "subscription").strip().lower()
+    if mode in {"subscription", "api"}:
+        return mode
+    return "subscription"
+
+
 def _parse_agent_model(model: str) -> tuple[str, str | None]:
     """Parse an agent model string into (sdk_name, underlying_model).
 
@@ -220,11 +233,20 @@ def _result_from_agent(
     """
     content = "\n".join(last_message_text) if last_message_text else ""
     full_text = "\n".join(all_text) if all_text else ""
-    cost = (
-        result_msg.total_cost_usd
-        if result_msg and result_msg.total_cost_usd is not None
-        else 0.0
-    )
+    billing_mode = _agent_billing_mode()
+    if billing_mode == "api":
+        cost = (
+            result_msg.total_cost_usd
+            if result_msg and result_msg.total_cost_usd is not None
+            else 0.0
+        )
+        cost_source = "provider_reported" if result_msg and result_msg.total_cost_usd is not None else "unavailable"
+        effective_billing_mode = "api_metered"
+    else:
+        # Claude Code OAuth subscription plans are not metered per-call in local API logs.
+        cost = 0.0
+        cost_source = "subscription_included"
+        effective_billing_mode = "subscription_included"
     usage: dict[str, Any] = dict(result_msg.usage) if result_msg and result_msg.usage else {}
     is_error = result_msg.is_error if result_msg else True
 
@@ -244,6 +266,8 @@ def _result_from_agent(
         finish_reason="error" if is_error else "stop",
         raw_response=result_msg,
         full_text=full_text if full_text != content else None,
+        cost_source=cost_source,
+        billing_mode=effective_billing_mode,
     )
 
 
@@ -892,7 +916,16 @@ def _result_from_codex(
             "output_tokens": getattr(usage, "output_tokens", 0),
         }
 
-    cost = _estimate_codex_cost(model, usage) if usage else 0.0
+    billing_mode = _agent_billing_mode()
+    if billing_mode == "api":
+        cost = _estimate_codex_cost(model, usage) if usage else 0.0
+        cost_source = "estimated_from_usage"
+        effective_billing_mode = "api_metered"
+    else:
+        # Codex ChatGPT subscription/OAuth mode should not map usage tokens to API USD.
+        cost = 0.0
+        cost_source = "subscription_included"
+        effective_billing_mode = "subscription_included"
 
     return LLMCallResult(
         content=final_response,
@@ -901,6 +934,8 @@ def _result_from_codex(
         model=model,
         finish_reason="error" if is_error else "stop",
         raw_response=raw_turn,
+        cost_source=cost_source,
+        billing_mode=effective_billing_mode,
     )
 
 

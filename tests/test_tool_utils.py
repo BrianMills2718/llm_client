@@ -67,6 +67,11 @@ def failing_tool(x: str) -> str:
     raise RuntimeError("Intentional failure")
 
 
+def fetch_chunks(chunk_ids: list[str]) -> str:
+    """Return joined chunk ids."""
+    return "|".join(chunk_ids)
+
+
 # ---------------------------------------------------------------------------
 # callable_to_openai_tool
 # ---------------------------------------------------------------------------
@@ -81,7 +86,7 @@ class TestCallableToOpenaiTool:
         assert fn["description"] == "Add two numbers."
         assert fn["parameters"]["properties"]["a"] == {"type": "integer"}
         assert fn["parameters"]["properties"]["b"] == {"type": "integer"}
-        assert set(fn["parameters"]["required"]) == {"a", "b"}
+        assert set(fn["parameters"]["required"]) == {"a", "b", "tool_reasoning"}
 
     def test_async_with_default(self) -> None:
         schema = callable_to_openai_tool(async_search)
@@ -91,7 +96,7 @@ class TestCallableToOpenaiTool:
         props = fn["parameters"]["properties"]
         assert props["query"] == {"type": "string"}
         assert props["limit"] == {"type": "integer", "default": 10}
-        assert fn["parameters"]["required"] == ["query"]
+        assert fn["parameters"]["required"] == ["query", "tool_reasoning"]
 
     def test_optional_type(self) -> None:
         schema = callable_to_openai_tool(optional_param)
@@ -100,7 +105,7 @@ class TestCallableToOpenaiTool:
         # Optional[str] unwraps to string
         assert props["title"]["type"] == "string"
         assert props["title"]["default"] is None
-        assert fn["parameters"]["required"] == ["name"]
+        assert fn["parameters"]["required"] == ["name", "tool_reasoning"]
 
     def test_list_type(self) -> None:
         schema = callable_to_openai_tool(list_param)
@@ -111,6 +116,14 @@ class TestCallableToOpenaiTool:
     def test_no_docstring(self) -> None:
         schema = callable_to_openai_tool(no_doc)
         assert schema["function"]["description"] == ""
+
+    def test_description_override_attribute(self) -> None:
+        no_doc.__tool_description__ = "One-line override."
+        try:
+            schema = callable_to_openai_tool(no_doc)
+            assert schema["function"]["description"] == "One-line override."
+        finally:
+            delattr(no_doc, "__tool_description__")
 
     def test_missing_type_hint_raises(self) -> None:
         def bad_fn(x):  # type: ignore[no-untyped-def]
@@ -253,6 +266,47 @@ class TestExecuteDirectToolCalls:
         assert len(messages) == 2
         assert records[0].tool == "add"
         assert records[1].tool == "greet"
+
+    async def test_require_tool_reasoning_rejects_call(self) -> None:
+        tool_map = {"add": add}
+        tc = [_make_tc("c10", "add", {"a": 1, "b": 2})]
+        records, messages = await execute_direct_tool_calls(
+            tc,
+            tool_map,
+            50_000,
+            require_tool_reasoning=True,
+        )
+
+        assert records[0].result is None
+        assert records[0].error == "Missing required argument: tool_reasoning"
+        parsed = json.loads(messages[0]["content"])
+        assert "tool_reasoning" in parsed["error"]
+
+    async def test_alias_coercion_singular_to_plural(self) -> None:
+        tool_map = {"fetch_chunks": fetch_chunks}
+        tc = [_make_tc("c11", "fetch_chunks", {"chunk_id": "chunk_84"})]
+        records, messages = await execute_direct_tool_calls(tc, tool_map, 50_000)
+
+        assert records[0].error is None
+        assert records[0].arguments == {"chunk_ids": ["chunk_84"]}
+        assert records[0].result == "chunk_84"
+        assert len(records[0].arg_coercions) == 1
+        assert records[0].arg_coercions[0]["source_arg"] == "chunk_id"
+        assert records[0].arg_coercions[0]["target_arg"] == "chunk_ids"
+        assert records[0].arg_coercions[0]["rule"] == "singular_to_plural_wrap"
+
+    async def test_unknown_arg_rejected_with_validation_error(self) -> None:
+        tool_map = {"add": add}
+        tc = [_make_tc("c12", "add", {"a": 1, "b": 2, "vdb_reference_id": "x"})]
+        records, messages = await execute_direct_tool_calls(tc, tool_map, 50_000)
+
+        assert records[0].result is None
+        assert records[0].error is not None
+        assert "Validation error:" in records[0].error
+        assert "unsupported args: vdb_reference_id" in records[0].error
+        assert "allowed args: a, b" in records[0].error
+        payload = json.loads(messages[0]["content"])
+        assert "Validation error:" in payload["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +507,30 @@ class TestAcallWithTools:
             assert result.content == "forced"
             assert result.raw_response.turns == 3  # 2 loop + 1 forced
 
+    async def test_metadata_counts_arg_validation_rejections(self) -> None:
+        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 1, "b": 1, "vdb_reference_id": "x"}'},
+                }]),
+                _make_llm_result(content="done"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_tools
+            result = await _acall_with_tools(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                python_tools=[add],
+                task="test",
+                trace_id="test_metadata_counts_arg_validation_rejections",
+            )
+
+            agent = result.raw_response
+            assert isinstance(agent, MCPAgentResult)
+            assert agent.metadata["tool_arg_validation_rejections"] == 1
+            assert agent.metadata["tool_arg_coercions"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Routing through acall_llm
@@ -472,6 +550,7 @@ class TestPythonToolsRouting:
                 [{"role": "user", "content": "Q"}],
                 python_tools=[add],
                 max_turns=5,
+                max_tool_calls=9,
                 task="test",
                 trace_id="test_routes_to_tool_loop",
                 max_budget=0,
@@ -480,6 +559,7 @@ class TestPythonToolsRouting:
             mock_loop.assert_called_once()
             call_kw = mock_loop.call_args.kwargs
             assert call_kw["max_turns"] == 5
+            assert call_kw["max_tool_calls"] == 9
             # python_tools should be passed through
             assert len(call_kw["python_tools"]) == 1
 

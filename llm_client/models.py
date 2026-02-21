@@ -451,7 +451,7 @@ def _query_performance_sql(
             COALESCE(task, 'untagged') as task,
             model,
             COUNT(*) as call_count,
-            ROUND(COALESCE(SUM(cost), 0), 4) as total_cost,
+            ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 4) as total_cost,
             ROUND(COALESCE(AVG(latency_s), 0), 3) as avg_latency_s,
             ROUND(CAST(SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS REAL) / COUNT(*), 3) as error_rate,
             ROUND(COALESCE(AVG(total_tokens), 0)) as avg_tokens
@@ -529,7 +529,10 @@ def _query_performance_jsonl(
 
     result = []
     for (grp_task, grp_model), records in sorted(groups.items()):
-        total_cost = sum(r.get("cost") or 0 for r in records)
+        total_cost = sum(
+            r.get("marginal_cost") if r.get("marginal_cost") is not None else (r.get("cost") or 0)
+            for r in records
+        )
         latencies = [r["latency_s"] for r in records if r.get("latency_s") is not None]
         avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
         errors = sum(1 for r in records if r.get("error") is not None)

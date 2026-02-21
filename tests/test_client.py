@@ -1,10 +1,12 @@
 """Tests for llm_client. All mock litellm.completion (no real API calls)."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
+import llm_client.client as client_mod
 from llm_client import (
     AsyncCachePolicy,
     AsyncLLMStream,
@@ -41,6 +43,27 @@ from llm_client.errors import (
     LLMModelNotFoundError,
     LLMQuotaExhaustedError,
 )
+
+
+class TestRequiredTags:
+    def test_calls_experiment_enforcement_hook(self) -> None:
+        with (
+            patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
+            patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
+        ):
+            client_mod._require_tags("digimon.benchmark", "trace.required.tags", 0)
+        mock_feature_enforce.assert_called_once_with("digimon.benchmark", caller="llm_client.client")
+        mock_experiment_enforce.assert_called_once_with("digimon.benchmark", caller="llm_client.client")
+
+    def test_missing_tags_raise_before_enforcement(self) -> None:
+        with (
+            patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
+            patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
+        ):
+            with pytest.raises(ValueError, match="Missing required kwargs"):
+                client_mod._require_tags(task=None, trace_id="trace.required.tags", max_budget=0)
+        mock_feature_enforce.assert_not_called()
+        mock_experiment_enforce.assert_not_called()
 
 
 def _mock_response(
@@ -854,6 +877,66 @@ class TestGPT5TemperatureStripping:
         call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["temperature"] == 0.5
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_openrouter_gpt5_strips_sampling_controls(self, mock_completion: MagicMock, mock_cost: MagicMock) -> None:
+        """Provider-prefixed GPT-5 calls should also strip incompatible sampling args."""
+        mock_completion.return_value = _mock_response(content="ok")
+
+        call_llm(
+            "openrouter/openai/gpt-5",
+            [{"role": "user", "content": "Hi"}],
+            temperature=0.3,
+            top_p=0.8,
+            logprobs=True,
+            task="test",
+            trace_id="test_openrouter_gpt5_sampling_strip",
+            max_budget=0,
+        )
+        call_kwargs = mock_completion.call_args.kwargs
+        assert "temperature" not in call_kwargs
+        assert "top_p" not in call_kwargs
+        assert "logprobs" not in call_kwargs
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_openrouter_gpt5_coerce_and_warn_populates_result_warnings(
+        self,
+        mock_completion: MagicMock,
+        mock_cost: MagicMock,
+    ) -> None:
+        """Coercion should be visible in LLMCallResult.warnings by default."""
+        mock_completion.return_value = _mock_response(content="ok")
+
+        result = call_llm(
+            "openrouter/openai/gpt-5",
+            [{"role": "user", "content": "Hi"}],
+            temperature=0.25,
+            top_p=0.9,
+            unsupported_param_policy="coerce_and_warn",
+            task="test",
+            trace_id="test_openrouter_gpt5_coerce_warn",
+            max_budget=0,
+        )
+        call_kwargs = mock_completion.call_args.kwargs
+        assert "temperature" not in call_kwargs
+        assert "top_p" not in call_kwargs
+        assert any("COERCE_PARAMS" in w for w in result.warnings)
+        assert any("gpt5_sampling_compatibility" in w for w in result.warnings)
+
+    def test_openrouter_gpt5_strict_policy_raises(self) -> None:
+        """unsupported_param_policy=error should fail loud instead of coercing."""
+        with pytest.raises(LLMCapabilityError, match="Unsupported params for model"):
+            call_llm(
+                "openrouter/openai/gpt-5",
+                [{"role": "user", "content": "Hi"}],
+                temperature=0.25,
+                unsupported_param_policy="error",
+                task="test",
+                trace_id="test_openrouter_gpt5_strict_error",
+                max_budget=0,
+            )
+
 
 class TestConfigurableBackoff:
     """Tests for configurable base_delay and max_delay parameters."""
@@ -915,10 +998,12 @@ def _mock_responses_api_response(
     input_tokens: int = 10,
     output_tokens: int = 5,
     total_tokens: int = 15,
+    output: list | None = None,
 ) -> MagicMock:
     """Build a mock litellm responses() API response."""
     mock = MagicMock()
     mock.output_text = output_text
+    mock.output = output or []
     mock.status = status
     mock.incomplete_details = None
     mock.usage.input_tokens = input_tokens
@@ -1138,6 +1223,26 @@ class TestResponsesAPIRouting:
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")
+    def test_gpt5_strips_top_p_and_logprobs(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """GPT-5 requests should not forward unsupported sampling extras."""
+        mock_resp.return_value = _mock_responses_api_response()
+        call_llm(
+            "gpt-5-mini",
+            [{"role": "user", "content": "Hi"}],
+            top_p=0.7,
+            logprobs=True,
+            top_logprobs=3,
+            task="test",
+            trace_id="test_gpt5_strips_extra_sampling",
+            max_budget=0,
+        )
+        kwargs = mock_resp.call_args.kwargs
+        assert "top_p" not in kwargs
+        assert "logprobs" not in kwargs
+        assert "top_logprobs" not in kwargs
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
     def test_gpt5_extracts_usage(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """Usage should map input_tokens/output_tokens to prompt/completion."""
         mock_resp.return_value = _mock_responses_api_response(
@@ -1156,6 +1261,32 @@ class TestResponsesAPIRouting:
         mock_resp.return_value = resp
         result = call_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gpt5_raw_resp", max_budget=0)
         assert result.raw_response is resp
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt5_tool_call_output_without_text(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
+        """Responses API function_call output should map to OpenAI-style tool_calls."""
+        tool_item = SimpleNamespace(
+            type="function_call",
+            call_id="call_abc123",
+            name="get_weather",
+            arguments='{"location":"NYC"}',
+        )
+        mock_resp.return_value = _mock_responses_api_response(output_text="", output=[tool_item])
+        tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+        result = call_llm_with_tools(
+            "gpt-5-mini",
+            [{"role": "user", "content": "Weather?"}],
+            tools,
+            task="test",
+            trace_id="test_gpt5_tool_call_output_without_text",
+            max_budget=0,
+        )
+        assert result.finish_reason == "tool_calls"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["id"] == "call_abc123"
+        assert result.tool_calls[0]["function"]["name"] == "get_weather"
+        assert '"location":"NYC"' in result.tool_calls[0]["function"]["arguments"]
 
     @patch("llm_client.client.litellm.responses")
     def test_gpt5_empty_content_raises(self, mock_resp: MagicMock) -> None:
@@ -1255,6 +1386,30 @@ class TestAsyncResponsesAPIRouting:
         result = await acall_llm("gpt-5-mini", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_async_gpt5_retries", max_budget=0)
         assert result.content == "Hello from GPT-5!"
         assert mock_aresp.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt5_tool_call_output_without_text(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
+        """Async Responses API function_call output should map to tool_calls."""
+        tool_item = SimpleNamespace(
+            type="function_call",
+            call_id="call_async_1",
+            name="lookup",
+            arguments='{"entity":"Israel"}',
+        )
+        mock_aresp.return_value = _mock_responses_api_response(output_text="", output=[tool_item])
+        result = await acall_llm_with_tools(
+            "gpt-5-mini",
+            [{"role": "user", "content": "Lookup entity"}],
+            [{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+            task="test",
+            trace_id="test_async_gpt5_tool_call_output_without_text",
+            max_budget=0,
+        )
+        assert result.finish_reason == "tool_calls"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["function"]["name"] == "lookup"
 
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
@@ -1761,6 +1916,28 @@ class TestFallbackModels:
         )
         assert result.content == "Primary OK"
         assert result.model == "gpt-4"
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_duplicate_primary_fallback_is_deduplicated(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        """Duplicate primary in fallback list should not trigger self-fallback churn."""
+        mock_comp.return_value = _mock_response(content="Primary OK")
+        result = call_llm(
+            "gemini/gemini-2.5-flash", [{"role": "user", "content": "Hi"}],
+            fallback_models=["gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash"],
+            task="test",
+            trace_id="test_dedup_primary_fallback",
+            max_budget=0,
+        )
+        assert result.content == "Primary OK"
+        assert result.model == "gemini/gemini-2.5-flash"
         assert mock_comp.call_count == 1
 
     @patch("llm_client.client.time.sleep")

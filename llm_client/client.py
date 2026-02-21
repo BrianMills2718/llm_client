@@ -53,7 +53,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
 
 import litellm
@@ -75,6 +75,9 @@ T = TypeVar("T", bound=BaseModel)
 
 # Silence litellm's noisy default logging
 litellm.suppress_debug_info = True
+
+# Accounting constants (documented in agent_ecology3/docs/ACCOUNTING_CONSTANTS.md)
+FALLBACK_COST_FLOOR_USD_PER_TOKEN = 0.000001
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,18 @@ class LLMCallResult:
     """For agent SDKs: full conversation text (all assistant messages).
     ``content`` holds only the final assistant message.
     None for non-agent calls."""
+    cost_source: str = "unspecified"
+    """How cost was determined: provider_reported, computed, fallback_estimate, cache_hit, etc."""
+    billing_mode: str = "api_metered"
+    """Billing mode: api_metered, subscription_included, or unknown."""
+    marginal_cost: float | None = None
+    """Incremental cost attributed to this call; defaults to ``cost`` when omitted."""
+    cache_hit: bool = False
+    """Whether this result came from cache instead of a model call."""
+
+    def __post_init__(self) -> None:
+        if self.marginal_cost is None:
+            self.marginal_cost = 0.0 if self.cache_hit else float(self.cost)
 
 
 @dataclass
@@ -200,6 +215,16 @@ def _cache_key(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> str
     """Build a deterministic cache key from call parameters."""
     key_data = _json.dumps({"model": model, "messages": messages, **kwargs}, sort_keys=True)
     return hashlib.sha256(key_data.encode()).hexdigest()
+
+
+def _mark_cache_hit(result: LLMCallResult) -> LLMCallResult:
+    """Return a cache-hit view of a cached result without mutating cache state."""
+    return replace(
+        result,
+        cache_hit=True,
+        marginal_cost=0.0,
+        cost_source="cache_hit",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -537,12 +562,14 @@ class LLMStream:
             complete = litellm.stream_chunk_builder(self._raw_chunks)
             if complete:
                 usage = _extract_usage(complete)
-                cost = _compute_cost(complete)
+                cost, cost_source = _parse_cost_result(_compute_cost(complete))
                 finish_reason = complete.choices[0].finish_reason or "stop"
                 if complete.choices[0].message.tool_calls:
                     tool_calls = _extract_tool_calls(complete.choices[0].message)
+            else:
+                cost_source = "unavailable"
         except Exception:
-            pass
+            cost_source = "unavailable"
         self._result = LLMCallResult(
             content=content,
             usage=usage,
@@ -552,6 +579,7 @@ class LLMStream:
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
             warnings=self._warnings,
+            cost_source=cost_source,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -623,12 +651,14 @@ class AsyncLLMStream:
             complete = litellm.stream_chunk_builder(self._raw_chunks)
             if complete:
                 usage = _extract_usage(complete)
-                cost = _compute_cost(complete)
+                cost, cost_source = _parse_cost_result(_compute_cost(complete))
                 finish_reason = complete.choices[0].finish_reason or "stop"
                 if complete.choices[0].message.tool_calls:
                     tool_calls = _extract_tool_calls(complete.choices[0].message)
+            else:
+                cost_source = "unavailable"
         except Exception:
-            pass
+            cost_source = "unavailable"
         self._result = LLMCallResult(
             content=content,
             usage=usage,
@@ -638,6 +668,7 @@ class AsyncLLMStream:
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
             warnings=self._warnings,
+            cost_source=cost_source,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -711,21 +742,32 @@ def _extract_usage(response: Any) -> dict[str, Any]:
     return result
 
 
-def _compute_cost(response: Any) -> float:
-    """Compute cost via litellm.completion_cost, with fallback."""
+def _compute_cost(response: Any) -> tuple[float, str]:
+    """Compute cost via litellm.completion_cost, with explicit source tagging."""
     try:
         cost = float(litellm.completion_cost(completion_response=response))
-        return cost
+        return cost, "computed"
     except Exception:
         # Fallback: rough estimate based on total tokens
         total: int = response.usage.total_tokens
-        fallback = total * 0.000001  # $1 per million tokens as rough floor
+        fallback = total * FALLBACK_COST_FLOOR_USD_PER_TOKEN
         logger.warning(
             "completion_cost failed, using fallback: $%.6f for %d tokens",
             fallback,
             total,
         )
-        return fallback
+        return fallback, "fallback_estimate"
+
+
+def _parse_cost_result(value: float | tuple[float, str], default_source: str = "computed") -> tuple[float, str]:
+    """Normalize cost helper return values.
+
+    Supports both new tuple return and legacy float return to keep monkeypatch
+    compatibility in tests and downstream callers.
+    """
+    if isinstance(value, tuple) and len(value) == 2:
+        return float(value[0]), str(value[1])
+    return float(value), default_source
 
 
 def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
@@ -751,6 +793,24 @@ def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
 
 
 _RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
+_GPT5_ALWAYS_STRIP_SAMPLING = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
+_GPT5_REASONING_GATED_SAMPLING = {
+    "gpt-5.1",
+    "gpt-5.2",
+    "gpt-5.1-chat-latest",
+    "gpt-5.2-chat-latest",
+}
+_GPT5_SAMPLING_PARAMS = ("temperature", "top_p", "logprobs", "top_logprobs")
+_UNSUPPORTED_PARAM_POLICY_ENV = "LLM_CLIENT_UNSUPPORTED_PARAM_POLICY"
+_UNSUPPORTED_PARAM_POLICIES = frozenset({"coerce_and_warn", "coerce_silent", "error"})
+_UNSUPPORTED_PARAM_POLICY_ALIASES = {
+    "warn": "coerce_and_warn",
+    "coerce": "coerce_and_warn",
+    "silent": "coerce_silent",
+    "strict": "error",
+    "raise": "error",
+    "error_only": "error",
+}
 
 def _is_responses_api_model(model: str) -> bool:
     """Check if model requires litellm.responses() instead of completion().
@@ -767,6 +827,110 @@ def _is_responses_api_model(model: str) -> bool:
     if "/" in lower:
         return False
     return lower in _RESPONSES_API_MODELS
+
+
+def _base_model_name(model: str) -> str:
+    """Return the provider-agnostic lowercase model name."""
+    return model.lower().rsplit("/", 1)[-1]
+
+
+def _build_model_chain(model: str, fallback_models: list[str] | None) -> list[str]:
+    """Build primary+fallback model chain with stable de-duplication."""
+    chain: list[str] = []
+    seen: set[str] = set()
+    for candidate in [model] + (fallback_models or []):
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        chain.append(normalized)
+    return chain
+
+
+def _strip_incompatible_sampling_params(model: str, call_kwargs: dict[str, Any]) -> list[str]:
+    """Drop sampling params that are unsupported for GPT-5 family variants.
+
+    GPT-5 legacy models reject sampling controls entirely in many reasoning
+    configurations. Keeping this normalization at the client layer avoids
+    provider-specific 400s and silent retries when callers pass generic kwargs.
+    """
+    base = _base_model_name(model)
+    reasoning_effort = str(call_kwargs.get("reasoning_effort", "")).strip().lower()
+
+    should_strip = False
+    if base in _GPT5_ALWAYS_STRIP_SAMPLING:
+        should_strip = True
+    elif base in _GPT5_REASONING_GATED_SAMPLING and reasoning_effort and reasoning_effort != "none":
+        should_strip = True
+
+    if not should_strip:
+        return []
+
+    removed: list[str] = []
+    for key in _GPT5_SAMPLING_PARAMS:
+        if key in call_kwargs:
+            call_kwargs.pop(key, None)
+            removed.append(key)
+    return removed
+
+
+def _resolve_unsupported_param_policy(explicit_policy: Any) -> str:
+    raw = explicit_policy
+    if raw is None:
+        raw = os.environ.get(_UNSUPPORTED_PARAM_POLICY_ENV, "coerce_and_warn")
+    policy = str(raw).strip().lower()
+    policy = _UNSUPPORTED_PARAM_POLICY_ALIASES.get(policy, policy)
+    if policy not in _UNSUPPORTED_PARAM_POLICIES:
+        allowed = ", ".join(sorted(_UNSUPPORTED_PARAM_POLICIES))
+        raise ValueError(
+            f"Invalid unsupported_param_policy={raw!r}. "
+            f"Allowed: {allowed} (or aliases: {', '.join(sorted(_UNSUPPORTED_PARAM_POLICY_ALIASES))})"
+        )
+    return policy
+
+
+def _coerce_model_incompatible_params(
+    *,
+    model: str,
+    kwargs: dict[str, Any],
+    policy: str,
+    warning_sink: list[str] | None = None,
+) -> list[str]:
+    """Normalize unsupported params and emit loud diagnostics."""
+    removed: list[str] = []
+
+    # Bare GPT-5 models route via responses API and reject temperature.
+    if _is_responses_api_model(model) and "temperature" in kwargs:
+        kwargs.pop("temperature", None)
+        removed.append("temperature")
+
+    # GPT-5 family sampling incompatibilities across providers/completions.
+    removed.extend(_strip_incompatible_sampling_params(model, kwargs))
+
+    if not removed:
+        return []
+
+    removed_unique = sorted(set(removed))
+    detail = (
+        f"COERCE_PARAMS model={model} policy={policy} "
+        f"removed={','.join(removed_unique)} "
+        f"rule=gpt5_sampling_compatibility"
+    )
+    if policy == "error":
+        raise LLMCapabilityError(
+            f"Unsupported params for model {model}: {', '.join(removed_unique)}. "
+            "Use unsupported_param_policy='coerce_and_warn' to auto-coerce."
+        )
+    if policy == "coerce_and_warn":
+        logger.warning(detail)
+        if warning_sink is not None:
+            warning_sink.append(detail)
+    else:
+        logger.info(detail)
+    return removed_unique
 
 
 def _is_agent_model(model: str) -> bool:
@@ -791,6 +955,7 @@ _AGENT_ONLY_KWARGS: frozenset[str] = frozenset(
         "allowed_tools",
         "cwd",
         "max_turns",
+        "max_tool_calls",
         "permission_mode",
         "max_budget_usd",
         "sandbox_mode",
@@ -839,9 +1004,9 @@ def _validate_execution_contract(
                 "or mcp_servers/mcp_sessions."
             )
 
-    # max_turns is valid for non-agent models when using MCP/python_tools
+    # max_turns/max_tool_calls are valid for non-agent models when using MCP/python_tools
     has_tool_loop = any(k in kwargs for k in ("mcp_servers", "mcp_sessions", "python_tools"))
-    check_set = _AGENT_ONLY_KWARGS - {"max_turns"} if has_tool_loop else _AGENT_ONLY_KWARGS
+    check_set = _AGENT_ONLY_KWARGS - {"max_turns", "max_tool_calls"} if has_tool_loop else _AGENT_ONLY_KWARGS
     agent_only = sorted(k for k in kwargs if k in check_set)
     if agent_only:
         non_agent = [m for m in models if not _is_agent_model(m)]
@@ -868,11 +1033,7 @@ _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
         "(intel 42, $0.28/$0.42) and MiMo-V2-Flash (intel 41, $0.15 blended). "
         "Both are smarter AND cheaper.",
     ),
-    "gpt-4o": (
-        "gpt-5",
-        "GPT-4o ($2.50/$10) is strictly worse than GPT-5 ($1.25/$10) — "
-        "GPT-5 is cheaper and smarter. There is no reason to use GPT-4o.",
-    ),
+    # gpt-4o moved to _WARNED_MODELS (warn-only, never banned)
     "o1-mini": (
         "o3-mini",
         "o1-mini is deprecated. Use o3-mini for reasoning tasks.",
@@ -924,6 +1085,16 @@ _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
     ),
 }
 
+# Models that are outclassed but still usable — warn loudly, never ban.
+# Same format as _DEPRECATED_MODELS. Useful for benchmarking against baselines.
+_WARNED_MODELS: dict[str, tuple[str, str]] = {
+    "gpt-4o": (
+        "gpt-5",
+        "GPT-4o ($2.50/$10) is outclassed by GPT-5 ($1.25/$10) — "
+        "GPT-5 is cheaper and smarter. Consider switching.",
+    ),
+}
+
 # Models that match a deprecated pattern but should NOT be flagged
 _DEPRECATED_MODEL_EXCEPTIONS: set[str] = {
     "gpt-4o-mini",  # has its own entry — prevent double-match from gpt-4o
@@ -970,6 +1141,23 @@ def _check_model_deprecation(model: str) -> None:
             import warnings
             warnings.warn(warning_msg, DeprecationWarning, stacklevel=3)
             return
+    # Warned models: loud warning but never banned, even in strict mode
+    for pattern, (replacement, reason) in _WARNED_MODELS.items():
+        if pattern in lower:
+            if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
+                continue
+            warning_msg = (
+                f"\n{'=' * 72}\n"
+                f"WARNING: OUTCLASSED MODEL: {model}\n"
+                f"{'=' * 72}\n"
+                f"Reason: {reason}\n"
+                f"Use instead: {replacement}\n"
+                f"{'=' * 72}\n"
+            )
+            logger.warning(warning_msg)
+            import warnings
+            warnings.warn(warning_msg, UserWarning, stacklevel=3)
+            return
 
 
 def _require_tags(task: str | None, trace_id: str | None, max_budget: float | None) -> None:
@@ -988,6 +1176,10 @@ def _require_tags(task: str | None, trace_id: str | None, max_budget: float | No
             f"trace_id= (deterministic ID for this unit of work), and "
             f"max_budget= (cost limit in USD, 0 for unlimited)."
         )
+    _io_log.enforce_feature_profile(task, caller="llm_client.client")
+    # Optional org-level guardrail: benchmark/eval tasks should run inside an
+    # active experiment context so observability is complete and comparable.
+    _io_log.enforce_experiment_context(task, caller="llm_client.client")
 
 
 def _check_budget(trace_id: str, max_budget: float) -> None:
@@ -1111,6 +1303,7 @@ def _prepare_responses_kwargs(
     timeout: int,
     api_base: str | None,
     kwargs: dict[str, Any],
+    warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build kwargs for litellm.responses() / aresponses().
 
@@ -1120,6 +1313,13 @@ def _prepare_responses_kwargs(
     and return empty output while still billing you).
     """
     kwargs = dict(kwargs)  # Don't mutate caller's dict
+    policy = _resolve_unsupported_param_policy(kwargs.pop("unsupported_param_policy", None))
+    _coerce_model_incompatible_params(
+        model=model,
+        kwargs=kwargs,
+        policy=policy,
+        warning_sink=warning_sink,
+    )
 
     input_text = _convert_messages_to_input(messages)
 
@@ -1141,7 +1341,7 @@ def _prepare_responses_kwargs(
 
     # Strip parameters that break GPT-5 or don't apply to responses API
     for key in ("max_tokens", "max_output_tokens", "messages",
-                "reasoning_effort", "thinking", "temperature"):
+                "reasoning_effort", "thinking", "temperature", "unsupported_param_policy"):
         kwargs.pop(key, None)
 
     # Convert tools from ChatCompletions format to Responses API format.
@@ -1176,24 +1376,24 @@ def _extract_responses_usage(response: Any) -> dict[str, Any]:
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
-def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> float:
+def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> tuple[float, str]:
     """Compute cost for a responses() API call."""
     # Try litellm's built-in cost calculation
     try:
         cost = float(litellm.completion_cost(completion_response=response))
         if cost > 0:
-            return cost
+            return cost, "computed"
     except Exception:
         pass
 
     # Try the usage.cost field (responses API sometimes includes this)
     raw_usage = getattr(response, "usage", None)
     if raw_usage and hasattr(raw_usage, "cost") and raw_usage.cost:
-        return float(raw_usage.cost)
+        return float(raw_usage.cost), "provider_reported"
 
     # Fallback estimate
     total = usage["total_tokens"]
-    fallback = total * 0.000001
+    fallback = total * FALLBACK_COST_FLOOR_USD_PER_TOKEN
     if total > 0:
         logger.warning(
             "completion_cost failed for responses API, "
@@ -1201,7 +1401,7 @@ def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> float:
             fallback,
             total,
         )
-    return fallback
+    return fallback, "fallback_estimate"
 
 
 def _build_result_from_responses(
@@ -1210,18 +1410,71 @@ def _build_result_from_responses(
     warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Build LLMCallResult from a responses() API response."""
+    def _item_get(item: Any, key: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
+    def _extract_responses_tool_calls(resp: Any) -> list[dict[str, Any]]:
+        output_items = getattr(resp, "output", None) or []
+        tool_calls: list[dict[str, Any]] = []
+        for idx, item in enumerate(output_items):
+            item_type = _item_get(item, "type")
+            if item_type not in {"function_call", "tool_call", "function"}:
+                continue
+
+            fn_name = _item_get(item, "name")
+            fn_args = _item_get(item, "arguments")
+
+            # Some providers nest function payloads under "function".
+            if not fn_name:
+                fn_obj = _item_get(item, "function")
+                if fn_obj is not None:
+                    if isinstance(fn_obj, dict):
+                        fn_name = fn_obj.get("name")
+                        fn_args = fn_args if fn_args is not None else fn_obj.get("arguments")
+                    else:
+                        fn_name = getattr(fn_obj, "name", fn_name)
+                        fn_args = fn_args if fn_args is not None else getattr(fn_obj, "arguments", None)
+
+            if not fn_name:
+                continue
+
+            if fn_args is None:
+                args_raw = "{}"
+            elif isinstance(fn_args, str):
+                args_raw = fn_args
+            else:
+                try:
+                    args_raw = _json.dumps(fn_args)
+                except Exception:
+                    args_raw = str(fn_args)
+
+            call_id = _item_get(item, "call_id") or _item_get(item, "id") or f"call_{idx}"
+            tool_calls.append({
+                "id": str(call_id),
+                "type": "function",
+                "function": {
+                    "name": str(fn_name),
+                    "arguments": args_raw,
+                },
+            })
+
+        return tool_calls
+
     # Use litellm's output_text convenience property
     content = getattr(response, "output_text", None) or ""
+    tool_calls = _extract_responses_tool_calls(response)
 
     usage = _extract_responses_usage(response)
-    cost = _compute_responses_cost(response, usage)
+    cost, cost_source = _parse_cost_result(_compute_responses_cost(response, usage), default_source="computed")
 
     # Map responses API status to finish_reason
     status = getattr(response, "status", "completed")
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
         reason = str(getattr(details, "reason", "")) if details else ""
-        if "max_output_tokens" in reason:
+        if "max_output_tokens" in reason and not tool_calls:
             raise RuntimeError(
                 f"LLM response truncated ({len(content)} chars). "
                 "Responses API hit max_output_tokens limit."
@@ -1230,16 +1483,20 @@ def _build_result_from_responses(
     else:
         finish_reason = "stop"
 
-    # Empty content (retryable)
-    if not content.strip():
+    if tool_calls:
+        finish_reason = "tool_calls"
+
+    # Empty content is retryable only when no tool calls were emitted.
+    if not content.strip() and not tool_calls:
         raise ValueError("Empty content from LLM (responses API)")
 
     logger.debug(
-        "LLM call (responses API): model=%s tokens=%d cost=$%.6f status=%s",
+        "LLM call (responses API): model=%s tokens=%d cost=$%.6f status=%s tool_calls=%d",
         model,
         usage["total_tokens"],
         cost,
         status,
+        len(tool_calls),
     )
 
     return LLMCallResult(
@@ -1247,10 +1504,11 @@ def _build_result_from_responses(
         usage=usage,
         cost=cost,
         model=model,
-        tool_calls=[],
+        tool_calls=tool_calls,
         finish_reason=finish_reason,
         raw_response=response,
         warnings=warnings or [],
+        cost_source=cost_source,
     )
 
 
@@ -1305,8 +1563,11 @@ def _prepare_call_kwargs(
     reasoning_effort: str | None,
     api_base: str | None,
     kwargs: dict[str, Any],
+    warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build kwargs dict shared by call_llm and acall_llm."""
+    raw_kwargs = dict(kwargs)
+    policy = _resolve_unsupported_param_policy(raw_kwargs.pop("unsupported_param_policy", None))
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -1315,7 +1576,7 @@ def _prepare_call_kwargs(
         # all retries with jittered backoff. Passing it to litellm causes
         # double retry (litellm retries HTTP errors internally, then our
         # loop retries the same errors again).
-        **kwargs,
+        **raw_kwargs,
     }
 
     if api_base is not None:
@@ -1334,13 +1595,17 @@ def _prepare_call_kwargs(
     # Thinking model detection: set budget_tokens=0 to disable reasoning tokens.
     # For Gemini 2.5+, thinkingBudget=0 disables thinking. An empty
     # thinkingConfig {} means "use default" which enables thinking.
-    if _is_thinking_model(model) and "thinking" not in kwargs:
+    if _is_thinking_model(model) and "thinking" not in raw_kwargs:
         call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
 
-    # GPT-5 models don't support the temperature parameter
-    # (structured calls go through instructor + litellm.completion, not responses API)
-    if _is_responses_api_model(model):
-        call_kwargs.pop("temperature", None)
+    # Guard against GPT-5-family sampling param incompatibilities across
+    # providers (e.g., provider-prefixed GPT-5 models on completion path).
+    _coerce_model_incompatible_params(
+        model=model,
+        kwargs=call_kwargs,
+        policy=policy,
+        warning_sink=warning_sink,
+    )
 
     # Auto-set max_tokens to model's max if not specified, or clamp if too high.
     # Prevents "65536 but max is 65535" errors across different models.
@@ -1360,7 +1625,7 @@ def _build_result_from_response(
     finish_reason: str = response.choices[0].finish_reason or ""
     tool_calls = _extract_tool_calls(response.choices[0].message)
     usage = _extract_usage(response)
-    cost = _compute_cost(response)
+    cost, cost_source = _parse_cost_result(_compute_cost(response))
 
     # Raise on truncation (non-retryable) — retrying won't help, token limit is fixed
     if finish_reason == "length":
@@ -1392,6 +1657,7 @@ def _build_result_from_response(
         finish_reason=finish_reason,
         raw_response=response,
         warnings=warnings or [],
+        cost_source=cost_source,
     )
 
 
@@ -1460,7 +1726,7 @@ def call_llm(
                   For GPT-5 models, response_format is automatically
                   converted and max_tokens is stripped.
                   For agent models, agent-specific kwargs are extracted:
-                  allowed_tools, cwd, max_turns, permission_mode,
+                  allowed_tools, cwd, max_turns, max_tool_calls, permission_mode,
                   max_budget_usd.
 
     Returns:
@@ -1503,7 +1769,7 @@ def call_llm(
     if execution_mode != "text":
         _inner_named["execution_mode"] = execution_mode
 
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     _validate_execution_contract(
         models=models,
         execution_mode=execution_mode,
@@ -1574,6 +1840,7 @@ def call_llm(
                 timeout=timeout,
                 api_base=api_base,
                 kwargs=kwargs,
+                warning_sink=_warnings,
             )
         else:
             call_kwargs = _prepare_call_kwargs(
@@ -1583,13 +1850,24 @@ def call_llm(
                 reasoning_effort=reasoning_effort,
                 api_base=api_base,
                 kwargs=kwargs,
+                warning_sink=_warnings,
             )
 
         if cache is not None:
             key = _cache_key(current_model, messages, **kwargs)
             cached = cache.get(key)
             if cached is not None:
-                return cached
+                cached_result = _mark_cache_hit(cached)
+                _io_log.log_call(
+                    model=current_model,
+                    messages=messages,
+                    result=cached_result,
+                    latency_s=time.monotonic() - _log_t0,
+                    caller="call_llm",
+                    task=task,
+                    trace_id=trace_id,
+                )
+                return cached_result
 
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
@@ -1724,7 +2002,7 @@ def call_llm_structured(
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured", task=task, trace_id=trace_id)
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
     _warnings: list[str] = []
 
@@ -1736,7 +2014,17 @@ def call_llm_structured(
             cached = cache.get(key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
-                return reparsed, cached
+                cached_result = _mark_cache_hit(cached)
+                _io_log.log_call(
+                    model=current_model,
+                    messages=messages,
+                    result=cached_result,
+                    latency_s=time.monotonic() - _log_t0,
+                    caller="call_llm_structured",
+                    task=task,
+                    trace_id=trace_id,
+                )
+                return reparsed, cached_result
 
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
@@ -1749,6 +2037,7 @@ def call_llm_structured(
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
                     timeout=timeout, api_base=api_base, kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 resp_kwargs["text"] = {
                     "format": {
@@ -1769,7 +2058,7 @@ def call_llm_structured(
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_responses_usage(response)
-                        cost = _compute_responses_cost(response, usage)
+                        cost, cost_source = _parse_cost_result(_compute_responses_cost(response, usage), default_source="computed")
 
                         if attempt > 0:
                             logger.info("call_llm_structured (responses) succeeded after %d retries", attempt)
@@ -1778,6 +2067,7 @@ def call_llm_structured(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason="stop",
                             raw_response=response, warnings=_warnings,
+                            cost_source=cost_source,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -1817,6 +2107,7 @@ def call_llm_structured(
                     reasoning_effort=reasoning_effort,
                     api_base=api_base,
                     kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 base_kwargs["response_format"] = {
                     "type": "json_schema",
@@ -1837,7 +2128,7 @@ def call_llm_structured(
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_usage(response)
-                        cost = _compute_cost(response)
+                        cost, cost_source = _parse_cost_result(_compute_cost(response))
                         finish_reason: str = response.choices[0].finish_reason or "stop"
 
                         if attempt > 0:
@@ -1847,6 +2138,7 @@ def call_llm_structured(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason=finish_reason,
                             raw_response=response, warnings=_warnings,
+                            cost_source=cost_source,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -1895,6 +2187,7 @@ def call_llm_structured(
                     reasoning_effort=reasoning_effort,
                     api_base=api_base,
                     kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
@@ -1905,7 +2198,7 @@ def call_llm_structured(
                         )
 
                         usage = _extract_usage(completion_response)
-                        cost = _compute_cost(completion_response)
+                        cost, cost_source = _parse_cost_result(_compute_cost(completion_response))
                         content = str(parsed.model_dump_json())
                         finish_reason = completion_response.choices[0].finish_reason or ""
 
@@ -1920,6 +2213,7 @@ def call_llm_structured(
                             finish_reason=finish_reason,
                             raw_response=completion_response,
                             warnings=_warnings,
+                            cost_source=cost_source,
                         )
 
                         if hooks and hooks.after_call:
@@ -2121,7 +2415,7 @@ async def acall_llm(
     if execution_mode != "text":
         _inner_named["execution_mode"] = execution_mode
 
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     _validate_execution_contract(
         models=models,
         execution_mode=execution_mode,
@@ -2190,6 +2484,7 @@ async def acall_llm(
                 timeout=timeout,
                 api_base=api_base,
                 kwargs=kwargs,
+                warning_sink=_warnings,
             )
         else:
             call_kwargs = _prepare_call_kwargs(
@@ -2199,13 +2494,24 @@ async def acall_llm(
                 reasoning_effort=reasoning_effort,
                 api_base=api_base,
                 kwargs=kwargs,
+                warning_sink=_warnings,
             )
 
         if cache is not None:
             key = _cache_key(current_model, messages, **kwargs)
             cached = await _async_cache_get(cache, key)
             if cached is not None:
-                return cached
+                cached_result = _mark_cache_hit(cached)
+                _io_log.log_call(
+                    model=current_model,
+                    messages=messages,
+                    result=cached_result,
+                    latency_s=time.monotonic() - _log_t0,
+                    caller="acall_llm",
+                    task=task,
+                    trace_id=trace_id,
+                )
+                return cached_result
 
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
@@ -2340,7 +2646,7 @@ async def acall_llm_structured(
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured", task=task, trace_id=trace_id)
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
     _warnings: list[str] = []
 
@@ -2352,7 +2658,17 @@ async def acall_llm_structured(
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
-                return reparsed, cached
+                cached_result = _mark_cache_hit(cached)
+                _io_log.log_call(
+                    model=current_model,
+                    messages=messages,
+                    result=cached_result,
+                    latency_s=time.monotonic() - _log_t0,
+                    caller="acall_llm_structured",
+                    task=task,
+                    trace_id=trace_id,
+                )
+                return reparsed, cached_result
 
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
@@ -2365,6 +2681,7 @@ async def acall_llm_structured(
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
                     timeout=timeout, api_base=api_base, kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 resp_kwargs["text"] = {
                     "format": {
@@ -2385,7 +2702,7 @@ async def acall_llm_structured(
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_responses_usage(response)
-                        cost = _compute_responses_cost(response, usage)
+                        cost, cost_source = _parse_cost_result(_compute_responses_cost(response, usage), default_source="computed")
 
                         if attempt > 0:
                             logger.info("acall_llm_structured (responses) succeeded after %d retries", attempt)
@@ -2394,6 +2711,7 @@ async def acall_llm_structured(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason="stop",
                             raw_response=response, warnings=_warnings,
+                            cost_source=cost_source,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2433,6 +2751,7 @@ async def acall_llm_structured(
                     reasoning_effort=reasoning_effort,
                     api_base=api_base,
                     kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 base_kwargs["response_format"] = {
                     "type": "json_schema",
@@ -2453,7 +2772,7 @@ async def acall_llm_structured(
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_usage(response)
-                        cost = _compute_cost(response)
+                        cost, cost_source = _parse_cost_result(_compute_cost(response))
                         finish_reason: str = response.choices[0].finish_reason or "stop"
 
                         if attempt > 0:
@@ -2463,6 +2782,7 @@ async def acall_llm_structured(
                             content=content, usage=usage, cost=cost,
                             model=current_model, finish_reason=finish_reason,
                             raw_response=response, warnings=_warnings,
+                            cost_source=cost_source,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2511,6 +2831,7 @@ async def acall_llm_structured(
                     reasoning_effort=reasoning_effort,
                     api_base=api_base,
                     kwargs=kwargs,
+                    warning_sink=_warnings,
                 )
                 call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
 
@@ -2521,7 +2842,7 @@ async def acall_llm_structured(
                         )
 
                         usage = _extract_usage(completion_response)
-                        cost = _compute_cost(completion_response)
+                        cost, cost_source = _parse_cost_result(_compute_cost(completion_response))
                         content = str(parsed.model_dump_json())
                         finish_reason = completion_response.choices[0].finish_reason or ""
 
@@ -2536,6 +2857,7 @@ async def acall_llm_structured(
                             finish_reason=finish_reason,
                             raw_response=completion_response,
                             warnings=_warnings,
+                            cost_source=cost_source,
                         )
 
                         if hooks and hooks.after_call:
@@ -2993,7 +3315,7 @@ def stream_llm(
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
     _warnings: list[str] = []
     backoff_fn = r.backoff or exponential_backoff
@@ -3006,6 +3328,7 @@ def stream_llm(
             reasoning_effort=reasoning_effort,
             api_base=api_base,
             kwargs=kwargs,
+            warning_sink=_warnings,
         )
         call_kwargs["stream"] = True
 
@@ -3093,7 +3416,7 @@ async def astream_llm(
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = [model] + (fallback_models or [])
+    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
     _warnings: list[str] = []
     backoff_fn = r.backoff or exponential_backoff
@@ -3106,6 +3429,7 @@ async def astream_llm(
             reasoning_effort=reasoning_effort,
             api_base=api_base,
             kwargs=kwargs,
+            warning_sink=_warnings,
         )
         call_kwargs["stream"] = True
 

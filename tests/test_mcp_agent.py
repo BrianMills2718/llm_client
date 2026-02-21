@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from llm_client import (
+    DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MAX_TURNS,
     DEFAULT_MCP_INIT_TIMEOUT,
     DEFAULT_TOOL_RESULT_MAX_LENGTH,
@@ -57,18 +58,15 @@ class TestMcpToolToOpenai:
             "required": ["query"],
         }
         result = _mcp_tool_to_openai(tool)
-        assert result == {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search for entities",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"query": {"type": "string"}},
-                    "required": ["query"],
-                },
-            },
-        }
+        assert result["type"] == "function"
+        assert result["function"]["name"] == "search"
+        assert result["function"]["description"] == "Search for entities"
+        required = result["function"]["parameters"]["required"]
+        assert "query" in required
+        assert "tool_reasoning" in required
+        props = result["function"]["parameters"]["properties"]
+        assert props["query"] == {"type": "string"}
+        assert "tool_reasoning" in props
 
     def test_missing_description(self) -> None:
         tool = MagicMock()
@@ -84,7 +82,9 @@ class TestMcpToolToOpenai:
         tool.description = "desc"
         tool.inputSchema = None
         result = _mcp_tool_to_openai(tool)
-        assert result["function"]["parameters"] == {"type": "object", "properties": {}}
+        params = result["function"]["parameters"]
+        assert params["type"] == "object"
+        assert "tool_reasoning" in params["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +154,9 @@ class TestTruncate:
 
 
 class TestDefaults:
+    def test_default_max_tool_calls(self) -> None:
+        assert DEFAULT_MAX_TOOL_CALLS == 20
+
     def test_default_max_turns(self) -> None:
         assert DEFAULT_MAX_TURNS == 20
 
@@ -166,6 +169,7 @@ class TestDefaults:
     def test_mcp_loop_kwargs(self) -> None:
         assert "mcp_servers" in MCP_LOOP_KWARGS
         assert "max_turns" in MCP_LOOP_KWARGS
+        assert "max_tool_calls" in MCP_LOOP_KWARGS
         assert "mcp_init_timeout" in MCP_LOOP_KWARGS
         assert "tool_result_max_length" in MCP_LOOP_KWARGS
 
@@ -264,9 +268,13 @@ class TestAcallWithMcp:
             assert result.raw_response.tool_calls == []
             # No tool calls → trace has just the final assistant message
             trace = result.raw_response.conversation_trace
-            assert len(trace) == 1
-            assert trace[0]["role"] == "assistant"
-            assert trace[0]["content"] == "Paris"
+            non_budget_trace = [
+                msg for msg in trace
+                if "budget:" not in str(msg.get("content", "")).lower()
+            ]
+            assert len(non_budget_trace) == 1
+            assert non_budget_trace[0]["role"] == "assistant"
+            assert non_budget_trace[0]["content"] == "Paris"
 
     async def test_multi_turn_with_tool_calls(self) -> None:
         """LLM calls a tool, gets result, then answers."""
@@ -327,13 +335,18 @@ class TestAcallWithMcp:
 
             # Verify conversation trace captures all messages
             trace = agent_result.conversation_trace
-            assert len(trace) == 3  # assistant(tool_call) + tool_result + assistant(answer)
-            assert trace[0]["role"] == "assistant"
-            assert len(trace[0]["tool_calls"]) == 1
-            assert trace[0]["tool_calls"][0]["name"] == "search"
-            assert trace[1]["role"] == "tool"
-            assert trace[2]["role"] == "assistant"
-            assert trace[2]["content"] == "Paris"
+            non_budget_trace = [
+                msg for msg in trace
+                if ("budget:" not in str(msg.get("content", "")).lower())
+                and ("Observability requirement" not in str(msg.get("content", "")))
+            ]
+            assert len(non_budget_trace) == 3  # assistant(tool_call) + tool_result + assistant(answer)
+            assert non_budget_trace[0]["role"] == "assistant"
+            assert len(non_budget_trace[0]["tool_calls"]) == 1
+            assert non_budget_trace[0]["tool_calls"][0]["name"] == "search"
+            assert non_budget_trace[1]["role"] == "tool"
+            assert non_budget_trace[2]["role"] == "assistant"
+            assert non_budget_trace[2]["content"] == "Paris"
 
             # Verify the session.call_tool was called correctly
             mock_session.call_tool.assert_called_once_with(
@@ -387,6 +400,293 @@ class TestAcallWithMcp:
 
             assert result.content == "forced answer"
             assert result.raw_response.turns == 3  # 2 loop + 1 forced
+
+    async def test_max_tool_calls_exhausted(self) -> None:
+        """Loop stops when max_tool_calls is exhausted and forces final answer."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_tool_result("result"),
+        )
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            tool_call_result = _make_llm_result(tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }])
+            final_result = _make_llm_result(content="forced by tool budget")
+            mock_acall.side_effect = [tool_call_result, final_result]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+            )
+
+            assert result.content == "forced by tool budget"
+            assert result.raw_response.turns == 2  # 1 loop + 1 forced final
+            assert len(result.raw_response.tool_calls) == 1
+
+    async def test_max_tool_calls_ignores_todo_tools(self) -> None:
+        """todo_* calls do not consume max_tool_calls budget."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("todo_update"), _make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(
+            side_effect=[_make_tool_result("todo-ok"), _make_tool_result("search-ok")],
+        )
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "todo_update", "arguments": "{}"},
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }]),
+                _make_llm_result(content="forced by retrieval budget"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+            )
+
+            assert result.content == "forced by retrieval budget"
+            assert result.raw_response.turns == 3  # 2 loop turns + 1 forced final
+            assert len(result.raw_response.tool_calls) == 2
+            assert result.raw_response.metadata["budgeted_tool_calls_used"] == 1
+            assert mock_session.call_tool.call_count == 2
+
+    async def test_require_tool_reasoning_rejects_mcp_call(self) -> None:
+        """Strict mode rejects tool calls that omit tool_reasoning."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }]),
+                _make_llm_result(content="answer after rejection"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                require_tool_reasoning=True,
+            )
+
+            assert result.content == "answer after rejection"
+            # Invalid call is rejected pre-execution and not recorded as executed tool call
+            assert len(result.raw_response.tool_calls) == 0
+            assert result.raw_response.metadata["rejected_missing_reasoning_calls"] == 1
+            assert any("missing tool_reasoning" in w.lower() for w in (result.warnings or []))
+            # Synthetic tool rejection is still visible in trace for observability
+            assert any(
+                "Missing required argument: tool_reasoning" in str(msg.get("content", ""))
+                for msg in result.raw_response.conversation_trace
+                if msg.get("role") == "tool"
+            )
+            mock_session.call_tool.assert_not_called()
+
+    async def test_enforce_tool_contracts_rejects_incompatible_call(self) -> None:
+        """Contract mode rejects tool calls when required artifacts are unavailable."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": '{"tool_reasoning":"test"}',
+                    },
+                }]),
+                _make_llm_result(content="answer after contract rejection"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                enforce_tool_contracts=True,
+                tool_contracts={
+                    "search": {
+                        "requires_all": ["ENTITY_SET"],
+                        "produces": ["CHUNK_SET"],
+                    },
+                },
+                initial_artifacts=("QUERY_TEXT",),
+            )
+
+            assert result.content == "answer after contract rejection"
+            assert result.raw_response.metadata["tool_contract_rejections"] == 1
+            assert result.raw_response.metadata["available_artifacts_final"] == ["QUERY_TEXT"]
+            assert any(
+                "Tool contract violation" in str(msg.get("content", ""))
+                for msg in result.raw_response.conversation_trace
+                if msg.get("role") == "tool"
+            )
+            mock_session.call_tool.assert_not_called()
+
+    async def test_enforce_tool_contracts_propagates_artifacts(self) -> None:
+        """Successful contract-validated calls grow available artifacts."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("entity_tfidf"), _make_tool("entity_onehop")],
+        ))
+        mock_session.call_tool = AsyncMock(
+            side_effect=[_make_tool_result("entity hit"), _make_tool_result("onehop hit")],
+        )
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "entity_tfidf",
+                        "arguments": '{"tool_reasoning":"seed entities from query"}',
+                    },
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "entity_onehop",
+                        "arguments": '{"tool_reasoning":"expand entity neighborhood"}',
+                    },
+                }]),
+                _make_llm_result(content="answer"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                enforce_tool_contracts=True,
+                tool_contracts={
+                    "entity_tfidf": {
+                        "requires_all": ["QUERY_TEXT"],
+                        "produces": ["ENTITY_SET"],
+                    },
+                    "entity_onehop": {
+                        "requires_all": ["ENTITY_SET"],
+                        "produces": ["ENTITY_SET"],
+                    },
+                },
+                initial_artifacts=("QUERY_TEXT",),
+            )
+
+            assert result.content == "answer"
+            assert mock_session.call_tool.call_count == 2
+            assert result.raw_response.metadata["tool_contract_rejections"] == 0
+            assert "ENTITY_SET" in result.raw_response.metadata["available_artifacts_final"]
 
     async def test_no_tools_raises(self) -> None:
         """Error if MCP servers provide no tools."""
@@ -576,6 +876,7 @@ class TestRouting:
                 [{"role": "user", "content": "Q"}],
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
                 max_turns=5,
+                max_tool_calls=7,
                 task="test",
                 trace_id="test_non_agent_mcp_routing",
                 max_budget=0,
@@ -587,6 +888,7 @@ class TestRouting:
                 "srv": {"command": "python", "args": ["s.py"]},
             }
             assert call_kwargs.kwargs.get("max_turns") == 5
+            assert call_kwargs.kwargs.get("max_tool_calls") == 7
 
     async def test_agent_model_with_mcp_skips_loop(self) -> None:
         """Agent model + mcp_servers → existing agent SDK path (not MCP loop)."""
@@ -666,6 +968,7 @@ class TestRouting:
                 [{"role": "user", "content": "Q"}],
                 mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
                 max_turns=10,
+                max_tool_calls=15,
                 mcp_init_timeout=60.0,
                 tool_result_max_length=10000,
                 temperature=0.5,  # regular litellm kwarg
@@ -678,6 +981,7 @@ class TestRouting:
             # MCP kwargs present
             assert call_kwargs["mcp_servers"] == {"srv": {"command": "python", "args": ["s.py"]}}
             assert call_kwargs["max_turns"] == 10
+            assert call_kwargs["max_tool_calls"] == 15
             assert call_kwargs["mcp_init_timeout"] == 60.0
             assert call_kwargs["tool_result_max_length"] == 10000
             # Regular kwargs also present (passed through)
@@ -732,7 +1036,15 @@ class TestAgentDiagnostics:
                 "test-model",
                 [{"role": "user", "content": "q"}],
                 [{"type": "function", "function": {"name": "t"}}],
-                agent_result, mock_executor, 5, 50000, 60, {},
+                agent_result,
+                mock_executor,
+                5,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
             )
 
         assert content == "answer"
@@ -767,12 +1079,20 @@ class TestAgentDiagnostics:
                 "test-model",
                 [{"role": "user", "content": "q"}],
                 [{"type": "function", "function": {"name": "t"}}],
-                agent_result, mock_executor, 5, 50000, 60, {},
+                agent_result,
+                mock_executor,
+                5,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
             )
 
-        assert len(agent_result.warnings) == 2
-        assert "rate limit" in agent_result.warnings[0]
-        assert "timeout" in agent_result.warnings[1]
+        assert len(agent_result.warnings) >= 2
+        assert any("rate limit" in w for w in agent_result.warnings)
+        assert any("timeout" in w for w in agent_result.warnings)
 
     async def test_models_used_tracked(self) -> None:
         """models_used set tracks all models that responded."""
@@ -786,7 +1106,209 @@ class TestAgentDiagnostics:
                 "gemini/gemini-2.5-flash",
                 [{"role": "user", "content": "q"}],
                 [{"type": "function", "function": {"name": "t"}}],
-                agent_result, AsyncMock(), 5, 50000, 60, {},
+                agent_result,
+                AsyncMock(),
+                5,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
             )
 
         assert "gemini/gemini-2.5-flash" in agent_result.models_used
+
+    async def test_submit_answer_enforced_when_tool_available(self) -> None:
+        """When submit_answer exists, plain-text response is nudged into explicit submission."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        llm_results = [
+            _make_llm_result(content="June 1982"),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"from chunk_1","answer":"June 1982"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+        ]
+
+        async def mock_executor(tc, ml):
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="submit_answer",
+                        arguments={"reasoning": "from chunk_1", "answer": "June 1982"},
+                        result='{"status":"submitted","answer":"June 1982"}',
+                    ),
+                ],
+                [{
+                    "role": "tool",
+                    "tool_call_id": "tc_submit",
+                    "content": '{"status":"submitted","answer":"June 1982"}',
+                }],
+            )
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "submit_answer"}}],
+                agent_result,
+                mock_executor,
+                5,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "June 1982"
+        assert finish == "submitted"
+        assert any(
+            msg.get("role") == "user" and "MUST call submit_answer" in msg.get("content", "")
+            for msg in agent_result.conversation_trace
+        )
+
+    async def test_autofill_reasoning_for_todo_reset(self) -> None:
+        """todo_reset missing tool_reasoning is auto-filled and executed in strict mode."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        observed_tool_calls: list[dict[str, Any]] = []
+
+        async def mock_executor(tool_calls, max_len):
+            observed_tool_calls.extend(tool_calls)
+            return (
+                [MCPToolCallRecord(server="srv", tool="todo_reset", arguments={}, result='{"status":"reset"}')],
+                [{"role": "tool", "tool_call_id": "tc_reset", "content": '{"status":"reset"}'}],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_reset",
+                    "function": {"name": "todo_reset", "arguments": "{}"},
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="done"),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "todo_reset"}}],
+                agent_result,
+                mock_executor,
+                3,
+                None,
+                True,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert observed_tool_calls
+        args = json.loads(observed_tool_calls[0]["function"]["arguments"])
+        assert "tool_reasoning" in args
+        assert agent_result.metadata["rejected_missing_reasoning_calls"] == 0
+        assert not any(
+            "observability: missing tool_reasoning on tools:" in w.lower()
+            for w in agent_result.warnings
+        )
+
+    async def test_submit_answer_suppressed_until_todo_progress(self) -> None:
+        """Repeated submit_answer calls are suppressed until TODO state changes."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="submit_answer",
+                        arguments={"reasoning": "r", "answer": "a"},
+                        error="Cannot submit yet. Unfinished TODOs: todo_1.",
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_submit_1",
+                        "content": '{"error":"Cannot submit yet. Unfinished TODOs: todo_1."}',
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_1",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit now"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_2",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit again"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="final"),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "submit_answer"}}],
+                agent_result,
+                mock_executor,
+                3,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "final"
+        assert finish == "stop"
+        # First submit call executes; second is suppressed before executor.
+        assert executor_call_count == 1
+        assert agent_result.metadata["control_loop_suppressed_calls"] >= 1
+        assert any(
+            "submit_answer suppressed" in (record.error or "")
+            for record in agent_result.tool_calls
+            if record.tool == "submit_answer"
+        )

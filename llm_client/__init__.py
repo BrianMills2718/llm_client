@@ -92,10 +92,23 @@ from llm_client.errors import (
 from llm_client.io_log import configure as configure_logging
 from llm_client.rate_limit import configure as configure_rate_limit
 from llm_client.io_log import (
+    ActiveFeatureProfile,
+    ActiveExperimentRun,
+    ExperimentRun,
+    activate_feature_profile,
+    activate_experiment_run,
     compare_runs,
+    configure_feature_profile,
+    configure_experiment_enforcement,
+    configure_agent_spec_enforcement,
+    enforce_agent_spec,
+    experiment_run,
     finish_run,
     get_completed_traces,
     get_cost,
+    get_active_experiment_run_id,
+    get_active_feature_profile,
+    get_run,
     get_run_items,
     get_runs,
     get_trace_tree,
@@ -113,6 +126,12 @@ from llm_client.models import (
     query_performance,
 )
 from llm_client.prompts import render_prompt
+from llm_client.agent_spec import (
+    AgentSpecValidationError,
+    REQUIRED_AGENT_SPEC_SECTIONS,
+    load_agent_spec,
+    validate_agent_spec,
+)
 from llm_client.validators import ValidationResult, run_validators, register_validator, spec_hash
 from llm_client.difficulty import (
     DifficultyTier,
@@ -151,10 +170,15 @@ from llm_client.git_utils import (
     classify_diff_files,
     get_diff_files,
     get_git_head,
+    get_working_tree_files,
+    is_git_dirty,
 )
 
 from llm_client.mcp_agent import (
+    DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    DEFAULT_INITIAL_ARTIFACTS,
     DEFAULT_MAX_TURNS,
+    DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MCP_INIT_TIMEOUT,
     DEFAULT_TOOL_RESULT_MAX_LENGTH,
     MCPAgentResult,
@@ -176,6 +200,16 @@ from llm_client.scoring import (
     list_rubrics,
     load_rubric,
     score_output,
+)
+from llm_client.experiment_eval import (
+    DEFAULT_DETERMINISTIC_CHECKS,
+    build_gate_signals,
+    evaluate_gate_policy,
+    load_gate_policy,
+    review_items_with_rubric,
+    run_deterministic_checks_for_item,
+    run_deterministic_checks_for_items,
+    triage_items,
 )
 
 from llm_client.client import (
@@ -224,8 +258,11 @@ __all__ = [
     "wrap_error",
     "AsyncCachePolicy",
     "DEFAULT_MAX_TURNS",
+    "DEFAULT_MAX_TOOL_CALLS",
     "DEFAULT_MCP_INIT_TIMEOUT",
     "DEFAULT_TOOL_RESULT_MAX_LENGTH",
+    "DEFAULT_ENFORCE_TOOL_CONTRACTS",
+    "DEFAULT_INITIAL_ARTIFACTS",
     "MCPAgentResult",
     "MCPSessionPool",
     "MCPToolCallRecord",
@@ -266,10 +303,28 @@ __all__ = [
     "start_run",
     "log_item",
     "finish_run",
+    "ActiveFeatureProfile",
+    "ActiveExperimentRun",
+    "ExperimentRun",
+    "activate_feature_profile",
+    "activate_experiment_run",
+    "configure_feature_profile",
+    "experiment_run",
+    "configure_experiment_enforcement",
+    "configure_agent_spec_enforcement",
+    "enforce_agent_spec",
+    "get_active_experiment_run_id",
+    "get_active_feature_profile",
     "get_runs",
+    "get_run",
     "get_run_items",
     "compare_runs",
     "render_prompt",
+    # AgentSpec
+    "AgentSpecValidationError",
+    "REQUIRED_AGENT_SPEC_SECTIONS",
+    "load_agent_spec",
+    "validate_agent_spec",
     "strip_fences",
     "ModelInfo",
     "TaskProfile",
@@ -315,6 +370,8 @@ __all__ = [
     "classify_diff_files",
     "get_diff_files",
     "get_git_head",
+    "get_working_tree_files",
+    "is_git_dirty",
     # tool_utils
     "callable_to_openai_tool",
     "prepare_direct_tools",
@@ -327,4 +384,13 @@ __all__ = [
     "list_rubrics",
     "load_rubric",
     "score_output",
+    # experiment_eval
+    "DEFAULT_DETERMINISTIC_CHECKS",
+    "run_deterministic_checks_for_item",
+    "run_deterministic_checks_for_items",
+    "review_items_with_rubric",
+    "load_gate_policy",
+    "build_gate_signals",
+    "evaluate_gate_policy",
+    "triage_items",
 ]

@@ -29,6 +29,11 @@ result = call_llm("ollama/llama3", [{"role": "user", "content": "Hello"}])
 print(result.content)  # "Hi there!"
 print(result.cost)     # 0.0003
 print(result.usage)    # {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}
+
+# Agent SDK models default to subscription accounting (no per-call API USD)
+agent_result = call_llm("claude-code", [{"role": "user", "content": "Refactor this"}], task="dev", trace_id="demo/agent", max_budget=0)
+print(agent_result.cost)         # 0.0
+print(agent_result.billing_mode) # "subscription_included"
 ```
 
 ### Structured output (Pydantic)
@@ -184,7 +189,26 @@ result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
 result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
 ```
 
+Cache hits are returned with:
+- `cache_hit=True`
+- `marginal_cost=0.0`
+- `cost_source="cache_hit"`
+
+The original `cost` field remains as the attributed/original call cost for analytics.
+
 Implement `CachePolicy` protocol for custom backends (Redis, disk, etc.).
+
+### Agent billing mode
+
+By default, agent SDK models (`claude-code`, `codex`) use subscription accounting:
+- `LLM_CLIENT_AGENT_BILLING_MODE=subscription` (default)
+- Per-call `cost=0.0`, `billing_mode="subscription_included"`
+
+If you run agent SDK calls in API-metered mode, set:
+
+```bash
+export LLM_CLIENT_AGENT_BILLING_MODE=api
+```
 
 ### Retry policy
 
@@ -220,13 +244,34 @@ Fourteen functions (7 sync + 7 async):
 | `stream_llm(model, messages, **kw)` | `astream_llm(...)` | `LLMStream` | Streaming with retry/fallback |
 | `stream_llm_with_tools(model, messages, tools, **kw)` | `astream_llm_with_tools(...)` | `LLMStream` | Streaming with tools |
 
-`LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
+`LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.marginal_cost`, `.cost_source`, `.billing_mode`, `.cache_hit`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
 `call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
 
 `stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
 
 `*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions`, `on_item_complete`, `on_item_error`.
+
+## Experiment Observability
+
+Use the built-in CLI to inspect and compare benchmark/eval runs recorded via
+`start_run` / `log_item` / `finish_run`.
+
+```bash
+python -m llm_client experiments
+python -m llm_client experiments --compare RUN_BASE RUN_CANDIDATE
+python -m llm_client experiments --compare-diff RUN_BASE RUN_CANDIDATE
+python -m llm_client experiments --detail RUN_ID
+python -m llm_client experiments --detail RUN_ID --det-checks default
+python -m llm_client experiments --detail RUN_ID --review-rubric extraction_quality
+python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg_llm_em_gte":80}}' --gate-fail-exit-code
+```
+
+`--detail` now supports:
+- automatic triage over item-level error classes,
+- deterministic checks (`--det-checks`),
+- rubric-based LLM review (`--review-rubric` / `--review-model`),
+- policy gates (`--gate-policy`) with optional non-zero exit on failure.
 
 ## API keys
 

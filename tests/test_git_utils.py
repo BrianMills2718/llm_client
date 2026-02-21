@@ -8,6 +8,8 @@ from llm_client.git_utils import (
     TEST_CHANGE,
     classify_diff_files,
     get_git_head,
+    get_working_tree_files,
+    is_git_dirty,
 )
 
 
@@ -76,3 +78,24 @@ def test_get_git_head_returns_string():
 def test_get_git_head_nonexistent_dir():
     result = get_git_head(cwd="/nonexistent/path/that/does/not/exist")
     assert result is None
+
+
+def test_get_working_tree_files_type():
+    files = get_working_tree_files()
+    assert isinstance(files, list)
+    assert all(isinstance(f, str) for f in files)
+
+
+def test_get_working_tree_files_nonexistent_dir():
+    files = get_working_tree_files(cwd="/nonexistent/path/that/does/not/exist")
+    assert files == []
+
+
+def test_is_git_dirty_returns_bool():
+    dirty = is_git_dirty()
+    assert isinstance(dirty, bool)
+
+
+def test_is_git_dirty_nonexistent_dir():
+    dirty = is_git_dirty(cwd="/nonexistent/path/that/does/not/exist")
+    assert dirty is False

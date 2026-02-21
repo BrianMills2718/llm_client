@@ -266,6 +266,31 @@ class TestToolShimLoop:
             agent: MCPAgentResult = result.raw_response
             assert agent.turns == 3  # 2 tool turns + 1 forced
 
+    async def test_max_tool_calls_exhausted(self) -> None:
+        """Loop terminates and forces answer when max_tool_calls reached."""
+        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+            tool_response = _make_llm_result(content=json.dumps({
+                "action": "tool_call",
+                "tool_name": "add",
+                "arguments": {"a": 1, "b": 1},
+            }))
+            forced_answer = _make_llm_result(content="forced by tool budget")
+            mock_acall.side_effect = [tool_response, forced_answer]
+
+            result = await _acall_with_tool_shim(
+                "test-model",
+                [{"role": "user", "content": "keep going"}],
+                [add],
+                max_turns=10,
+                max_tool_calls=1,
+                task="test", trace_id="test_max_tool_calls", max_budget=0,
+            )
+
+            assert result.content == "forced by tool budget"
+            agent: MCPAgentResult = result.raw_response
+            assert agent.turns == 2  # 1 tool turn + 1 forced
+            assert len(agent.tool_calls) == 1
+
     async def test_unknown_action(self) -> None:
         """Unknown action → error nudge → model corrects."""
         with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:

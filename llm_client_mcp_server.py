@@ -115,7 +115,7 @@ def list_recent_traces(
             trace_id,
             COALESCE(project, 'unknown') as project,
             COALESCE(task, 'untagged') as task,
-            ROUND(SUM(CASE WHEN error IS NULL THEN cost ELSE 0 END), 6) as total_cost,
+            ROUND(SUM(CASE WHEN error IS NULL THEN COALESCE(marginal_cost, cost) ELSE 0 END), 6) as total_cost,
             COUNT(*) as call_count,
             SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as error_count,
             MIN(timestamp) as first_seen,
@@ -162,7 +162,7 @@ def get_trace_detail(trace_id: str) -> str:
         return json.dumps({"error": "Observability DB not available"})
 
     rows = db.execute(
-        """SELECT model, task, cost, latency_s, prompt_tokens,
+        """SELECT model, task, cost, marginal_cost, cost_source, billing_mode, cache_hit, latency_s, prompt_tokens,
                   completion_tokens, finish_reason, error, timestamp
            FROM llm_calls
            WHERE trace_id = ?
@@ -177,20 +177,25 @@ def get_trace_detail(trace_id: str) -> str:
     total_cost = 0.0
     total_errors = 0
     for r in rows:
-        cost = r[2] or 0.0
-        total_cost += cost
-        if r[7]:
+        attributed_cost = r[2] or 0.0
+        marginal_cost = attributed_cost if r[3] is None else (r[3] or 0.0)
+        total_cost += marginal_cost
+        if r[11]:
             total_errors += 1
         calls.append({
             "model": r[0],
             "task": r[1],
-            "cost_usd": round(cost, 6),
-            "latency_s": r[3],
-            "prompt_tokens": r[4],
-            "completion_tokens": r[5],
-            "finish_reason": r[6],
-            "error": r[7],
-            "timestamp": r[8],
+            "cost_usd": round(marginal_cost, 6),
+            "attributed_cost_usd": round(attributed_cost, 6),
+            "cost_source": r[4],
+            "billing_mode": r[5],
+            "cache_hit": bool(r[6]),
+            "latency_s": r[7],
+            "prompt_tokens": r[8],
+            "completion_tokens": r[9],
+            "finish_reason": r[10],
+            "error": r[11],
+            "timestamp": r[12],
         })
 
     return json.dumps({

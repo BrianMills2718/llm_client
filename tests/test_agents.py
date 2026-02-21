@@ -356,7 +356,9 @@ class TestAgentCallMocked:
         result = call_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_agent_call_sync", max_budget=0)
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
-        assert result.cost == 0.005
+        assert result.cost == 0.0
+        assert result.billing_mode == "subscription_included"
+        assert result.cost_source == "subscription_included"
         assert result.model == "claude-code"
         assert result.finish_reason == "stop"
 
@@ -366,8 +368,25 @@ class TestAgentCallMocked:
         result = await acall_llm("claude-code", [{"role": "user", "content": "What is 2+2?"}], task="test", trace_id="test_agent_call_async", max_budget=0)
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
-        assert result.cost == 0.005
+        assert result.cost == 0.0
+        assert result.billing_mode == "subscription_included"
+        assert result.cost_source == "subscription_included"
         assert result.finish_reason == "stop"
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_call_llm_agent_api_mode(self, monkeypatch) -> None:
+        monkeypatch.setenv("LLM_CLIENT_AGENT_BILLING_MODE", "api")
+        result = call_llm(
+            "claude-code",
+            [{"role": "user", "content": "What is 2+2?"}],
+            task="test",
+            trace_id="test_agent_call_api_mode",
+            max_budget=0,
+        )
+        assert isinstance(result, LLMCallResult)
+        assert result.cost == 0.005
+        assert result.billing_mode == "api_metered"
+        assert result.cost_source == "provider_reported"
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_hooks_fire_for_agent(self) -> None:
@@ -540,7 +559,9 @@ class TestAgentStructured:
         assert parsed.name == "Tokyo"
         assert parsed.country == "Japan"
         assert isinstance(meta, LLMCallResult)
-        assert meta.cost == 0.01
+        assert meta.cost == 0.0
+        assert meta.billing_mode == "subscription_included"
+        assert meta.cost_source == "subscription_included"
         assert meta.model == "claude-code"
 
     @pytest.mark.usefixtures("_mock_structured_sdk")
@@ -555,7 +576,9 @@ class TestAgentStructured:
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
         assert parsed.country == "Japan"
-        assert meta.cost == 0.01
+        assert meta.cost == 0.0
+        assert meta.billing_mode == "subscription_included"
+        assert meta.cost_source == "subscription_included"
 
     @pytest.mark.usefixtures("_mock_structured_sdk")
     def test_structured_hooks_fire(self) -> None:
@@ -617,7 +640,9 @@ class TestAgentStream:
         assert "4" in "".join(chunks)
         result = stream.result
         assert isinstance(result, LLMCallResult)
-        assert result.cost == 0.005
+        assert result.cost == 0.0
+        assert result.billing_mode == "subscription_included"
+        assert result.cost_source == "subscription_included"
         assert result.model == "claude-code"
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
@@ -631,7 +656,9 @@ class TestAgentStream:
         assert "4" in "".join(chunks)
         result = stream.result
         assert isinstance(result, LLMCallResult)
-        assert result.cost == 0.005
+        assert result.cost == 0.0
+        assert result.billing_mode == "subscription_included"
+        assert result.cost_source == "subscription_included"
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     def test_stream_result_before_consume_raises(self) -> None:
@@ -696,7 +723,9 @@ class TestAgentBatch:
         for r in results:
             assert isinstance(r, LLMCallResult)
             assert r.model == "claude-code"
-            assert r.cost == 0.005
+            assert r.cost == 0.0
+            assert r.billing_mode == "subscription_included"
+            assert r.cost_source == "subscription_included"
 
     @pytest.mark.usefixtures("_mock_agent_sdk")
     @pytest.mark.asyncio
