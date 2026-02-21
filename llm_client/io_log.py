@@ -558,6 +558,8 @@ def log_call(
         marginal_cost = None
         cache_hit = 0
         finish_reason = None
+        warnings: list[str] | None = None
+        n_tool_calls: int | None = None
         if result is not None:
             response_content = getattr(result, "content", None)
             usage_raw = getattr(result, "usage", None)
@@ -579,6 +581,12 @@ def log_call(
             cache_attr = getattr(result, "cache_hit", False)
             cache_hit = 1 if cache_attr is True else 0
             finish_reason = getattr(result, "finish_reason", None)
+            warnings_raw = getattr(result, "warnings", None)
+            if isinstance(warnings_raw, list):
+                warnings = [str(w) for w in warnings_raw if str(w)]
+            tool_calls_raw = getattr(result, "tool_calls", None)
+            if isinstance(tool_calls_raw, list):
+                n_tool_calls = len(tool_calls_raw)
 
         timestamp = datetime.now(timezone.utc).isoformat()
         record = {
@@ -595,6 +603,9 @@ def log_call(
             "finish_reason": finish_reason,
             "latency_s": round(latency_s, 3) if latency_s is not None else None,
             "error": str(error) if error else None,
+            "error_type": type(error).__name__ if error else None,
+            "warnings": warnings,
+            "n_tool_calls": n_tool_calls,
             "caller": caller,
             "task": task,
             "trace_id": trace_id,
@@ -682,6 +693,54 @@ def log_embedding(
         )
     except Exception:
         logger.debug("io_log.log_embedding failed", exc_info=True)
+
+
+def log_foundation_event(
+    *,
+    event: dict[str, Any],
+    caller: str = "foundation",
+    task: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Append one FOUNDATION event record. Never raises by default."""
+    if not _enabled:
+        return
+    try:
+        from llm_client.foundation import validate_foundation_event
+
+        normalized_event = validate_foundation_event(event)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        run_id = str(normalized_event.get("run_id") or "")
+        event_id = str(normalized_event.get("event_id") or "")
+        event_type = str(normalized_event.get("event_type") or "")
+
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": timestamp,
+            "caller": caller,
+            "task": task,
+            "trace_id": trace_id,
+            "run_id": run_id or None,
+            "event_id": event_id or None,
+            "event_type": event_type or None,
+            "event": normalized_event,
+        }
+        with open(d / "foundation_events.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+
+        _write_foundation_event_to_db(
+            timestamp=timestamp,
+            run_id=run_id or None,
+            trace_id=trace_id,
+            event_id=event_id or None,
+            event_type=event_type or None,
+            payload=normalized_event,
+            caller=caller,
+            task=task,
+        )
+    except Exception:
+        logger.debug("io_log.log_foundation_event failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +848,19 @@ CREATE TABLE IF NOT EXISTS experiment_items (
     trace_id TEXT,
     UNIQUE(run_id, item_id)
 );
+
+CREATE TABLE IF NOT EXISTS foundation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    run_id TEXT,
+    trace_id TEXT,
+    event_id TEXT,
+    event_type TEXT,
+    payload TEXT NOT NULL,
+    caller TEXT,
+    task TEXT
+);
 """
 
 _INDEXES_SQL = """
@@ -816,6 +888,10 @@ CREATE INDEX IF NOT EXISTS idx_expr_git_commit ON experiment_runs(git_commit);
 CREATE INDEX IF NOT EXISTS idx_expri_run_id ON experiment_items(run_id);
 CREATE INDEX IF NOT EXISTS idx_expri_item_id ON experiment_items(item_id);
 CREATE INDEX IF NOT EXISTS idx_expri_trace_id ON experiment_items(trace_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fevent_event_id ON foundation_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_fevent_run_id ON foundation_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_fevent_trace_id ON foundation_events(trace_id);
+CREATE INDEX IF NOT EXISTS idx_fevent_event_type ON foundation_events(event_type);
 """
 
 
@@ -960,6 +1036,41 @@ def _write_embedding_to_db(
         db.commit()
     except Exception:
         logger.debug("io_log._write_embedding_to_db failed", exc_info=True)
+
+
+def _write_foundation_event_to_db(
+    *,
+    timestamp: str,
+    run_id: str | None,
+    trace_id: str | None,
+    event_id: str | None,
+    event_type: str | None,
+    payload: dict[str, Any],
+    caller: str,
+    task: str | None,
+) -> None:
+    """Insert a foundation event into SQLite. Never raises."""
+    try:
+        db = _get_db()
+        db.execute(
+            """INSERT INTO foundation_events
+               (timestamp, project, run_id, trace_id, event_id, event_type, payload, caller, task)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp,
+                _get_project(),
+                run_id,
+                trace_id,
+                event_id,
+                event_type,
+                json.dumps(payload, default=str),
+                caller,
+                task,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log._write_foundation_event_to_db failed", exc_info=True)
 
 
 def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:

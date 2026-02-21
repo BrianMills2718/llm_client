@@ -618,6 +618,67 @@ class TestAcallWithMcp:
             )
             mock_session.call_tool.assert_not_called()
 
+    async def test_enforce_tool_contracts_rejects_binding_conflict(self) -> None:
+        """Hard binding conflicts are rejected pre-execution with binding_conflict code."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": '{"tool_reasoning":"lookup","graph_reference_id":"graph_b"}',
+                    },
+                }]),
+                _make_llm_result(content="binding conflict handled"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                enforce_tool_contracts=True,
+                tool_contracts={
+                    "search": {
+                        "requires_all": ["QUERY_TEXT"],
+                        "produces": ["CHUNK_SET"],
+                    },
+                },
+                initial_artifacts=("QUERY_TEXT",),
+                initial_bindings={"graph_id": "graph_a"},
+            )
+
+            assert result.content == "binding conflict handled"
+            assert result.raw_response.metadata["tool_contract_rejections"] == 1
+            assert result.raw_response.metadata["available_bindings_final"]["graph_id"] == "graph_a"
+            violations = result.raw_response.metadata["tool_contract_violation_events"]
+            assert len(violations) == 1
+            assert violations[0]["error_code"] == "binding_conflict"
+            assert violations[0]["failure_phase"] == "binding_validation"
+            mock_session.call_tool.assert_not_called()
+
     async def test_enforce_tool_contracts_propagates_artifacts(self) -> None:
         """Successful contract-validated calls grow available artifacts."""
         mock_session = AsyncMock()
@@ -1118,6 +1179,98 @@ class TestAgentDiagnostics:
             )
 
         assert "gemini/gemini-2.5-flash" in agent_result.models_used
+
+    async def test_progressive_tool_disclosure_filters_then_unlocks(self) -> None:
+        """Only composable tools are exposed per turn; newly-produced artifacts unlock others."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        observed_tool_surfaces: list[list[str]] = []
+
+        async def mock_inner_acall(model, messages, **kwargs):
+            tools = kwargs.get("tools") or []
+            observed_tool_surfaces.append([
+                str(t.get("function", {}).get("name", ""))
+                for t in tools
+                if isinstance(t, dict)
+            ])
+            if len(observed_tool_surfaces) == 1:
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_entity_seed",
+                        "function": {
+                            "name": "entity_tfidf",
+                            "arguments": '{"tool_reasoning":"seed from query"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            return _make_llm_result(content="done")
+
+        async def mock_executor(tool_calls, max_len):
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="entity_tfidf",
+                        arguments={"tool_reasoning": "seed from query"},
+                        result='{"entities":["e1"]}',
+                    ),
+                ],
+                [{
+                    "role": "tool",
+                    "tool_call_id": "tc_entity_seed",
+                    "content": '{"entities":["e1"]}',
+                }],
+            )
+
+        openai_tools = [
+            {"type": "function", "function": {"name": "entity_tfidf"}},
+            {"type": "function", "function": {"name": "entity_onehop"}},
+            {"type": "function", "function": {"name": "todo_list"}},
+        ]
+        contracts = {
+            "entity_tfidf": {
+                "requires_all": ["QUERY_TEXT"],
+                "produces": ["ENTITY_SET"],
+            },
+            "entity_onehop": {
+                "requires_all": ["ENTITY_SET"],
+                "produces": ["ENTITY_SET"],
+            },
+            "todo_list": {"is_control": True},
+        }
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                openai_tools,
+                agent_result,
+                mock_executor,
+                3,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                enforce_tool_contracts=True,
+                progressive_tool_disclosure=True,
+                tool_contracts=contracts,
+                initial_artifacts=("QUERY_TEXT",),
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert len(observed_tool_surfaces) == 2
+        # Turn 1: entity_onehop is hidden because ENTITY_SET is not available yet.
+        assert observed_tool_surfaces[0] == ["entity_tfidf", "todo_list"]
+        # Turn 2: entity_tfidf produced ENTITY_SET, so entity_onehop is now visible.
+        assert observed_tool_surfaces[1] == ["entity_tfidf", "entity_onehop", "todo_list"]
+        assert agent_result.metadata["tool_disclosure_turns"] == 1
+        assert agent_result.metadata["tool_disclosure_hidden_total"] == 1
 
     async def test_submit_answer_enforced_when_tool_available(self) -> None:
         """When submit_answer exists, plain-text response is nudged into explicit submission."""

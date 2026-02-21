@@ -38,6 +38,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.client import LLMCallResult
+from llm_client.foundation import (
+    check_binding_conflicts,
+    coerce_run_id,
+    extract_bindings_from_tool_args,
+    merge_binding_state,
+    new_event_id,
+    new_session_id,
+    normalize_bindings,
+    now_iso,
+    sha256_json,
+    sha256_text,
+    validate_foundation_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +101,9 @@ DEFAULT_MAX_MESSAGE_CHARS: int = 260_000
 DEFAULT_ENFORCE_TOOL_CONTRACTS: bool = False
 """When enabled, reject tool calls that violate declared composability contracts."""
 
+DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE: bool = True
+"""When enabled with contracts, expose only currently composable tools per turn."""
+
 DEFAULT_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
 """Default artifact kinds available before any tool call."""
 
@@ -102,8 +118,10 @@ MCP_LOOP_KWARGS = frozenset({
     "tool_result_max_length",
     "max_message_chars",
     "enforce_tool_contracts",
+    "progressive_tool_disclosure",
     "tool_contracts",
     "initial_artifacts",
+    "initial_bindings",
 })
 
 # Kwargs consumed by the direct tool loop
@@ -115,8 +133,10 @@ TOOL_LOOP_KWARGS = frozenset({
     "tool_result_max_length",
     "max_message_chars",
     "enforce_tool_contracts",
+    "progressive_tool_disclosure",
     "tool_contracts",
     "initial_artifacts",
+    "initial_bindings",
 })
 
 
@@ -137,6 +157,17 @@ class MCPToolCallRecord:
     result: str | None = None
     error: str | None = None
     latency_s: float = 0.0
+
+
+@dataclass
+class ToolCallValidation:
+    """Normalized pre-execution validation outcome for a tool call."""
+
+    is_valid: bool
+    reason: str = ""
+    error_code: str | None = None
+    failure_phase: str | None = None
+    call_bindings: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -543,10 +574,30 @@ def _validate_tool_contract_call(
     contract: dict[str, Any],
     parsed_args: dict[str, Any] | None,
     available_artifacts: set[str],
-) -> tuple[bool, str]:
+    available_bindings: dict[str, str | None] | None = None,
+) -> ToolCallValidation:
     """Validate whether a tool call is composable given currently available artifacts."""
+    call_bindings = extract_bindings_from_tool_args(parsed_args)
+
     if contract.get("is_control"):
-        return True, ""
+        return ToolCallValidation(
+            is_valid=True,
+            call_bindings=call_bindings,
+        )
+
+    if call_bindings:
+        bindings_ok, bindings_reason, _conflicts, normalized_call_bindings = check_binding_conflicts(
+            available_bindings=available_bindings,
+            proposed_bindings=call_bindings,
+        )
+        if not bindings_ok:
+            return ToolCallValidation(
+                is_valid=False,
+                reason=bindings_reason,
+                error_code="binding_conflict",
+                failure_phase="binding_validation",
+                call_bindings=normalized_call_bindings,
+            )
 
     requires_all, requires_any = _effective_contract_requirements(
         tool_name, contract, parsed_args,
@@ -554,18 +605,75 @@ def _validate_tool_contract_call(
 
     missing_all = sorted(requires_all - available_artifacts)
     if missing_all:
-        return (
-            False,
-            f"{tool_name} requires all of {sorted(requires_all)}; missing {missing_all}",
+        return ToolCallValidation(
+            is_valid=False,
+            reason=f"{tool_name} requires all of {sorted(requires_all)}; missing {missing_all}",
+            error_code="missing_prerequisite",
+            failure_phase="input_validation",
+            call_bindings=call_bindings,
         )
 
     if requires_any and not (requires_any & available_artifacts):
-        return (
-            False,
-            f"{tool_name} requires one of {sorted(requires_any)}; available {sorted(available_artifacts)}",
+        return ToolCallValidation(
+            is_valid=False,
+            reason=f"{tool_name} requires one of {sorted(requires_any)}; available {sorted(available_artifacts)}",
+            error_code="missing_prerequisite",
+            failure_phase="input_validation",
+            call_bindings=call_bindings,
         )
 
-    return True, ""
+    return ToolCallValidation(
+        is_valid=True,
+        call_bindings=call_bindings,
+    )
+
+
+def _filter_tools_for_disclosure(
+    *,
+    openai_tools: list[dict[str, Any]],
+    normalized_tool_contracts: dict[str, dict[str, Any]],
+    available_artifacts: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Return tools currently composable from artifact state + hidden reasons.
+
+    Unknown tools (no contract declared) are kept visible to avoid false negatives.
+    Control tools stay visible regardless of artifact state.
+    """
+    if not openai_tools:
+        return [], []
+    if not normalized_tool_contracts:
+        return list(openai_tools), []
+
+    visible: list[dict[str, Any]] = []
+    hidden: list[dict[str, str]] = []
+    for tool_def in openai_tools:
+        fn = tool_def.get("function", {}) if isinstance(tool_def, dict) else {}
+        tool_name = str(fn.get("name", "")).strip()
+        if not tool_name:
+            visible.append(tool_def)
+            continue
+
+        contract = normalized_tool_contracts.get(tool_name)
+        if not isinstance(contract, dict):
+            visible.append(tool_def)
+            continue
+
+        validation = _validate_tool_contract_call(
+            tool_name=tool_name,
+            contract=contract,
+            parsed_args=None,
+            available_artifacts=available_artifacts,
+            available_bindings=None,
+        )
+        if validation.is_valid:
+            visible.append(tool_def)
+        else:
+            hidden.append({"tool": tool_name, "reason": validation.reason})
+
+    if not visible:
+        # Failsafe: never present an empty tool surface if tools exist.
+        return list(openai_tools), hidden
+    return visible, hidden
 
 
 def _contract_outputs(contract: dict[str, Any] | None) -> set[str]:
@@ -793,8 +901,10 @@ async def _acall_with_mcp(
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
+    initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     **kwargs: Any,
 ) -> LLMCallResult:
@@ -818,8 +928,10 @@ async def _acall_with_mcp(
         mcp_init_timeout: Seconds to wait for server startup
         tool_result_max_length: Max chars per tool result (truncated if longer)
         enforce_tool_contracts: If True, reject tool calls violating tool contracts.
+        progressive_tool_disclosure: If True, hide tools whose contracts are not currently satisfiable.
         tool_contracts: Optional per-tool composability contracts.
         initial_artifacts: Artifact kinds available before any tool call.
+        initial_bindings: Binding state available before any tool call.
         timeout: Per-turn LLM call timeout
         **kwargs: Passed through to acall_llm (retry, hooks, etc.)
     """
@@ -859,8 +971,10 @@ async def _acall_with_mcp(
             tool_result_max_length,
             max_message_chars,
             enforce_tool_contracts,
+            progressive_tool_disclosure,
             tool_contracts,
             initial_artifacts,
+            initial_bindings,
             timeout,
             kwargs,
         )
@@ -899,8 +1013,10 @@ async def _acall_with_mcp(
                 tool_result_max_length,
                 max_message_chars,
                 enforce_tool_contracts,
+                progressive_tool_disclosure,
                 tool_contracts,
                 initial_artifacts,
+                initial_bindings,
                 timeout,
                 kwargs,
             )
@@ -942,8 +1058,10 @@ async def _agent_loop(
     tool_result_max_length: int,
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
+    initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     kwargs: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
@@ -975,6 +1093,8 @@ async def _agent_loop(
     tool_arg_coercions = 0
     tool_arg_coercion_calls = 0
     tool_arg_validation_rejections = 0
+    tool_disclosure_turns = 0
+    tool_disclosure_hidden_total = 0
     context_compactions = 0
     context_compacted_messages = 0
     context_compacted_chars = 0
@@ -989,6 +1109,8 @@ async def _agent_loop(
     if not available_artifacts:
         available_artifacts = set(DEFAULT_INITIAL_ARTIFACTS)
     initial_artifact_snapshot = sorted(available_artifacts)
+    available_bindings = normalize_bindings(initial_bindings)
+    initial_binding_snapshot = dict(available_bindings)
     artifact_timeline: list[dict[str, Any]] = [{
         "turn": 0,
         "phase": "initial",
@@ -1011,6 +1133,54 @@ async def _agent_loop(
     pending_submit_todo_ids: list[str] = []
 
     kwargs = dict(kwargs or {})
+    trace_id = str(kwargs.get("trace_id", "")).strip() or None
+    task = str(kwargs.get("task", "")).strip() or None
+    foundation_session_id = new_session_id()
+    foundation_actor_id = "agent:mcp_loop:default:1"
+    foundation_events: list[dict[str, Any]] = []
+    foundation_event_types: dict[str, int] = {}
+    foundation_event_validation_errors = 0
+    foundation_events_logged = 0
+    try:
+        from llm_client import io_log as _io_log  # local import to avoid module-cycle hazards
+        active_run_id = _io_log.get_active_experiment_run_id()
+    except Exception:
+        _io_log = None
+        active_run_id = None
+    foundation_run_id = coerce_run_id(
+        active_run_id if isinstance(active_run_id, str) else None,
+        trace_id,
+    )
+
+    def _emit_foundation_event(payload: dict[str, Any]) -> None:
+        nonlocal foundation_event_validation_errors, foundation_events_logged
+        try:
+            validated = validate_foundation_event(payload)
+        except Exception as exc:
+            foundation_event_validation_errors += 1
+            warning = f"FOUNDATION_EVENT_INVALID: {type(exc).__name__}: {exc}"
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            return
+
+        foundation_events.append(validated)
+        event_type = str(validated.get("event_type", "unknown"))
+        foundation_event_types[event_type] = foundation_event_types.get(event_type, 0) + 1
+
+        if _io_log is None:
+            return
+        try:
+            _io_log.log_foundation_event(
+                event=validated,
+                caller="llm_client.mcp_agent",
+                task=task,
+                trace_id=trace_id,
+            )
+            foundation_events_logged += 1
+        except Exception as exc:
+            warning = f"FOUNDATION_EVENT_LOG_FAILED: {type(exc).__name__}: {exc}"
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
 
     if (
         "max_tokens" not in kwargs
@@ -1066,8 +1236,33 @@ async def _agent_loop(
             agent_result.warnings.append(warning)
             logger.warning(warning)
 
+        disclosed_tools = openai_tools
+        hidden_disclosure = []
+        if progressive_tool_disclosure and normalized_tool_contracts:
+            disclosed_tools, hidden_disclosure = _filter_tools_for_disclosure(
+                openai_tools=openai_tools,
+                normalized_tool_contracts=normalized_tool_contracts,
+                available_artifacts=available_artifacts,
+            )
+            if hidden_disclosure:
+                tool_disclosure_turns += 1
+                tool_disclosure_hidden_total += len(hidden_disclosure)
+                hidden_names = [h["tool"] for h in hidden_disclosure]
+                logger.info(
+                    "TOOL_DISCLOSURE turn=%d exposed=%d/%d hidden=%s available_artifacts=%s",
+                    turn + 1,
+                    len(disclosed_tools),
+                    len(openai_tools),
+                    hidden_names,
+                    sorted(available_artifacts),
+                )
+                agent_result.warnings.append(
+                    "TOOL_DISCLOSURE: hidden currently incompatible tools on turn "
+                    f"{turn + 1}: {', '.join(hidden_names)}"
+                )
+
         result = await _inner_acall_llm(
-            effective_model, messages, timeout=timeout, tools=openai_tools, **kwargs,
+            effective_model, messages, timeout=timeout, tools=disclosed_tools, **kwargs,
         )
 
         # Track per-turn diagnostics
@@ -1083,6 +1278,38 @@ async def _agent_loop(
                 f"using {result.model} for remaining turns"
             )
             effective_model = result.model
+
+        _emit_foundation_event(
+            {
+                "event_id": new_event_id(),
+                "event_type": "LLMCalled",
+                "timestamp": now_iso(),
+                "run_id": foundation_run_id,
+                "session_id": foundation_session_id,
+                "actor_id": foundation_actor_id,
+                "operation": {"name": "_inner_acall_llm", "version": None},
+                "inputs": {
+                    "artifact_ids": sorted(available_artifacts),
+                    "params": {
+                        "turn": turn + 1,
+                        "model": effective_model,
+                    },
+                    "bindings": dict(available_bindings),
+                },
+                "outputs": {
+                    "artifact_ids": [],
+                    "payload_hashes": [sha256_text(result.content or "")],
+                },
+                "llm": {
+                    "model_id": result.model,
+                    "content_persisted": "hash_only",
+                    "prompt_sha256": sha256_json(messages),
+                    "response_sha256": sha256_text(result.content or ""),
+                    "token_usage": dict(result.usage or {}),
+                    "cost_usd": float(result.cost or 0.0),
+                },
+            }
+        )
 
         # Accumulate usage
         inp, out, cached, cache_create = _extract_usage(result.usage or {})
@@ -1316,23 +1543,28 @@ async def _agent_loop(
                     filtered_contract_calls.append(tc)
                     continue
 
-                is_valid, reason = _validate_tool_contract_call(
+                validation = _validate_tool_contract_call(
                     tool_name=tool_name,
                     contract=contract,
                     parsed_args=parsed_args,
                     available_artifacts=available_artifacts,
+                    available_bindings=available_bindings,
                 )
-                if is_valid:
+                if validation.is_valid:
                     filtered_contract_calls.append(tc)
                     continue
 
                 contract_rejected_calls += 1
-                err = f"Tool contract violation: {reason}"
+                err = f"Tool contract violation: {validation.reason}"
                 contract_violation_events.append({
                     "turn": turn + 1,
                     "tool": tool_name or "<unknown>",
-                    "reason": reason,
+                    "reason": validation.reason,
+                    "error_code": validation.error_code or "contract_violation",
+                    "failure_phase": validation.failure_phase or "input_validation",
                     "available_artifacts": sorted(available_artifacts),
+                    "available_bindings": dict(available_bindings),
+                    "call_bindings": dict(validation.call_bindings),
                     "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
                 })
                 contract_rejected_records.append(
@@ -1346,8 +1578,41 @@ async def _agent_loop(
                 contract_rejected_messages.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": _json.dumps({"error": err}),
+                    "content": _json.dumps(
+                        {
+                            "error": err,
+                            "error_code": validation.error_code or "contract_violation",
+                            "failure_phase": validation.failure_phase or "input_validation",
+                            "call_bindings": validation.call_bindings,
+                        }
+                    ),
                 })
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": tool_name or "<unknown>", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": parsed_args if isinstance(parsed_args, dict) else {},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": validation.error_code or "contract_violation",
+                            "category": "validation",
+                            "phase": validation.failure_phase or "input_validation",
+                            "retryable": False,
+                            "tool_name": tool_name or "<unknown>",
+                            "user_message": err,
+                            "debug_ref": None,
+                        },
+                    }
+                )
 
             tool_calls_to_execute = filtered_contract_calls
             if contract_rejected_records:
@@ -1439,6 +1704,54 @@ async def _agent_loop(
                     "Update TODO state or change hypotheses before retrying submit/completion.]"
                 ),
             }
+            for rec in suppressed_records:
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": rec.tool or "<unknown>", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": rec.arguments if isinstance(rec.arguments, dict) else {},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": "control_loop_suppressed",
+                            "category": "policy",
+                            "phase": "post_validation",
+                            "retryable": False,
+                            "tool_name": rec.tool or "<unknown>",
+                            "user_message": rec.error or "suppressed",
+                            "debug_ref": None,
+                        },
+                    }
+                )
+
+        for tc in tool_calls_to_execute:
+            tool_name = tc.get("function", {}).get("name", "") or "<unknown>"
+            parsed_args = _extract_tool_call_args(tc)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolCalled",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": tool_name, "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": parsed_args if isinstance(parsed_args, dict) else {},
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                }
+            )
 
         # Execute valid tool calls via executor
         if tool_calls_to_execute:
@@ -1448,10 +1761,69 @@ async def _agent_loop(
         else:
             executed_records, executed_tool_messages = [], []
 
-        if enforce_tool_contracts and normalized_tool_contracts:
-            for record in executed_records:
-                if record.error:
-                    continue
+        for record in executed_records:
+            if record.error:
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": record.tool or "<unknown>", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": record.arguments if isinstance(record.arguments, dict) else {},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": "tool_runtime_error",
+                            "category": "execution",
+                            "phase": "execution",
+                            "retryable": False,
+                            "tool_name": record.tool or "<unknown>",
+                            "user_message": record.error,
+                            "debug_ref": None,
+                        },
+                    }
+                )
+                continue
+
+            observed_bindings = extract_bindings_from_tool_args(record.arguments)
+            merged_bindings = merge_binding_state(
+                available_bindings=available_bindings,
+                observed_bindings=observed_bindings,
+            )
+            if merged_bindings != available_bindings:
+                old_bindings = dict(available_bindings)
+                available_bindings = merged_bindings
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "BindingChanged",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": record.tool or "<unknown>", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": record.arguments if isinstance(record.arguments, dict) else {},
+                            "bindings": old_bindings,
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "binding_change": {
+                            "old_bindings": old_bindings,
+                            "new_bindings": dict(available_bindings),
+                            "reason": "adopted_new_binding_from_successful_tool_call",
+                        },
+                    }
+                )
+
+            produced: set[str] = set()
+            if enforce_tool_contracts and normalized_tool_contracts:
                 produced = _contract_outputs(normalized_tool_contracts.get(record.tool))
                 if produced:
                     available_artifacts.update(produced)
@@ -1462,6 +1834,30 @@ async def _agent_loop(
                         "produced": sorted(produced),
                         "available_artifacts": sorted(available_artifacts),
                     })
+
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ArtifactCreated",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": record.tool or "<unknown>", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": record.arguments if isinstance(record.arguments, dict) else {},
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {
+                        "artifact_ids": sorted(produced),
+                        "payload_hashes": (
+                            [sha256_text(record.result or "")]
+                            if record.result is not None else []
+                        ),
+                    },
+                }
+            )
 
         records = contract_rejected_records + suppressed_records + executed_records
         tool_messages = contract_rejected_messages + suppressed_tool_messages + executed_tool_messages
@@ -1810,12 +2206,22 @@ async def _agent_loop(
     agent_result.metadata["context_compacted_messages"] = context_compacted_messages
     agent_result.metadata["context_compacted_chars"] = context_compacted_chars
     agent_result.metadata["enforce_tool_contracts"] = enforce_tool_contracts
+    agent_result.metadata["progressive_tool_disclosure"] = progressive_tool_disclosure
     agent_result.metadata["tool_contract_rejections"] = contract_rejected_calls
     agent_result.metadata["tool_contract_violation_events"] = contract_violation_events
     agent_result.metadata["tool_contracts_declared"] = sorted(normalized_tool_contracts.keys())
     agent_result.metadata["initial_artifacts"] = initial_artifact_snapshot
     agent_result.metadata["available_artifacts_final"] = sorted(available_artifacts)
     agent_result.metadata["artifact_timeline"] = artifact_timeline
+    agent_result.metadata["initial_bindings"] = initial_binding_snapshot
+    agent_result.metadata["available_bindings_final"] = dict(available_bindings)
+    agent_result.metadata["tool_disclosure_turns"] = tool_disclosure_turns
+    agent_result.metadata["tool_disclosure_hidden_total"] = tool_disclosure_hidden_total
+    agent_result.metadata["foundation_event_count"] = len(foundation_events)
+    agent_result.metadata["foundation_event_types"] = dict(foundation_event_types)
+    agent_result.metadata["foundation_event_validation_errors"] = foundation_event_validation_errors
+    agent_result.metadata["foundation_events_logged"] = foundation_events_logged
+    agent_result.metadata["foundation_events"] = foundation_events
     if tool_call_turns_total > 0:
         agent_result.warnings.append(
             "METRIC: tool_call_empty_text_turns="
@@ -1856,8 +2262,10 @@ async def _acall_with_tools(
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
     max_message_chars: int = DEFAULT_MAX_MESSAGE_CHARS,
     enforce_tool_contracts: bool = DEFAULT_ENFORCE_TOOL_CONTRACTS,
+    progressive_tool_disclosure: bool = DEFAULT_PROGRESSIVE_TOOL_DISCLOSURE,
     tool_contracts: dict[str, dict[str, Any]] | None = None,
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
+    initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     **kwargs: Any,
 ) -> LLMCallResult:
@@ -1874,6 +2282,8 @@ async def _acall_with_tools(
         max_tool_calls: Maximum tool calls before final forced answer. None disables.
         require_tool_reasoning: If True, reject tool calls missing tool_reasoning.
         tool_result_max_length: Max chars per tool result.
+        progressive_tool_disclosure: If True, hide tools whose contracts are not currently satisfiable.
+        initial_bindings: Binding state available before any tool call.
         timeout: Per-turn LLM call timeout.
         **kwargs: Passed through to acall_llm.
     """
@@ -1907,8 +2317,10 @@ async def _acall_with_tools(
         tool_result_max_length,
         max_message_chars,
         enforce_tool_contracts,
+        progressive_tool_disclosure,
         tool_contracts,
         initial_artifacts,
+        initial_bindings,
         timeout,
         kwargs,
     )
