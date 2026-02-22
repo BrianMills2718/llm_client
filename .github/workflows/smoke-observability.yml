@@ -1,0 +1,36 @@
+name: smoke-observability
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  observability-switches:
+    runs-on: ubuntu-latest
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUNBUFFERED: "1"
+      LLM_CLIENT_LOG_ENABLED: "0"
+      LLM_CLIENT_SEMANTICS_TELEMETRY: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Smoke tests with logging/telemetry disabled
+        run: |
+          pytest -q \
+            tests/test_io_log.py::TestLogCall::test_disabled_skips_logging \
+            tests/test_model_identity_contract.py::TestModelIdentityContract::test_semantics_telemetry_disabled_via_env \
+            tests/test_main_semantics.py::test_cmd_semantics_snapshot_appends_jsonl

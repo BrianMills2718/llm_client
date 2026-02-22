@@ -292,3 +292,27 @@ class TestModelIdentityContract:
         assert params["caller"] == "call_llm"
         assert params["config_source"] == "env_or_default"
         assert params["result_model_semantics"] == "resolved"
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_semantics_telemetry_disabled_via_env(
+        self,
+        mock_completion: MagicMock,
+        _mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        monkeypatch.setenv("LLM_CLIENT_SEMANTICS_TELEMETRY", "off")
+        mock_completion.return_value = _mock_response()
+
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="telemetry.disabled",
+            max_budget=0,
+        )
+
+        assert not mock_log_foundation_event.called

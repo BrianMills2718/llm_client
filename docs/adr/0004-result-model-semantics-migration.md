@@ -48,6 +48,9 @@ Negative:
    - Keep default `legacy`.
    - Gather adoption telemetry and issue migration guidance for explicit
      semantics selection.
+   - Collect daily rollups via
+     `python -m llm_client semantics-snapshot` to make the `0.8.0` default
+     decision evidence-based.
    - Telemetry source:
      - foundation event `ConfigChanged`
      - operation `result_model_semantics_adoption`

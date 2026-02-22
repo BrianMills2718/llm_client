@@ -129,3 +129,37 @@ def test_cmd_semantics_table_respects_caller_filter(monkeypatch, capsys) -> None
     assert "call_llm" in out
     assert "requested" in out
     assert "acall_llm" not in out
+
+
+def test_cmd_semantics_snapshot_appends_jsonl(monkeypatch, tmp_path) -> None:
+    db = _make_db()
+    db.execute(
+        "INSERT INTO foundation_events (timestamp, project, event_type, payload, caller, task) VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-02-22T00:00:00Z", "proj", "ConfigChanged", _telemetry_payload(caller="call_llm", source="explicit_config", mode="requested"), "call_llm", "test"),
+    )
+    db.execute(
+        "INSERT INTO foundation_events (timestamp, project, event_type, payload, caller, task) VALUES (?, ?, ?, ?, ?, ?)",
+        ("2026-02-22T00:01:00Z", "proj", "ConfigChanged", _telemetry_payload(caller="acall_llm", source="env_or_default", mode="legacy"), "acall_llm", "test"),
+    )
+    db.commit()
+
+    monkeypatch.setattr(cli, "_connect", lambda: db)
+    out_path = tmp_path / "semantics_adoption.jsonl"
+    args = SimpleNamespace(
+        project=None,
+        caller="call_llm",
+        task=None,
+        days=None,
+        limit=1000,
+        output=str(out_path),
+        print_json=False,
+    )
+    cli.cmd_semantics_snapshot(args)
+
+    lines = out_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["total_events"] == 1
+    assert payload["filters"]["caller"] == "call_llm"
+    assert payload["rows"][0]["caller"] == "call_llm"
+    assert payload["rows"][0]["semantics"] == "requested"

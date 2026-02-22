@@ -28,6 +28,8 @@ Usage:
     python -m llm_client semantics                     # semantics adoption summary
     python -m llm_client semantics --days 14 --format json
     python -m llm_client semantics --caller call_llm
+    python -m llm_client semantics-snapshot           # append daily snapshot row
+    python -m llm_client semantics-snapshot --output /tmp/semantics.jsonl --print-json
 
     python -m llm_client backfill                      # import JSONL → SQLite
     python -m llm_client backfill --clear              # wipe + reimport
@@ -41,6 +43,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 
 
 def _get_db_path() -> Path:
@@ -338,6 +341,15 @@ def cmd_traces(args: argparse.Namespace) -> None:
 
 def cmd_semantics(args: argparse.Namespace) -> None:
     """Summarize result_model_semantics adoption telemetry events."""
+    summary = _collect_semantics_summary(args)
+    if args.format == "json":
+        print(json.dumps(summary, indent=2))
+        return
+    _print_semantics_table(summary, window_days=args.days)
+
+
+def _collect_semantics_summary(args: argparse.Namespace) -> dict[str, Any]:
+    """Collect summarized semantics-adoption telemetry rows."""
     db = _connect()
 
     where_parts = ["event_type = ?"]
@@ -421,18 +433,31 @@ def cmd_semantics(args: argparse.Namespace) -> None:
         key=lambda r: (-int(r["count"]), str(r["caller"]), str(r["config_source"]), str(r["semantics"]))
     )
 
-    if args.format == "json":
-        print(json.dumps({
-            "total_events": total,
-            "first_timestamp": first_ts,
-            "last_timestamp": last_ts,
-            "rows": summary_rows,
-        }, indent=2))
-        return
+    return {
+        "total_events": total,
+        "first_timestamp": first_ts,
+        "last_timestamp": last_ts,
+        "rows": summary_rows,
+        "scanned_rows": len(rows),
+    }
+
+
+def _print_semantics_table(summary: dict[str, Any], *, window_days: int | None) -> None:
+    total = int(summary.get("total_events", 0))
+    scanned_rows = int(summary.get("scanned_rows", 0))
+    first_ts = summary.get("first_timestamp")
+    last_ts = summary.get("last_timestamp")
+    summary_rows = summary.get("rows")
+    if not isinstance(summary_rows, list):
+        summary_rows = []
 
     print("\nSemantics Adoption:")
-    print(f"  events={total}  window_days={args.days if args.days else 'all'}  scanned_rows={len(rows)}")
-    if first_ts and last_ts:
+    print(
+        f"  events={total}  "
+        f"window_days={window_days if window_days else 'all'}  "
+        f"scanned_rows={scanned_rows}"
+    )
+    if isinstance(first_ts, str) and isinstance(last_ts, str):
         print(f"  first={first_ts}  last={last_ts}")
 
     if not summary_rows:
@@ -442,6 +467,8 @@ def cmd_semantics(args: argparse.Namespace) -> None:
     headers = ["Caller", "Config Source", "Semantics", "Count", "Share"]
     col_widths = [len(h) for h in headers]
     for row in summary_rows:
+        if not isinstance(row, dict):
+            continue
         col_widths[0] = max(col_widths[0], len(str(row["caller"])))
         col_widths[1] = max(col_widths[1], len(str(row["config_source"])))
         col_widths[2] = max(col_widths[2], len(str(row["semantics"])))
@@ -460,6 +487,41 @@ def cmd_semantics(args: argparse.Namespace) -> None:
             str(row["count"]),
             f"{float(row['share']):.1%}",
         ))
+
+
+def _default_semantics_snapshot_path() -> Path:
+    """Store snapshots adjacent to the observability SQLite DB."""
+    return _get_db_path().with_name("semantics_adoption_snapshots.jsonl")
+
+
+def cmd_semantics_snapshot(args: argparse.Namespace) -> None:
+    """Append one machine-readable semantics-adoption snapshot."""
+    summary = _collect_semantics_summary(args)
+    now = datetime.now(timezone.utc)
+    output_path = Path(args.output).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    record: dict[str, Any] = {
+        "captured_at": now.isoformat(),
+        "captured_date": now.date().isoformat(),
+        "filters": {
+            "project": args.project,
+            "caller": args.caller,
+            "task": args.task,
+            "days": args.days,
+            "limit": args.limit,
+        },
+    }
+    record.update(summary)
+
+    with output_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True))
+        f.write("\n")
+
+    if args.print_json:
+        print(json.dumps(record, indent=2))
+        return
+    print(f"Wrote semantics snapshot to {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1090,6 +1152,27 @@ def main() -> None:
     sem_p.add_argument("--limit", type=int, default=50000, help="Max foundation_events rows to scan")
     sem_p.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
+    # semantics daily snapshot
+    sem_snap_p = sub.add_parser(
+        "semantics-snapshot",
+        help="Append one JSONL snapshot row for semantics adoption telemetry",
+    )
+    sem_snap_p.add_argument("--project", help="Filter to a specific project")
+    sem_snap_p.add_argument("--caller", help="Filter to a specific caller (e.g., call_llm)")
+    sem_snap_p.add_argument("--task", help="Filter to a specific task")
+    sem_snap_p.add_argument("--days", type=int, help="Only include last N days")
+    sem_snap_p.add_argument("--limit", type=int, default=50000, help="Max foundation_events rows to scan")
+    sem_snap_p.add_argument(
+        "--output",
+        default=str(_default_semantics_snapshot_path()),
+        help="JSONL file path for appended snapshots",
+    )
+    sem_snap_p.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print written snapshot object to stdout",
+    )
+
     # backfill
     backfill_p = sub.add_parser("backfill", help="Import JSONL logs into SQLite")
     backfill_p.add_argument("--clear", action="store_true", help="Wipe DB before importing (avoids dupes)")
@@ -1110,6 +1193,8 @@ def main() -> None:
         cmd_experiments(args)
     elif args.command == "semantics":
         cmd_semantics(args)
+    elif args.command == "semantics-snapshot":
+        cmd_semantics_snapshot(args)
     elif args.command == "backfill":
         cmd_backfill(args)
 

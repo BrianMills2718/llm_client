@@ -25,6 +25,12 @@ All notable changes to `llm-client` are documented in this file.
 - Lightweight semantics-adoption telemetry for migration planning:
   - foundation events (`ConfigChanged`) with caller/source/mode metadata
   - env switch: `LLM_CLIENT_SEMANTICS_TELEMETRY=off`.
+- Semantics snapshot CLI for daily migration tracking:
+  - `python -m llm_client semantics-snapshot`
+  - appends JSONL snapshot records with filters + aggregate adoption summary.
+- GitHub Actions smoke workflow for observability toggles:
+  - `.github/workflows/smoke-observability.yml`
+  - validates telemetry/logging disabled mode.
 
 ### Changed
 
@@ -38,6 +44,8 @@ All notable changes to `llm-client` are documented in this file.
 - Added CLI adoption report:
   - `python -m llm_client semantics`
   - summarizes semantics mode/source usage from `foundation_events`.
+- Added telemetry-off contract test:
+  - `LLM_CLIENT_SEMANTICS_TELEMETRY=off` suppresses foundation event emission.
 
 ### Compatibility Notes
 
