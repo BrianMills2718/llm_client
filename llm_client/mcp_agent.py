@@ -561,14 +561,26 @@ def _effective_contract_requirements(
     args = parsed_args or {}
 
     if tool_name == "chunk_get_text":
-        has_chunk_ids = bool(args.get("chunk_id")) or bool(args.get("chunk_ids"))
-        has_entity_ids = bool(args.get("entity_ids")) or bool(args.get("entity_names"))
-        if has_chunk_ids and not has_entity_ids:
-            return {"CHUNK_SET"}, set()
-        if has_entity_ids and not has_chunk_ids:
-            return {"ENTITY_SET"}, set()
-        if has_chunk_ids and has_entity_ids:
-            return {"CHUNK_SET", "ENTITY_SET"}, set()
+        def _has_values(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (list, tuple, set)):
+                return any(_has_values(item) for item in value)
+            return True
+
+        # Explicit IDs/names are self-contained: the call can be valid even when
+        # the runtime artifact tracker has not yet materialized CHUNK_SET/ENTITY_SET.
+        has_explicit_chunk_refs = _has_values(args.get("chunk_id")) or _has_values(args.get("chunk_ids"))
+        has_explicit_entity_refs = (
+            _has_values(args.get("entity_id"))
+            or _has_values(args.get("entity_ids"))
+            or _has_values(args.get("entity_name"))
+            or _has_values(args.get("entity_names"))
+        )
+        if has_explicit_chunk_refs or has_explicit_entity_refs:
+            return set(), set()
 
     return requires_all, requires_any
 

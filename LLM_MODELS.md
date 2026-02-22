@@ -21,6 +21,7 @@ Models with thinking/effort levels show their best config. Duplicate entries rem
 | **Best mid-tier** | Gemini 3 Flash | Intelligence 46, $1.13, 207 t/s, 1M context |
 | **Cheapest good model** | MiMo-V2-Flash | Intelligence 41, $0.15 (!), 166 t/s. Open-weight. |
 | **Best value per intelligence** | DeepSeek V3.2 | Intelligence 42, $0.32. Open-weight. |
+| **Best reliability for tool loops** | DeepSeek V3.2 (OpenRouter) + fallback | More stable in long agentic tool-call loops than Gemini OpenAI-compat paths in our runs |
 | **Best long context** | Grok 4.1 Fast | 2M context, $0.28, 179 t/s |
 | **Cheapest reasoning** | DeepSeek V3.2 (thinking) | $0.32 blended with CoT |
 | **Best reasoning quality** | o3 | Intelligence 38 (reasoning-focused benchmarks much higher) |
@@ -28,6 +29,22 @@ Models with thinking/effort levels show their best config. Duplicate entries rem
 | **Best open-weight** | GLM-5 | Intelligence 50, MIT license, 744B/44B active |
 | **Cheapest OpenAI** | GPT-5 nano | $0.14, intelligence 27. Good for simple tasks. |
 | **Best free tier** | Gemini 2.5 Flash | Free on Google dev platform |
+
+---
+
+## Reliability Notes (Production)
+
+- Gemini models remain strong for many text/analysis tasks, but in long
+  tool-calling loops they can intermittently return empty content (`200 OK`,
+  no usable text/tool call payload) through compatibility layers.
+- This is not always resolved by naive retries because some failures are
+  deterministic for the current conversation/tool state.
+- Recommended default for tool-heavy automation:
+  1. Primary: `openrouter/deepseek/deepseek-chat`
+  2. Fallback 1: `openrouter/openai/gpt-5-mini`
+  3. Fallback 2: `gemini/gemini-2.5-flash` (optional, for cost/context)
+- If you keep Gemini as primary, require typed failure classification and
+  state-mutating retry/recovery before repeating the same request payload.
 
 ---
 

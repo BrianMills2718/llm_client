@@ -45,6 +45,24 @@ class LLMTransientError(LLMError):
     """Server error (500/502/503), timeout, connection — retry."""
 
 
+class LLMEmptyResponseError(LLMError):
+    """Model returned no text/tool output; retryability depends on classification."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        classification: str,
+        diagnostics: dict | None = None,
+        original: Exception | None = None,
+    ) -> None:
+        super().__init__(message, original=original)
+        self.retryable = retryable
+        self.classification = classification
+        self.diagnostics = diagnostics or {}
+
+
 class LLMModelNotFoundError(LLMError):
     """Model doesn't exist (404)."""
 

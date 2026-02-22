@@ -49,16 +49,21 @@ def test_available_only_false_returns_first():
     assert model == "ollama/llama3.1"
 
 
-@patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}, clear=False)
+@patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=False)
 def test_tier_1_skips_ollama_when_unavailable():
     # mock-ok: ollama availability check is system-dependent
     with patch("llm_client.difficulty._is_ollama_available", return_value=False):
         model = get_model_for_difficulty(1)
-        assert model == "deepseek/deepseek-chat"
+        assert model == "openrouter/deepseek/deepseek-chat"
 
 
-@patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False)
+@patch.dict(
+    "os.environ",
+    {"GEMINI_API_KEY": "test-key", "OPENROUTER_API_KEY": "", "DEEPSEEK_API_KEY": ""},
+    clear=False,
+)
 def test_tier_2_returns_gemini():
+    # Gemini is selected when OpenRouter/DeepSeek creds are unavailable.
     model = get_model_for_difficulty(2)
     assert model == "gemini/gemini-2.5-flash"
 
@@ -83,6 +88,11 @@ def test_no_available_models_raises():
 @patch.dict("os.environ", {"DEEPSEEK_API_KEY": "key"}, clear=False)
 def test_deepseek_available():
     assert _is_model_available("deepseek/deepseek-chat") is True
+
+
+@patch.dict("os.environ", {"OPENROUTER_API_KEY": "key"}, clear=False)
+def test_openrouter_deepseek_available():
+    assert _is_model_available("openrouter/deepseek/deepseek-chat") is True
 
 
 @patch.dict("os.environ", {}, clear=True)

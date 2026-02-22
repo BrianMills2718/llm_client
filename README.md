@@ -65,6 +65,15 @@ Structured-output provider notes:
 - For high-reliability extraction, set a fallback model that handles deep
   schemas well (for example `openrouter/openai/gpt-5-mini`) via
   `fallback_models=[...]` at call sites.
+- For long agentic tool loops, prefer an explicit primary+fallback chain rather
+  than Gemini-only retries:
+  `openrouter/deepseek/deepseek-chat` ->
+  `openrouter/openai/gpt-5-mini` ->
+  `gemini/gemini-2.5-flash` (optional).
+- Optional A/B switch: set `LLM_CLIENT_GEMINI_NATIVE_MODE=on` to route
+  `gemini/*` calls through a direct Gemini REST path (bypassing the
+  OpenAI-chat compatibility layer). Unsupported kwargs automatically fall back
+  to the standard litellm route.
 
 ### Execution mode contract
 

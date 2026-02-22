@@ -52,6 +52,9 @@ import random
 import re
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
@@ -65,6 +68,7 @@ from llm_client import rate_limit as _rate_limit
 from llm_client.errors import (
     LLMBudgetExceededError,
     LLMCapabilityError,
+    LLMEmptyResponseError,
     LLMModelNotFoundError,
     wrap_error,
 )
@@ -78,6 +82,21 @@ litellm.suppress_debug_info = True
 
 # Accounting constants (documented in agent_ecology3/docs/ACCOUNTING_CONSTANTS.md)
 FALLBACK_COST_FLOOR_USD_PER_TOKEN = 0.000001
+GEMINI_NATIVE_MODE_ENV = "LLM_CLIENT_GEMINI_NATIVE_MODE"
+GEMINI_NATIVE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
+    "max_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "stop",
+    "tools",
+    "tool_choice",
+    "thinking",
+})
+OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
+OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
+OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +280,19 @@ _RETRYABLE_PATTERNS = [
     "temporary failure",
 ]
 
+_EMPTY_POLICY_FINISH_REASONS = frozenset({
+    "blocked",
+    "content_filter",
+    "recitation",
+    "safety",
+})
+
+_EMPTY_TOOL_PROTOCOL_FINISH_REASONS = frozenset({
+    "malformed_function_call",
+    "unexpected_tool_call",
+    "too_many_tool_calls",
+})
+
 # Patterns in error messages that indicate permanent failure (never retry).
 # Checked before _RETRYABLE_PATTERNS so they take precedence.
 _NON_RETRYABLE_PATTERNS = [
@@ -280,6 +312,9 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     Uses litellm exception types for reliable classification, with string
     pattern matching as fallback for generic exceptions.
     """
+    if isinstance(error, LLMEmptyResponseError):
+        return bool(error.retryable)
+
     # RuntimeError is used for non-retryable conditions (e.g., truncation)
     if isinstance(error, RuntimeError):
         return False
@@ -328,6 +363,41 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     if extra_patterns:
         patterns = list(patterns) + [p.lower() for p in extra_patterns]
     return any(p in error_str for p in patterns)
+
+
+def _compact_diagnostics(diagnostics: dict[str, Any], *, max_len: int = 600) -> str:
+    """Render diagnostics dict into a bounded JSON string for errors/logging."""
+    try:
+        rendered = _json.dumps(diagnostics, sort_keys=True, ensure_ascii=True, default=str)
+    except Exception:
+        rendered = str(diagnostics)
+    if len(rendered) <= max_len:
+        return rendered
+    return rendered[:max_len] + "...(truncated)"
+
+
+def _raise_empty_response(
+    *,
+    provider: str,
+    classification: str,
+    retryable: bool,
+    diagnostics: dict[str, Any],
+) -> None:
+    """Raise typed empty-response error with structured diagnostics."""
+    payload = dict(diagnostics)
+    payload["provider"] = provider
+    payload["classification"] = classification
+    payload["retryable"] = retryable
+    message = (
+        f"Empty content from LLM [{provider}:{classification} retryable={retryable}] "
+        f"diagnostics={_compact_diagnostics(payload)}"
+    )
+    raise LLMEmptyResponseError(
+        message,
+        retryable=retryable,
+        classification=classification,
+        diagnostics=payload,
+    )
 
 
 # Patterns indicating the provider rejected the JSON schema itself (not a
@@ -834,14 +904,585 @@ def _base_model_name(model: str) -> str:
     return model.lower().rsplit("/", 1)[-1]
 
 
+def _is_image_generation_model(model: str) -> bool:
+    """Best-effort detection for image-generation model families."""
+    base = _base_model_name(model)
+    hints = (
+        "gpt-image",
+        "dall-e",
+        "imagen",
+        "stable-diffusion",
+        "sdxl",
+        "flux",
+    )
+    return any(h in base for h in hints)
+
+
+def _openrouter_routing_enabled() -> bool:
+    """Whether automatic OpenRouter model normalization is enabled."""
+    raw = os.environ.get(OPENROUTER_ROUTING_ENV, "on").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on", ""}:
+        return True
+    logger.warning(
+        "Invalid %s=%r; expected on/off boolean. Defaulting to on.",
+        OPENROUTER_ROUTING_ENV,
+        raw,
+    )
+    return True
+
+
+def _normalize_model_for_routing(model: str) -> str:
+    """Route non-Gemini, non-image model IDs through OpenRouter by default."""
+    raw = str(model or "").strip()
+    if not raw:
+        return raw
+    if not _openrouter_routing_enabled():
+        return raw
+
+    lower = raw.lower()
+    if lower.startswith(("openrouter/", "gemini/")):
+        return raw
+    if lower.startswith(("codex", "claude-code", "openai-agents")):
+        return raw
+    if _is_image_generation_model(raw):
+        return raw
+
+    # Explicit provider/model IDs.
+    if "/" in raw:
+        provider = lower.split("/", 1)[0]
+        if provider in {"openai", "anthropic", "deepseek", "x-ai", "xai", "mistral", "mistralai"}:
+            return f"openrouter/{raw}"
+        return raw
+
+    # Bare model IDs.
+    if lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-embedding-", "text-moderation-")):
+        return f"openrouter/openai/{raw}"
+    if lower.startswith("claude"):
+        return f"openrouter/anthropic/{raw}"
+    if lower.startswith("deepseek"):
+        return f"openrouter/deepseek/{raw}"
+    if lower.startswith("grok"):
+        return f"openrouter/x-ai/{raw}"
+    if lower.startswith("mistral"):
+        return f"openrouter/mistralai/{raw}"
+    return raw
+
+
+def _resolve_api_base_for_model(model: str, api_base: str | None) -> str | None:
+    """Resolve provider API base after model normalization."""
+    if api_base is not None:
+        return api_base
+    if str(model or "").strip().lower().startswith("openrouter/"):
+        return os.environ.get(OPENROUTER_API_BASE_ENV, OPENROUTER_DEFAULT_API_BASE)
+    return None
+
+
+def _is_gemini_model(model: str) -> bool:
+    """Check if model targets Google's Gemini API namespace."""
+    return model.lower().startswith("gemini/")
+
+
+def _gemini_native_mode_enabled() -> bool:
+    """Whether native Gemini REST path is enabled via env flag."""
+    raw = os.environ.get(GEMINI_NATIVE_MODE_ENV, "off").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off", ""}:
+        return False
+    logger.warning(
+        "Invalid %s=%r; expected on/off boolean. Defaulting to off.",
+        GEMINI_NATIVE_MODE_ENV,
+        raw,
+    )
+    return False
+
+
+def _gemini_model_name(model: str) -> str:
+    """Return raw Gemini model id without provider prefix."""
+    if not _is_gemini_model(model):
+        return model
+    return model.split("/", 1)[1]
+
+
+def _as_text_content(content: Any) -> str:
+    """Best-effort conversion of OpenAI-style content into plain text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                elif "content" in item and isinstance(item["content"], str) and item["content"]:
+                    parts.append(item["content"])
+                continue
+            rendered = str(item)
+            if rendered:
+                parts.append(rendered)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _safe_json_object(value: Any) -> dict[str, Any]:
+    """Parse JSON-ish values into dicts for Gemini function args/response."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = _json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"value": parsed}
+        except Exception:
+            return {"value": value}
+    if value is None:
+        return {}
+    return {"value": value}
+
+
+def _convert_tools_for_gemini_native(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI tool schema to Gemini functionDeclarations format."""
+    declarations: list[dict[str, Any]] = []
+    for tool in tools:
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name", "")).strip()
+        if not name:
+            continue
+        decl: dict[str, Any] = {"name": name}
+        description = fn.get("description")
+        if isinstance(description, str) and description.strip():
+            decl["description"] = description
+        parameters = fn.get("parameters")
+        if isinstance(parameters, dict):
+            # Gemini REST accepts JSON schema under "parameters".
+            decl["parameters"] = parameters
+        declarations.append(decl)
+    if not declarations:
+        return []
+    return [{"functionDeclarations": declarations}]
+
+
+def _convert_tool_choice_for_gemini_native(tool_choice: Any) -> dict[str, Any] | None:
+    """Convert OpenAI tool_choice to Gemini toolConfig when possible."""
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        choice = tool_choice.strip().lower()
+        if choice in {"auto", ""}:
+            return None
+        if choice == "none":
+            return {"functionCallingConfig": {"mode": "NONE"}}
+        if choice in {"required", "any"}:
+            return {"functionCallingConfig": {"mode": "ANY"}}
+        return None
+    if isinstance(tool_choice, dict):
+        fn = tool_choice.get("function")
+        if isinstance(fn, dict):
+            name = str(fn.get("name", "")).strip()
+            if name:
+                return {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": [name],
+                    },
+                }
+    return None
+
+
+def _build_gemini_native_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate OpenAI-style messages/tools kwargs into Gemini REST payload."""
+    system_lines: list[str] = []
+    contents: list[dict[str, Any]] = []
+    tool_call_name_by_id: dict[str, str] = {}
+
+    for msg in messages:
+        role = str(msg.get("role", "")).strip().lower()
+        if role == "system":
+            text = _as_text_content(msg.get("content"))
+            if text.strip():
+                system_lines.append(text.strip())
+            continue
+
+        if role == "assistant":
+            parts: list[dict[str, Any]] = []
+            text = _as_text_content(msg.get("content"))
+            if text.strip():
+                parts.append({"text": text})
+
+            raw_tool_calls = msg.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                for idx, tc in enumerate(raw_tool_calls):
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function")
+                    if not isinstance(fn, dict):
+                        continue
+                    name = str(fn.get("name", "")).strip()
+                    if not name:
+                        continue
+                    args = _safe_json_object(fn.get("arguments"))
+                    tc_id = str(tc.get("id", "")).strip() or f"call_{len(tool_call_name_by_id) + idx + 1}"
+                    tool_call_name_by_id[tc_id] = name
+                    parts.append({"functionCall": {"name": name, "args": args}})
+
+            if parts:
+                contents.append({"role": "model", "parts": parts})
+            continue
+
+        if role == "tool":
+            tool_call_id = str(msg.get("tool_call_id", "")).strip()
+            tool_name = str(msg.get("name", "")).strip() or tool_call_name_by_id.get(tool_call_id, "tool_response")
+            response_obj = _safe_json_object(msg.get("content"))
+            contents.append({
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "name": tool_name,
+                        "response": response_obj,
+                    },
+                }],
+            })
+            continue
+
+        # Default: user/unknown roles become user text turns.
+        text = _as_text_content(msg.get("content"))
+        if text.strip():
+            contents.append({"role": "user", "parts": [{"text": text}]})
+
+    if not contents:
+        # Gemini requires at least one content turn.
+        contents = [{"role": "user", "parts": [{"text": ""}]}]
+
+    payload: dict[str, Any] = {"contents": contents}
+    if system_lines:
+        payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_lines)}]}
+
+    tools = kwargs.get("tools")
+    if isinstance(tools, list):
+        gemini_tools = _convert_tools_for_gemini_native(tools)
+        if gemini_tools:
+            payload["tools"] = gemini_tools
+
+    tool_config = _convert_tool_choice_for_gemini_native(kwargs.get("tool_choice"))
+    if tool_config:
+        payload["toolConfig"] = tool_config
+
+    generation_config: dict[str, Any] = {}
+    if "temperature" in kwargs:
+        generation_config["temperature"] = kwargs["temperature"]
+    if "top_p" in kwargs:
+        generation_config["topP"] = kwargs["top_p"]
+    max_tokens = kwargs.get("max_completion_tokens", kwargs.get("max_tokens"))
+    if max_tokens is not None:
+        generation_config["maxOutputTokens"] = int(max_tokens)
+    stop = kwargs.get("stop")
+    if stop is not None:
+        if isinstance(stop, str):
+            generation_config["stopSequences"] = [stop]
+        elif isinstance(stop, list):
+            generation_config["stopSequences"] = [s for s in stop if isinstance(s, str)]
+
+    thinking = kwargs.get("thinking")
+    if isinstance(thinking, dict):
+        budget = thinking.get("budget_tokens", thinking.get("thinkingBudget"))
+        if budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": int(budget)}
+    elif _is_thinking_model(model):
+        # Match default llm_client behavior: disable thinking budget unless explicitly set.
+        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
+    if generation_config:
+        payload["generationConfig"] = generation_config
+
+    return payload
+
+
+def _gemini_native_unsupported_kwargs(kwargs: dict[str, Any]) -> list[str]:
+    """Return sorted kwargs that native Gemini path does not currently support."""
+    return sorted(k for k in kwargs.keys() if k not in GEMINI_NATIVE_SUPPORTED_KWARGS)
+
+
+def _should_use_gemini_native(
+    model: str,
+    *,
+    api_base: str | None,
+    kwargs: dict[str, Any],
+    warning_sink: list[str] | None = None,
+) -> bool:
+    """Determine if call should route through native Gemini REST path."""
+    if not _is_gemini_model(model):
+        return False
+    if not _gemini_native_mode_enabled():
+        return False
+    if api_base is not None:
+        msg = (
+            f"GEMINI_NATIVE_SKIP: api_base provided for {model}; "
+            "using litellm completion route"
+        )
+        logger.info(msg)
+        if warning_sink is not None:
+            warning_sink.append(msg)
+        return False
+    unsupported = _gemini_native_unsupported_kwargs(kwargs)
+    if unsupported:
+        msg = (
+            f"GEMINI_NATIVE_SKIP: unsupported kwargs for {model}: "
+            + ", ".join(unsupported)
+        )
+        logger.info(msg)
+        if warning_sink is not None:
+            warning_sink.append(msg)
+        return False
+    return True
+
+
+def _gemini_native_usage(response: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Gemini usageMetadata into llm_client usage schema."""
+    raw = response.get("usageMetadata", {}) if isinstance(response, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    prompt_tokens = int(raw.get("promptTokenCount", raw.get("inputTokenCount", 0)) or 0)
+    completion_tokens = int(raw.get("candidatesTokenCount", raw.get("outputTokenCount", 0)) or 0)
+    total_tokens = int(raw.get("totalTokenCount", prompt_tokens + completion_tokens) or 0)
+    cached_tokens = int(raw.get("cachedContentTokenCount", 0) or 0)
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "prompt_tokens_details": {"cached_tokens": cached_tokens},
+        "cache_creation_input_tokens": 0,
+    }
+
+
+def _build_result_from_gemini_native(
+    response: dict[str, Any],
+    model: str,
+    warnings: list[str] | None = None,
+) -> LLMCallResult:
+    """Build ``LLMCallResult`` from native Gemini REST response payload."""
+    candidates = response.get("candidates") if isinstance(response, dict) else None
+    if not isinstance(candidates, list) or not candidates:
+        _raise_empty_response(
+            provider="gemini_native",
+            classification="provider_empty_candidates",
+            retryable=True,
+            diagnostics={
+                "model": model,
+                "has_candidates": isinstance(candidates, list),
+                "candidate_count": len(candidates) if isinstance(candidates, list) else 0,
+                "has_prompt_feedback": isinstance(response.get("promptFeedback"), dict),
+            },
+        )
+
+    first = candidates[0] if isinstance(candidates[0], dict) else {}
+    finish_raw = str(first.get("finishReason", "")).strip()
+    finish_reason = finish_raw.lower()
+    content_obj = first.get("content")
+    parts = content_obj.get("parts", []) if isinstance(content_obj, dict) else []
+    prompt_feedback = response.get("promptFeedback", {}) if isinstance(response, dict) else {}
+    block_reason = ""
+    block_reason_message = ""
+    if isinstance(prompt_feedback, dict):
+        block_reason = str(prompt_feedback.get("blockReason", "")).strip()
+        block_reason_message = str(prompt_feedback.get("blockReasonMessage", "")).strip()
+
+    text_segments: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    blocked_safety_categories: list[str] = []
+    for idx, part in enumerate(parts):
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            text_segments.append(text)
+        fn_call = part.get("functionCall")
+        if isinstance(fn_call, dict):
+            name = str(fn_call.get("name", "")).strip()
+            if not name:
+                continue
+            args = fn_call.get("args", {})
+            args_json = args if isinstance(args, str) else _json.dumps(args)
+            tool_calls.append({
+                "id": f"gemini_fn_{idx}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": args_json,
+                },
+            })
+    safety_ratings = first.get("safetyRatings")
+    if isinstance(safety_ratings, list):
+        for sr in safety_ratings:
+            if not isinstance(sr, dict):
+                continue
+            if sr.get("blocked") is True:
+                category = str(sr.get("category", "unknown")).strip() or "unknown"
+                blocked_safety_categories.append(category)
+
+    content = "".join(text_segments).strip()
+    if finish_reason in {"max_tokens", "max_output_tokens"} and not tool_calls:
+        raise RuntimeError(
+            f"LLM response truncated ({len(content)} chars). "
+            "Increase max_tokens or simplify the prompt."
+        )
+
+    if not content and not tool_calls:
+        diagnostics = {
+            "model": model,
+            "finish_reason": finish_raw or "unknown",
+            "prompt_block_reason": block_reason or None,
+            "prompt_block_reason_message": block_reason_message or None,
+            "blocked_safety_categories": blocked_safety_categories,
+            "candidate_count": len(candidates),
+            "parts_count": len(parts),
+        }
+        if (
+            block_reason
+            or blocked_safety_categories
+            or finish_reason in _EMPTY_POLICY_FINISH_REASONS
+        ):
+            _raise_empty_response(
+                provider="gemini_native",
+                classification="provider_policy_block",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        if finish_reason in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
+            _raise_empty_response(
+                provider="gemini_native",
+                classification="provider_tool_protocol",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        _raise_empty_response(
+            provider="gemini_native",
+            classification="provider_empty_unknown",
+            retryable=True,
+            diagnostics=diagnostics,
+        )
+
+    usage = _gemini_native_usage(response)
+    total = int(usage.get("total_tokens", 0) or 0)
+    cost = total * FALLBACK_COST_FLOOR_USD_PER_TOKEN
+    result_finish = "tool_calls" if tool_calls else (finish_reason or "stop")
+
+    return LLMCallResult(
+        content=content,
+        usage=usage,
+        cost=cost,
+        model=model,
+        tool_calls=tool_calls,
+        finish_reason=result_finish,
+        raw_response=response,
+        warnings=warnings or [],
+        cost_source="fallback_estimate",
+    )
+
+
+def _call_gemini_native(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Direct Gemini REST call (bypasses OpenAI-compat translation layers)."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is required for native Gemini mode")
+
+    gemini_model = _gemini_model_name(model)
+    url = GEMINI_NATIVE_ENDPOINT.format(model=urllib.parse.quote(gemini_model, safe=".-_"))
+    payload = _build_gemini_native_payload(model, messages, kwargs)
+    body = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url=url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        message = f"Gemini native HTTP {e.code}: {err_body[:500]}"
+        if e.code in {429, 500, 502, 503, 504}:
+            raise ValueError(message)
+        raise RuntimeError(message)
+    except urllib.error.URLError as e:
+        raise ValueError(f"Gemini native network error: {e}") from e
+
+    try:
+        parsed = _json.loads(raw)
+    except Exception as e:
+        raise ValueError("Gemini native returned invalid JSON") from e
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+        err = parsed["error"]
+        code = int(err.get("code", 0) or 0)
+        status = str(err.get("status", "")).strip()
+        msg = str(err.get("message", "")).strip()
+        rendered = f"Gemini native API error {code} {status}: {msg}".strip()
+        if code in {429, 500, 502, 503, 504} or ("rate" in msg.lower() and "limit" in msg.lower()):
+            raise ValueError(rendered)
+        raise RuntimeError(rendered)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Gemini native returned non-object JSON payload")
+    return parsed
+
+
+async def _acall_gemini_native(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Async wrapper around native Gemini REST call."""
+    return await asyncio.to_thread(
+        _call_gemini_native,
+        model,
+        messages,
+        timeout=timeout,
+        kwargs=kwargs,
+    )
+
+
 def _build_model_chain(model: str, fallback_models: list[str] | None) -> list[str]:
     """Build primary+fallback model chain with stable de-duplication."""
     chain: list[str] = []
     seen: set[str] = set()
     for candidate in [model] + (fallback_models or []):
-        normalized = str(candidate or "").strip()
-        if not normalized:
+        raw = str(candidate or "").strip()
+        if not raw:
             continue
+        normalized = _normalize_model_for_routing(raw)
+        if normalized != raw:
+            logger.info("ROUTE_MODEL: %s -> %s", raw, normalized)
         key = normalized.lower()
         if key in seen:
             continue
@@ -1488,7 +2129,37 @@ def _build_result_from_responses(
 
     # Empty content is retryable only when no tool calls were emitted.
     if not content.strip() and not tool_calls:
-        raise ValueError("Empty content from LLM (responses API)")
+        detail_reason = ""
+        if status == "incomplete":
+            details = getattr(response, "incomplete_details", None)
+            detail_reason = str(getattr(details, "reason", "")).strip().lower() if details else ""
+        diagnostics = {
+            "model": model,
+            "status": status,
+            "finish_reason": finish_reason,
+            "incomplete_reason": detail_reason or None,
+            "output_items": len(getattr(response, "output", None) or []),
+        }
+        if detail_reason in _EMPTY_POLICY_FINISH_REASONS or finish_reason in _EMPTY_POLICY_FINISH_REASONS:
+            _raise_empty_response(
+                provider="responses_api",
+                classification="provider_policy_block",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        if detail_reason in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
+            _raise_empty_response(
+                provider="responses_api",
+                classification="provider_tool_protocol",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        _raise_empty_response(
+            provider="responses_api",
+            classification="provider_empty_unknown",
+            retryable=True,
+            diagnostics=diagnostics,
+        )
 
     logger.debug(
         "LLM call (responses API): model=%s tokens=%d cost=$%.6f status=%s tool_calls=%d",
@@ -1615,6 +2286,21 @@ def _prepare_call_kwargs(
     return call_kwargs
 
 
+def _provider_hint_from_response(response: Any) -> str | None:
+    """Best-effort provider hint from litellm response metadata."""
+    hidden = getattr(response, "_hidden_params", None)
+    if isinstance(hidden, dict):
+        for key in ("custom_llm_provider", "provider", "litellm_provider"):
+            value = hidden.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for attr in ("provider", "llm_provider"):
+        value = getattr(response, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _build_result_from_response(
     response: Any,
     model: str,
@@ -1638,7 +2324,33 @@ def _build_result_from_response(
     # Note: finish_reason="tool_calls" with no actual tool_calls is a model bug
     # that should be retried, so we only check for actual tool_calls presence.
     if not content.strip() and not tool_calls:
-        raise ValueError("Empty content from LLM")
+        finish_norm = str(finish_reason).strip().lower()
+        diagnostics = {
+            "model": model,
+            "provider_hint": _provider_hint_from_response(response),
+            "finish_reason": finish_reason or None,
+            "has_tool_calls": bool(tool_calls),
+        }
+        if finish_norm in _EMPTY_POLICY_FINISH_REASONS:
+            _raise_empty_response(
+                provider="litellm_completion",
+                classification="provider_policy_block",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        if finish_norm in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
+            _raise_empty_response(
+                provider="litellm_completion",
+                classification="provider_tool_protocol",
+                retryable=False,
+                diagnostics=diagnostics,
+            )
+        _raise_empty_response(
+            provider="litellm_completion",
+            classification="provider_empty_unknown",
+            retryable=True,
+            diagnostics=diagnostics,
+        )
 
     logger.debug(
         "LLM call: model=%s tokens=%d cost=$%.6f finish=%s",
@@ -1770,6 +2482,12 @@ def call_llm(
         _inner_named["execution_mode"] = execution_mode
 
     models = _build_model_chain(model, fallback_models)
+    primary_model = models[0] if models else _normalize_model_for_routing(model)
+    fallback_chain = models[1:] or None
+    if fallback_chain is not None:
+        _inner_named["fallback_models"] = fallback_chain
+    else:
+        _inner_named.pop("fallback_models", None)
     _validate_execution_contract(
         models=models,
         execution_mode=execution_mode,
@@ -1790,9 +2508,9 @@ def call_llm(
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
         result = _run_sync(_acall_with_mcp(
-            model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
+            primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         ))
-        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
+        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
     # Direct Python tool loop: non-agent model + python_tools → in-process tool-calling loop
@@ -1813,13 +2531,13 @@ def call_llm(
         if not supports_tool_calling(model):
             from llm_client.tool_shim import _acall_with_tool_shim
             result = _run_sync(_acall_with_tool_shim(
-                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             ))
         else:
             result = _run_sync(_acall_with_tools(
-                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             ))
-        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
+        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -1831,6 +2549,17 @@ def call_llm(
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        use_gemini_native = (
+            not is_agent
+            and not use_responses
+            and _should_use_gemini_native(
+                current_model,
+                api_base=current_api_base,
+                kwargs=kwargs,
+                warning_sink=_warnings,
+            )
+        )
 
         if is_agent:
             pass  # No kwargs preparation needed for agent models
@@ -1838,17 +2567,19 @@ def call_llm(
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
-                api_base=api_base,
+                api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
             )
+        elif use_gemini_native:
+            pass  # Native Gemini route builds payload per-attempt.
         else:
             call_kwargs = _prepare_call_kwargs(
                 current_model, messages,
                 timeout=timeout,
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
-                api_base=api_base,
+                api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
             )
@@ -1887,6 +2618,15 @@ def call_llm(
                         with _rate_limit.acquire(current_model):
                             response = litellm.responses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model, warnings=_warnings)
+                    elif use_gemini_native:
+                        with _rate_limit.acquire(current_model):
+                            response = _call_gemini_native(
+                                current_model,
+                                messages,
+                                timeout=timeout,
+                                kwargs=kwargs,
+                            )
+                        result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
                     else:
                         with _rate_limit.acquire(current_model):
                             response = litellm.completion(**call_kwargs)
@@ -2009,6 +2749,7 @@ def call_llm_structured(
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = cache.get(key)
@@ -2036,7 +2777,7 @@ def call_llm_structured(
                 schema = _strict_json_schema(response_model.model_json_schema())
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
-                    timeout=timeout, api_base=api_base, kwargs=kwargs,
+                    timeout=timeout, api_base=current_api_base, kwargs=kwargs,
                     warning_sink=_warnings,
                 )
                 resp_kwargs["text"] = {
@@ -2105,7 +2846,7 @@ def call_llm_structured(
                     timeout=timeout,
                     num_retries=r.max_retries,
                     reasoning_effort=reasoning_effort,
-                    api_base=api_base,
+                    api_base=current_api_base,
                     kwargs=kwargs,
                     warning_sink=_warnings,
                 )
@@ -2185,7 +2926,7 @@ def call_llm_structured(
                     timeout=timeout,
                     num_retries=r.max_retries,
                     reasoning_effort=reasoning_effort,
-                    api_base=api_base,
+                    api_base=current_api_base,
                     kwargs=kwargs,
                     warning_sink=_warnings,
                 )
@@ -2416,6 +3157,12 @@ async def acall_llm(
         _inner_named["execution_mode"] = execution_mode
 
     models = _build_model_chain(model, fallback_models)
+    primary_model = models[0] if models else _normalize_model_for_routing(model)
+    fallback_chain = models[1:] or None
+    if fallback_chain is not None:
+        _inner_named["fallback_models"] = fallback_chain
+    else:
+        _inner_named.pop("fallback_models", None)
     _validate_execution_contract(
         models=models,
         execution_mode=execution_mode,
@@ -2435,9 +3182,9 @@ async def acall_llm(
             if k in remaining:
                 mcp_kw[k] = remaining.pop(k)
         result = await _acall_with_mcp(
-            model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
+            primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         )
-        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
+        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 
     # Direct Python tool loop: non-agent model + python_tools → in-process tool-calling loop
@@ -2457,13 +3204,13 @@ async def acall_llm(
         if not supports_tool_calling(model):
             from llm_client.tool_shim import _acall_with_tool_shim
             result = await _acall_with_tool_shim(
-                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             )
         else:
             result = await _acall_with_tools(
-                model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
+                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             )
-        _io_log.log_call(model=model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
+        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -2475,6 +3222,17 @@ async def acall_llm(
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        use_gemini_native = (
+            not is_agent
+            and not use_responses
+            and _should_use_gemini_native(
+                current_model,
+                api_base=current_api_base,
+                kwargs=kwargs,
+                warning_sink=_warnings,
+            )
+        )
 
         if is_agent:
             pass  # No kwargs preparation needed for agent models
@@ -2482,17 +3240,19 @@ async def acall_llm(
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
-                api_base=api_base,
+                api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
             )
+        elif use_gemini_native:
+            pass  # Native Gemini route builds payload per-attempt.
         else:
             call_kwargs = _prepare_call_kwargs(
                 current_model, messages,
                 timeout=timeout,
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
-                api_base=api_base,
+                api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
             )
@@ -2531,6 +3291,15 @@ async def acall_llm(
                         async with _rate_limit.aacquire(current_model):
                             response = await litellm.aresponses(**call_kwargs)
                         result = _build_result_from_responses(response, current_model, warnings=_warnings)
+                    elif use_gemini_native:
+                        async with _rate_limit.aacquire(current_model):
+                            response = await _acall_gemini_native(
+                                current_model,
+                                messages,
+                                timeout=timeout,
+                                kwargs=kwargs,
+                            )
+                        result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
                     else:
                         async with _rate_limit.aacquire(current_model):
                             response = await litellm.acompletion(**call_kwargs)
@@ -2653,6 +3422,7 @@ async def acall_llm_structured(
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = await _async_cache_get(cache, key)
@@ -2680,7 +3450,7 @@ async def acall_llm_structured(
                 schema = _strict_json_schema(response_model.model_json_schema())
                 resp_kwargs = _prepare_responses_kwargs(
                     current_model, messages,
-                    timeout=timeout, api_base=api_base, kwargs=kwargs,
+                    timeout=timeout, api_base=current_api_base, kwargs=kwargs,
                     warning_sink=_warnings,
                 )
                 resp_kwargs["text"] = {
@@ -2749,7 +3519,7 @@ async def acall_llm_structured(
                     timeout=timeout,
                     num_retries=r.max_retries,
                     reasoning_effort=reasoning_effort,
-                    api_base=api_base,
+                    api_base=current_api_base,
                     kwargs=kwargs,
                     warning_sink=_warnings,
                 )
@@ -2829,7 +3599,7 @@ async def acall_llm_structured(
                     timeout=timeout,
                     num_retries=r.max_retries,
                     reasoning_effort=reasoning_effort,
-                    api_base=api_base,
+                    api_base=current_api_base,
                     kwargs=kwargs,
                     warning_sink=_warnings,
                 )
@@ -3321,12 +4091,13 @@ def stream_llm(
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
             timeout=timeout,
             num_retries=0,
             reasoning_effort=reasoning_effort,
-            api_base=api_base,
+            api_base=current_api_base,
             kwargs=kwargs,
             warning_sink=_warnings,
         )
@@ -3422,12 +4193,13 @@ async def astream_llm(
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
+        current_api_base = _resolve_api_base_for_model(current_model, api_base)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
             timeout=timeout,
             num_retries=0,
             reasoning_effort=reasoning_effort,
-            api_base=api_base,
+            api_base=current_api_base,
             kwargs=kwargs,
             warning_sink=_warnings,
         )

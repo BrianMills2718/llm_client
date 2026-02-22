@@ -36,6 +36,7 @@ from llm_client import (
 )
 from llm_client.mcp_agent import (
     MCP_LOOP_KWARGS,
+    _effective_contract_requirements,
     _extract_usage,
     _mcp_tool_to_openai,
     _truncate,
@@ -133,6 +134,35 @@ class TestExtractUsage:
         assert out == 100
         assert cached == 400
         assert cache_create == 50
+
+
+class TestDynamicContractRequirements:
+    def test_chunk_get_text_explicit_chunk_id_is_self_contained(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text",
+            {"requires_all": ["CHUNK_SET"], "requires_any": ["ENTITY_SET"]},
+            {"chunk_id": "chunk_84"},
+        )
+        assert requires_all == set()
+        assert requires_any == set()
+
+    def test_chunk_get_text_explicit_entity_id_alias_is_self_contained(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text",
+            {"requires_all": ["ENTITY_SET"]},
+            {"entity_id": "godiva"},
+        )
+        assert requires_all == set()
+        assert requires_any == set()
+
+    def test_chunk_get_text_without_explicit_refs_uses_contract(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text",
+            {"requires_all": ["CHUNK_SET"], "requires_any": ["ENTITY_SET"]},
+            {},
+        )
+        assert requires_all == {"CHUNK_SET"}
+        assert requires_any == {"ENTITY_SET"}
 
 
 class TestTruncate:

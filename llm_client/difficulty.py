@@ -6,7 +6,7 @@ available model at each tier, with support for local models via ollama.
 Usage:
     from llm_client.difficulty import get_model_for_difficulty, DifficultyTier
 
-    model = get_model_for_difficulty(2)  # → "gemini/gemini-2.5-flash"
+    model = get_model_for_difficulty(2)  # → "openrouter/deepseek/deepseek-chat"
     model = get_model_for_difficulty(1)  # → "ollama/llama3.1" if available, else deepseek
     model = get_model_for_difficulty(0)  # → None (scripted, no LLM needed)
 """
@@ -47,6 +47,7 @@ DEFAULT_TIERS: list[dict[str, Any]] = [
         "description": "Simple: formatting, template fill, structured extraction",
         "models": [
             "ollama/llama3.1",
+            "openrouter/deepseek/deepseek-chat",
             "deepseek/deepseek-chat",
             "gpt-5-nano",
             "gemini/gemini-2.5-flash-lite",
@@ -56,6 +57,7 @@ DEFAULT_TIERS: list[dict[str, Any]] = [
         "tier": 2,
         "description": "Moderate: entity extraction, classification, analysis",
         "models": [
+            "openrouter/deepseek/deepseek-chat",
             "gemini/gemini-2.5-flash",
             "deepseek/deepseek-chat",
             "gpt-5-mini",
@@ -109,6 +111,7 @@ def _is_model_available(model: str) -> bool:
         return True  # Agent SDKs use their own auth
     # Map model prefix to env var
     prefix_to_env: dict[str, str] = {
+        "openrouter/": "OPENROUTER_API_KEY",
         "deepseek/": "DEEPSEEK_API_KEY",
         "gemini/": "GEMINI_API_KEY",
         "gpt-": "OPENAI_API_KEY",
