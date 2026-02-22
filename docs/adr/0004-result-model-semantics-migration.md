@@ -41,10 +41,19 @@ Negative:
 
 ## Migration Plan
 
-1. `0.6.x`: default remains `legacy`; document opt-in semantics.
-2. Next minor: gather adoption telemetry and compatibility feedback.
-3. Future major/minor decision: consider changing default only with
-   compatibility flag retained for one release cycle.
+1. `0.6.1` (2026-02-22):
+   - Ship typed semantics controls and additive identity fields.
+   - Keep default `legacy`.
+2. `0.7.x` (target window: March-April 2026):
+   - Keep default `legacy`.
+   - Gather adoption telemetry and issue migration guidance for explicit
+     semantics selection.
+3. `0.8.0` (target window: Q2 2026):
+   - Flip default to `requested`.
+   - Retain explicit `legacy` compatibility mode for one full minor cycle.
+4. `1.0.0` (target window: Q3 2026):
+   - Remove `legacy` default behavior.
+   - Keep `requested` and `resolved` as supported explicit semantics.
 
 ## Testing Contract
 

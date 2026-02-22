@@ -25,7 +25,15 @@ The staged refactor has proceeded beyond week-1 stabilization:
    - additive alias `execution_model`
    - opt-in `result.model` semantics override via typed config/env.
 6. Follow-up ADR added: `docs/adr/0004-result-model-semantics-migration.md`.
-7. Current test status: `pytest -q` => `757 passed, 1 skipped`.
+7. Release follow-up completed:
+   - `CHANGELOG.md` added with `0.6.1` entry.
+   - `pyproject.toml` version advanced to `0.6.1`.
+8. `result.model` migration timeline is now explicit:
+   - `0.6.1`: default `legacy`
+   - `0.7.x`: migration guidance + adoption monitoring
+   - `0.8.0` target: default `requested` with `legacy` compatibility mode
+   - `1.0.0` target: remove `legacy` default behavior
+9. Current test status: `pytest -q` => `757 passed, 1 skipped`.
 
 ## 1. Why We Need Advice
 
@@ -39,7 +47,7 @@ We want advice on:
 
 ## 2. What This Project Is
 
-This is a Python package (`llm-client`, version `0.6.0`) that wraps `litellm` and agent SDKs behind a unified interface.
+This is a Python package (`llm-client`, version `0.6.1`) that wraps `litellm` and agent SDKs behind a unified interface.
 
 Core capabilities:
 1. Sync + async LLM calls.

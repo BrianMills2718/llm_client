@@ -2,6 +2,11 @@
 
 Thin wrapper around [litellm](https://github.com/BerriAI/litellm). Swap models by changing one string.
 
+## Release notes
+
+- Current version: `0.6.1`
+- Latest changes are tracked in `CHANGELOG.md`.
+
 ## Install
 
 ```bash
@@ -67,6 +72,21 @@ Model identity fields on results:
 - `result.resolved_model` / `result.execution_model` (terminal executed model)
 - `result.routing_trace` (routing/fallback metadata)
 - `result.warning_records` (machine-readable `LLMC_WARN_*` warnings)
+
+Model-semantics env override:
+
+```bash
+export LLM_CLIENT_RESULT_MODEL_SEMANTICS=legacy      # default
+# or
+export LLM_CLIENT_RESULT_MODEL_SEMANTICS=requested
+export LLM_CLIENT_RESULT_MODEL_SEMANTICS=resolved
+```
+
+Planned migration timeline:
+- `0.6.x`: default stays `legacy` (compatibility-first).
+- `0.7.x`: emit migration guidance and monitor adoption of explicit semantics.
+- `0.8.0` (target): flip default to `requested`; keep `legacy` as opt-in compatibility.
+- `1.0.0` (target): remove `legacy` default behavior after one full compatibility cycle.
 
 ### Structured output (Pydantic)
 

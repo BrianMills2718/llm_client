@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-client"
-version = "0.6.0"
+version = "0.6.1"
 description = "Thin LLM client wrapping litellm + agent SDKs. Swap models by changing one string."
 requires-python = ">=3.10"
 dependencies = [
