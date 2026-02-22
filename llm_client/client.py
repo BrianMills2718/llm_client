@@ -57,7 +57,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
 
@@ -103,6 +103,7 @@ OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
 REQUIRE_TAGS_ENV = "LLM_CLIENT_REQUIRE_TAGS"
 AGENT_RETRY_SAFE_ENV = "LLM_CLIENT_AGENT_RETRY_SAFE"
+SEMANTICS_TELEMETRY_ENV = "LLM_CLIENT_SEMANTICS_TELEMETRY"
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +263,83 @@ def _mark_cache_hit(result: LLMCallResult) -> LLMCallResult:
         marginal_cost=0.0,
         cost_source="cache_hit",
     )
+
+
+_SEMANTICS_ADOPTION_LOCK = threading.Lock()
+_SEMANTICS_ADOPTION_COUNTS: Counter[tuple[str, str, str]] = Counter()
+
+
+def _semantics_telemetry_enabled() -> bool:
+    raw = os.environ.get(SEMANTICS_TELEMETRY_ENV, "1").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on", ""}:
+        return True
+    logger.warning(
+        "Invalid %s=%r; expected on/off boolean. Defaulting to on.",
+        SEMANTICS_TELEMETRY_ENV,
+        raw,
+    )
+    return True
+
+
+def _record_semantics_adoption(
+    *,
+    cfg: ClientConfig,
+    explicit_config: bool,
+    caller: str,
+    task: str | None,
+    trace_id: str | None,
+) -> None:
+    """Emit lightweight, metadata-only telemetry for semantics adoption."""
+    mode = str(cfg.result_model_semantics)
+    source = "explicit_config" if explicit_config else "env_or_default"
+
+    with _SEMANTICS_ADOPTION_LOCK:
+        key = (caller, source, mode)
+        _SEMANTICS_ADOPTION_COUNTS[key] += 1
+        observed_count = int(_SEMANTICS_ADOPTION_COUNTS[key])
+
+    if not _semantics_telemetry_enabled():
+        return
+
+    try:
+        from llm_client.foundation import coerce_run_id, new_event_id, new_session_id, now_iso
+
+        event = {
+            "event_id": new_event_id(),
+            "event_type": "ConfigChanged",
+            "timestamp": now_iso(),
+            "run_id": coerce_run_id(None, trace_id),
+            "session_id": new_session_id(),
+            "actor_id": "llm_client:semantics_telemetry",
+            "operation": {
+                "name": "result_model_semantics_adoption",
+                "version": "0.6.1",
+            },
+            "inputs": {
+                "artifact_ids": [],
+                "params": {
+                    "caller": caller,
+                    "config_source": source,
+                    "result_model_semantics": mode,
+                    "observed_count": observed_count,
+                },
+                "bindings": {},
+            },
+            "outputs": {
+                "artifact_ids": [],
+                "payload_hashes": [],
+            },
+        }
+        _io_log.log_foundation_event(
+            event=event,
+            caller=caller,
+            task=task,
+            trace_id=trace_id,
+        )
+    except Exception:
+        logger.debug("semantics-adoption telemetry emit failed", exc_info=True)
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -2840,6 +2918,7 @@ def call_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -2850,6 +2929,13 @@ def call_llm(
         task, trace_id, max_budget, caller="call_llm",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="call_llm",
+        task=task,
+        trace_id=trace_id,
+    )
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -3210,6 +3296,7 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -3219,6 +3306,13 @@ def call_llm_structured(
         task, trace_id, max_budget, caller="call_llm_structured",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="call_llm_structured",
+        task=task,
+        trace_id=trace_id,
+    )
     plan = resolve_call(
         CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
@@ -3714,6 +3808,7 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -3724,6 +3819,13 @@ async def acall_llm(
         task, trace_id, max_budget, caller="acall_llm",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="acall_llm",
+        task=task,
+        trace_id=trace_id,
+    )
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -4082,6 +4184,7 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -4091,6 +4194,13 @@ async def acall_llm_structured(
         task, trace_id, max_budget, caller="acall_llm_structured",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="acall_llm_structured",
+        task=task,
+        trace_id=trace_id,
+    )
     plan = resolve_call(
         CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
@@ -4876,6 +4986,7 @@ def stream_llm(
         LLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
@@ -4884,6 +4995,13 @@ def stream_llm(
         task, trace_id, max_budget, caller="stream_llm",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="stream_llm",
+        task=task,
+        trace_id=trace_id,
+    )
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -5007,6 +5125,7 @@ async def astream_llm(
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
+    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
@@ -5015,6 +5134,13 @@ async def astream_llm(
         task, trace_id, max_budget, caller="astream_llm",
     )
     _check_budget(trace_id, max_budget)
+    _record_semantics_adoption(
+        cfg=cfg,
+        explicit_config=explicit_config,
+        caller="astream_llm",
+        task=task,
+        trace_id=trace_id,
+    )
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)

@@ -22,6 +22,9 @@ All notable changes to `llm-client` are documented in this file.
   - `LLMCallResult.warning_records`
   - stable warning codes (`LLMC_WARN_*`)
 - Deterministic tool-call compliance gate (`llm_client.compliance_gate`).
+- Lightweight semantics-adoption telemetry for migration planning:
+  - foundation events (`ConfigChanged`) with caller/source/mode metadata
+  - env switch: `LLM_CLIENT_SEMANTICS_TELEMETRY=off`.
 
 ### Changed
 

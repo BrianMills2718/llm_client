@@ -48,6 +48,10 @@ Negative:
    - Keep default `legacy`.
    - Gather adoption telemetry and issue migration guidance for explicit
      semantics selection.
+   - Telemetry source:
+     - foundation event `ConfigChanged`
+     - operation `result_model_semantics_adoption`
+     - params: caller, config_source, result_model_semantics, observed_count.
 3. `0.8.0` (target window: Q2 2026):
    - Flip default to `requested`.
    - Retain explicit `legacy` compatibility mode for one full minor cycle.

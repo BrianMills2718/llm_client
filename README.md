@@ -82,6 +82,17 @@ export LLM_CLIENT_RESULT_MODEL_SEMANTICS=requested
 export LLM_CLIENT_RESULT_MODEL_SEMANTICS=resolved
 ```
 
+Semantics adoption telemetry:
+- Metadata-only adoption telemetry is emitted as foundation events
+  (`event_type="ConfigChanged"`, operation `result_model_semantics_adoption`).
+- Captured fields: caller, config source (`explicit_config` or `env_or_default`),
+  selected semantics mode, and in-process observed count.
+- Disable with:
+
+```bash
+export LLM_CLIENT_SEMANTICS_TELEMETRY=off
+```
+
 Planned migration timeline:
 - `0.6.x`: default stays `legacy` (compatibility-first).
 - `0.7.x`: emit migration guidance and monitor adoption of explicit semantics.

@@ -229,3 +229,66 @@ class TestModelIdentityContract:
             rec.get("code") == "LLMC_WARN_MODEL_OUTCLASSED"
             for rec in result.warning_records
         )
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_semantics_telemetry_event_for_explicit_config(
+        self,
+        mock_completion: MagicMock,
+        _mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        mock_completion.return_value = _mock_response()
+
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="telemetry.explicit.config",
+            max_budget=0,
+            config=ClientConfig(
+                routing_policy="direct",
+                result_model_semantics="requested",
+            ),
+        )
+
+        assert mock_log_foundation_event.called
+        event = mock_log_foundation_event.call_args.kwargs["event"]
+        assert event["event_type"] == "ConfigChanged"
+        assert event["operation"]["name"] == "result_model_semantics_adoption"
+        params = event["inputs"]["params"]
+        assert params["caller"] == "call_llm"
+        assert params["config_source"] == "explicit_config"
+        assert params["result_model_semantics"] == "requested"
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_semantics_telemetry_event_for_env_default_config(
+        self,
+        mock_completion: MagicMock,
+        _mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        monkeypatch.setenv("LLM_CLIENT_RESULT_MODEL_SEMANTICS", "resolved")
+        mock_completion.return_value = _mock_response()
+
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="telemetry.env.default",
+            max_budget=0,
+        )
+
+        assert mock_log_foundation_event.called
+        event = mock_log_foundation_event.call_args.kwargs["event"]
+        params = event["inputs"]["params"]
+        assert params["caller"] == "call_llm"
+        assert params["config_source"] == "env_or_default"
+        assert params["result_model_semantics"] == "resolved"

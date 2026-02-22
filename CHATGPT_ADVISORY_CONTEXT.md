@@ -33,7 +33,12 @@ The staged refactor has proceeded beyond week-1 stabilization:
    - `0.7.x`: migration guidance + adoption monitoring
    - `0.8.0` target: default `requested` with `legacy` compatibility mode
    - `1.0.0` target: remove `legacy` default behavior
-9. Current test status: `pytest -q` => `757 passed, 1 skipped`.
+9. Semantics adoption telemetry is implemented:
+   - metadata-only foundation event (`ConfigChanged`)
+   - operation `result_model_semantics_adoption`
+   - params: caller, config_source, result_model_semantics, observed_count
+   - opt-out: `LLM_CLIENT_SEMANTICS_TELEMETRY=off`
+10. Current test status: `pytest -q` => `760 passed, 1 skipped`.
 
 ## 1. Why We Need Advice
 
