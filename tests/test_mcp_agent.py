@@ -955,8 +955,8 @@ class TestAcallWithMcp:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 class TestRouting:
+    @pytest.mark.asyncio
     async def test_non_agent_with_mcp_routes_to_loop(self) -> None:
         """Non-agent model + mcp_servers → MCP agent loop."""
         with patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop:
@@ -981,6 +981,7 @@ class TestRouting:
             assert call_kwargs.kwargs.get("max_turns") == 5
             assert call_kwargs.kwargs.get("max_tool_calls") == 7
 
+    @pytest.mark.asyncio
     async def test_agent_model_with_mcp_skips_loop(self) -> None:
         """Agent model + mcp_servers → existing agent SDK path (not MCP loop)."""
         with (
@@ -1001,6 +1002,7 @@ class TestRouting:
             mock_loop.assert_not_called()
             mock_route.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_no_mcp_servers_normal_routing(self) -> None:
         """No mcp_servers → normal litellm routing."""
         with (
@@ -1049,6 +1051,7 @@ class TestRouting:
             # _run_sync wraps the async call
             mock_loop.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_mcp_kwargs_popped_from_inner_calls(self) -> None:
         """MCP-specific kwargs don't leak to inner acall_llm."""
         with patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop:
