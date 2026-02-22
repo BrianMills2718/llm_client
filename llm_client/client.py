@@ -13,7 +13,8 @@ Features:
 - Three-tier routing: Agent SDK → Responses API → Chat Completions
 - Smart retry with jittered exponential backoff on transient errors,
   empty responses, and JSON parse failures
-- Automatic Responses API routing for GPT-5 models (litellm.responses)
+- Automatic Responses API routing for bare GPT-5 models
+  (litellm.responses; when OpenRouter auto-routing is off)
 - Agent SDK routing for "claude-code" and "codex" models
 - Thinking model detection (Gemini 3/4 → budget_tokens: 0)
 - Fallback models — automatic failover to secondary models
@@ -52,6 +53,7 @@ import random
 import re
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,8 +64,10 @@ from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
 import litellm
 from pydantic import BaseModel
 
+from llm_client.config import ClientConfig, ResultModelSemantics
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
+from llm_client.routing import CallRequest, resolve_api_base_for_model, resolve_call
 
 from llm_client.errors import (
     LLMBudgetExceededError,
@@ -97,6 +101,8 @@ GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
 OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
 OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
+REQUIRE_TAGS_ENV = "LLM_CLIENT_REQUIRE_TAGS"
+AGENT_RETRY_SAFE_ENV = "LLM_CLIENT_AGENT_RETRY_SAFE"
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +131,14 @@ class LLMCallResult:
     usage: dict[str, Any]
     cost: float
     model: str
+    requested_model: str | None = None
+    """Raw model string provided at the public API boundary."""
+    resolved_model: str | None = None
+    """Best-effort model string used for the successful terminal attempt."""
+    execution_model: str | None = None
+    """Alias for resolved terminal model, kept additive for migration clarity."""
+    routing_trace: dict[str, Any] | None = field(default=None, repr=False)
+    """Optional routing/fallback trace for contract characterization and debugging."""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
     raw_response: Any = field(default=None, repr=False)
@@ -132,6 +146,8 @@ class LLMCallResult:
     """Diagnostic warnings accumulated during retry/fallback/routing.
     Empty list on clean calls. Populated with RETRY/FALLBACK/STICKY_FALLBACK
     messages when non-obvious decisions occurred."""
+    warning_records: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    """Machine-readable warning records (code/category/message/remediation)."""
     full_text: str | None = field(default=None, repr=False)
     """For agent SDKs: full conversation text (all assistant messages).
     ``content`` holds only the final assistant message.
@@ -148,6 +164,8 @@ class LLMCallResult:
     def __post_init__(self) -> None:
         if self.marginal_cost is None:
             self.marginal_cost = 0.0 if self.cache_hit else float(self.cost)
+        if self.execution_model is None and self.resolved_model is not None:
+            self.execution_model = self.resolved_model
 
 
 @dataclass
@@ -246,6 +264,222 @@ def _mark_cache_hit(result: LLMCallResult) -> LLMCallResult:
     )
 
 
+def _routing_policy_label(config: ClientConfig | None = None) -> str:
+    """Return a stable routing-policy label for result tracing."""
+    if config is not None:
+        return "openrouter_on" if config.routing_policy == "openrouter" else "openrouter_off"
+    return "openrouter_on" if _openrouter_routing_enabled() else "openrouter_off"
+
+
+def _build_routing_trace(
+    *,
+    requested_model: str,
+    attempted_models: list[str] | None = None,
+    selected_model: str | None = None,
+    requested_api_base: str | None = None,
+    effective_api_base: str | None = None,
+    sticky_fallback: bool | None = None,
+    routing_policy: str | None = None,
+) -> dict[str, Any]:
+    """Build a minimal routing trace for week-1 contract characterization."""
+    trace: dict[str, Any] = {"routing_policy": routing_policy or _routing_policy_label()}
+    attempts = [m for m in (attempted_models or []) if isinstance(m, str) and m.strip()]
+    if attempts:
+        trace["attempted_models"] = attempts
+        if requested_model != attempts[0]:
+            trace["normalized_from"] = requested_model
+            trace["normalized_to"] = attempts[0]
+    if selected_model:
+        trace["selected_model"] = selected_model
+    if sticky_fallback is not None:
+        trace["sticky_fallback"] = bool(sticky_fallback)
+    if (
+        requested_api_base is None
+        and effective_api_base is not None
+    ):
+        trace["api_base_injected"] = True
+    elif requested_api_base is not None:
+        trace["api_base_injected"] = False
+    return trace
+
+
+def _warning_record(
+    *,
+    code: str,
+    category: str,
+    message: str,
+    field_path: str | None = None,
+    remediation: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "code": code,
+        "category": category,
+        "message": message,
+    }
+    if field_path:
+        record["field_path"] = field_path
+    if remediation:
+        record["remediation"] = remediation
+    return record
+
+
+def _warning_record_from_message(message: str) -> dict[str, Any] | None:
+    text = str(message or "")
+    if text.startswith("RETRY "):
+        return _warning_record(
+            code="LLMC_WARN_RETRY",
+            category="RuntimeWarning",
+            message=text,
+            remediation="Inspect transient provider/network conditions.",
+        )
+    if text.startswith("FALLBACK:"):
+        return _warning_record(
+            code="LLMC_WARN_FALLBACK",
+            category="UserWarning",
+            message=text,
+            remediation="Check primary model/provider health and fallback policy.",
+        )
+    if text.startswith("STICKY_FALLBACK:"):
+        return _warning_record(
+            code="LLMC_WARN_STICKY_FALLBACK",
+            category="UserWarning",
+            message=text,
+            remediation="Investigate persistent failures on the requested primary model.",
+        )
+    if text.startswith("AUTO_TAG:"):
+        return _warning_record(
+            code="LLMC_WARN_AUTO_TAG",
+            category="UserWarning",
+            message=text,
+            remediation="Pass explicit task/trace_id/max_budget for deterministic observability.",
+        )
+    if text.startswith("AGENT_RETRY_DISABLED:"):
+        return _warning_record(
+            code="LLMC_WARN_AGENT_RETRY_DISABLED",
+            category="UserWarning",
+            message=text,
+            remediation="Enable agent_retry_safe only for read-only/idempotent agent runs.",
+        )
+    if text.startswith("GEMINI_NATIVE_SKIP:"):
+        return _warning_record(
+            code="LLMC_WARN_GEMINI_NATIVE_SKIP",
+            category="UserWarning",
+            message=text,
+            remediation="Adjust kwargs or api_base to use native Gemini path.",
+        )
+    if text.startswith("TOOL_DISCLOSURE:"):
+        return _warning_record(
+            code="LLMC_WARN_TOOL_DISCLOSURE",
+            category="UserWarning",
+            message=text,
+        )
+    return None
+
+
+def _model_warning_record(requested_model: str) -> dict[str, Any] | None:
+    lower = str(requested_model or "").lower()
+    for pattern in _DEPRECATED_MODELS:
+        if pattern in lower and not any(
+            exc in lower and exc != pattern
+            for exc in _DEPRECATED_MODEL_EXCEPTIONS
+        ):
+            return _warning_record(
+                code="LLMC_WARN_MODEL_DEPRECATED",
+                category="DeprecationWarning",
+                message=f"Model {requested_model} is deprecated/outclassed.",
+                field_path="model",
+            )
+    for pattern in _WARNED_MODELS:
+        if pattern in lower and not any(
+            exc in lower and exc != pattern
+            for exc in _DEPRECATED_MODEL_EXCEPTIONS
+        ):
+            return _warning_record(
+                code="LLMC_WARN_MODEL_OUTCLASSED",
+                category="UserWarning",
+                message=f"Model {requested_model} is outclassed but still allowed.",
+                field_path="model",
+            )
+    return None
+
+
+def _merge_warning_records(
+    *,
+    existing: list[dict[str, Any]] | None,
+    warnings: list[str] | None,
+    requested_model: str,
+    extra_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = [dict(r) for r in (existing or []) if isinstance(r, dict)]
+    seen: set[tuple[str, str]] = set()
+    for rec in merged:
+        seen.add((str(rec.get("code", "")), str(rec.get("message", ""))))
+
+    for msg in warnings or []:
+        rec = _warning_record_from_message(msg)
+        if rec is None:
+            continue
+        key = (str(rec.get("code", "")), str(rec.get("message", "")))
+        if key not in seen:
+            merged.append(rec)
+            seen.add(key)
+
+    model_rec = _model_warning_record(requested_model)
+    if model_rec is not None:
+        key = (str(model_rec.get("code", "")), str(model_rec.get("message", "")))
+        if key not in seen:
+            merged.append(model_rec)
+            seen.add(key)
+
+    for rec in extra_records or []:
+        if not isinstance(rec, dict):
+            continue
+        key = (str(rec.get("code", "")), str(rec.get("message", "")))
+        if key not in seen:
+            merged.append(dict(rec))
+            seen.add(key)
+    return merged
+
+
+def _annotate_result_identity(
+    result: LLMCallResult,
+    *,
+    requested_model: str,
+    resolved_model: str | None = None,
+    routing_trace: dict[str, Any] | None = None,
+    warning_records: list[dict[str, Any]] | None = None,
+    result_model_semantics: ResultModelSemantics = "legacy",
+) -> LLMCallResult:
+    """Attach additive model-identity fields without changing legacy model semantics."""
+    if result.requested_model is None:
+        result.requested_model = requested_model
+    if resolved_model is not None and result.resolved_model is None:
+        result.resolved_model = resolved_model
+    if result.execution_model is None and result.resolved_model is not None:
+        result.execution_model = result.resolved_model
+
+    if routing_trace:
+        existing = result.routing_trace if isinstance(result.routing_trace, dict) else {}
+        merged = dict(existing)
+        merged.update(routing_trace)
+        result.routing_trace = merged
+
+    if result_model_semantics == "requested":
+        result.model = result.requested_model or requested_model
+    elif result_model_semantics == "resolved":
+        resolved_identity = result.resolved_model or resolved_model
+        if resolved_identity:
+            result.model = resolved_identity
+
+    result.warning_records = _merge_warning_records(
+        existing=result.warning_records,
+        warnings=result.warnings,
+        requested_model=result.requested_model or requested_model,
+        extra_records=warning_records,
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Retry infrastructure
 # ---------------------------------------------------------------------------
@@ -306,6 +540,38 @@ _NON_RETRYABLE_PATTERNS = [
 ]
 
 
+def _retry_delay_hint_seconds(error: Exception) -> float | None:
+    """Parse provider retry-after hints from an error message (seconds)."""
+    text = str(error)
+    if not text:
+        return None
+
+    patterns = [
+        r'retry(?:ing)?\s+(?:in|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hour|hours)?',
+        r'"retryDelay"\s*:\s*"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)?"',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            value = float(m.group(1))
+        except Exception:
+            continue
+        unit = (m.group(2) or "s").strip().lower()
+        if unit in {"ms"}:
+            value /= 1000.0
+        elif unit in {"m", "min", "mins", "minute", "minutes"}:
+            value *= 60.0
+        elif unit in {"h", "hour", "hours"}:
+            value *= 3600.0
+        if value <= 0:
+            continue
+        # Bound absurd delays while still honoring provider windows.
+        return min(value, 600.0)
+    return None
+
+
 def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
     """Check if an error is transient and worth retrying.
 
@@ -337,6 +603,10 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
         # or permanent quota exhaustion. Check the message.
         if isinstance(error, _lt.RateLimitError):
             error_str = str(error).lower()
+            # Provider-specified retry windows are considered retryable even
+            # when the message includes "quota" phrasing.
+            if _retry_delay_hint_seconds(error) is not None:
+                return True
             if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
                 return False
             return True  # transient rate limit — retry
@@ -549,6 +819,22 @@ def _check_retryable(error: Exception, policy: RetryPolicy) -> bool:
     return _is_retryable(error, extra_patterns=policy.retry_on)
 
 
+def _compute_retry_delay(
+    *,
+    attempt: int,
+    error: Exception,
+    policy: RetryPolicy,
+    backoff_fn: Callable[[int, float, float], float],
+) -> float:
+    """Compute retry delay, honoring provider retry hints when present."""
+    delay = backoff_fn(attempt, policy.base_delay, policy.max_delay)
+    hint = _retry_delay_hint_seconds(error)
+    if hint is None:
+        return delay
+    # Use the larger delay to avoid hammering providers before their window.
+    return max(delay, hint)
+
+
 # ---------------------------------------------------------------------------
 # Async cache helpers
 # ---------------------------------------------------------------------------
@@ -592,6 +878,10 @@ class LLMStream:
         task: str | None = None,
         trace_id: str | None = None,
         warnings: list[str] | None = None,
+        requested_model: str | None = None,
+        resolved_model: str | None = None,
+        routing_trace: dict[str, Any] | None = None,
+        result_model_semantics: ResultModelSemantics = "legacy",
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -600,6 +890,10 @@ class LLMStream:
         self._task = task
         self._trace_id = trace_id
         self._warnings = warnings or []
+        self._requested_model = requested_model
+        self._resolved_model = resolved_model
+        self._routing_trace = routing_trace
+        self._result_model_semantics = result_model_semantics
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -645,11 +939,21 @@ class LLMStream:
             usage=usage,
             cost=cost,
             model=self._model,
+            requested_model=self._requested_model,
+            resolved_model=self._resolved_model or self._model,
+            routing_trace=self._routing_trace,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
             warnings=self._warnings,
             cost_source=cost_source,
+        )
+        self._result = _annotate_result_identity(
+            self._result,
+            requested_model=self._requested_model or self._model,
+            resolved_model=self._resolved_model or self._model,
+            routing_trace=self._routing_trace,
+            result_model_semantics=self._result_model_semantics,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -681,6 +985,10 @@ class AsyncLLMStream:
         task: str | None = None,
         trace_id: str | None = None,
         warnings: list[str] | None = None,
+        requested_model: str | None = None,
+        resolved_model: str | None = None,
+        routing_trace: dict[str, Any] | None = None,
+        result_model_semantics: ResultModelSemantics = "legacy",
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -689,6 +997,10 @@ class AsyncLLMStream:
         self._task = task
         self._trace_id = trace_id
         self._warnings = warnings or []
+        self._requested_model = requested_model
+        self._resolved_model = resolved_model
+        self._routing_trace = routing_trace
+        self._result_model_semantics = result_model_semantics
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -734,11 +1046,21 @@ class AsyncLLMStream:
             usage=usage,
             cost=cost,
             model=self._model,
+            requested_model=self._requested_model,
+            resolved_model=self._resolved_model or self._model,
+            routing_trace=self._routing_trace,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
             warnings=self._warnings,
             cost_source=cost_source,
+        )
+        self._result = _annotate_result_identity(
+            self._result,
+            requested_model=self._requested_model or self._model,
+            resolved_model=self._resolved_model or self._model,
+            routing_trace=self._routing_trace,
+            result_model_semantics=self._result_model_semantics,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -934,49 +1256,26 @@ def _openrouter_routing_enabled() -> bool:
 
 
 def _normalize_model_for_routing(model: str) -> str:
-    """Route non-Gemini, non-image model IDs through OpenRouter by default."""
-    raw = str(model or "").strip()
-    if not raw:
-        return raw
-    if not _openrouter_routing_enabled():
-        return raw
+    """Route non-Gemini, non-image model IDs through OpenRouter by default.
 
-    lower = raw.lower()
-    if lower.startswith(("openrouter/", "gemini/")):
-        return raw
-    if lower.startswith(("codex", "claude-code", "openai-agents")):
-        return raw
-    if _is_image_generation_model(raw):
-        return raw
-
-    # Explicit provider/model IDs.
-    if "/" in raw:
-        provider = lower.split("/", 1)[0]
-        if provider in {"openai", "anthropic", "deepseek", "x-ai", "xai", "mistral", "mistralai"}:
-            return f"openrouter/{raw}"
-        return raw
-
-    # Bare model IDs.
-    if lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-embedding-", "text-moderation-")):
-        return f"openrouter/openai/{raw}"
-    if lower.startswith("claude"):
-        return f"openrouter/anthropic/{raw}"
-    if lower.startswith("deepseek"):
-        return f"openrouter/deepseek/{raw}"
-    if lower.startswith("grok"):
-        return f"openrouter/x-ai/{raw}"
-    if lower.startswith("mistral"):
-        return f"openrouter/mistralai/{raw}"
-    return raw
+    Note: with default routing enabled, bare ``gpt-5*`` model IDs are normalized
+    to ``openrouter/openai/gpt-5*`` and therefore use completion routing instead
+    of OpenAI Responses API. Disable routing via
+    ``LLM_CLIENT_OPENROUTER_ROUTING=off`` to keep bare OpenAI IDs.
+    """
+    cfg = ClientConfig.from_env()
+    req = CallRequest(model=model)
+    return resolve_call(req, cfg).primary_model
 
 
-def _resolve_api_base_for_model(model: str, api_base: str | None) -> str | None:
+def _resolve_api_base_for_model(
+    model: str,
+    api_base: str | None,
+    config: ClientConfig | None = None,
+) -> str | None:
     """Resolve provider API base after model normalization."""
-    if api_base is not None:
-        return api_base
-    if str(model or "").strip().lower().startswith("openrouter/"):
-        return os.environ.get(OPENROUTER_API_BASE_ENV, OPENROUTER_DEFAULT_API_BASE)
-    return None
+    cfg = config or ClientConfig.from_env()
+    return resolve_api_base_for_model(model, api_base, cfg)
 
 
 def _is_gemini_model(model: str) -> bool:
@@ -1389,6 +1688,7 @@ def _build_result_from_gemini_native(
         usage=usage,
         cost=cost,
         model=model,
+        resolved_model=model,
         tool_calls=tool_calls,
         finish_reason=result_finish,
         raw_response=response,
@@ -1472,23 +1772,52 @@ async def _acall_gemini_native(
     )
 
 
-def _build_model_chain(model: str, fallback_models: list[str] | None) -> list[str]:
+def _build_model_chain(
+    model: str,
+    fallback_models: list[str] | None,
+    config: ClientConfig | None = None,
+) -> list[str]:
     """Build primary+fallback model chain with stable de-duplication."""
-    chain: list[str] = []
-    seen: set[str] = set()
-    for candidate in [model] + (fallback_models or []):
-        raw = str(candidate or "").strip()
-        if not raw:
-            continue
-        normalized = _normalize_model_for_routing(raw)
-        if normalized != raw:
-            logger.info("ROUTE_MODEL: %s -> %s", raw, normalized)
-        key = normalized.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        chain.append(normalized)
-    return chain
+    cfg = config or ClientConfig.from_env()
+    plan = resolve_call(
+        CallRequest(model=model, fallback_models=fallback_models),
+        cfg,
+    )
+    normalization_events = plan.routing_trace.get("normalization_events")
+    if isinstance(normalization_events, list):
+        for event in normalization_events:
+            if not isinstance(event, dict):
+                continue
+            raw = str(event.get("from", "")).strip()
+            normalized = str(event.get("to", "")).strip()
+            if raw and normalized and raw != normalized:
+                logger.info("ROUTE_MODEL: %s -> %s", raw, normalized)
+    return plan.models
+
+
+def _truthy_env(value: Any) -> bool:
+    """Parse common truthy env-style values."""
+    if isinstance(value, bool):
+        return value
+    raw = str(value or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _tags_strict_mode(task: str | None) -> bool:
+    """Whether missing task/trace/budget tags should raise instead of defaulting."""
+    if _truthy_env(os.environ.get(REQUIRE_TAGS_ENV)):
+        return True
+    if _truthy_env(os.environ.get("CI")):
+        return True
+    t = str(task or "").strip().lower()
+    return t.startswith(("benchmark", "bench", "eval", "ci"))
+
+
+def _agent_retry_safe_enabled(explicit: Any | None) -> bool:
+    """Whether retries on agent SDK calls are allowed."""
+    if explicit is not None:
+        return _truthy_env(explicit)
+    return _truthy_env(os.environ.get(AGENT_RETRY_SAFE_ENV))
 
 
 def _strip_incompatible_sampling_params(model: str, call_kwargs: dict[str, Any]) -> list[str]:
@@ -1801,8 +2130,18 @@ def _check_model_deprecation(model: str) -> None:
             return
 
 
-def _require_tags(task: str | None, trace_id: str | None, max_budget: float | None) -> None:
-    """Enforce that every LLM call has task, trace_id, and max_budget."""
+def _require_tags(
+    task: str | None,
+    trace_id: str | None,
+    max_budget: float | None,
+    *,
+    caller: str,
+) -> tuple[str, str, float, list[str]]:
+    """Resolve observability tags.
+
+    In strict mode (CI, benchmark/eval tasks, or ``LLM_CLIENT_REQUIRE_TAGS=1``),
+    missing tags raise. Otherwise they are auto-populated.
+    """
     missing = []
     if not task:
         missing.append("task")
@@ -1810,17 +2149,39 @@ def _require_tags(task: str | None, trace_id: str | None, max_budget: float | No
         missing.append("trace_id")
     if max_budget is None:
         missing.append("max_budget")
-    if missing:
+    strict_mode = _tags_strict_mode(task)
+    if strict_mode and missing:
         raise ValueError(
             f"Missing required kwargs: {', '.join(missing)}. "
-            f"Every call_llm/acall_llm call must include task= (what kind of work), "
-            f"trace_id= (deterministic ID for this unit of work), and "
-            f"max_budget= (cost limit in USD, 0 for unlimited)."
+            "Strict tag enforcement is enabled "
+            f"(set {REQUIRE_TAGS_ENV}=0 to disable outside CI/benchmark)."
         )
-    _io_log.enforce_feature_profile(task, caller="llm_client.client")
+
+    resolved_task = str(task).strip() if task else "adhoc"
+    resolved_trace_id = (
+        str(trace_id).strip() if trace_id else f"auto/{caller}/{uuid.uuid4().hex[:12]}"
+    )
+    if max_budget is None:
+        resolved_max_budget = 0.0
+    else:
+        try:
+            resolved_max_budget = float(max_budget)
+        except (TypeError, ValueError):
+            raise ValueError(f"max_budget must be numeric, got {max_budget!r}") from None
+
+    auto_warnings: list[str] = []
+    if not task:
+        auto_warnings.append("AUTO_TAG: task=adhoc")
+    if not trace_id:
+        auto_warnings.append(f"AUTO_TAG: trace_id={resolved_trace_id}")
+    if max_budget is None:
+        auto_warnings.append("AUTO_TAG: max_budget=0 (unlimited)")
+
+    _io_log.enforce_feature_profile(resolved_task, caller="llm_client.client")
     # Optional org-level guardrail: benchmark/eval tasks should run inside an
     # active experiment context so observability is complete and comparable.
-    _io_log.enforce_experiment_context(task, caller="llm_client.client")
+    _io_log.enforce_experiment_context(resolved_task, caller="llm_client.client")
+    return resolved_task, resolved_trace_id, resolved_max_budget, auto_warnings
 
 
 def _check_budget(trace_id: str, max_budget: float) -> None:
@@ -2175,6 +2536,7 @@ def _build_result_from_responses(
         usage=usage,
         cost=cost,
         model=model,
+        resolved_model=model,
         tool_calls=tool_calls,
         finish_reason=finish_reason,
         raw_response=response,
@@ -2301,15 +2663,41 @@ def _provider_hint_from_response(response: Any) -> str | None:
     return None
 
 
+def _first_choice_or_empty_error(
+    response: Any,
+    *,
+    model: str,
+    provider: str,
+) -> Any:
+    """Return first completion choice or raise a typed empty-response error."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or not choices:
+        _raise_empty_response(
+            provider=provider,
+            classification="provider_empty_candidates",
+            retryable=True,
+            diagnostics={
+                "model": model,
+                "provider_hint": _provider_hint_from_response(response),
+                "has_choices": isinstance(choices, list),
+                "choice_count": len(choices) if isinstance(choices, list) else 0,
+            },
+        )
+    return choices[0]
+
+
 def _build_result_from_response(
     response: Any,
     model: str,
     warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Extract all fields from a litellm response into LLMCallResult."""
-    content: str = response.choices[0].message.content or ""
-    finish_reason: str = response.choices[0].finish_reason or ""
-    tool_calls = _extract_tool_calls(response.choices[0].message)
+    first_choice = _first_choice_or_empty_error(
+        response, model=model, provider="litellm_completion"
+    )
+    content: str = first_choice.message.content or ""
+    finish_reason: str = first_choice.finish_reason or ""
+    tool_calls = _extract_tool_calls(first_choice.message)
     usage = _extract_usage(response)
     cost, cost_source = _parse_cost_result(_compute_cost(response))
 
@@ -2365,6 +2753,7 @@ def _build_result_from_response(
         usage=usage,
         cost=cost,
         model=model,
+        resolved_model=model,
         tool_calls=tool_calls,
         finish_reason=finish_reason,
         raw_response=response,
@@ -2396,6 +2785,7 @@ def call_llm(
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM. Routes by model string: litellm, Responses API, or Agent SDK.
@@ -2403,8 +2793,12 @@ def call_llm(
     Just change the model string to switch providers. Everything else
     stays the same. Three-tier routing:
     - "claude-code[/model]" → Claude Agent SDK
-    - "gpt-5*" → litellm.responses() (Responses API)
+    - Bare "gpt-5*" → litellm.responses() (Responses API)
     - Everything else → litellm.completion()
+
+    By default, OpenRouter normalization is enabled
+    (``LLM_CLIENT_OPENROUTER_ROUTING=on``), so bare OpenAI/Anthropic model IDs
+    are rewritten to ``openrouter/...`` and use completion routing.
 
     Retries up to num_retries times with jittered exponential backoff on
     transient errors (rate limits, timeouts, empty responses, JSON parse
@@ -2446,11 +2840,15 @@ def call_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    agent_retry_safe = kwargs.pop("agent_retry_safe", None)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="call_llm",
+    )
     _check_budget(trace_id, max_budget)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
@@ -2480,10 +2878,16 @@ def call_llm(
         _inner_named["hooks"] = hooks
     if execution_mode != "text":
         _inner_named["execution_mode"] = execution_mode
+    _inner_named["config"] = cfg
 
-    models = _build_model_chain(model, fallback_models)
-    primary_model = models[0] if models else _normalize_model_for_routing(model)
-    fallback_chain = models[1:] or None
+    plan = resolve_call(
+        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
+        cfg,
+    )
+    models = plan.models
+    primary_model = plan.primary_model
+    fallback_chain = plan.fallback_models or None
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
     if fallback_chain is not None:
         _inner_named["fallback_models"] = fallback_chain
     else:
@@ -2510,6 +2914,21 @@ def call_llm(
         result = _run_sync(_acall_with_mcp(
             primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         ))
+        result = _annotate_result_identity(
+            result,
+            requested_model=model,
+            resolved_model=result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[primary_model],
+                selected_model=result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
+                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
+        )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
@@ -2537,6 +2956,21 @@ def call_llm(
             result = _run_sync(_acall_with_tools(
                 primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             ))
+        result = _annotate_result_identity(
+            result,
+            requested_model=model,
+            resolved_model=result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[primary_model],
+                selected_model=result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
+                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
+        )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
@@ -2544,12 +2978,13 @@ def call_llm(
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
+    agent_retry_safe_enabled = _agent_retry_safe_enabled(agent_retry_safe)
 
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
             and not use_responses
@@ -2589,6 +3024,20 @@ def call_llm(
             cached = cache.get(key)
             if cached is not None:
                 cached_result = _mark_cache_hit(cached)
+                cached_result = _annotate_result_identity(
+                    cached_result,
+                    requested_model=model,
+                    resolved_model=current_model,
+                    routing_trace=_build_routing_trace(
+                        requested_model=model,
+                        attempted_models=models[:model_idx + 1],
+                        selected_model=current_model,
+                        requested_api_base=api_base,
+                        effective_api_base=current_api_base,
+                        routing_policy=routing_policy,
+                    ),
+                    result_model_semantics=cfg.result_model_semantics,
+                )
                 _io_log.log_call(
                     model=current_model,
                     messages=messages,
@@ -2604,7 +3053,19 @@ def call_llm(
             hooks.before_call(current_model, messages, kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
-        effective_retries = 0 if (is_agent and retry is None) else r.max_retries
+        if is_agent and not agent_retry_safe_enabled:
+            effective_retries = 0
+            if r.max_retries > 0:
+                msg = (
+                    "AGENT_RETRY_DISABLED: retries for agent models are disabled by default "
+                    "to avoid duplicate side effects. Set agent_retry_safe=True (or "
+                    f"{AGENT_RETRY_SAFE_ENV}=1) only for explicitly safe/read-only runs."
+                )
+                if msg not in _warnings:
+                    _warnings.append(msg)
+                    logger.warning(msg)
+        else:
+            effective_retries = r.max_retries
         try:
             for attempt in range(effective_retries + 1):
                 try:
@@ -2633,6 +3094,25 @@ def call_llm(
                         result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("call_llm succeeded after %d retries", attempt)
+                    if is_agent:
+                        resolved_model = result.resolved_model
+                    else:
+                        resolved_model = current_model
+                    result = _annotate_result_identity(
+                        result,
+                        requested_model=model,
+                        resolved_model=resolved_model,
+                        routing_trace=_build_routing_trace(
+                            requested_model=model,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=resolved_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                            routing_policy=routing_policy,
+                        ),
+                        result_model_semantics=cfg.result_model_semantics,
+                    )
                     if hooks and hooks.after_call:
                         hooks.after_call(result)
                     if cache is not None:
@@ -2645,7 +3125,12 @@ def call_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    delay = _compute_retry_delay(
+                        attempt=attempt,
+                        error=e,
+                        policy=r,
+                        backoff_fn=backoff_fn,
+                    )
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
@@ -2699,6 +3184,7 @@ def call_llm_structured(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Call LLM and get back a validated Pydantic model.
@@ -2724,12 +3210,22 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="call_llm_structured",
+    )
     _check_budget(trace_id, max_budget)
+    plan = resolve_call(
+        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
+        cfg,
+    )
+    models = plan.models
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
+
     if _is_agent_model(model):
         from llm_client.agents import _route_call_structured
         if hooks and hooks.before_call:
@@ -2737,25 +3233,52 @@ def call_llm_structured(
         parsed, llm_result = _route_call_structured(
             model, messages, response_model, timeout=timeout, **kwargs,
         )
+        llm_result = _annotate_result_identity(
+            llm_result,
+            requested_model=model,
+            resolved_model=llm_result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[plan.primary_model],
+                selected_model=llm_result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=api_base,
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
+        )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured", task=task, trace_id=trace_id)
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
 
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = cache.get(key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
                 cached_result = _mark_cache_hit(cached)
+                cached_result = _annotate_result_identity(
+                    cached_result,
+                    requested_model=model,
+                    resolved_model=current_model,
+                    routing_trace=_build_routing_trace(
+                        requested_model=model,
+                        attempted_models=models[:model_idx + 1],
+                        selected_model=current_model,
+                        requested_api_base=api_base,
+                        effective_api_base=current_api_base,
+                        routing_policy=routing_policy,
+                    ),
+                    result_model_semantics=cfg.result_model_semantics,
+                )
                 _io_log.log_call(
                     model=current_model,
                     messages=messages,
@@ -2810,6 +3333,20 @@ def call_llm_structured(
                             raw_response=response, warnings=_warnings,
                             cost_source=cost_source,
                         )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
+                        )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
                         if cache is not None:
@@ -2822,7 +3359,12 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -2863,14 +3405,19 @@ def call_llm_structured(
                     try:
                         with _rate_limit.acquire(current_model):
                             response = litellm.completion(**base_kwargs)
-                        raw_content = response.choices[0].message.content or ""
+                        first_choice = _first_choice_or_empty_error(
+                            response,
+                            model=current_model,
+                            provider="litellm_completion_structured",
+                        )
+                        raw_content = first_choice.message.content or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (native JSON schema structured)")
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_usage(response)
                         cost, cost_source = _parse_cost_result(_compute_cost(response))
-                        finish_reason: str = response.choices[0].finish_reason or "stop"
+                        finish_reason: str = first_choice.finish_reason or "stop"
 
                         if attempt > 0:
                             logger.info("call_llm_structured (native schema) succeeded after %d retries", attempt)
@@ -2880,6 +3427,20 @@ def call_llm_structured(
                             model=current_model, finish_reason=finish_reason,
                             raw_response=response, warnings=_warnings,
                             cost_source=cost_source,
+                        )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2901,7 +3462,12 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -2941,7 +3507,12 @@ def call_llm_structured(
                         usage = _extract_usage(completion_response)
                         cost, cost_source = _parse_cost_result(_compute_cost(completion_response))
                         content = str(parsed.model_dump_json())
-                        finish_reason = completion_response.choices[0].finish_reason or ""
+                        completion_choice = _first_choice_or_empty_error(
+                            completion_response,
+                            model=current_model,
+                            provider="instructor_completion_structured",
+                        )
+                        finish_reason = completion_choice.finish_reason or ""
 
                         if attempt > 0:
                             logger.info("call_llm_structured succeeded after %d retries", attempt)
@@ -2956,6 +3527,20 @@ def call_llm_structured(
                             warnings=_warnings,
                             cost_source=cost_source,
                         )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
+                        )
 
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -2969,7 +3554,12 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -3024,6 +3614,7 @@ def call_llm_with_tools(
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call LLM with tool/function calling support.
@@ -3065,6 +3656,7 @@ def call_llm_with_tools(
         on_fallback=on_fallback,
         hooks=hooks,
         execution_mode=execution_mode,
+        config=config,
         tools=tools,
         **kwargs,
     )
@@ -3093,6 +3685,7 @@ async def acall_llm(
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm. Same three-tier routing (Agent SDK / Responses API / Completions).
@@ -3121,11 +3714,15 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    agent_retry_safe = kwargs.pop("agent_retry_safe", None)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="acall_llm",
+    )
     _check_budget(trace_id, max_budget)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
@@ -3155,10 +3752,16 @@ async def acall_llm(
         _inner_named["hooks"] = hooks
     if execution_mode != "text":
         _inner_named["execution_mode"] = execution_mode
+    _inner_named["config"] = cfg
 
-    models = _build_model_chain(model, fallback_models)
-    primary_model = models[0] if models else _normalize_model_for_routing(model)
-    fallback_chain = models[1:] or None
+    plan = resolve_call(
+        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
+        cfg,
+    )
+    models = plan.models
+    primary_model = plan.primary_model
+    fallback_chain = plan.fallback_models or None
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
     if fallback_chain is not None:
         _inner_named["fallback_models"] = fallback_chain
     else:
@@ -3183,6 +3786,21 @@ async def acall_llm(
                 mcp_kw[k] = remaining.pop(k)
         result = await _acall_with_mcp(
             primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
+        )
+        result = _annotate_result_identity(
+            result,
+            requested_model=model,
+            resolved_model=result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[primary_model],
+                selected_model=result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
+                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
         )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
@@ -3210,6 +3828,21 @@ async def acall_llm(
             result = await _acall_with_tools(
                 primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             )
+        result = _annotate_result_identity(
+            result,
+            requested_model=model,
+            resolved_model=result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[primary_model],
+                selected_model=result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
+                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
+        )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 
@@ -3217,12 +3850,13 @@ async def acall_llm(
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
+    agent_retry_safe_enabled = _agent_retry_safe_enabled(agent_retry_safe)
 
     for model_idx, current_model in enumerate(models):
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
             and not use_responses
@@ -3262,6 +3896,20 @@ async def acall_llm(
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 cached_result = _mark_cache_hit(cached)
+                cached_result = _annotate_result_identity(
+                    cached_result,
+                    requested_model=model,
+                    resolved_model=current_model,
+                    routing_trace=_build_routing_trace(
+                        requested_model=model,
+                        attempted_models=models[:model_idx + 1],
+                        selected_model=current_model,
+                        requested_api_base=api_base,
+                        effective_api_base=current_api_base,
+                        routing_policy=routing_policy,
+                    ),
+                    result_model_semantics=cfg.result_model_semantics,
+                )
                 _io_log.log_call(
                     model=current_model,
                     messages=messages,
@@ -3277,7 +3925,19 @@ async def acall_llm(
             hooks.before_call(current_model, messages, kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
-        effective_retries = 0 if (is_agent and retry is None) else r.max_retries
+        if is_agent and not agent_retry_safe_enabled:
+            effective_retries = 0
+            if r.max_retries > 0:
+                msg = (
+                    "AGENT_RETRY_DISABLED: retries for agent models are disabled by default "
+                    "to avoid duplicate side effects. Set agent_retry_safe=True (or "
+                    f"{AGENT_RETRY_SAFE_ENV}=1) only for explicitly safe/read-only runs."
+                )
+                if msg not in _warnings:
+                    _warnings.append(msg)
+                    logger.warning(msg)
+        else:
+            effective_retries = r.max_retries
         try:
             for attempt in range(effective_retries + 1):
                 try:
@@ -3306,6 +3966,25 @@ async def acall_llm(
                         result = _build_result_from_response(response, current_model, warnings=_warnings)
                     if attempt > 0:
                         logger.info("acall_llm succeeded after %d retries", attempt)
+                    if is_agent:
+                        resolved_model = result.resolved_model
+                    else:
+                        resolved_model = current_model
+                    result = _annotate_result_identity(
+                        result,
+                        requested_model=model,
+                        resolved_model=resolved_model,
+                        routing_trace=_build_routing_trace(
+                            requested_model=model,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=resolved_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                            routing_policy=routing_policy,
+                        ),
+                        result_model_semantics=cfg.result_model_semantics,
+                    )
                     if hooks and hooks.after_call:
                         hooks.after_call(result)
                     if cache is not None:
@@ -3318,7 +3997,12 @@ async def acall_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    delay = _compute_retry_delay(
+                        attempt=attempt,
+                        error=e,
+                        policy=r,
+                        backoff_fn=backoff_fn,
+                    )
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
@@ -3372,6 +4056,7 @@ async def acall_llm_structured(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> tuple[T, LLMCallResult]:
     """Async version of call_llm_structured.
@@ -3397,12 +4082,22 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="acall_llm_structured",
+    )
     _check_budget(trace_id, max_budget)
+    plan = resolve_call(
+        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
+        cfg,
+    )
+    models = plan.models
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
+
     if _is_agent_model(model):
         from llm_client.agents import _route_acall_structured
         if hooks and hooks.before_call:
@@ -3410,25 +4105,52 @@ async def acall_llm_structured(
         parsed, llm_result = await _route_acall_structured(
             model, messages, response_model, timeout=timeout, **kwargs,
         )
+        llm_result = _annotate_result_identity(
+            llm_result,
+            requested_model=model,
+            resolved_model=llm_result.resolved_model,
+            routing_trace=_build_routing_trace(
+                requested_model=model,
+                attempted_models=[plan.primary_model],
+                selected_model=llm_result.resolved_model,
+                requested_api_base=api_base,
+                effective_api_base=api_base,
+                routing_policy=routing_policy,
+            ),
+            result_model_semantics=cfg.result_model_semantics,
+        )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured", task=task, trace_id=trace_id)
         return parsed, llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models)
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
 
     _model_fqn = f"{response_model.__module__}.{response_model.__qualname__}"
 
     for model_idx, current_model in enumerate(models):
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
                 cached_result = _mark_cache_hit(cached)
+                cached_result = _annotate_result_identity(
+                    cached_result,
+                    requested_model=model,
+                    resolved_model=current_model,
+                    routing_trace=_build_routing_trace(
+                        requested_model=model,
+                        attempted_models=models[:model_idx + 1],
+                        selected_model=current_model,
+                        requested_api_base=api_base,
+                        effective_api_base=current_api_base,
+                        routing_policy=routing_policy,
+                    ),
+                    result_model_semantics=cfg.result_model_semantics,
+                )
                 _io_log.log_call(
                     model=current_model,
                     messages=messages,
@@ -3483,6 +4205,20 @@ async def acall_llm_structured(
                             raw_response=response, warnings=_warnings,
                             cost_source=cost_source,
                         )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
+                        )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
                         if cache is not None:
@@ -3495,7 +4231,12 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -3536,14 +4277,19 @@ async def acall_llm_structured(
                     try:
                         async with _rate_limit.aacquire(current_model):
                             response = await litellm.acompletion(**base_kwargs)
-                        raw_content = response.choices[0].message.content or ""
+                        first_choice = _first_choice_or_empty_error(
+                            response,
+                            model=current_model,
+                            provider="litellm_completion_structured",
+                        )
+                        raw_content = first_choice.message.content or ""
                         if not raw_content.strip():
                             raise ValueError("Empty content from LLM (native JSON schema structured)")
                         parsed = response_model.model_validate_json(raw_content)
                         content = str(parsed.model_dump_json())
                         usage = _extract_usage(response)
                         cost, cost_source = _parse_cost_result(_compute_cost(response))
-                        finish_reason: str = response.choices[0].finish_reason or "stop"
+                        finish_reason: str = first_choice.finish_reason or "stop"
 
                         if attempt > 0:
                             logger.info("acall_llm_structured (native schema) succeeded after %d retries", attempt)
@@ -3553,6 +4299,20 @@ async def acall_llm_structured(
                             model=current_model, finish_reason=finish_reason,
                             raw_response=response, warnings=_warnings,
                             cost_source=cost_source,
+                        )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -3574,7 +4334,12 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -3614,7 +4379,12 @@ async def acall_llm_structured(
                         usage = _extract_usage(completion_response)
                         cost, cost_source = _parse_cost_result(_compute_cost(completion_response))
                         content = str(parsed.model_dump_json())
-                        finish_reason = completion_response.choices[0].finish_reason or ""
+                        completion_choice = _first_choice_or_empty_error(
+                            completion_response,
+                            model=current_model,
+                            provider="instructor_completion_structured",
+                        )
+                        finish_reason = completion_choice.finish_reason or ""
 
                         if attempt > 0:
                             logger.info("acall_llm_structured succeeded after %d retries", attempt)
@@ -3629,6 +4399,20 @@ async def acall_llm_structured(
                             warnings=_warnings,
                             cost_source=cost_source,
                         )
+                        llm_result = _annotate_result_identity(
+                            llm_result,
+                            requested_model=model,
+                            resolved_model=current_model,
+                            routing_trace=_build_routing_trace(
+                                requested_model=model,
+                                attempted_models=models[:model_idx + 1],
+                                selected_model=current_model,
+                                requested_api_base=api_base,
+                                effective_api_base=current_api_base,
+                                routing_policy=routing_policy,
+                            ),
+                            result_model_semantics=cfg.result_model_semantics,
+                        )
 
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -3642,7 +4426,12 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                        delay = _compute_retry_delay(
+                            attempt=attempt,
+                            error=e,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        )
                         if r.on_retry is not None:
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
@@ -3697,6 +4486,7 @@ async def acall_llm_with_tools(
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm_with_tools.
@@ -3738,6 +4528,7 @@ async def acall_llm_with_tools(
         on_fallback=on_fallback,
         hooks=hooks,
         execution_mode=execution_mode,
+        config=config,
         tools=tools,
         **kwargs,
     )
@@ -3769,6 +4560,7 @@ async def acall_llm_batch(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> list[LLMCallResult | Exception]:
     """Run multiple LLM calls concurrently with semaphore-based rate limiting.
@@ -3813,6 +4605,7 @@ async def acall_llm_batch(
                     fallback_models=fallback_models,
                     on_fallback=on_fallback,
                     hooks=hooks,
+                    config=config,
                     **kwargs,
                 )
                 if on_item_complete is not None:
@@ -3848,6 +4641,7 @@ def call_llm_batch(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> list[LLMCallResult | Exception]:
     """Sync wrapper for :func:`acall_llm_batch`.
@@ -3877,6 +4671,7 @@ def call_llm_batch(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        config=config,
         **kwargs,
     )
     try:
@@ -3911,6 +4706,7 @@ async def acall_llm_structured_batch(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> list[tuple[T, LLMCallResult] | Exception]:
     """Run multiple structured LLM calls concurrently.
@@ -3945,6 +4741,7 @@ async def acall_llm_structured_batch(
                     fallback_models=fallback_models,
                     on_fallback=on_fallback,
                     hooks=hooks,
+                    config=config,
                     **kwargs,
                 )
                 if on_item_complete is not None:
@@ -3981,6 +4778,7 @@ def call_llm_structured_batch(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> list[tuple[T, LLMCallResult] | Exception]:
     """Sync wrapper for :func:`acall_llm_structured_batch`.
@@ -4006,6 +4804,7 @@ def call_llm_structured_batch(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        config=config,
         **kwargs,
     )
     try:
@@ -4039,6 +4838,7 @@ def stream_llm(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMStream:
     """Stream an LLM response, yielding text chunks as they arrive.
@@ -4076,22 +4876,26 @@ def stream_llm(
         LLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="stream_llm",
+    )
     _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models)
+    models = _build_model_chain(model, fallback_models, cfg)
+    routing_policy = _routing_policy_label(cfg)
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
             timeout=timeout,
@@ -4113,14 +4917,38 @@ def stream_llm(
                         response = litellm.completion(**call_kwargs)
                     if attempt > 0:
                         logger.info("stream_llm succeeded after %d retries", attempt)
-                    return LLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
+                    return LLMStream(
+                        response,
+                        current_model,
+                        hooks=hooks,
+                        messages=messages,
+                        task=task,
+                        trace_id=trace_id,
+                        warnings=_warnings,
+                        requested_model=model,
+                        resolved_model=current_model,
+                        routing_trace=_build_routing_trace(
+                            requested_model=model,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=current_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            routing_policy=routing_policy,
+                        ),
+                        result_model_semantics=cfg.result_model_semantics,
+                    )
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    delay = _compute_retry_delay(
+                        attempt=attempt,
+                        error=e,
+                        policy=r,
+                        backoff_fn=backoff_fn,
+                    )
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
@@ -4168,6 +4996,7 @@ async def astream_llm(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> AsyncLLMStream:
     """Async version of :func:`stream_llm` with retry/fallback support.
@@ -4178,22 +5007,26 @@ async def astream_llm(
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
+    cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
-    _require_tags(task, trace_id, max_budget)
+    task, trace_id, max_budget, _entry_warnings = _require_tags(
+        task, trace_id, max_budget, caller="astream_llm",
+    )
     _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models)
+    models = _build_model_chain(model, fallback_models, cfg)
+    routing_policy = _routing_policy_label(cfg)
     last_error: Exception | None = None
-    _warnings: list[str] = []
+    _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 
     for model_idx, current_model in enumerate(models):
-        current_api_base = _resolve_api_base_for_model(current_model, api_base)
+        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
             timeout=timeout,
@@ -4215,14 +5048,38 @@ async def astream_llm(
                         response = await litellm.acompletion(**call_kwargs)
                     if attempt > 0:
                         logger.info("astream_llm succeeded after %d retries", attempt)
-                    return AsyncLLMStream(response, current_model, hooks=hooks, messages=messages, task=task, trace_id=trace_id, warnings=_warnings)
+                    return AsyncLLMStream(
+                        response,
+                        current_model,
+                        hooks=hooks,
+                        messages=messages,
+                        task=task,
+                        trace_id=trace_id,
+                        warnings=_warnings,
+                        requested_model=model,
+                        resolved_model=current_model,
+                        routing_trace=_build_routing_trace(
+                            requested_model=model,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=current_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            routing_policy=routing_policy,
+                        ),
+                        result_model_semantics=cfg.result_model_semantics,
+                    )
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
-                    delay = backoff_fn(attempt, r.base_delay, r.max_delay)
+                    delay = _compute_retry_delay(
+                        attempt=attempt,
+                        error=e,
+                        policy=r,
+                        backoff_fn=backoff_fn,
+                    )
                     if r.on_retry is not None:
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
@@ -4271,6 +5128,7 @@ def stream_llm_with_tools(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> LLMStream:
     """Stream an LLM response with tool/function calling support.
@@ -4306,6 +5164,7 @@ def stream_llm_with_tools(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        config=config,
         tools=tools,
         **kwargs,
     )
@@ -4328,6 +5187,7 @@ async def astream_llm_with_tools(
     fallback_models: list[str] | None = None,
     on_fallback: Callable[[str, Exception, str], None] | None = None,
     hooks: Hooks | None = None,
+    config: ClientConfig | None = None,
     **kwargs: Any,
 ) -> AsyncLLMStream:
     """Async version of :func:`stream_llm_with_tools`.
@@ -4353,6 +5213,7 @@ async def astream_llm_with_tools(
         fallback_models=fallback_models,
         on_fallback=on_fallback,
         hooks=hooks,
+        config=config,
         tools=tools,
         **kwargs,
     )

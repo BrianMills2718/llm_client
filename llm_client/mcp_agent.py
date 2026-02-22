@@ -38,7 +38,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.client import LLMCallResult
+from llm_client.compliance_gate import (
+    build_tool_parameter_index,
+    validate_tool_call_inputs,
+)
 from llm_client.foundation import (
+    BINDING_KEYS,
+    HARD_BINDING_KEYS,
     check_binding_conflicts,
     coerce_run_id,
     extract_bindings_from_tool_args,
@@ -81,8 +87,11 @@ BUDGET_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset({
 """Tools exempt from max_tool_calls budgeting (planning + final submit)."""
 
 AUTO_REASONING_TOOL_DEFAULTS: dict[str, str] = {
+    "todo_create": "Create a TODO item to track a required reasoning step.",
+    "todo_update": "Update TODO state after checking available evidence for that step.",
     "todo_reset": "Reset TODO state for the current question before planning/execution.",
     "todo_list": "Read TODO states to decide the next unblock action.",
+    "submit_answer": "Submit the current best factual answer from gathered evidence.",
 }
 """Deterministic fallback reasoning for idempotent planning tools."""
 
@@ -109,6 +118,44 @@ DEFAULT_SUPPRESS_CONTROL_LOOP_CALLS: bool = False
 
 DEFAULT_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
 """Default artifact kinds available before any tool call."""
+
+DEFAULT_TOOL_DISCLOSURE_MAX_UNAVAILABLE: int = 10
+"""Maximum unavailable tools reported per turn in disclosure guidance."""
+
+DEFAULT_TOOL_DISCLOSURE_MAX_MISSING_PER_TOOL: int = 2
+"""Maximum missing requirements listed per unavailable tool."""
+
+DEFAULT_TOOL_DISCLOSURE_MAX_REPAIR_TOOLS: int = 2
+"""Maximum conversion/repair tool hints surfaced per unavailable tool."""
+
+DEFAULT_TOOL_DISCLOSURE_REASON_MAX_CHARS: int = 220
+"""Maximum chars allocated to each unavailable-tool reason snippet."""
+
+DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS: int = 4
+"""Approximate chars/token conversion used for prompt-overhead accounting."""
+
+DEFAULT_TOOL_CALL_STALL_TURNS: int = 3
+"""Force final answer after this many consecutive tool-call turns with zero executable calls."""
+
+ARG_SELF_CONTAINED_TOOL_NAMES: frozenset[str] = frozenset({
+    "chunk_get_text",
+    "chunk_get_text_by_chunk_ids",
+    "chunk_get_text_by_entity_ids",
+})
+"""Compatibility fallback for legacy self-contained tools (prefer contract metadata)."""
+
+
+EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE = "TOOL_VALIDATION_REJECTED_MISSING_PREREQUISITE"
+EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY = "TOOL_VALIDATION_REJECTED_MISSING_CAPABILITY"
+EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT = "TOOL_VALIDATION_REJECTED_BINDING_CONFLICT"
+EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING = "TOOL_VALIDATION_REJECTED_MISSING_TOOL_REASONING"
+EVENT_CODE_TOOL_VALIDATION_SCHEMA = "TOOL_VALIDATION_REJECTED_SCHEMA"
+EVENT_CODE_CONTROL_LOOP_SUPPRESSED = "CONTROL_CHURN_SUPPRESSED"
+EVENT_CODE_CONTROL_CHURN_THRESHOLD = "CONTROL_CHURN_THRESHOLD_EXCEEDED"
+EVENT_CODE_TOOL_RUNTIME_ERROR = "TOOL_EXECUTION_RUNTIME_ERROR"
+EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN = "PROVIDER_EMPTY_RESPONSE_FIRST_TURN"
+EVENT_CODE_PROVIDER_EMPTY_RESPONSE = "PROVIDER_EMPTY_RESPONSE"
+EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
 
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
@@ -164,6 +211,38 @@ class MCPToolCallRecord:
     latency_s: float = 0.0
 
 
+@dataclass(frozen=True)
+class CapabilityRequirement:
+    """Normalized capability requirement for composability checks."""
+
+    kind: str
+    ref_type: str | None = None
+    namespace: str | None = None
+    bindings_hash: str | None = None
+
+    def to_dict(self) -> dict[str, str]:
+        payload: dict[str, str] = {"kind": self.kind}
+        if self.ref_type:
+            payload["ref_type"] = self.ref_type
+        if self.namespace:
+            payload["namespace"] = self.namespace
+        if self.bindings_hash:
+            payload["bindings_hash"] = self.bindings_hash
+        return payload
+
+    def short_label(self) -> str:
+        suffix_parts: list[str] = []
+        if self.ref_type:
+            suffix_parts.append(f"ref_type={self.ref_type}")
+        if self.namespace:
+            suffix_parts.append(f"namespace={self.namespace}")
+        if self.bindings_hash:
+            suffix_parts.append(f"bindings_hash={self.bindings_hash[:12]}")
+        if not suffix_parts:
+            return self.kind
+        return f"{self.kind}[{', '.join(suffix_parts)}]"
+
+
 @dataclass
 class ToolCallValidation:
     """Normalized pre-execution validation outcome for a tool call."""
@@ -173,6 +252,7 @@ class ToolCallValidation:
     error_code: str | None = None
     failure_phase: str | None = None
     call_bindings: dict[str, str | None] = field(default_factory=dict)
+    missing_requirements: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -303,6 +383,23 @@ def _extract_usage(usage: dict[str, Any]) -> tuple[int, int, int, int]:
     cached = usage.get("cached_tokens") or 0
     cache_creation = usage.get("cache_creation_tokens") or 0
     return int(inp), int(out), int(cached), int(cache_creation)
+
+
+def _build_agent_usage(agent_result: MCPAgentResult) -> dict[str, int]:
+    """Build consistent usage/loop counters for agent-mode calls."""
+    usage: dict[str, int] = {
+        "input_tokens": int(agent_result.total_input_tokens),
+        "output_tokens": int(agent_result.total_output_tokens),
+        "total_tokens": int(agent_result.total_input_tokens + agent_result.total_output_tokens),
+        "num_turns": int(agent_result.turns or 0),
+        "n_tool_calls": int(len(agent_result.tool_calls)),
+        "n_budgeted_tool_calls": int(_count_budgeted_records(agent_result.tool_calls)),
+    }
+    if agent_result.total_cached_tokens:
+        usage["cached_tokens"] = int(agent_result.total_cached_tokens)
+    if agent_result.total_cache_creation_tokens:
+        usage["cache_creation_tokens"] = int(agent_result.total_cache_creation_tokens)
+    return usage
 
 
 def _truncate(text: str, max_length: int) -> str:
@@ -478,6 +575,21 @@ def _set_tool_call_args(tc: dict[str, Any], args: dict[str, Any]) -> dict[str, A
     return out
 
 
+def _tool_evidence_signature(record: MCPToolCallRecord) -> str | None:
+    """Stable signature for successful non-control evidence-producing tool outputs."""
+    if record.error or _is_budget_exempt_tool(record.tool):
+        return None
+    if record.result is None:
+        return None
+    result_hash = sha256_text(record.result)
+    return f"{record.tool}:{result_hash}"
+
+
+def _evidence_digest(evidence_signatures: set[str]) -> str:
+    """Deterministic digest of accumulated evidence signatures."""
+    return sha256_json(sorted(evidence_signatures)).replace("sha256:", "")
+
+
 def _autofill_tool_reasoning(
     tc: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
@@ -508,6 +620,292 @@ def _normalize_artifact_kind(kind: Any) -> str | None:
     return None
 
 
+def _normalize_capability_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _capability_requirement_from_raw(raw: Any) -> CapabilityRequirement | None:
+    """Parse one capability requirement from raw contract payload."""
+    if isinstance(raw, str):
+        kind = _normalize_artifact_kind(raw)
+        if kind:
+            return CapabilityRequirement(kind=kind)
+        return None
+
+    if not isinstance(raw, dict):
+        return None
+
+    kind = _normalize_artifact_kind(raw.get("kind"))
+    if not kind:
+        return None
+
+    ref_type = _normalize_capability_value(raw.get("ref_type"))
+    namespace = _normalize_capability_value(raw.get("namespace"))
+    bindings_hash = _normalize_capability_value(raw.get("bindings_hash"))
+    return CapabilityRequirement(
+        kind=kind,
+        ref_type=ref_type,
+        namespace=namespace,
+        bindings_hash=bindings_hash,
+    )
+
+
+def _normalize_capability_requirements(raw: Any) -> list[CapabilityRequirement]:
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    out: list[CapabilityRequirement] = []
+    seen: set[tuple[str, str | None, str | None, str | None]] = set()
+    for item in raw:
+        req = _capability_requirement_from_raw(item)
+        if req is None:
+            continue
+        key = (req.kind, req.ref_type, req.namespace, req.bindings_hash)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(req)
+    return out
+
+
+def _capability_state_add(
+    state: dict[str, set[tuple[str | None, str | None, str | None]]],
+    *,
+    kind: str | None,
+    ref_type: str | None = None,
+    namespace: str | None = None,
+    bindings_hash: str | None = None,
+) -> bool:
+    normalized_kind = _normalize_artifact_kind(kind)
+    if not normalized_kind:
+        return False
+    bucket = state.setdefault(normalized_kind, set())
+    entry = (
+        _normalize_capability_value(ref_type),
+        _normalize_capability_value(namespace),
+        _normalize_capability_value(bindings_hash),
+    )
+    before = len(bucket)
+    bucket.add(entry)
+    return len(bucket) > before
+
+
+def _capability_state_has(
+    state: dict[str, set[tuple[str | None, str | None, str | None]]],
+    req: CapabilityRequirement,
+) -> bool:
+    bucket = state.get(req.kind)
+    if not bucket:
+        return False
+    for ref_type, namespace, bindings_hash in bucket:
+        if req.ref_type and req.ref_type != ref_type:
+            continue
+        if req.namespace and req.namespace != namespace:
+            continue
+        if req.bindings_hash and req.bindings_hash != bindings_hash:
+            continue
+        return True
+    return False
+
+
+def _capability_state_snapshot(
+    state: dict[str, set[tuple[str | None, str | None, str | None]]],
+) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for kind in sorted(state):
+        entries = sorted(
+            state[kind],
+            key=lambda item: (
+                item[0] or "",
+                item[1] or "",
+                item[2] or "",
+            ),
+        )
+        for ref_type, namespace, bindings_hash in entries:
+            req = CapabilityRequirement(
+                kind=kind,
+                ref_type=ref_type,
+                namespace=namespace,
+                bindings_hash=bindings_hash,
+            )
+            out.append(req.to_dict())
+    return out
+
+
+def _capability_requirement_matches(
+    produced: CapabilityRequirement,
+    required: CapabilityRequirement,
+) -> bool:
+    """Whether a produced capability could satisfy a required capability."""
+    if produced.kind != required.kind:
+        return False
+    if required.ref_type and produced.ref_type and required.ref_type != produced.ref_type:
+        return False
+    if required.namespace and produced.namespace and required.namespace != produced.namespace:
+        return False
+    if (
+        required.bindings_hash
+        and produced.bindings_hash
+        and required.bindings_hash != produced.bindings_hash
+    ):
+        return False
+    return True
+
+
+def _canonical_binding_spec(
+    bindings: dict[str, str | None],
+    *,
+    keys: tuple[str, ...],
+) -> dict[str, str | None]:
+    """Canonical binding spec for deterministic hashing (stable key subset/order)."""
+    return {key: bindings.get(key) for key in keys}
+
+
+def _hard_bindings_spec(bindings: dict[str, str | None]) -> dict[str, str | None]:
+    return _canonical_binding_spec(bindings, keys=HARD_BINDING_KEYS)
+
+
+def _full_bindings_spec(bindings: dict[str, str | None]) -> dict[str, str | None]:
+    return _canonical_binding_spec(bindings, keys=BINDING_KEYS)
+
+
+def _binding_hash(spec: dict[str, str | None]) -> str:
+    return sha256_json(spec).replace("sha256:", "")
+
+
+def _hard_bindings_state_hash(bindings: dict[str, str | None]) -> str:
+    return _binding_hash(_hard_bindings_spec(bindings))
+
+
+def _full_bindings_state_hash(bindings: dict[str, str | None]) -> str:
+    return _binding_hash(_full_bindings_spec(bindings))
+
+
+def _namespace_from_bindings(bindings: dict[str, str | None]) -> str | None:
+    """Best-effort namespace heuristic from authoritative binding state."""
+    for key in ("graph_id", "dataset_id", "scope_id", "corpus_id", "vector_store_id"):
+        value = bindings.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _explicit_ref_type_from_args(kind: str, args: dict[str, Any] | None) -> str | None:
+    if not isinstance(args, dict):
+        return None
+
+    def _has_values(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, set)):
+            return any(_has_values(v) for v in value)
+        return True
+
+    if kind == "ENTITY_SET":
+        if _has_values(args.get("entity_ids")) or _has_values(args.get("entity_id")):
+            return "id"
+        if _has_values(args.get("entity_names")) or _has_values(args.get("entity_name")):
+            return "name"
+    if kind == "CHUNK_SET":
+        if _has_values(args.get("chunk_ids")) or _has_values(args.get("chunk_id")):
+            return "id"
+    return None
+
+
+def _infer_output_capabilities(
+    *,
+    tool_name: str,
+    parsed_args: dict[str, Any] | None,
+    produced_artifacts: set[str],
+    available_bindings: dict[str, str | None],
+) -> list[CapabilityRequirement]:
+    """Infer lightweight capability tags from tool name + arguments."""
+    namespace = _namespace_from_bindings(available_bindings)
+    bindings_hash = _hard_bindings_state_hash(available_bindings)
+    inferred: list[CapabilityRequirement] = []
+
+    for kind in sorted(produced_artifacts):
+        ref_type = _explicit_ref_type_from_args(kind, parsed_args)
+        if kind == "CHUNK_SET" and "chunk_get_text" in tool_name:
+            ref_type = "fulltext"
+        elif kind == "CHUNK_SET" and "search" in tool_name and ref_type is None:
+            ref_type = "snippet"
+
+        inferred.append(
+            CapabilityRequirement(
+                kind=kind,
+                ref_type=ref_type,
+                namespace=namespace,
+                bindings_hash=bindings_hash,
+            )
+        )
+
+    return inferred
+
+
+def _trim_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3] + "..."
+
+
+def _short_requirement(req: CapabilityRequirement) -> str:
+    return req.short_label()
+
+
+def _has_explicit_chunk_or_entity_refs(args: dict[str, Any] | None) -> bool:
+    if not isinstance(args, dict):
+        return False
+
+    def _has_values(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, set)):
+            return any(_has_values(item) for item in value)
+        return True
+
+    has_explicit_chunk_refs = _has_values(args.get("chunk_id")) or _has_values(args.get("chunk_ids"))
+    has_explicit_entity_refs = (
+        _has_values(args.get("entity_id"))
+        or _has_values(args.get("entity_ids"))
+        or _has_values(args.get("entity_name"))
+        or _has_values(args.get("entity_names"))
+    )
+    return bool(has_explicit_chunk_refs or has_explicit_entity_refs)
+
+
+def _is_arg_self_contained_tool(tool_name: str) -> bool:
+    """Compatibility fallback for self-contained tools without explicit contract metadata."""
+    return tool_name in ARG_SELF_CONTAINED_TOOL_NAMES
+
+
+def _contract_declares_no_artifact_prereqs(contract: dict[str, Any] | None) -> bool:
+    if not isinstance(contract, dict):
+        return False
+    raw = contract.get("artifact_prereqs")
+    return (
+        (isinstance(raw, str) and raw.strip().lower() == "none")
+        or bool(contract.get("artifact_prereqs_none"))
+        or bool(contract.get("self_contained"))
+    )
+
+
+def _tool_declares_no_artifact_prereqs(
+    tool_name: str,
+    contract: dict[str, Any] | None,
+) -> bool:
+    """Prefer declarative contract metadata; retain legacy fallback list for compatibility."""
+    if _contract_declares_no_artifact_prereqs(contract):
+        return True
+    return _is_arg_self_contained_tool(tool_name)
+
+
 def _normalize_tool_contracts(raw: Any) -> dict[str, dict[str, Any]]:
     """Normalize raw tool contract payload into a predictable dict shape."""
     if not isinstance(raw, dict):
@@ -520,30 +918,40 @@ def _normalize_tool_contracts(raw: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(spec, dict):
             continue
 
-        requires_all = {
-            k for k in (
-                _normalize_artifact_kind(v) for v in (spec.get("requires_all") or [])
-            )
-            if k
-        }
-        requires_any = {
-            k for k in (
-                _normalize_artifact_kind(v) for v in (spec.get("requires_any") or [])
-            )
-            if k
-        }
-        produces = {
-            k for k in (
-                _normalize_artifact_kind(v) for v in (spec.get("produces") or [])
-            )
-            if k
-        }
+        requires_all_caps = _normalize_capability_requirements(spec.get("requires_all"))
+        requires_any_caps = _normalize_capability_requirements(spec.get("requires_any"))
+        requires_all_caps.extend(
+            _normalize_capability_requirements(spec.get("requires_all_capabilities"))
+        )
+        requires_any_caps.extend(
+            _normalize_capability_requirements(spec.get("requires_any_capabilities"))
+        )
+
+        produces_caps = _normalize_capability_requirements(spec.get("produces"))
+        produces_caps.extend(
+            _normalize_capability_requirements(spec.get("produces_capabilities"))
+        )
+
+        requires_all = {req.kind for req in requires_all_caps}
+        requires_any = {req.kind for req in requires_any_caps}
+        produces = {req.kind for req in produces_caps}
 
         normalized[tool_name.strip()] = {
-            "requires_all": requires_all,
-            "requires_any": requires_any,
-            "produces": produces,
+            "requires_all_artifacts": requires_all,
+            "requires_any_artifacts": requires_any,
+            "requires_all_capabilities": requires_all_caps,
+            "requires_any_capabilities": requires_any_caps,
+            "produces_artifacts": produces,
+            "produces_capabilities": produces_caps,
             "is_control": bool(spec.get("is_control", False)),
+            "artifact_prereqs": (
+                str(spec.get("artifact_prereqs", "")).strip().lower()
+                if isinstance(spec.get("artifact_prereqs"), str)
+                else None
+            ),
+            "artifact_prereqs_none": (
+                str(spec.get("artifact_prereqs", "")).strip().lower() == "none"
+            ),
         }
 
     return normalized
@@ -555,32 +963,19 @@ def _effective_contract_requirements(
     parsed_args: dict[str, Any] | None,
 ) -> tuple[set[str], set[str]]:
     """Resolve dynamic per-call requirements for selected tools."""
-    requires_all = set(contract.get("requires_all") or set())
-    requires_any = set(contract.get("requires_any") or set())
+    requires_all = set(contract.get("requires_all_artifacts") or contract.get("requires_all") or set())
+    requires_any = set(contract.get("requires_any_artifacts") or contract.get("requires_any") or set())
 
     args = parsed_args or {}
 
-    if tool_name == "chunk_get_text":
-        def _has_values(value: Any) -> bool:
-            if value is None:
-                return False
-            if isinstance(value, str):
-                return bool(value.strip())
-            if isinstance(value, (list, tuple, set)):
-                return any(_has_values(item) for item in value)
-            return True
+    declarative_no_prereqs = _contract_declares_no_artifact_prereqs(contract)
+    if declarative_no_prereqs:
+        return set(), set()
 
+    if _is_arg_self_contained_tool(tool_name) and _has_explicit_chunk_or_entity_refs(args):
         # Explicit IDs/names are self-contained: the call can be valid even when
         # the runtime artifact tracker has not yet materialized CHUNK_SET/ENTITY_SET.
-        has_explicit_chunk_refs = _has_values(args.get("chunk_id")) or _has_values(args.get("chunk_ids"))
-        has_explicit_entity_refs = (
-            _has_values(args.get("entity_id"))
-            or _has_values(args.get("entity_ids"))
-            or _has_values(args.get("entity_name"))
-            or _has_values(args.get("entity_names"))
-        )
-        if has_explicit_chunk_refs or has_explicit_entity_refs:
-            return set(), set()
+        return set(), set()
 
     return requires_all, requires_any
 
@@ -591,10 +986,12 @@ def _validate_tool_contract_call(
     contract: dict[str, Any],
     parsed_args: dict[str, Any] | None,
     available_artifacts: set[str],
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] | None = None,
     available_bindings: dict[str, str | None] | None = None,
 ) -> ToolCallValidation:
     """Validate whether a tool call is composable given currently available artifacts."""
     call_bindings = extract_bindings_from_tool_args(parsed_args)
+    capability_state = available_capabilities or {}
 
     if contract.get("is_control"):
         return ToolCallValidation(
@@ -611,9 +1008,10 @@ def _validate_tool_contract_call(
             return ToolCallValidation(
                 is_valid=False,
                 reason=bindings_reason,
-                error_code="binding_conflict",
+                error_code=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
                 failure_phase="binding_validation",
                 call_bindings=normalized_call_bindings,
+                missing_requirements=[],
             )
 
     requires_all, requires_any = _effective_contract_requirements(
@@ -625,18 +1023,69 @@ def _validate_tool_contract_call(
         return ToolCallValidation(
             is_valid=False,
             reason=f"{tool_name} requires all of {sorted(requires_all)}; missing {missing_all}",
-            error_code="missing_prerequisite",
+            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
             failure_phase="input_validation",
             call_bindings=call_bindings,
+            missing_requirements=[{"kind": k} for k in missing_all],
         )
 
     if requires_any and not (requires_any & available_artifacts):
+        missing_any = sorted(requires_any)
         return ToolCallValidation(
             is_valid=False,
             reason=f"{tool_name} requires one of {sorted(requires_any)}; available {sorted(available_artifacts)}",
-            error_code="missing_prerequisite",
+            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
             failure_phase="input_validation",
             call_bindings=call_bindings,
+            missing_requirements=[{"kind": k} for k in missing_any],
+        )
+
+    declarative_no_prereqs = _contract_declares_no_artifact_prereqs(contract)
+    skip_capability_requirements = declarative_no_prereqs or (
+        _is_arg_self_contained_tool(tool_name)
+        and _has_explicit_chunk_or_entity_refs(parsed_args)
+    )
+    if skip_capability_requirements:
+        return ToolCallValidation(
+            is_valid=True,
+            call_bindings=call_bindings,
+        )
+
+    missing_capabilities: list[CapabilityRequirement] = []
+    for req in (contract.get("requires_all_capabilities") or []):
+        if isinstance(req, CapabilityRequirement) and not _capability_state_has(capability_state, req):
+            missing_capabilities.append(req)
+    if missing_capabilities:
+        missing_payload = [req.to_dict() for req in missing_capabilities]
+        return ToolCallValidation(
+            is_valid=False,
+            reason=(
+                f"{tool_name} missing required capabilities: "
+                + ", ".join(_short_requirement(req) for req in missing_capabilities)
+            ),
+            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
+            failure_phase="input_validation",
+            call_bindings=call_bindings,
+            missing_requirements=missing_payload,
+        )
+
+    requires_any_caps = [
+        req
+        for req in (contract.get("requires_any_capabilities") or [])
+        if isinstance(req, CapabilityRequirement)
+    ]
+    if requires_any_caps and not any(_capability_state_has(capability_state, req) for req in requires_any_caps):
+        missing_payload = [req.to_dict() for req in requires_any_caps]
+        return ToolCallValidation(
+            is_valid=False,
+            reason=(
+                f"{tool_name} requires one capability from: "
+                + ", ".join(_short_requirement(req) for req in requires_any_caps)
+            ),
+            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
+            failure_phase="input_validation",
+            call_bindings=call_bindings,
+            missing_requirements=missing_payload,
         )
 
     return ToolCallValidation(
@@ -645,24 +1094,93 @@ def _validate_tool_contract_call(
     )
 
 
+def _find_repair_tools_for_missing_requirements(
+    *,
+    current_tool_name: str,
+    missing_requirements: list[dict[str, Any]],
+    normalized_tool_contracts: dict[str, dict[str, Any]],
+    available_artifacts: set[str],
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]],
+    available_bindings: dict[str, str | None] | None,
+    max_repair_tools: int,
+) -> list[str]:
+    """Suggest legal-now tools that can produce currently missing requirements."""
+    if max_repair_tools <= 0:
+        return []
+
+    required_caps: list[CapabilityRequirement] = []
+    for raw in missing_requirements or []:
+        req = _capability_requirement_from_raw(raw)
+        if req is not None:
+            required_caps.append(req)
+    if not required_caps:
+        return []
+
+    candidates: list[str] = []
+    for tool_name in sorted(normalized_tool_contracts):
+        if tool_name == current_tool_name:
+            continue
+        contract = normalized_tool_contracts.get(tool_name)
+        if not isinstance(contract, dict):
+            continue
+        if bool(contract.get("is_control")):
+            continue
+
+        produced_caps = _contract_output_capabilities(contract)
+        produced_kinds = _contract_outputs(contract)
+        can_repair = False
+        for req in required_caps:
+            for produced in produced_caps:
+                if _capability_requirement_matches(produced, req):
+                    can_repair = True
+                    break
+            if can_repair:
+                break
+            if req.kind in produced_kinds:
+                can_repair = True
+                break
+        if not can_repair:
+            continue
+
+        validation = _validate_tool_contract_call(
+            tool_name=tool_name,
+            contract=contract,
+            parsed_args=None,
+            available_artifacts=available_artifacts,
+            available_capabilities=available_capabilities,
+            available_bindings=available_bindings,
+        )
+        if validation.is_valid:
+            candidates.append(tool_name)
+        if len(candidates) >= max_repair_tools:
+            break
+
+    return candidates
+
+
 def _filter_tools_for_disclosure(
     *,
     openai_tools: list[dict[str, Any]],
     normalized_tool_contracts: dict[str, dict[str, Any]],
     available_artifacts: set[str],
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]],
+    available_bindings: dict[str, str | None] | None = None,
+    max_unavailable: int = DEFAULT_TOOL_DISCLOSURE_MAX_UNAVAILABLE,
+    max_missing_per_tool: int = DEFAULT_TOOL_DISCLOSURE_MAX_MISSING_PER_TOOL,
+    max_repair_tools: int = DEFAULT_TOOL_DISCLOSURE_MAX_REPAIR_TOOLS,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     """Return tools currently composable from artifact state + hidden reasons.
 
     Unknown tools (no contract declared) are kept visible to avoid false negatives.
     Control tools stay visible regardless of artifact state.
     """
     if not openai_tools:
-        return [], []
+        return [], [], 0
     if not normalized_tool_contracts:
-        return list(openai_tools), []
+        return list(openai_tools), [], 0
 
     visible: list[dict[str, Any]] = []
-    hidden: list[dict[str, str]] = []
+    hidden_all: list[dict[str, Any]] = []
     for tool_def in openai_tools:
         fn = tool_def.get("function", {}) if isinstance(tool_def, dict) else {}
         tool_name = str(fn.get("name", "")).strip()
@@ -675,29 +1193,286 @@ def _filter_tools_for_disclosure(
             visible.append(tool_def)
             continue
 
+        # Keep explicit-ID/self-contained tools visible so disclosure does not
+        # create false negatives before arguments are known.
+        if _tool_declares_no_artifact_prereqs(tool_name, contract):
+            visible.append(tool_def)
+            continue
+
         validation = _validate_tool_contract_call(
             tool_name=tool_name,
             contract=contract,
             parsed_args=None,
             available_artifacts=available_artifacts,
-            available_bindings=None,
+            available_capabilities=available_capabilities,
+            available_bindings=available_bindings,
         )
         if validation.is_valid:
             visible.append(tool_def)
         else:
-            hidden.append({"tool": tool_name, "reason": validation.reason})
+            hidden_all.append({
+                "tool": tool_name,
+                "reason": validation.reason,
+                "missing_requirements": list(validation.missing_requirements or []),
+                "missing_count": len(validation.missing_requirements or []),
+            })
 
-    if not visible:
-        # Failsafe: never present an empty tool surface if tools exist.
-        return list(openai_tools), hidden
-    return visible, hidden
+    hidden_all.sort(key=lambda h: (int(h.get("missing_count", 0) or 0), str(h.get("tool", ""))))
+    hidden_total = len(hidden_all)
+
+    if max_missing_per_tool >= 0:
+        for item in hidden_all:
+            missing = item.get("missing_requirements") or []
+            if isinstance(missing, list):
+                item["missing_requirements"] = missing[:max_missing_per_tool]
+            item["missing_count"] = len(item.get("missing_requirements") or [])
+            item["repair_tools"] = _find_repair_tools_for_missing_requirements(
+                current_tool_name=str(item.get("tool", "")).strip(),
+                missing_requirements=list(item.get("missing_requirements") or []),
+                normalized_tool_contracts=normalized_tool_contracts,
+                available_artifacts=available_artifacts,
+                available_capabilities=available_capabilities,
+                available_bindings=available_bindings,
+                max_repair_tools=max_repair_tools,
+            )
+
+    if max_unavailable >= 0:
+        hidden_all = hidden_all[:max_unavailable]
+
+    return visible, hidden_all, hidden_total
 
 
 def _contract_outputs(contract: dict[str, Any] | None) -> set[str]:
     """Return declared artifact outputs for a tool contract."""
     if not isinstance(contract, dict):
         return set()
-    return set(contract.get("produces") or set())
+    return set(contract.get("produces_artifacts") or contract.get("produces") or set())
+
+
+def _contract_output_capabilities(contract: dict[str, Any] | None) -> list[CapabilityRequirement]:
+    if not isinstance(contract, dict):
+        return []
+    out = contract.get("produces_capabilities") or []
+    return [req for req in out if isinstance(req, CapabilityRequirement)]
+
+
+def _is_control_tool_name(
+    tool_name: str,
+    normalized_tool_contracts: dict[str, dict[str, Any]],
+) -> bool:
+    contract = normalized_tool_contracts.get(tool_name)
+    return bool(isinstance(contract, dict) and contract.get("is_control"))
+
+
+def _disclosure_reason_from_entry(entry: dict[str, Any]) -> str:
+    repair_tools = entry.get("repair_tools")
+    repair_hint = ""
+    if isinstance(repair_tools, list):
+        names = [str(n).strip() for n in repair_tools if isinstance(n, str) and n.strip()]
+        if names:
+            repair_hint = f"; try {', '.join(names)}"
+
+    missing = entry.get("missing_requirements")
+    if isinstance(missing, list) and missing:
+        labels: list[str] = []
+        for item in missing:
+            req = _capability_requirement_from_raw(item)
+            if req is None:
+                continue
+            labels.append(_short_requirement(req))
+        if labels:
+            return "needs " + ", ".join(labels) + repair_hint
+    reason = str(entry.get("reason", "")).strip()
+    if reason:
+        return reason + repair_hint
+    return "missing prerequisites" + repair_hint
+
+
+def _disclosure_message(hidden_entries: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for entry in hidden_entries:
+        tool = str(entry.get("tool", "")).strip() or "<unknown>"
+        reason = _trim_text(_disclosure_reason_from_entry(entry), DEFAULT_TOOL_DISCLOSURE_REASON_MAX_CHARS)
+        parts.append(f"{tool}: {reason}")
+    return "; ".join(parts)
+
+
+def _analyze_lane_closure(
+    *,
+    normalized_tool_contracts: dict[str, dict[str, Any]],
+    initial_artifacts: set[str],
+    initial_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]],
+    available_bindings: dict[str, str | None] | None,
+) -> dict[str, Any]:
+    """Advisory closure analysis for current lane (toolset + policies).
+
+    This intentionally ignores argument-level dynamics and provides best-effort
+    reachability from the declared initial state.
+    """
+    reachable_artifacts: set[str] = set(initial_artifacts)
+    reachable_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] = {
+        kind: set(entries)
+        for kind, entries in (initial_capabilities or {}).items()
+    }
+
+    max_iters = max(1, len(normalized_tool_contracts) * 2)
+    for _ in range(max_iters):
+        changed = False
+        for tool_name in sorted(normalized_tool_contracts):
+            contract = normalized_tool_contracts.get(tool_name)
+            if not isinstance(contract, dict):
+                continue
+            if bool(contract.get("is_control")):
+                continue
+            validation = _validate_tool_contract_call(
+                tool_name=tool_name,
+                contract=contract,
+                parsed_args=None,
+                available_artifacts=reachable_artifacts,
+                available_capabilities=reachable_capabilities,
+                available_bindings=available_bindings,
+            )
+            if not validation.is_valid:
+                continue
+            for kind in _contract_outputs(contract):
+                if kind not in reachable_artifacts:
+                    reachable_artifacts.add(kind)
+                    changed = True
+            for produced in _contract_output_capabilities(contract):
+                if _capability_state_add(
+                    reachable_capabilities,
+                    kind=produced.kind,
+                    ref_type=produced.ref_type,
+                    namespace=produced.namespace,
+                    bindings_hash=produced.bindings_hash,
+                ):
+                    changed = True
+        if not changed:
+            break
+
+    unresolved_tools: list[dict[str, Any]] = []
+    for tool_name in sorted(normalized_tool_contracts):
+        contract = normalized_tool_contracts.get(tool_name)
+        if not isinstance(contract, dict):
+            continue
+        if bool(contract.get("is_control")):
+            continue
+        validation = _validate_tool_contract_call(
+            tool_name=tool_name,
+            contract=contract,
+            parsed_args=None,
+            available_artifacts=reachable_artifacts,
+            available_capabilities=reachable_capabilities,
+            available_bindings=available_bindings,
+        )
+        if validation.is_valid:
+            continue
+        unresolved_tools.append(
+            {
+                "tool": tool_name,
+                "error_code": validation.error_code,
+                "missing_requirements": list(validation.missing_requirements or []),
+            }
+        )
+
+    return {
+        "lane_closed": len(unresolved_tools) == 0,
+        "reachable_artifacts": sorted(reachable_artifacts),
+        "reachable_capabilities": _capability_state_snapshot(reachable_capabilities),
+        "unresolved_tools": unresolved_tools,
+        "unresolved_tool_count": len(unresolved_tools),
+    }
+
+
+def _is_retrieval_no_hits_result(
+    *,
+    tool_name: str,
+    result_text: str | None,
+) -> bool:
+    """Best-effort retrieval no-hit detector for taxonomy accounting."""
+    if not result_text or _is_budget_exempt_tool(tool_name):
+        return False
+
+    lower = result_text.lower()
+    if "no results" in lower or "not found" in lower or "\"status\": \"no_results\"" in lower:
+        return True
+
+    try:
+        payload = _json.loads(result_text)
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    for key in ("results", "entities", "chunks", "relationships", "neighbors", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value) == 0
+
+    for key in ("count", "total", "hits"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)):
+            return int(value) == 0
+    return False
+
+
+_PRIMARY_FAILURE_PRIORITY: tuple[str, ...] = (
+    "provider",
+    "composability",
+    "retrieval",
+    "control_churn",
+    "reasoning",
+)
+
+_TERMINAL_FAILURE_EVENT_CODES: frozenset[str] = frozenset({
+    EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN,
+    EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
+    EVENT_CODE_CONTROL_CHURN_THRESHOLD,
+})
+
+
+def _first_terminal_failure_event_code(failure_event_codes: list[str]) -> str | None:
+    """Return earliest terminal blocker event code in event order, if present."""
+    for code in failure_event_codes:
+        if code in _TERMINAL_FAILURE_EVENT_CODES:
+            return code
+    return None
+
+
+def _classify_failure_signals(
+    *,
+    failure_event_codes: list[str],
+    retrieval_no_hits_count: int,
+    control_loop_suppressed_calls: int,
+    force_final_reason: str | None,
+    submit_answer_succeeded: bool,
+) -> tuple[str, list[str]]:
+    """Deterministic primary/secondary failure classes from event codes + counters."""
+    classes: set[str] = set()
+
+    for code in failure_event_codes:
+        if code.startswith("PROVIDER_"):
+            classes.add("provider")
+        elif code.startswith("TOOL_VALIDATION_REJECTED_") or code == EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS:
+            classes.add("composability")
+        elif code.startswith("RETRIEVAL_"):
+            classes.add("retrieval")
+        elif code.startswith("CONTROL_CHURN_"):
+            classes.add("control_churn")
+        elif code.startswith("REASONING_"):
+            classes.add("reasoning")
+
+    if retrieval_no_hits_count > 0:
+        classes.add("retrieval")
+    if control_loop_suppressed_calls > 0:
+        classes.add("control_churn")
+    if force_final_reason is not None and not classes and not submit_answer_succeeded:
+        classes.add("reasoning")
+
+    ordered = [c for c in _PRIMARY_FAILURE_PRIORITY if c in classes]
+    if not ordered:
+        return "none", []
+    return ordered[0], ordered[1:]
 
 
 def _is_responses_api_raw_response(raw_response: Any) -> bool:
@@ -1044,23 +1819,28 @@ async def _acall_with_mcp(
     else:
         raise ValueError("Either mcp_servers or mcp_sessions must be provided")
 
-    # Cost is accumulated during _agent_loop via agent_result metadata
-    usage = {
-            "input_tokens": agent_result.total_input_tokens,
-            "output_tokens": agent_result.total_output_tokens,
-            "total_tokens": (
-                agent_result.total_input_tokens + agent_result.total_output_tokens
-            ),
-        }
-    if agent_result.total_cached_tokens:
-        usage["cached_tokens"] = agent_result.total_cached_tokens
-    if agent_result.total_cache_creation_tokens:
-        usage["cache_creation_tokens"] = agent_result.total_cache_creation_tokens
+    # Cost is accumulated during _agent_loop via agent_result metadata.
+    usage = _build_agent_usage(agent_result)
+    resolved_model = agent_result.metadata.get("resolved_model")
+    if not isinstance(resolved_model, str) or not resolved_model.strip():
+        resolved_model = None
+    attempted_models = agent_result.metadata.get("attempted_models")
+    if not isinstance(attempted_models, list):
+        attempted_models = None
+    sticky_fallback = agent_result.metadata.get("sticky_fallback")
+    if not isinstance(sticky_fallback, bool):
+        sticky_fallback = None
     return LLMCallResult(
         content=final_content,
         usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
         model=model,
+        requested_model=model,
+        resolved_model=resolved_model,
+        routing_trace={
+            "attempted_models": attempted_models,
+            "sticky_fallback": sticky_fallback,
+        },
         finish_reason=final_finish_reason,
         raw_response=agent_result,
         warnings=agent_result.warnings,
@@ -1096,15 +1876,20 @@ async def _agent_loop(
 
     Returns (final_content, final_finish_reason).
     """
+    kwargs = dict(kwargs or {})
+
     total_cost = 0.0
     final_content = ""
     final_finish_reason = "stop"
     effective_model = model
+    attempted_models: list[str] = []
+    sticky_fallback = False
     tool_call_counts: dict[str, int] = {}
     tool_loop_nudges: dict[str, int] = {}
     tool_error_counts: dict[tuple[str, str], int] = {}
     tool_error_nudges: dict[tuple[str, str], int] = {}
     submit_requires_todo_progress = False
+    submit_requires_new_evidence = False
     todo_done_error_streak: dict[str, int] = {}
     control_loop_suppressed_calls = 0
     last_budget_remaining: int | None = None
@@ -1117,12 +1902,28 @@ async def _agent_loop(
     tool_arg_validation_rejections = 0
     tool_disclosure_turns = 0
     tool_disclosure_hidden_total = 0
+    tool_disclosure_unavailable_msgs = 0
+    tool_disclosure_unavailable_reason_chars = 0
+    tool_disclosure_unavailable_reason_tokens_est = 0
+    tool_disclosure_repair_suggestions = 0
+    no_legal_noncontrol_turns = 0
+    zero_exec_tool_turn_streak = 0
+    max_zero_exec_tool_turn_streak = 0
     context_compactions = 0
     context_compacted_messages = 0
     context_compacted_chars = 0
+    gate_rejected_calls = 0
+    gate_violation_events: list[dict[str, Any]] = []
     contract_rejected_calls = 0
     contract_violation_events: list[dict[str, Any]] = []
+    failure_event_codes: list[str] = []
+    autofilled_tool_reasoning_calls = 0
+    autofilled_tool_reasoning_by_tool: dict[str, int] = {}
+    evidence_signatures: set[str] = set()
+    submit_evidence_digest_at_last_failure: str | None = None
+    retrieval_no_hits_count = 0
     normalized_tool_contracts = _normalize_tool_contracts(tool_contracts)
+    tool_parameter_index = build_tool_parameter_index(openai_tools)
     if initial_artifacts is None:
         initial_artifacts = DEFAULT_INITIAL_ARTIFACTS
     available_artifacts = {
@@ -1131,12 +1932,49 @@ async def _agent_loop(
     if not available_artifacts:
         available_artifacts = set(DEFAULT_INITIAL_ARTIFACTS)
     initial_artifact_snapshot = sorted(available_artifacts)
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] = {}
+    for artifact in initial_artifact_snapshot:
+        _capability_state_add(available_capabilities, kind=artifact)
+    initial_capabilities_raw = kwargs.pop("initial_capabilities", None)
+    if isinstance(initial_capabilities_raw, list):
+        for item in initial_capabilities_raw:
+            req = _capability_requirement_from_raw(item)
+            if req is None:
+                continue
+            _capability_state_add(
+                available_capabilities,
+                kind=req.kind,
+                ref_type=req.ref_type,
+                namespace=req.namespace,
+                bindings_hash=req.bindings_hash,
+            )
+    initial_capability_snapshot = _capability_state_snapshot(available_capabilities)
     available_bindings = normalize_bindings(initial_bindings)
     initial_binding_snapshot = dict(available_bindings)
+    lane_closure_analysis = _analyze_lane_closure(
+        normalized_tool_contracts=normalized_tool_contracts,
+        initial_artifacts=set(available_artifacts),
+        initial_capabilities=available_capabilities,
+        available_bindings=available_bindings,
+    )
+    if (
+        enforce_tool_contracts
+        and normalized_tool_contracts
+        and not bool(lane_closure_analysis.get("lane_closed"))
+    ):
+        unresolved_count = int(lane_closure_analysis.get("unresolved_tool_count") or 0)
+        warning = (
+            "CAPABILITY_CLOSURE_ADVISORY: lane has "
+            f"{unresolved_count} unresolved non-control tool(s) from initial state. "
+            "Ensure conversion operators are available for required capability transitions."
+        )
+        agent_result.warnings.append(warning)
+        logger.warning(warning)
     artifact_timeline: list[dict[str, Any]] = [{
         "turn": 0,
         "phase": "initial",
         "available_artifacts": list(initial_artifact_snapshot),
+        "available_capabilities": list(initial_capability_snapshot),
     }]
     if enforce_tool_contracts and not normalized_tool_contracts:
         warning = (
@@ -1154,7 +1992,6 @@ async def _agent_loop(
     force_final_reason: str | None = None
     pending_submit_todo_ids: list[str] = []
 
-    kwargs = dict(kwargs or {})
     trace_id = str(kwargs.get("trace_id", "")).strip() or None
     task = str(kwargs.get("task", "")).strip() or None
     foundation_session_id = new_session_id()
@@ -1173,6 +2010,34 @@ async def _agent_loop(
         active_run_id if isinstance(active_run_id, str) else None,
         trace_id,
     )
+    run_config_spec: dict[str, Any] = {
+        "requested_model": model,
+        "max_turns": max_turns,
+        "max_tool_calls": max_tool_calls,
+        "require_tool_reasoning": require_tool_reasoning,
+        "enforce_tool_contracts": enforce_tool_contracts,
+        "progressive_tool_disclosure": progressive_tool_disclosure,
+        "suppress_control_loop_calls": suppress_control_loop_calls,
+        "tool_result_max_length": tool_result_max_length,
+        "max_message_chars": max_message_chars,
+    }
+    runtime_policy_kwargs = {
+        k: kwargs.get(k)
+        for k in (
+            "temperature",
+            "top_p",
+            "timeout",
+            "num_retries",
+            "fallback_models",
+            "fallback_limit",
+            "execution_mode",
+            "api_base",
+            "service_tier",
+        )
+        if k in kwargs
+    }
+    run_config_spec["runtime_policy"] = runtime_policy_kwargs
+    run_config_hash = sha256_json(run_config_spec).replace("sha256:", "")
 
     def _emit_foundation_event(payload: dict[str, Any]) -> None:
         nonlocal foundation_event_validation_errors, foundation_events_logged
@@ -1259,47 +2124,170 @@ async def _agent_loop(
             logger.warning(warning)
 
         disclosed_tools = openai_tools
-        hidden_disclosure = []
+        hidden_disclosure: list[dict[str, Any]] = []
+        hidden_disclosure_total = 0
         if progressive_tool_disclosure and normalized_tool_contracts:
-            disclosed_tools, hidden_disclosure = _filter_tools_for_disclosure(
+            disclosed_tools, hidden_disclosure, hidden_disclosure_total = _filter_tools_for_disclosure(
                 openai_tools=openai_tools,
                 normalized_tool_contracts=normalized_tool_contracts,
                 available_artifacts=available_artifacts,
+                available_capabilities=available_capabilities,
+                available_bindings=available_bindings,
             )
             if hidden_disclosure:
                 tool_disclosure_turns += 1
-                tool_disclosure_hidden_total += len(hidden_disclosure)
+                tool_disclosure_hidden_total += hidden_disclosure_total
+                tool_disclosure_repair_suggestions += sum(
+                    len(entry.get("repair_tools") or [])
+                    for entry in hidden_disclosure
+                    if isinstance(entry, dict)
+                )
                 hidden_names = [h["tool"] for h in hidden_disclosure]
+                disclosure_reason = _disclosure_message(hidden_disclosure)
+                disclosure_msg = {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: Currently unavailable tools with missing requirements: "
+                        f"{disclosure_reason}]"
+                    ),
+                }
+                disclosure_chars = len(str(disclosure_msg.get("content", "")))
+                tool_disclosure_unavailable_msgs += 1
+                tool_disclosure_unavailable_reason_chars += disclosure_chars
+                tool_disclosure_unavailable_reason_tokens_est += max(
+                    1, disclosure_chars // DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS,
+                )
+                messages.append(disclosure_msg)
+                agent_result.conversation_trace.append(disclosure_msg)
                 logger.info(
-                    "TOOL_DISCLOSURE turn=%d exposed=%d/%d hidden=%s available_artifacts=%s",
+                    "TOOL_DISCLOSURE turn=%d exposed=%d/%d hidden=%s available_artifacts=%s available_capabilities=%s",
                     turn + 1,
                     len(disclosed_tools),
                     len(openai_tools),
                     hidden_names,
                     sorted(available_artifacts),
+                    _capability_state_snapshot(available_capabilities),
                 )
                 agent_result.warnings.append(
                     "TOOL_DISCLOSURE: hidden currently incompatible tools on turn "
                     f"{turn + 1}: {', '.join(hidden_names)}"
                 )
 
-        result = await _inner_acall_llm(
-            effective_model, messages, timeout=timeout, tools=disclosed_tools, **kwargs,
-        )
+            noncontrol_disclosed = [
+                t for t in disclosed_tools
+                if isinstance(t, dict)
+                and not _is_control_tool_name(
+                    str(t.get("function", {}).get("name", "")).strip(),
+                    normalized_tool_contracts,
+                )
+            ]
+            if not noncontrol_disclosed:
+                no_legal_noncontrol_turns += 1
+                warning = (
+                    "TOOL_DISCLOSURE: no legal non-control tools available this turn. "
+                    "Use conversion/planning/control tools to unlock capabilities."
+                )
+                agent_result.warnings.append(warning)
+                logger.warning(warning)
+                failure_event_codes.append(EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS)
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "__disclosure__", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {
+                                "hidden_tools": [h.get("tool") for h in hidden_disclosure],
+                                "hidden_total": hidden_disclosure_total,
+                            },
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS,
+                            "category": "validation",
+                            "phase": "input_validation",
+                            "retryable": True,
+                            "tool_name": "__disclosure__",
+                            "user_message": warning,
+                            "debug_ref": None,
+                        },
+                    }
+                )
+
+        try:
+            result = await _inner_acall_llm(
+                effective_model, messages, timeout=timeout, tools=disclosed_tools, **kwargs,
+            )
+        except Exception as exc:
+            error_text = str(exc).strip() or f"{type(exc).__name__}"
+            is_provider_empty = "Empty content from LLM" in error_text
+            event_code = (
+                EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN
+                if is_provider_empty and turn == 0
+                else EVENT_CODE_PROVIDER_EMPTY_RESPONSE
+                if is_provider_empty
+                else EVENT_CODE_TOOL_RUNTIME_ERROR
+            )
+            failure_event_codes.append(event_code)
+            warning = (
+                "AGENT_LLM_CALL_FAILED: turn="
+                f"{turn + 1} model={effective_model} error={error_text}"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": "_inner_acall_llm", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": {"turn": turn + 1, "error": error_text},
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": event_code,
+                        "category": "provider" if is_provider_empty else "execution",
+                        "phase": "execution",
+                        "retryable": bool(is_provider_empty),
+                        "tool_name": "_inner_acall_llm",
+                        "user_message": error_text,
+                        "debug_ref": None,
+                    },
+                }
+            )
+            final_content = error_text
+            final_finish_reason = "error"
+            break
 
         # Track per-turn diagnostics
-        agent_result.models_used.add(result.model)
+        result_model = str(result.model).strip() or effective_model
+        agent_result.models_used.add(result_model)
+        if result_model and result_model not in attempted_models:
+            attempted_models.append(result_model)
         if result.warnings:
             agent_result.warnings.extend(result.warnings)
 
         # Sticky fallback: if inner call fell back to a different model,
         # use that model for remaining turns (avoids re-hitting dead primary).
-        if result.model != effective_model:
+        if result_model != effective_model:
             agent_result.warnings.append(
                 f"STICKY_FALLBACK: {effective_model} failed, "
-                f"using {result.model} for remaining turns"
+                f"using {result_model} for remaining turns"
             )
-            effective_model = result.model
+            effective_model = result_model
+            sticky_fallback = True
 
         _emit_foundation_event(
             {
@@ -1314,7 +2302,8 @@ async def _agent_loop(
                     "artifact_ids": sorted(available_artifacts),
                     "params": {
                         "turn": turn + 1,
-                        "model": effective_model,
+                    "model": effective_model,
+                        "capabilities_sha256": sha256_json(_capability_state_snapshot(available_capabilities)),
                     },
                     "bindings": dict(available_bindings),
                 },
@@ -1323,7 +2312,7 @@ async def _agent_loop(
                     "payload_hashes": [sha256_text(result.content or "")],
                 },
                 "llm": {
-                    "model_id": result.model,
+                    "model_id": result_model,
                     "content_persisted": "hash_only",
                     "prompt_sha256": sha256_json(messages),
                     "response_sha256": sha256_text(result.content or ""),
@@ -1375,12 +2364,66 @@ async def _agent_loop(
             final_finish_reason = result.finish_reason
             # Log visibility: empty content on first turn is almost always a model failure
             if not result.content and turn == 0:
+                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN)
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "_inner_acall_llm", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {"turn": turn + 1, "finish_reason": result.finish_reason},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN,
+                            "category": "provider",
+                            "phase": "execution",
+                            "retryable": True,
+                            "tool_name": "_inner_acall_llm",
+                            "user_message": "Provider returned empty content with no tool calls on first turn.",
+                            "debug_ref": None,
+                        },
+                    }
+                )
                 logger.error(
                     "Agent loop: model=%s returned empty content with 0 tool calls on turn 1 "
                     "(finish_reason=%s). All %d retries + fallback exhausted at the per-turn level.",
                     model, result.finish_reason, kwargs.get("num_retries", 2),
                 )
             elif not result.content:
+                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_RESPONSE)
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "_inner_acall_llm", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {"turn": turn + 1, "finish_reason": result.finish_reason},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
+                            "category": "provider",
+                            "phase": "execution",
+                            "retryable": True,
+                            "tool_name": "_inner_acall_llm",
+                            "user_message": "Provider returned empty content with no tool calls.",
+                            "debug_ref": None,
+                        },
+                    }
+                )
                 logger.warning(
                     "Agent loop: model=%s returned empty content on turn %d/%d "
                     "(finish_reason=%s, %d tool calls so far).",
@@ -1405,6 +2448,10 @@ async def _agent_loop(
                 name = patched.get("function", {}).get("name", "")
                 if name:
                     autofilled_reasoning_tools.append(name)
+                    autofilled_tool_reasoning_by_tool[name] = (
+                        autofilled_tool_reasoning_by_tool.get(name, 0) + 1
+                    )
+                autofilled_tool_reasoning_calls += 1
             patched_calls.append(patched)
         tool_calls_this_turn = patched_calls
         if autofilled_reasoning_tools:
@@ -1454,22 +2501,16 @@ async def _agent_loop(
                 )
 
         missing_reasoning_tools: list[str] = []
-        missing_reasoning_call_ids: set[str] = set()
         for tc in tool_calls_this_turn:
             fn = tc.get("function", {})
             tc_name = fn.get("name", "")
-            tc_id = tc.get("id", "")
             tc_args = _extract_tool_call_args(tc)
             if not isinstance(tc_args, dict):
                 missing_reasoning_tools.append(tc_name or "<unknown>")
-                if tc_id:
-                    missing_reasoning_call_ids.add(tc_id)
                 continue
             tc_reasoning = tc_args.get(TOOL_REASONING_FIELD)
             if not isinstance(tc_reasoning, str) or not tc_reasoning.strip():
                 missing_reasoning_tools.append(tc_name or "<unknown>")
-                if tc_id:
-                    missing_reasoning_call_ids.add(tc_id)
 
         if missing_reasoning_tools:
             reasoning_nudge = {
@@ -1514,40 +2555,109 @@ async def _agent_loop(
         })
 
         tool_calls_to_execute = tool_calls_this_turn
-        pending_repair_msg: dict[str, Any] | None = None
-        if require_tool_reasoning and missing_reasoning_call_ids:
-            tool_calls_to_execute = [
-                tc for tc in tool_calls_this_turn
-                if tc.get("id", "") not in missing_reasoning_call_ids
-            ]
+        gate_rejected_records: list[MCPToolCallRecord] = []
+        gate_rejected_messages: list[dict[str, Any]] = []
+        pending_gate_msg: dict[str, Any] | None = None
 
-            rejected_missing_reasoning_calls += len(missing_reasoning_call_ids)
-            rejected_tool_messages: list[dict[str, Any]] = []
-            for tc in tool_calls_this_turn:
-                tc_id = tc.get("id", "")
-                if tc_id not in missing_reasoning_call_ids:
-                    continue
-                rejected_tool_messages.append({
+        filtered_gate_calls: list[dict[str, Any]] = []
+        for tc in tool_calls_to_execute:
+            tool_name = str(tc.get("function", {}).get("name", "")).strip()
+            tc_id = tc.get("id", "")
+            parsed_args = _extract_tool_call_args(tc)
+            validation = validate_tool_call_inputs(
+                tool_name=tool_name or "<unknown>",
+                parsed_args=parsed_args,
+                tool_parameters=tool_parameter_index.get(tool_name),
+                require_tool_reasoning=require_tool_reasoning,
+                tool_reasoning_field=TOOL_REASONING_FIELD,
+                available_bindings=available_bindings,
+                error_code_schema=EVENT_CODE_TOOL_VALIDATION_SCHEMA,
+                error_code_missing_reasoning=EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
+                error_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
+            )
+            if validation.is_valid:
+                filtered_gate_calls.append(tc)
+                continue
+
+            gate_rejected_calls += 1
+            if validation.error_code == EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING:
+                rejected_missing_reasoning_calls += 1
+            gate_reason = validation.reason or "Compliance gate rejected tool call."
+            gate_error = f"Validation error: {gate_reason}"
+            gate_error_code = validation.error_code or EVENT_CODE_TOOL_VALIDATION_SCHEMA
+            failure_event_codes.append(gate_error_code)
+            gate_violation_events.append(
+                {
+                    "turn": turn + 1,
+                    "tool": tool_name or "<unknown>",
+                    "reason": gate_reason,
+                    "error_code": gate_error_code,
+                    "failure_phase": validation.failure_phase or "input_validation",
+                    "available_artifacts": sorted(available_artifacts),
+                    "available_capabilities": _capability_state_snapshot(available_capabilities),
+                    "available_bindings": dict(available_bindings),
+                    "call_bindings": dict(validation.call_bindings),
+                    "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
+                    "missing_requirements": list(validation.missing_requirements or []),
+                }
+            )
+            gate_rejected_records.append(
+                MCPToolCallRecord(
+                    server="__compliance__",
+                    tool=tool_name or "<unknown>",
+                    arguments=parsed_args if isinstance(parsed_args, dict) else {},
+                    error=gate_error,
+                )
+            )
+            gate_rejected_messages.append(
+                {
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": _json.dumps({
-                        "error": f"Missing required argument: {TOOL_REASONING_FIELD}",
-                    }),
-                })
-            messages.extend(rejected_tool_messages)
-            for tmsg in rejected_tool_messages:
-                agent_result.conversation_trace.append({
-                    "role": "tool",
-                    "tool_call_id": tmsg.get("tool_call_id", ""),
-                    "content": tmsg.get("content", ""),
-                })
+                    "content": _json.dumps(
+                        {
+                            "error": gate_error,
+                            "error_code": gate_error_code,
+                            "failure_phase": validation.failure_phase or "input_validation",
+                            "call_bindings": validation.call_bindings,
+                            "missing_requirements": validation.missing_requirements,
+                        }
+                    ),
+                }
+            )
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": tool_name or "<unknown>", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": parsed_args if isinstance(parsed_args, dict) else {},
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": gate_error_code,
+                        "category": "validation",
+                        "phase": validation.failure_phase or "input_validation",
+                        "retryable": True,
+                        "tool_name": tool_name or "<unknown>",
+                        "user_message": gate_error,
+                        "debug_ref": None,
+                    },
+                }
+            )
 
-            pending_repair_msg = {
+        tool_calls_to_execute = filtered_gate_calls
+        if gate_rejected_records:
+            pending_gate_msg = {
                 "role": "user",
                 "content": (
-                    "[SYSTEM: One or more tool calls were rejected because "
-                    f"'{TOOL_REASONING_FIELD}' was missing. Re-issue corrected tool calls "
-                    "only if still needed.]"
+                    "[SYSTEM: One or more tool calls were rejected by compliance checks "
+                    "(schema/binding/observability). Re-issue corrected calls only if still needed.]"
                 ),
             }
 
@@ -1570,6 +2680,7 @@ async def _agent_loop(
                     contract=contract,
                     parsed_args=parsed_args,
                     available_artifacts=available_artifacts,
+                    available_capabilities=available_capabilities,
                     available_bindings=available_bindings,
                 )
                 if validation.is_valid:
@@ -1582,13 +2693,16 @@ async def _agent_loop(
                     "turn": turn + 1,
                     "tool": tool_name or "<unknown>",
                     "reason": validation.reason,
-                    "error_code": validation.error_code or "contract_violation",
+                    "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
                     "failure_phase": validation.failure_phase or "input_validation",
                     "available_artifacts": sorted(available_artifacts),
+                    "available_capabilities": _capability_state_snapshot(available_capabilities),
                     "available_bindings": dict(available_bindings),
                     "call_bindings": dict(validation.call_bindings),
                     "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
+                    "missing_requirements": list(validation.missing_requirements or []),
                 })
+                failure_event_codes.append(validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE)
                 contract_rejected_records.append(
                     MCPToolCallRecord(
                         server="__contract__",
@@ -1603,9 +2717,10 @@ async def _agent_loop(
                     "content": _json.dumps(
                         {
                             "error": err,
-                            "error_code": validation.error_code or "contract_violation",
+                            "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
                             "failure_phase": validation.failure_phase or "input_validation",
                             "call_bindings": validation.call_bindings,
+                            "missing_requirements": validation.missing_requirements,
                         }
                     ),
                 })
@@ -1625,7 +2740,7 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": validation.error_code or "contract_violation",
+                            "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
                             "category": "validation",
                             "phase": validation.failure_phase or "input_validation",
                             "retryable": False,
@@ -1643,6 +2758,7 @@ async def _agent_loop(
                     "content": (
                         "[SYSTEM: One or more tool calls were rejected by tool composability contracts. "
                         f"Use tools compatible with available artifacts: {sorted(available_artifacts)}. "
+                        f"Capabilities: {_capability_state_snapshot(available_capabilities)}. "
                         "Adjust plan and try again.]"
                     ),
                 }
@@ -1651,6 +2767,7 @@ async def _agent_loop(
         # 1) block repeated submit_answer attempts until TODO state changes;
         # 2) block repeated todo_update(done) retries on the same TODO after
         #    repeated validation failures.
+        current_evidence_digest = _evidence_digest(evidence_signatures)
         suppressed_records: list[MCPToolCallRecord] = []
         suppressed_tool_messages: list[dict[str, Any]] = []
         filtered_tool_calls: list[dict[str, Any]] = []
@@ -1659,6 +2776,42 @@ async def _agent_loop(
                 tool_name = tc.get("function", {}).get("name", "")
                 tc_id = tc.get("id", "")
                 parsed_args = _extract_tool_call_args(tc) or {}
+
+                if tool_name == "submit_answer" and submit_requires_new_evidence:
+                    if (
+                        submit_evidence_digest_at_last_failure is not None
+                        and current_evidence_digest != submit_evidence_digest_at_last_failure
+                    ):
+                        submit_requires_new_evidence = False
+                        submit_evidence_digest_at_last_failure = None
+                    else:
+                        err = (
+                            "submit_answer suppressed: validator requires NEW evidence before retry. "
+                            "Evidence digest has not changed since last rejected submit. "
+                            "Run at least one non-control evidence tool call "
+                            "(entity_*, chunk_*, relationship_*, subgraph_*) first, then retry submit."
+                        )
+                        suppressed_records.append(
+                            MCPToolCallRecord(
+                                server="__agent__",
+                                tool=tool_name,
+                                arguments=parsed_args,
+                                error=err,
+                            )
+                        )
+                        suppressed_tool_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": _json.dumps(
+                                {
+                                    "error": err,
+                                    "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
+                                    "evidence_digest": current_evidence_digest,
+                                    "required_evidence_digest_change_from": submit_evidence_digest_at_last_failure,
+                                }
+                            ),
+                        })
+                        continue
 
                 if tool_name == "submit_answer" and submit_requires_todo_progress:
                     unresolved_hint = (
@@ -1684,7 +2837,12 @@ async def _agent_loop(
                     suppressed_tool_messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
-                        "content": _json.dumps({"error": err}),
+                        "content": _json.dumps(
+                            {
+                                "error": err,
+                                "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
+                            }
+                        ),
                     })
                     continue
 
@@ -1710,7 +2868,12 @@ async def _agent_loop(
                         suppressed_tool_messages.append({
                             "role": "tool",
                             "tool_call_id": tc_id,
-                            "content": _json.dumps({"error": err}),
+                            "content": _json.dumps(
+                                {
+                                    "error": err,
+                                    "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
+                                }
+                            ),
                         })
                         continue
 
@@ -1746,7 +2909,7 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": "control_loop_suppressed",
+                            "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
                             "category": "policy",
                             "phase": "post_validation",
                             "retryable": False,
@@ -1756,6 +2919,7 @@ async def _agent_loop(
                         },
                     }
                 )
+                failure_event_codes.append(EVENT_CODE_CONTROL_LOOP_SUPPRESSED)
 
         for tc in tool_calls_to_execute:
             tool_name = tc.get("function", {}).get("name", "") or "<unknown>"
@@ -1804,7 +2968,7 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": "tool_runtime_error",
+                            "error_code": EVENT_CODE_TOOL_RUNTIME_ERROR,
                             "category": "execution",
                             "phase": "execution",
                             "retryable": False,
@@ -1814,6 +2978,7 @@ async def _agent_loop(
                         },
                     }
                 )
+                failure_event_codes.append(EVENT_CODE_TOOL_RUNTIME_ERROR)
                 continue
 
             observed_bindings = extract_bindings_from_tool_args(record.arguments)
@@ -1848,17 +3013,47 @@ async def _agent_loop(
                 )
 
             produced: set[str] = set()
+            produced_capabilities: list[CapabilityRequirement] = []
             if enforce_tool_contracts and normalized_tool_contracts:
-                produced = _contract_outputs(normalized_tool_contracts.get(record.tool))
+                contract = normalized_tool_contracts.get(record.tool)
+                produced = _contract_outputs(contract)
+                produced_capabilities = _contract_output_capabilities(contract)
                 if produced:
                     available_artifacts.update(produced)
-                    artifact_timeline.append({
-                        "turn": turn + 1,
-                        "phase": "tool_success",
-                        "tool": record.tool,
-                        "produced": sorted(produced),
-                        "available_artifacts": sorted(available_artifacts),
-                    })
+
+            inferred_caps = _infer_output_capabilities(
+                tool_name=record.tool,
+                parsed_args=record.arguments if isinstance(record.arguments, dict) else {},
+                produced_artifacts=produced,
+                available_bindings=available_bindings,
+            )
+
+            produced_capability_payload: list[dict[str, str]] = []
+            for req in produced_capabilities + inferred_caps:
+                added = _capability_state_add(
+                    available_capabilities,
+                    kind=req.kind,
+                    ref_type=req.ref_type,
+                    namespace=req.namespace,
+                    bindings_hash=req.bindings_hash,
+                )
+                if added:
+                    produced_capability_payload.append(req.to_dict())
+
+            if produced:
+                artifact_timeline.append({
+                    "turn": turn + 1,
+                    "phase": "tool_success",
+                    "tool": record.tool,
+                    "produced": sorted(produced),
+                    "produced_capabilities": produced_capability_payload,
+                    "available_artifacts": sorted(available_artifacts),
+                    "available_capabilities": _capability_state_snapshot(available_capabilities),
+                })
+
+            if _is_retrieval_no_hits_result(tool_name=record.tool, result_text=record.result):
+                retrieval_no_hits_count += 1
+                failure_event_codes.append("RETRIEVAL_NO_HITS")
 
             _emit_foundation_event(
                 {
@@ -1884,13 +3079,13 @@ async def _agent_loop(
                 }
             )
 
-        records = contract_rejected_records + suppressed_records + executed_records
-        tool_messages = contract_rejected_messages + suppressed_tool_messages + executed_tool_messages
+        records = gate_rejected_records + contract_rejected_records + suppressed_records + executed_records
+        tool_messages = gate_rejected_messages + contract_rejected_messages + suppressed_tool_messages + executed_tool_messages
         agent_result.tool_calls.extend(records)
         messages.extend(tool_messages)
-        if pending_repair_msg is not None:
-            messages.append(pending_repair_msg)
-            agent_result.conversation_trace.append(pending_repair_msg)
+        if pending_gate_msg is not None:
+            messages.append(pending_gate_msg)
+            agent_result.conversation_trace.append(pending_gate_msg)
         if pending_contract_msg is not None:
             messages.append(pending_contract_msg)
             agent_result.conversation_trace.append(pending_contract_msg)
@@ -1932,6 +3127,22 @@ async def _agent_loop(
         submitted_answer_value: str | None = None
         submit_error_this_turn = False
         submit_errors: list[str] = []
+        submit_needs_new_evidence_signal = False
+        evidence_digest_before_turn = _evidence_digest(evidence_signatures)
+        for record in executed_records:
+            signature = _tool_evidence_signature(record)
+            if signature:
+                evidence_signatures.add(signature)
+        evidence_digest_after_turn = _evidence_digest(evidence_signatures)
+        new_evidence_this_turn = evidence_digest_after_turn != evidence_digest_before_turn
+        if (
+            new_evidence_this_turn
+            and submit_requires_new_evidence
+            and submit_evidence_digest_at_last_failure is not None
+            and evidence_digest_after_turn != submit_evidence_digest_at_last_failure
+        ):
+            submit_requires_new_evidence = False
+            submit_evidence_digest_at_last_failure = None
         for record in records:
             if record.tool != "submit_answer":
                 continue
@@ -1947,6 +3158,12 @@ async def _agent_loop(
                     validation = parsed.get("validation_error")
                     reason_code = ""
                     detail = ""
+                    recovery_policy = parsed.get("recovery_policy")
+                    if (
+                        isinstance(recovery_policy, dict)
+                        and bool(recovery_policy.get("new_evidence_required_before_retry"))
+                    ):
+                        submit_needs_new_evidence_signal = True
                     if isinstance(validation, dict):
                         reason_code = str(validation.get("reason_code", "")).strip()
                         detail = str(validation.get("message", "")).strip()
@@ -2013,6 +3230,9 @@ async def _agent_loop(
             )
             if todo_blocked and not todo_progress_this_turn:
                 submit_requires_todo_progress = True
+            if submit_needs_new_evidence_signal and not new_evidence_this_turn:
+                submit_requires_new_evidence = True
+                submit_evidence_digest_at_last_failure = evidence_digest_after_turn
             todo_fix_hint = ""
             if pending_submit_todo_ids:
                 todo_fix_hint = (
@@ -2022,6 +3242,13 @@ async def _agent_loop(
                     "todo_update(todo_id=<id>, status='blocked', note='why evidence is insufficient') "
                     "or mark done with evidence refs before submit."
                 )
+            evidence_fix_hint = (
+                " Validator requires NEW evidence before retry. "
+                "Run at least one non-control evidence tool call "
+                "(entity_*/chunk_*/relationship_*/subgraph_*) before submit."
+                if submit_requires_new_evidence else
+                ""
+            )
             retry_submit_msg = {
                 "role": "user",
                 "content": (
@@ -2033,6 +3260,7 @@ async def _agent_loop(
                         ""
                     )
                     + todo_fix_hint
+                    + evidence_fix_hint
                     + (
                         "Do NOT use refusal text (cannot, unknown, insufficient, no such, not found). "
                         "Submit the single best factual guess from retrieved evidence. "
@@ -2047,6 +3275,70 @@ async def _agent_loop(
             agent_result.conversation_trace.append(retry_submit_msg)
         elif todo_progress_this_turn:
             pending_submit_todo_ids = []
+
+        if tool_calls_this_turn and not tool_calls_to_execute:
+            zero_exec_tool_turn_streak += 1
+        else:
+            zero_exec_tool_turn_streak = 0
+        if zero_exec_tool_turn_streak > max_zero_exec_tool_turn_streak:
+            max_zero_exec_tool_turn_streak = zero_exec_tool_turn_streak
+
+        if zero_exec_tool_turn_streak >= DEFAULT_TOOL_CALL_STALL_TURNS:
+            blocked_tools = sorted({
+                str(tc.get("function", {}).get("name", "")).strip() or "<unknown>"
+                for tc in tool_calls_this_turn
+                if isinstance(tc, dict)
+            })
+            warning = (
+                "CONTROL_CHURN: consecutive turns with tool calls but no executable calls "
+                f"({zero_exec_tool_turn_streak} turns). Forcing final answer."
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            failure_event_codes.append(EVENT_CODE_CONTROL_CHURN_THRESHOLD)
+            stall_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Repeated non-executable tool-call loop detected "
+                    f"({zero_exec_tool_turn_streak} turns). Stop calling tools and "
+                    "submit your best answer now from existing evidence.]"
+                ),
+            }
+            messages.append(stall_msg)
+            agent_result.conversation_trace.append(stall_msg)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": "__control_churn__", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": {
+                            "blocked_tools": blocked_tools,
+                            "streak": zero_exec_tool_turn_streak,
+                            "contract_rejections": len(contract_rejected_records),
+                            "suppressed_calls": len(suppressed_records),
+                        },
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": EVENT_CODE_CONTROL_CHURN_THRESHOLD,
+                        "category": "policy",
+                        "phase": "post_validation",
+                        "retryable": False,
+                        "tool_name": "__control_churn__",
+                        "user_message": warning,
+                        "debug_ref": None,
+                    },
+                }
+            )
+            force_final_reason = "control_churn"
+            break
 
         # Repeated tool-error detection: nudge strategy change instead of
         # repeatedly retrying near-identical invalid calls.
@@ -2156,6 +3448,14 @@ async def _agent_loop(
                     "using evidence already retrieved. Extract the best name/date/number and answer.]"
                 ),
             }
+        elif force_final_reason == "control_churn":
+            force_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Tool-call loop stalled with repeated non-executable calls. "
+                    "You MUST submit your best factual answer now from current evidence.]"
+                ),
+            }
         else:
             logger.warning(
                 "Agent loop exhausted max_turns=%d, forcing final answer",
@@ -2186,29 +3486,136 @@ async def _agent_loop(
             )
             agent_result.warnings.append(warning)
             logger.warning(warning)
-        final_result = await _inner_acall_llm(
-            effective_model, messages, timeout=timeout, **kwargs,
-        )
-        agent_result.models_used.add(final_result.model)
-        if final_result.warnings:
-            agent_result.warnings.extend(final_result.warnings)
-        final_content = final_result.content
-        final_finish_reason = final_result.finish_reason
-        total_cost += final_result.cost
-        inp, out, cached, cache_create = _extract_usage(final_result.usage or {})
-        agent_result.total_input_tokens += inp
-        agent_result.total_output_tokens += out
-        agent_result.total_cached_tokens += cached
-        agent_result.total_cache_creation_tokens += cache_create
-        agent_result.turns += 1
-        # Capture forced final answer in trace
-        if final_content:
-            agent_result.conversation_trace.append({
-                "role": "assistant",
-                "content": final_content,
-            })
+        try:
+            final_result = await _inner_acall_llm(
+                effective_model, messages, timeout=timeout, **kwargs,
+            )
+        except Exception as exc:
+            error_text = str(exc).strip() or f"{type(exc).__name__}"
+            is_provider_empty = "Empty content from LLM" in error_text
+            event_code = (
+                EVENT_CODE_PROVIDER_EMPTY_RESPONSE
+                if is_provider_empty
+                else EVENT_CODE_TOOL_RUNTIME_ERROR
+            )
+            failure_event_codes.append(event_code)
+            warning = (
+                "AGENT_LLM_CALL_FAILED: forced_final model="
+                f"{effective_model} error={error_text}"
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": "_inner_acall_llm", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": {"turn": agent_result.turns + 1, "forced_final": True, "error": error_text},
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": event_code,
+                        "category": "provider" if is_provider_empty else "execution",
+                        "phase": "execution",
+                        "retryable": bool(is_provider_empty),
+                        "tool_name": "_inner_acall_llm",
+                        "user_message": error_text,
+                        "debug_ref": None,
+                    },
+                }
+            )
+            final_content = error_text
+            final_finish_reason = "error"
+            final_result = None
+
+        if final_result is None:
+            # Preserve partial trace/tool history instead of bubbling exception.
+            pass
+        else:
+            final_result_model = str(final_result.model).strip() or effective_model
+            agent_result.models_used.add(final_result_model)
+            if final_result_model and final_result_model not in attempted_models:
+                attempted_models.append(final_result_model)
+            if final_result.warnings:
+                agent_result.warnings.extend(final_result.warnings)
+            final_content = final_result.content
+            final_finish_reason = final_result.finish_reason
+            if not final_content:
+                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_RESPONSE)
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "_inner_acall_llm", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {"turn": agent_result.turns + 1, "forced_final": True},
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
+                            "category": "provider",
+                            "phase": "execution",
+                            "retryable": True,
+                            "tool_name": "_inner_acall_llm",
+                            "user_message": "Provider returned empty content on forced-final call.",
+                            "debug_ref": None,
+                        },
+                    }
+                )
+            total_cost += final_result.cost
+            inp, out, cached, cache_create = _extract_usage(final_result.usage or {})
+            agent_result.total_input_tokens += inp
+            agent_result.total_output_tokens += out
+            agent_result.total_cached_tokens += cached
+            agent_result.total_cache_creation_tokens += cache_create
+            agent_result.turns += 1
+            # Capture forced final answer in trace
+            if final_content:
+                agent_result.conversation_trace.append({
+                    "role": "assistant",
+                    "content": final_content,
+                })
+
+    primary_failure_class, secondary_failure_classes = _classify_failure_signals(
+        failure_event_codes=failure_event_codes,
+        retrieval_no_hits_count=retrieval_no_hits_count,
+        control_loop_suppressed_calls=control_loop_suppressed_calls,
+        force_final_reason=force_final_reason,
+        submit_answer_succeeded=submit_answer_succeeded,
+    )
+    first_terminal_failure_event_code = _first_terminal_failure_event_code(failure_event_codes)
+    failure_event_code_counts: dict[str, int] = {}
+    for code in failure_event_codes:
+        failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
+
+    hard_bindings_spec = _hard_bindings_spec(available_bindings)
+    full_bindings_spec = _full_bindings_spec(available_bindings)
+    hard_bindings_hash = _hard_bindings_state_hash(available_bindings)
+    full_bindings_hash = _full_bindings_state_hash(available_bindings)
+    initial_hard_bindings_spec = _hard_bindings_spec(initial_binding_snapshot)
+    initial_full_bindings_spec = _full_bindings_spec(initial_binding_snapshot)
+    initial_hard_bindings_hash = _hard_bindings_state_hash(initial_binding_snapshot)
+    initial_full_bindings_hash = _full_bindings_state_hash(initial_binding_snapshot)
+    final_evidence_digest = _evidence_digest(evidence_signatures)
 
     agent_result.metadata["total_cost"] = total_cost
+    agent_result.metadata["requested_model"] = model
+    agent_result.metadata["resolved_model"] = effective_model
+    agent_result.metadata["attempted_models"] = attempted_models
+    agent_result.metadata["sticky_fallback"] = sticky_fallback
     agent_result.metadata["max_turns"] = max_turns
     agent_result.metadata["max_tool_calls"] = max_tool_calls
     agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
@@ -2233,16 +3640,49 @@ async def _agent_loop(
     agent_result.metadata["enforce_tool_contracts"] = enforce_tool_contracts
     agent_result.metadata["progressive_tool_disclosure"] = progressive_tool_disclosure
     agent_result.metadata["suppress_control_loop_calls"] = suppress_control_loop_calls
+    agent_result.metadata["tool_gate_rejections"] = gate_rejected_calls
+    agent_result.metadata["tool_gate_violation_events"] = gate_violation_events
     agent_result.metadata["tool_contract_rejections"] = contract_rejected_calls
     agent_result.metadata["tool_contract_violation_events"] = contract_violation_events
     agent_result.metadata["tool_contracts_declared"] = sorted(normalized_tool_contracts.keys())
     agent_result.metadata["initial_artifacts"] = initial_artifact_snapshot
     agent_result.metadata["available_artifacts_final"] = sorted(available_artifacts)
+    agent_result.metadata["initial_capabilities"] = initial_capability_snapshot
+    agent_result.metadata["available_capabilities_final"] = _capability_state_snapshot(available_capabilities)
     agent_result.metadata["artifact_timeline"] = artifact_timeline
     agent_result.metadata["initial_bindings"] = initial_binding_snapshot
     agent_result.metadata["available_bindings_final"] = dict(available_bindings)
+    agent_result.metadata["initial_hard_bindings_spec"] = initial_hard_bindings_spec
+    agent_result.metadata["initial_full_bindings_spec"] = initial_full_bindings_spec
+    agent_result.metadata["initial_hard_bindings_hash"] = initial_hard_bindings_hash
+    agent_result.metadata["initial_full_bindings_hash"] = initial_full_bindings_hash
+    agent_result.metadata["hard_bindings_spec"] = hard_bindings_spec
+    agent_result.metadata["full_bindings_spec"] = full_bindings_spec
+    agent_result.metadata["hard_bindings_hash"] = hard_bindings_hash
+    agent_result.metadata["full_bindings_hash"] = full_bindings_hash
+    agent_result.metadata["run_config_spec"] = run_config_spec
+    agent_result.metadata["run_config_hash"] = run_config_hash
     agent_result.metadata["tool_disclosure_turns"] = tool_disclosure_turns
     agent_result.metadata["tool_disclosure_hidden_total"] = tool_disclosure_hidden_total
+    agent_result.metadata["tool_disclosure_unavailable_msgs"] = tool_disclosure_unavailable_msgs
+    agent_result.metadata["tool_disclosure_unavailable_reason_chars"] = tool_disclosure_unavailable_reason_chars
+    agent_result.metadata["tool_disclosure_unavailable_reason_tokens_est"] = tool_disclosure_unavailable_reason_tokens_est
+    agent_result.metadata["tool_disclosure_repair_suggestions"] = tool_disclosure_repair_suggestions
+    agent_result.metadata["lane_closure_analysis"] = lane_closure_analysis
+    agent_result.metadata["no_legal_noncontrol_turns"] = no_legal_noncontrol_turns
+    agent_result.metadata["max_zero_exec_tool_turn_streak"] = max_zero_exec_tool_turn_streak
+    agent_result.metadata["retrieval_no_hits_count"] = retrieval_no_hits_count
+    agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
+    agent_result.metadata["failure_event_code_counts"] = failure_event_code_counts
+    agent_result.metadata["primary_failure_class"] = primary_failure_class
+    agent_result.metadata["secondary_failure_classes"] = secondary_failure_classes
+    agent_result.metadata["first_terminal_failure_event_code"] = first_terminal_failure_event_code
+    agent_result.metadata["failure_priority_order"] = list(_PRIMARY_FAILURE_PRIORITY)
+    agent_result.metadata["terminal_failure_event_codes"] = sorted(_TERMINAL_FAILURE_EVENT_CODES)
+    agent_result.metadata["autofilled_tool_reasoning_calls"] = autofilled_tool_reasoning_calls
+    agent_result.metadata["autofilled_tool_reasoning_by_tool"] = dict(autofilled_tool_reasoning_by_tool)
+    agent_result.metadata["evidence_digest"] = final_evidence_digest
+    agent_result.metadata["submit_evidence_digest_at_last_failure"] = submit_evidence_digest_at_last_failure
     agent_result.metadata["foundation_event_count"] = len(foundation_events)
     agent_result.metadata["foundation_event_types"] = dict(foundation_event_types)
     agent_result.metadata["foundation_event_validation_errors"] = foundation_event_validation_errors
@@ -2354,22 +3794,27 @@ async def _acall_with_tools(
         kwargs,
     )
 
-    usage = {
-            "input_tokens": agent_result.total_input_tokens,
-            "output_tokens": agent_result.total_output_tokens,
-            "total_tokens": (
-                agent_result.total_input_tokens + agent_result.total_output_tokens
-            ),
-        }
-    if agent_result.total_cached_tokens:
-        usage["cached_tokens"] = agent_result.total_cached_tokens
-    if agent_result.total_cache_creation_tokens:
-        usage["cache_creation_tokens"] = agent_result.total_cache_creation_tokens
+    usage = _build_agent_usage(agent_result)
+    resolved_model = agent_result.metadata.get("resolved_model")
+    if not isinstance(resolved_model, str) or not resolved_model.strip():
+        resolved_model = None
+    attempted_models = agent_result.metadata.get("attempted_models")
+    if not isinstance(attempted_models, list):
+        attempted_models = None
+    sticky_fallback = agent_result.metadata.get("sticky_fallback")
+    if not isinstance(sticky_fallback, bool):
+        sticky_fallback = None
     return LLMCallResult(
         content=final_content,
         usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
         model=model,
+        requested_model=model,
+        resolved_model=resolved_model,
+        routing_trace={
+            "attempted_models": attempted_models,
+            "sticky_fallback": sticky_fallback,
+        },
         finish_reason=final_finish_reason,
         raw_response=agent_result,
         warnings=agent_result.warnings,

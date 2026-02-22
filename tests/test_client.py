@@ -45,23 +45,40 @@ from llm_client.errors import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Week-1 invariant: routing policy must be explicit in tests."""
+    monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+
+
 class TestRequiredTags:
     def test_calls_experiment_enforcement_hook(self) -> None:
         with (
             patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
             patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
         ):
-            client_mod._require_tags("digimon.benchmark", "trace.required.tags", 0)
+            client_mod._require_tags(
+                "digimon.benchmark",
+                "trace.required.tags",
+                0,
+                caller="test_required_tags",
+            )
         mock_feature_enforce.assert_called_once_with("digimon.benchmark", caller="llm_client.client")
         mock_experiment_enforce.assert_called_once_with("digimon.benchmark", caller="llm_client.client")
 
-    def test_missing_tags_raise_before_enforcement(self) -> None:
+    def test_missing_tags_raise_before_enforcement(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_CLIENT_REQUIRE_TAGS", "1")
         with (
             patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
             patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
         ):
             with pytest.raises(ValueError, match="Missing required kwargs"):
-                client_mod._require_tags(task=None, trace_id="trace.required.tags", max_budget=0)
+                client_mod._require_tags(
+                    task=None,
+                    trace_id="trace.required.tags",
+                    max_budget=0,
+                    caller="test_required_tags",
+                )
         mock_feature_enforce.assert_not_called()
         mock_experiment_enforce.assert_not_called()
 
@@ -76,6 +93,7 @@ def _mock_response(
     mock.choices = [MagicMock()]
     mock.choices[0].message.content = content
     mock.choices[0].message.tool_calls = tool_calls
+    mock.choices[0].message.refusal = None
     mock.choices[0].finish_reason = finish_reason
     mock.usage.prompt_tokens = 10
     mock.usage.completion_tokens = 5
@@ -468,6 +486,31 @@ class TestSmartRetry:
     @patch("llm_client.client.time.sleep")
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
+    def test_retries_on_empty_choices(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
+        """Empty choices[] should be treated as retryable empty responses."""
+        empty_choices = MagicMock()
+        empty_choices.choices = []
+        empty_choices.usage.prompt_tokens = 0
+        empty_choices.usage.completion_tokens = 0
+        empty_choices.usage.total_tokens = 0
+        good = _mock_response(content="Hello!")
+        mock_comp.side_effect = [empty_choices, good]
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_retry_empty_choices",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
     def test_retries_on_transient_error(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Rate limit / timeout errors should retry."""
         mock_comp.side_effect = [
@@ -686,6 +729,40 @@ class TestNonRetryableErrors:
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_transient_rate_limit", max_budget=0)
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_rate_limit_quota_with_retry_delay_is_retried(
+        self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
+    ) -> None:
+        """Quota-like 429 with explicit retryDelay should retry."""
+        import litellm
+        mock_comp.side_effect = [
+            litellm.RateLimitError(
+                (
+                    "Quota exceeded for metric: foo. "
+                    "Please retry in 14.673264491s. "
+                    '{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"14s"}]}'
+                ),
+                model="gemini-2.5-flash",
+                llm_provider="gemini",
+            ),
+            _mock_response(),
+        ]
+
+        result = call_llm(
+            "gemini/gemini-2.5-flash",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_quota_retry_delay",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+        assert mock_sleep.call_count == 1
+        assert mock_sleep.call_args.args[0] >= 14.0
 
     @patch("llm_client.client.litellm.completion")
     def test_generic_quota_string_not_retried(self, mock_comp: MagicMock) -> None:
@@ -3203,8 +3280,8 @@ class TestModelDeprecation:
     """Test that deprecated models emit loud warnings."""
 
     def test_gpt4o_warns(self):
-        """GPT-4o should trigger deprecation warning."""
-        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o"):
+        """GPT-4o should trigger outclassed-model warning."""
+        with pytest.warns(UserWarning, match="OUTCLASSED MODEL.*gpt-4o"):
             with patch("litellm.completion", return_value=_mock_response()):
                 call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o", max_budget=0)
 
@@ -3265,15 +3342,14 @@ class TestModelDeprecation:
             with patch("litellm.completion", return_value=_mock_response()):
                 call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini25", max_budget=0)
 
-    def test_warning_message_contains_stop_instruction(self):
-        """Warning message should contain the LLM-agent-directed STOP instruction."""
-        with pytest.warns(DeprecationWarning) as record:
+    def test_warning_message_contains_outclassed_guidance(self):
+        """Outclassed warning should include guidance and replacement."""
+        with pytest.warns(UserWarning) as record:
             with patch("litellm.completion", return_value=_mock_response()):
                 call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_stop_msg", max_budget=0)
         msg = str(record[0].message)
-        assert "STOP" in msg
-        assert "DO NOT USE THIS MODEL" in msg
-        assert "USER PERMISSION" in msg
+        assert "OUTCLASSED MODEL" in msg
+        assert "Reason:" in msg
         assert "Use instead:" in msg
 
     def test_structured_also_warns(self):
@@ -3283,8 +3359,11 @@ class TestModelDeprecation:
             name: str
             type: str
 
-        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
-            with patch("litellm.completion", return_value=_mock_response('{"name":"x","type":"y"}')):
+        with pytest.warns(UserWarning, match="OUTCLASSED MODEL"):
+            with (
+                patch("litellm.supports_response_schema", return_value=True),
+                patch("litellm.completion", return_value=_mock_response('{"name":"x","type":"y"}')),
+            ):
                 call_llm_structured(
                     "gpt-4o", [{"role": "user", "content": "hi"}],
                     response_model=_Entity,
@@ -3295,7 +3374,7 @@ class TestModelDeprecation:
     @pytest.mark.asyncio
     async def test_async_also_warns(self):
         """acall_llm should also check for deprecated models."""
-        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
+        with pytest.warns(UserWarning, match="OUTCLASSED MODEL"):
             with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 await acall_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_async", max_budget=0)
 

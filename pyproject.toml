@@ -40,3 +40,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that call external APIs and require LLM_CLIENT_INTEGRATION=1",
+]

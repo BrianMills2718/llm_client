@@ -7,6 +7,7 @@ respond with JSON that encodes either a tool call or a final answer.
 
 The loop mirrors ``_agent_loop`` in mcp_agent.py but never passes ``tools=``
 to the LLM — instead it uses ``response_format={"type": "json_object"}``.
+Tool calls still run through the shared compliance gate before execution.
 
 Only used for ``python_tools=`` (direct backend).  NOT for MCP, which
 requires OpenAI-format ``tool_calls`` in the LLM response.
@@ -19,13 +20,30 @@ import logging
 from typing import Any, Callable
 
 from llm_client.client import LLMCallResult
+from llm_client.compliance_gate import (
+    build_tool_parameter_index,
+    validate_tool_call_inputs,
+)
+from llm_client.foundation import (
+    extract_bindings_from_tool_args,
+    merge_binding_state,
+    normalize_bindings,
+)
 from llm_client.mcp_agent import (
     BUDGET_EXEMPT_TOOL_NAMES,
+    DEFAULT_INITIAL_ARTIFACTS,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_REQUIRE_TOOL_REASONING,
     DEFAULT_MAX_TURNS,
     DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    EVENT_CODE_TOOL_RUNTIME_ERROR,
+    EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
+    EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
+    EVENT_CODE_TOOL_VALIDATION_SCHEMA,
     MCPAgentResult,
+    MCPToolCallRecord,
+    TOOL_REASONING_FIELD,
+    _classify_failure_signals,
     _extract_usage,
     _inner_acall_llm,
 )
@@ -112,6 +130,8 @@ async def _acall_with_tool_shim(
     max_tool_calls: int | None = DEFAULT_MAX_TOOL_CALLS,
     require_tool_reasoning: bool = DEFAULT_REQUIRE_TOOL_REASONING,
     tool_result_max_length: int = DEFAULT_TOOL_RESULT_MAX_LENGTH,
+    initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
+    initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     **kwargs: Any,
 ) -> LLMCallResult:
@@ -140,6 +160,13 @@ async def _acall_with_tool_shim(
     total_cost = 0.0
     last_budget_remaining: int | None = None
     force_final_reason: str | None = None
+    tool_parameter_index = build_tool_parameter_index(openai_tools)
+    available_bindings = normalize_bindings(initial_bindings)
+    initial_binding_snapshot = dict(available_bindings)
+    failure_event_codes: list[str] = []
+    gate_violation_events: list[dict[str, Any]] = []
+    gate_rejected_calls = 0
+    rejected_missing_reasoning_calls = 0
 
     for turn in range(max_turns):
         if max_tool_calls is not None:
@@ -238,6 +265,20 @@ async def _acall_with_tool_shim(
         if action == "tool_call":
             tool_name = parsed.get("tool_name", "")
             arguments = parsed.get("arguments", {})
+            if not isinstance(arguments, dict):
+                arguments = {}
+
+            validation = validate_tool_call_inputs(
+                tool_name=tool_name or "<unknown>",
+                parsed_args=arguments,
+                tool_parameters=tool_parameter_index.get(tool_name),
+                require_tool_reasoning=require_tool_reasoning,
+                tool_reasoning_field=TOOL_REASONING_FIELD,
+                available_bindings=available_bindings,
+                error_code_schema=EVENT_CODE_TOOL_VALIDATION_SCHEMA,
+                error_code_missing_reasoning=EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
+                error_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
+            )
 
             # Build a synthetic OpenAI-format tool_call for execute_direct_tool_calls
             synthetic_tc = {
@@ -254,6 +295,48 @@ async def _acall_with_tool_shim(
                 "tool_calls": [{"name": tool_name, "arguments": arguments}],
             })
 
+            if not validation.is_valid:
+                gate_rejected_calls += 1
+                if validation.error_code == EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING:
+                    rejected_missing_reasoning_calls += 1
+                gate_reason = validation.reason or "Compliance gate rejected tool call."
+                gate_error_code = validation.error_code or EVENT_CODE_TOOL_VALIDATION_SCHEMA
+                gate_error = f"Validation error: {gate_reason}"
+                failure_event_codes.append(gate_error_code)
+                gate_violation_events.append(
+                    {
+                        "turn": turn + 1,
+                        "tool": tool_name or "<unknown>",
+                        "reason": gate_reason,
+                        "error_code": gate_error_code,
+                        "failure_phase": validation.failure_phase or "input_validation",
+                        "available_bindings": dict(available_bindings),
+                        "call_bindings": dict(validation.call_bindings),
+                        "arg_keys": sorted(arguments.keys()),
+                        "missing_requirements": list(validation.missing_requirements or []),
+                    }
+                )
+                agent_result.tool_calls.append(
+                    MCPToolCallRecord(
+                        server="__compliance__",
+                        tool=tool_name or "<unknown>",
+                        arguments=arguments,
+                        error=gate_error,
+                    )
+                )
+                messages.append({"role": "assistant", "content": raw_content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Tool call rejected by compliance gate: {gate_reason} "
+                            f"(error_code={gate_error_code}). "
+                            "Propose a corrected tool call or finish with final_answer."
+                        ),
+                    }
+                )
+                continue
+
             records, _ = await execute_direct_tool_calls(
                 [synthetic_tc],
                 tool_map,
@@ -266,8 +349,17 @@ async def _acall_with_tool_shim(
             record = records[0]
             if record.error:
                 tool_result_text = f"ERROR: {record.error}"
+                if record.error.lower().startswith("validation error:"):
+                    failure_event_codes.append(EVENT_CODE_TOOL_VALIDATION_SCHEMA)
+                else:
+                    failure_event_codes.append(EVENT_CODE_TOOL_RUNTIME_ERROR)
             else:
                 tool_result_text = record.result or ""
+                observed_bindings = extract_bindings_from_tool_args(record.arguments)
+                available_bindings = merge_binding_state(
+                    available_bindings=available_bindings,
+                    observed_bindings=observed_bindings,
+                )
 
             # Inject as conversation messages (not role=tool — model doesn't understand that)
             messages.append({"role": "assistant", "content": raw_content})
@@ -332,6 +424,17 @@ async def _acall_with_tool_shim(
         agent_result.total_cache_creation_tokens += cache_create
         agent_result.turns += 1
 
+    primary_failure_class, secondary_failure_classes = _classify_failure_signals(
+        failure_event_codes=failure_event_codes,
+        retrieval_no_hits_count=0,
+        control_loop_suppressed_calls=0,
+        force_final_reason=force_final_reason,
+        submit_answer_succeeded=True,
+    )
+    failure_event_code_counts: dict[str, int] = {}
+    for code in failure_event_codes:
+        failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
+
     agent_result.metadata["total_cost"] = total_cost
     agent_result.metadata["max_turns"] = max_turns
     agent_result.metadata["max_tool_calls"] = max_tool_calls
@@ -342,6 +445,16 @@ async def _acall_with_tool_shim(
     )
     agent_result.metadata["budget_exempt_tools"] = sorted(BUDGET_EXEMPT_TOOL_NAMES)
     agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
+    agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
+    agent_result.metadata["tool_gate_rejections"] = gate_rejected_calls
+    agent_result.metadata["tool_gate_violation_events"] = gate_violation_events
+    agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
+    agent_result.metadata["failure_event_code_counts"] = failure_event_code_counts
+    agent_result.metadata["primary_failure_class"] = primary_failure_class
+    agent_result.metadata["secondary_failure_classes"] = secondary_failure_classes
+    agent_result.metadata["initial_artifacts"] = list(initial_artifacts or [])
+    agent_result.metadata["initial_bindings"] = initial_binding_snapshot
+    agent_result.metadata["available_bindings_final"] = dict(available_bindings)
 
     usage = {
         "input_tokens": agent_result.total_input_tokens,

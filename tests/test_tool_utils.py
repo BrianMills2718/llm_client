@@ -531,6 +531,124 @@ class TestAcallWithTools:
             assert agent.metadata["tool_arg_validation_rejections"] == 1
             assert agent.metadata["tool_arg_coercions"] == 0
 
+    async def test_direct_tools_path_uses_compliance_gate(self) -> None:
+        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 1, "b": 1, "vdb_reference_id": "x"}'},
+                }]),
+                _make_llm_result(content="done"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_tools
+            result = await _acall_with_tools(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                python_tools=[add],
+                task="test",
+                trace_id="test_direct_tools_path_uses_compliance_gate",
+            )
+
+            agent = result.raw_response
+            assert isinstance(agent, MCPAgentResult)
+            assert agent.metadata["tool_gate_rejections"] == 1
+            assert (
+                agent.metadata["failure_event_code_counts"].get(
+                    "TOOL_VALIDATION_REJECTED_SCHEMA", 0,
+                )
+                >= 1
+            )
+            assert agent.tool_calls[0].server == "__compliance__"
+
+    async def test_shim_path_uses_compliance_gate_schema_reject(self) -> None:
+        with (
+            patch("llm_client.models.supports_tool_calling", return_value=False),
+            patch("llm_client.tool_shim._inner_acall_llm") as mock_acall,
+        ):
+            mock_acall.side_effect = [
+                _make_llm_result(
+                    content=json.dumps(
+                        {
+                            "action": "tool_call",
+                            "tool_name": "add",
+                            "arguments": {"a": 1, "b": 1, "unexpected": "x"},
+                        }
+                    )
+                ),
+                _make_llm_result(
+                    content=json.dumps(
+                        {
+                            "action": "final_answer",
+                            "content": "done",
+                        }
+                    )
+                ),
+            ]
+
+            from llm_client import acall_llm
+
+            result = await acall_llm(
+                "gemini/gemini-3-flash",
+                [{"role": "user", "content": "Q"}],
+                python_tools=[add],
+                task="test",
+                trace_id="test_shim_path_uses_compliance_gate_schema_reject",
+                max_budget=0,
+            )
+
+            agent = result.raw_response
+            assert isinstance(agent, MCPAgentResult)
+            assert agent.metadata["tool_gate_rejections"] == 1
+            assert "TOOL_VALIDATION_REJECTED_SCHEMA" in agent.metadata["failure_event_codes"]
+            assert agent.metadata["primary_failure_class"] == "composability"
+            assert agent.tool_calls[0].server == "__compliance__"
+
+    async def test_shim_path_rejects_binding_conflict_pre_execution(self) -> None:
+        with (
+            patch("llm_client.models.supports_tool_calling", return_value=False),
+            patch("llm_client.tool_shim._inner_acall_llm") as mock_acall,
+        ):
+            mock_acall.side_effect = [
+                _make_llm_result(
+                    content=json.dumps(
+                        {
+                            "action": "tool_call",
+                            "tool_name": "add",
+                            "arguments": {"a": 1, "b": 1, "vdb_reference_id": "store_b"},
+                        }
+                    )
+                ),
+                _make_llm_result(
+                    content=json.dumps(
+                        {
+                            "action": "final_answer",
+                            "content": "done",
+                        }
+                    )
+                ),
+            ]
+
+            from llm_client import acall_llm
+
+            result = await acall_llm(
+                "gemini/gemini-3-flash",
+                [{"role": "user", "content": "Q"}],
+                python_tools=[add],
+                initial_bindings={"vector_store_id": "store_a"},
+                task="test",
+                trace_id="test_shim_path_rejects_binding_conflict_pre_execution",
+                max_budget=0,
+            )
+
+            agent = result.raw_response
+            assert isinstance(agent, MCPAgentResult)
+            assert agent.metadata["tool_gate_rejections"] == 1
+            assert "TOOL_VALIDATION_REJECTED_BINDING_CONFLICT" in agent.metadata["failure_event_codes"]
+            assert agent.metadata["primary_failure_class"] == "composability"
+            assert agent.tool_calls[0].server == "__compliance__"
+
 
 # ---------------------------------------------------------------------------
 # Routing through acall_llm

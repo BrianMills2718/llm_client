@@ -7,11 +7,20 @@ Usage:
 
 import asyncio
 import json
+import os
 import sys
 import time
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.integration
+
+if os.environ.get("LLM_CLIENT_INTEGRATION", "").strip() != "1":
+    pytest.skip(
+        "Integration tests disabled by default. Set LLM_CLIENT_INTEGRATION=1 to enable.",
+        allow_module_level=True,
+    )
 
 sys.path.insert(0, ".")
 

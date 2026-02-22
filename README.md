@@ -36,6 +36,38 @@ print(agent_result.cost)         # 0.0
 print(agent_result.billing_mode) # "subscription_included"
 ```
 
+### Routing defaults
+
+- OpenRouter-first routing is enabled by default (`LLM_CLIENT_OPENROUTER_ROUTING=on`).
+- Bare model IDs like `gpt-5-mini` are normalized to `openrouter/openai/gpt-5-mini`.
+- If you want bare OpenAI IDs to stay bare (including Responses API routing for `gpt-5*`), set:
+
+```bash
+export LLM_CLIENT_OPENROUTER_ROUTING=off
+```
+
+### Typed routing/config (preferred)
+
+For deterministic behavior across environments, pass explicit `ClientConfig`:
+
+```python
+from llm_client import ClientConfig, call_llm
+
+cfg = ClientConfig(
+    routing_policy="direct",              # or "openrouter"
+    result_model_semantics="legacy",      # or "requested" / "resolved"
+)
+
+result = call_llm("gpt-5-mini", messages, config=cfg)
+```
+
+Model identity fields on results:
+- `result.model` (legacy/compatibility surface, semantics configurable)
+- `result.requested_model` (caller input)
+- `result.resolved_model` / `result.execution_model` (terminal executed model)
+- `result.routing_trace` (routing/fallback metadata)
+- `result.warning_records` (machine-readable `LLMC_WARN_*` warnings)
+
 ### Structured output (Pydantic)
 
 ```python
@@ -62,6 +94,11 @@ Structured-output provider notes:
   for certain requests.
 - `call_llm_structured` automatically falls back from native schema routing to
   instructor-based structured parsing when this happens.
+- Empty `choices=[]` payloads are classified as typed empty-response events
+  (`provider_empty_candidates`) and retried according to policy instead of
+  surfacing raw `IndexError` failures.
+- For 429 responses that include provider retry hints (for example Gemini
+  `retryDelay`), retry loops honor the hinted window before the next attempt.
 - For high-reliability extraction, set a fallback model that handles deep
   schemas well (for example `openrouter/openai/gpt-5-mini`) via
   `fallback_models=[...]` at call sites.
@@ -92,6 +129,16 @@ For code-generation/editing workflows that depend on workspace side effects,
 always set `execution_mode="workspace_agent"` to prevent accidental routing to
 chat-only models.
 
+### Observability tags
+
+- `task`, `trace_id`, and `max_budget` are optional in normal local usage.
+- Missing values are auto-filled as `task="adhoc"`, `trace_id="auto/<caller>/<id>"`, and `max_budget=0` (unlimited).
+- Strict enforcement is enabled automatically in CI and benchmark/eval-style tasks, or explicitly with:
+
+```bash
+export LLM_CLIENT_REQUIRE_TAGS=1
+```
+
 ### Tool calling
 
 ```python
@@ -114,6 +161,54 @@ result = call_llm_with_tools("gpt-4o", messages, tools)
 if result.tool_calls:
     print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 ```
+
+### MCP Agent Composability Contracts
+
+When using MCP agent loops (`mcp_servers=...` or `mcp_sessions=...`), you can enforce
+tool-chain legality and expose only currently legal tools:
+
+```python
+result = await acall_llm(
+    "openrouter/deepseek/deepseek-chat",
+    messages,
+    mcp_servers={...},
+    enforce_tool_contracts=True,
+    progressive_tool_disclosure=True,
+    initial_artifacts=("QUERY_TEXT",),
+    tool_contracts={
+        "entity_onehop": {
+            "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+            "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+        },
+        "chunk_get_text_by_entity_ids": {
+            "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+            "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        },
+        "chunk_get_text_by_chunk_ids": {
+            "artifact_prereqs": "none",
+            "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        },
+        "todo_list": {"is_control": True},
+    },
+)
+
+raw = result.raw_response  # MCPAgentResult
+print(raw.metadata["primary_failure_class"])
+print(raw.metadata["first_terminal_failure_event_code"])
+print(raw.metadata["failure_event_code_counts"])
+print(raw.metadata["available_capabilities_final"])
+print(raw.metadata["hard_bindings_hash"], raw.metadata["full_bindings_hash"])
+print(raw.metadata["lane_closure_analysis"]["lane_closed"])
+print(raw.metadata["tool_disclosure_repair_suggestions"])
+```
+
+Notes:
+- `artifact_prereqs: "none"` declares a self-contained tool for artifact-state checks only.
+- Binding checks and schema checks still run pre-execution.
+- Metadata includes both enforcement and attribution binding fingerprints:
+  - `hard_bindings_hash` (authoritative binding scope)
+  - `full_bindings_hash` (full normalized binding state)
+- Runtime also emits `run_config_hash` for model/lane/policy comparability.
 
 ### Batch/parallel calls
 
@@ -217,6 +312,26 @@ If you run agent SDK calls in API-metered mode, set:
 
 ```bash
 export LLM_CLIENT_AGENT_BILLING_MODE=api
+```
+
+### Agent retry safety
+
+- Agent SDK retries are disabled by default to avoid duplicate side effects.
+- To enable retries for explicitly safe/read-only agent runs:
+
+```bash
+export LLM_CLIENT_AGENT_RETRY_SAFE=1
+```
+
+- Or per-call:
+
+```python
+result = call_llm(
+    "claude-code",
+    messages,
+    agent_retry_safe=True,
+    num_retries=2,
+)
 ```
 
 ### Retry policy

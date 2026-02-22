@@ -212,6 +212,8 @@ from llm_client.experiment_eval import (
     run_deterministic_checks_for_items,
     triage_items,
 )
+from llm_client.config import ClientConfig
+from llm_client.routing import CallRequest, ResolvedCallPlan, resolve_call
 
 from llm_client.client import (
     AsyncCachePolicy,
@@ -274,6 +276,10 @@ __all__ = [
     "LLMCallResult",
     "LLMStream",
     "LRUCache",
+    "ClientConfig",
+    "CallRequest",
+    "ResolvedCallPlan",
+    "resolve_call",
     "RetryPolicy",
     "acall_llm",
     "acall_llm_batch",

@@ -42,6 +42,12 @@ from llm_client.errors import LLMError
 from llm_client.client import _is_agent_model
 
 
+@pytest.fixture(autouse=True)
+def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Week-1 invariant: routing policy must be explicit in tests."""
+    monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
