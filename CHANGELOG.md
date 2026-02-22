@@ -35,6 +35,9 @@ All notable changes to `llm-client` are documented in this file.
 - Integration tests are gated by marker + env:
   - default `pytest` excludes `integration`
   - enable with `LLM_CLIENT_INTEGRATION=1`.
+- Added CLI adoption report:
+  - `python -m llm_client semantics`
+  - summarizes semantics mode/source usage from `foundation_events`.
 
 ### Compatibility Notes
 

@@ -428,6 +428,21 @@ python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg
 - rubric-based LLM review (`--review-rubric` / `--review-model`),
 - policy gates (`--gate-policy`) with optional non-zero exit on failure.
 
+## Semantics Adoption Report
+
+Summarize `result_model_semantics` adoption from foundation telemetry events:
+
+```bash
+python -m llm_client semantics
+python -m llm_client semantics --days 14 --format json
+python -m llm_client semantics --caller call_llm
+```
+
+This reports, by caller:
+- config source (`explicit_config` vs `env_or_default`)
+- semantics mode (`legacy` / `requested` / `resolved`)
+- count and share
+
 ## API keys
 
 Set via environment variables (litellm convention):
