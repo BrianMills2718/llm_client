@@ -221,6 +221,11 @@ result = await acall_llm(
         },
         "todo_list": {"is_control": True},
     },
+    # Optional reliability controls:
+    forced_final_max_attempts=3,
+    forced_final_circuit_breaker_threshold=2,
+    finalization_fallback_models=["openrouter/openai/gpt-5-mini"],
+    retrieval_stagnation_turns=4,
 )
 
 raw = result.raw_response  # MCPAgentResult
@@ -240,6 +245,12 @@ Notes:
   - `hard_bindings_hash` (authoritative binding scope)
   - `full_bindings_hash` (full normalized binding state)
 - Runtime also emits `run_config_hash` for model/lane/policy comparability.
+- Forced-final fallback is finalization-only (no tool calls): configure with
+  `finalization_fallback_models=[...]`.
+- Forced-final attempts are bounded by `forced_final_max_attempts` and
+  `forced_final_circuit_breaker_threshold`.
+- Retrieval stagnation fuse (`retrieval_stagnation_turns`) terminates long
+  evidence loops that produce no new evidence digest.
 
 ### Batch/parallel calls
 
@@ -436,12 +447,18 @@ Summarize `result_model_semantics` adoption from foundation telemetry events:
 python -m llm_client semantics
 python -m llm_client semantics --days 14 --format json
 python -m llm_client semantics --caller call_llm
+python -m llm_client semantics-snapshot
+python -m llm_client semantics-snapshot --output ~/projects/data/semantics_daily.jsonl --print-json
 ```
 
 This reports, by caller:
 - config source (`explicit_config` vs `env_or_default`)
 - semantics mode (`legacy` / `requested` / `resolved`)
 - count and share
+
+For migration tracking, `semantics-snapshot` appends a JSONL row with
+`captured_at`, active filters, and the same aggregate summary. This is designed
+for cron/scheduled collection during `0.7.x`.
 
 ## API keys
 

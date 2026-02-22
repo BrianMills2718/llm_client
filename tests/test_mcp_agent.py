@@ -242,9 +242,10 @@ class TestFailureTaxonomy:
         "CONTROL_CHURN_SUPPRESSED",
         "CONTROL_CHURN_THRESHOLD_EXCEEDED",
         "TOOL_EXECUTION_RUNTIME_ERROR",
-        "PROVIDER_EMPTY_RESPONSE_FIRST_TURN",
-        "PROVIDER_EMPTY_RESPONSE",
+        "PROVIDER_EMPTY_CANDIDATES",
+        "FINALIZATION_CIRCUIT_BREAKER_OPEN",
         "RETRIEVAL_NO_HITS",
+        "RETRIEVAL_STAGNATION",
     }
 
     def test_runtime_event_codes_match_canonical_failure_set(self) -> None:
@@ -270,9 +271,10 @@ class TestFailureTaxonomy:
             ("CONTROL_CHURN_SUPPRESSED", "control_churn"),
             ("CONTROL_CHURN_THRESHOLD_EXCEEDED", "control_churn"),
             ("TOOL_EXECUTION_RUNTIME_ERROR", "none"),
-            ("PROVIDER_EMPTY_RESPONSE_FIRST_TURN", "provider"),
-            ("PROVIDER_EMPTY_RESPONSE", "provider"),
+            ("PROVIDER_EMPTY_CANDIDATES", "provider"),
+            ("FINALIZATION_CIRCUIT_BREAKER_OPEN", "provider"),
             ("RETRIEVAL_NO_HITS", "retrieval"),
+            ("RETRIEVAL_STAGNATION", "retrieval"),
         ],
     )
     def test_event_code_primary_failure_class_mapping(
@@ -298,7 +300,7 @@ class TestFailureTaxonomy:
             [
                 "TOOL_VALIDATION_REJECTED_SCHEMA",
                 "CONTROL_CHURN_THRESHOLD_EXCEEDED",
-                "PROVIDER_EMPTY_RESPONSE",
+                "PROVIDER_EMPTY_CANDIDATES",
             ]
         )
         assert first_terminal == "CONTROL_CHURN_THRESHOLD_EXCEEDED"
@@ -687,6 +689,65 @@ class TestAcallWithMcp:
                 "AGENT_LLM_CALL_FAILED" in w for w in result.raw_response.warnings
             )
 
+    async def test_forced_final_fallback_model_recovers_primary_failure(self) -> None:
+        """Forced-final can recover via finalization-only fallback without masking primary failure event metadata."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            tool_call_result = _make_llm_result(tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }])
+            mock_acall.side_effect = [
+                tool_call_result,
+                Exception(
+                    "Empty content from LLM [litellm_completion:provider_empty_candidates retryable=True]"
+                ),
+                _make_llm_result(content="fallback final answer", model="fallback-model"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+                forced_final_max_attempts=2,
+                finalization_fallback_models=["fallback-model"],
+            )
+
+            assert result.content == "fallback final answer"
+            assert result.finish_reason == "stop"
+            metadata = result.raw_response.metadata
+            assert metadata["forced_final_attempts"] == 2
+            assert metadata["finalization_fallback_used"] is True
+            assert metadata["finalization_fallback_succeeded"] is True
+            assert "FINALIZATION_PRIMARY_FAILED" in metadata.get("finalization_events", [])
+            assert "FINALIZATION_FALLBACK_SUCCEEDED" in metadata.get("finalization_events", [])
+            # Recovered finalization should not count as terminal run failure.
+            assert metadata.get("primary_failure_class") == "none"
+
     async def test_max_tool_calls_ignores_todo_tools(self) -> None:
         """todo_* calls do not consume max_tool_calls budget."""
         mock_session = AsyncMock()
@@ -741,6 +802,62 @@ class TestAcallWithMcp:
             assert len(result.raw_response.tool_calls) == 2
             assert result.raw_response.metadata["budgeted_tool_calls_used"] == 1
             assert mock_session.call_tool.call_count == 2
+
+    async def test_forced_final_circuit_breaker_opens_on_same_class_failures(self) -> None:
+        """Repeated same-class forced-final failures should open circuit breaker."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            tool_call_result = _make_llm_result(tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }])
+            provider_empty_exc = Exception(
+                "Empty content from LLM [litellm_completion:provider_empty_candidates retryable=True]"
+            )
+            mock_acall.side_effect = [tool_call_result, provider_empty_exc, provider_empty_exc]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+                forced_final_max_attempts=4,
+                forced_final_circuit_breaker_threshold=2,
+            )
+
+            assert result.finish_reason == "error"
+            metadata = result.raw_response.metadata
+            assert metadata["forced_final_attempts"] == 2
+            assert metadata["forced_final_circuit_breaker_opened"] is True
+            assert "FINALIZATION_CIRCUIT_BREAKER_OPEN" in metadata.get("failure_event_codes", [])
+            assert any(
+                "FINALIZATION_CIRCUIT_BREAKER_OPEN" in warning
+                for warning in result.raw_response.warnings
+            )
+            assert mock_acall.call_count == 3  # 1 loop turn + 2 forced-final attempts
 
     async def test_require_tool_reasoning_rejects_mcp_call(self) -> None:
         """Strict mode rejects tool calls that omit tool_reasoning."""
@@ -2162,6 +2279,94 @@ class TestAgentDiagnostics:
         assert agent_result.metadata["primary_failure_class"] == "control_churn"
         failure_counts = agent_result.metadata["failure_event_code_counts"]
         assert failure_counts.get("CONTROL_CHURN_THRESHOLD_EXCEEDED", 0) >= 1
+
+    async def test_retrieval_stagnation_forces_final_answer(self) -> None:
+        """Repeated evidence calls with unchanged evidence digest trigger retrieval stagnation fuse."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="chunk_text_search",
+                        arguments={"query_text": "same query"},
+                        result='{"chunks":[{"chunk_id":"chunk_1","text":"same evidence","score":0.9}]}',
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"tc_search_{executor_call_count}",
+                        "content": '{"chunks":[{"chunk_id":"chunk_1","text":"same evidence","score":0.9}]}',
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_1",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 1"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_2",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 2"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_3",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 3"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="best effort answer"),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "chunk_text_search"}}],
+                agent_result,
+                mock_executor,
+                10,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={"retrieval_stagnation_turns": 2},
+            )
+
+        assert content == "best effort answer"
+        assert finish == "stop"
+        assert executor_call_count == 3
+        assert agent_result.metadata["retrieval_stagnation_triggered"] is True
+        failure_counts = agent_result.metadata["failure_event_code_counts"]
+        assert failure_counts.get("RETRIEVAL_STAGNATION", 0) >= 1
 
     async def test_submit_needs_revision_is_not_treated_as_success(self) -> None:
         """submit_answer status=needs_revision must not terminate the loop as submitted."""

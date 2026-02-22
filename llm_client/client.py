@@ -618,6 +618,46 @@ _NON_RETRYABLE_PATTERNS = [
 ]
 
 
+def _coerce_retry_delay_seconds(raw_value: Any) -> float | None:
+    """Normalize a retry-delay value into seconds with sanity bounds."""
+    if raw_value is None:
+        return None
+
+    value: float | None = None
+    unit = "s"
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+    else:
+        text = str(raw_value).strip()
+        if not text:
+            return None
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hour|hours)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except Exception:
+            return None
+        unit = (match.group(2) or "s").strip().lower()
+
+    if value is None:
+        return None
+    if unit in {"ms"}:
+        value /= 1000.0
+    elif unit in {"m", "min", "mins", "minute", "minutes"}:
+        value *= 60.0
+    elif unit in {"h", "hour", "hours"}:
+        value *= 3600.0
+    if value <= 0:
+        return None
+    # Bound absurd delays while still honoring provider windows.
+    return min(value, 600.0)
+
+
 def _retry_delay_hint_seconds(error: Exception) -> float | None:
     """Parse provider retry-after hints from an error message (seconds)."""
     text = str(error)
@@ -632,22 +672,33 @@ def _retry_delay_hint_seconds(error: Exception) -> float | None:
         m = re.search(pat, text, flags=re.IGNORECASE)
         if not m:
             continue
-        try:
-            value = float(m.group(1))
-        except Exception:
-            continue
-        unit = (m.group(2) or "s").strip().lower()
-        if unit in {"ms"}:
-            value /= 1000.0
-        elif unit in {"m", "min", "mins", "minute", "minutes"}:
-            value *= 60.0
-        elif unit in {"h", "hour", "hours"}:
-            value *= 3600.0
-        if value <= 0:
-            continue
-        # Bound absurd delays while still honoring provider windows.
-        return min(value, 600.0)
+        hint = _coerce_retry_delay_seconds(f"{m.group(1)}{m.group(2) or 's'}")
+        if hint is not None:
+            return hint
     return None
+
+
+def _retry_delay_hint(error: Exception) -> tuple[float | None, str]:
+    """Return retry hint delay with source classification."""
+    for attr in ("retry_after", "retry_after_seconds", "retry_after_s", "retry_delay"):
+        hint = _coerce_retry_delay_seconds(getattr(error, attr, None))
+        if hint is not None:
+            return hint, "structured"
+
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        header_value: Any = None
+        if hasattr(headers, "get"):
+            header_value = headers.get("retry-after") or headers.get("Retry-After")
+        hint = _coerce_retry_delay_seconds(header_value)
+        if hint is not None:
+            return hint, "structured"
+
+    hint = _retry_delay_hint_seconds(error)
+    if hint is not None:
+        return hint, "parsed"
+    return None, "none"
 
 
 def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
@@ -683,7 +734,8 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
             error_str = str(error).lower()
             # Provider-specified retry windows are considered retryable even
             # when the message includes "quota" phrasing.
-            if _retry_delay_hint_seconds(error) is not None:
+            hint_delay, _hint_source = _retry_delay_hint(error)
+            if hint_delay is not None:
                 return True
             if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
                 return False
@@ -903,14 +955,14 @@ def _compute_retry_delay(
     error: Exception,
     policy: RetryPolicy,
     backoff_fn: Callable[[int, float, float], float],
-) -> float:
-    """Compute retry delay, honoring provider retry hints when present."""
+) -> tuple[float, str]:
+    """Compute retry delay and source, honoring provider hints when present."""
     delay = backoff_fn(attempt, policy.base_delay, policy.max_delay)
-    hint = _retry_delay_hint_seconds(error)
+    hint, hint_source = _retry_delay_hint(error)
     if hint is None:
-        return delay
+        return delay, "none"
     # Use the larger delay to avoid hammering providers before their window.
-    return max(delay, hint)
+    return max(delay, hint), hint_source
 
 
 # ---------------------------------------------------------------------------
@@ -3211,7 +3263,7 @@ def call_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
-                    delay = _compute_retry_delay(
+                    delay, retry_delay_source = _compute_retry_delay(
                         attempt=attempt,
                         error=e,
                         policy=r,
@@ -3221,13 +3273,15 @@ def call_llm(
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
                         f"RETRY {attempt + 1}/{effective_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e})"
+                        f"{current_model} ({type(e).__name__}: {e}) "
+                        f"[retry_delay_source={retry_delay_source}]"
                     )
                     logger.warning(
-                        "call_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        "call_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
                         attempt + 1,
                         effective_retries + 1,
                         delay,
+                        retry_delay_source,
                         e,
                     )
                     time.sleep(delay)
@@ -3453,7 +3507,7 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -3463,11 +3517,12 @@ def call_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                            attempt + 1, r.max_retries + 1, delay, e,
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         time.sleep(delay)
                 raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -3556,7 +3611,7 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -3566,11 +3621,12 @@ def call_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                            attempt + 1, r.max_retries + 1, delay, e,
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         time.sleep(delay)
                 else:
@@ -3648,7 +3704,7 @@ def call_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -3658,13 +3714,15 @@ def call_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
                             attempt + 1,
                             r.max_retries + 1,
                             delay,
+                            retry_delay_source,
                             e,
                         )
                         time.sleep(delay)
@@ -4099,7 +4157,7 @@ async def acall_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
-                    delay = _compute_retry_delay(
+                    delay, retry_delay_source = _compute_retry_delay(
                         attempt=attempt,
                         error=e,
                         policy=r,
@@ -4109,13 +4167,15 @@ async def acall_llm(
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
                         f"RETRY {attempt + 1}/{effective_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e})"
+                        f"{current_model} ({type(e).__name__}: {e}) "
+                        f"[retry_delay_source={retry_delay_source}]"
                     )
                     logger.warning(
-                        "acall_llm attempt %d/%d failed (retrying in %.1fs): %s",
+                        "acall_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
                         attempt + 1,
                         effective_retries + 1,
                         delay,
+                        retry_delay_source,
                         e,
                     )
                     await asyncio.sleep(delay)
@@ -4341,7 +4401,7 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -4351,11 +4411,12 @@ async def acall_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                            attempt + 1, r.max_retries + 1, delay, e,
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         await asyncio.sleep(delay)
                 raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -4444,7 +4505,7 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -4454,11 +4515,12 @@ async def acall_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
-                            attempt + 1, r.max_retries + 1, delay, e,
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         await asyncio.sleep(delay)
                 else:
@@ -4536,7 +4598,7 @@ async def acall_llm_structured(
                             hooks.on_error(e, attempt)
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
-                        delay = _compute_retry_delay(
+                        delay, retry_delay_source = _compute_retry_delay(
                             attempt=attempt,
                             error=e,
                             policy=r,
@@ -4546,13 +4608,15 @@ async def acall_llm_structured(
                             r.on_retry(attempt, e, delay)
                         _warnings.append(
                             f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e})"
+                            f"{current_model} ({type(e).__name__}: {e}) "
+                            f"[retry_delay_source={retry_delay_source}]"
                         )
                         logger.warning(
-                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs): %s",
+                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
                             attempt + 1,
                             r.max_retries + 1,
                             delay,
+                            retry_delay_source,
                             e,
                         )
                         await asyncio.sleep(delay)
@@ -5061,7 +5125,7 @@ def stream_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
-                    delay = _compute_retry_delay(
+                    delay, retry_delay_source = _compute_retry_delay(
                         attempt=attempt,
                         error=e,
                         policy=r,
@@ -5071,11 +5135,12 @@ def stream_llm(
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
                         f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e})"
+                        f"{current_model} ({type(e).__name__}: {e}) "
+                        f"[retry_delay_source={retry_delay_source}]"
                     )
                     logger.warning(
-                        "stream_llm attempt %d/%d failed (retrying in %.1fs): %s",
-                        attempt + 1, r.max_retries + 1, delay, e,
+                        "stream_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                        attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                     )
                     time.sleep(delay)
             raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
@@ -5200,7 +5265,7 @@ async def astream_llm(
                         hooks.on_error(e, attempt)
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
-                    delay = _compute_retry_delay(
+                    delay, retry_delay_source = _compute_retry_delay(
                         attempt=attempt,
                         error=e,
                         policy=r,
@@ -5210,11 +5275,12 @@ async def astream_llm(
                         r.on_retry(attempt, e, delay)
                     _warnings.append(
                         f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e})"
+                        f"{current_model} ({type(e).__name__}: {e}) "
+                        f"[retry_delay_source={retry_delay_source}]"
                     )
                     logger.warning(
-                        "astream_llm attempt %d/%d failed (retrying in %.1fs): %s",
-                        attempt + 1, r.max_retries + 1, delay, e,
+                        "astream_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
+                        attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                     )
                     await asyncio.sleep(delay)
             raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable

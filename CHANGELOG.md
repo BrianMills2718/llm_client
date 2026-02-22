@@ -2,6 +2,37 @@
 
 All notable changes to `llm-client` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- MCP agent runtime controls for finalization reliability:
+  - `finalization_fallback_models`
+  - `forced_final_max_attempts`
+  - `forced_final_circuit_breaker_threshold`
+- Retrieval stagnation fuse for evidence loops:
+  - `retrieval_stagnation_turns`
+  - terminal event code `RETRIEVAL_STAGNATION`
+- Extended MCP agent metadata and diagnostics:
+  - finalization fallback usage/success/event traces
+  - forced-final attempt and circuit-breaker telemetry
+  - retrieval stagnation trigger/streak/turn metadata
+- Digimon benchmark lane controls wired through runner:
+  - `--lane-policy {pure,reliability}`
+  - `--finalization-fallback-models`
+  - `--forced-final-max-attempts`
+  - `--forced-final-circuit-breaker-threshold`
+  - `--retrieval-stagnation-turns`
+
+### Changed
+
+- Provider-empty taxonomy is canonicalized as `PROVIDER_EMPTY_CANDIDATES`
+  (legacy aliases retained for compatibility).
+- Forced-final path now attempts bounded model chains and keeps run-level
+  failure attribution clean when fallback finalization succeeds.
+- Benchmark summaries now report completion-conditioned accuracy plus provider,
+  fallback, and retrieval-stagnation rates.
+
 ## 0.6.1 - 2026-02-22
 
 ### Added

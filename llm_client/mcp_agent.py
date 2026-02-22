@@ -137,6 +137,15 @@ DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS: int = 4
 DEFAULT_TOOL_CALL_STALL_TURNS: int = 3
 """Force final answer after this many consecutive tool-call turns with zero executable calls."""
 
+DEFAULT_RETRIEVAL_STAGNATION_TURNS: int = 4
+"""Force final answer after this many consecutive evidence turns with zero new evidence."""
+
+DEFAULT_FORCED_FINAL_MAX_ATTEMPTS: int = 1
+"""Maximum forced-final LLM attempts before terminating."""
+
+DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD: int = 2
+"""Open forced-final circuit breaker after this many same-class failures in a row."""
+
 ARG_SELF_CONTAINED_TOOL_NAMES: frozenset[str] = frozenset({
     "chunk_get_text",
     "chunk_get_text_by_chunk_ids",
@@ -153,8 +162,12 @@ EVENT_CODE_TOOL_VALIDATION_SCHEMA = "TOOL_VALIDATION_REJECTED_SCHEMA"
 EVENT_CODE_CONTROL_LOOP_SUPPRESSED = "CONTROL_CHURN_SUPPRESSED"
 EVENT_CODE_CONTROL_CHURN_THRESHOLD = "CONTROL_CHURN_THRESHOLD_EXCEEDED"
 EVENT_CODE_TOOL_RUNTIME_ERROR = "TOOL_EXECUTION_RUNTIME_ERROR"
-EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN = "PROVIDER_EMPTY_RESPONSE_FIRST_TURN"
-EVENT_CODE_PROVIDER_EMPTY_RESPONSE = "PROVIDER_EMPTY_RESPONSE"
+EVENT_CODE_PROVIDER_EMPTY = "PROVIDER_EMPTY_CANDIDATES"
+# Compatibility aliases retained for external imports; taxonomy now uses one canonical code.
+EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN = EVENT_CODE_PROVIDER_EMPTY
+EVENT_CODE_PROVIDER_EMPTY_RESPONSE = EVENT_CODE_PROVIDER_EMPTY
+EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN = "FINALIZATION_CIRCUIT_BREAKER_OPEN"
+EVENT_CODE_RETRIEVAL_STAGNATION = "RETRIEVAL_STAGNATION"
 EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
 
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
@@ -173,6 +186,10 @@ MCP_LOOP_KWARGS = frozenset({
     "tool_contracts",
     "initial_artifacts",
     "initial_bindings",
+    "forced_final_max_attempts",
+    "forced_final_circuit_breaker_threshold",
+    "finalization_fallback_models",
+    "retrieval_stagnation_turns",
 })
 
 # Kwargs consumed by the direct tool loop
@@ -189,6 +206,10 @@ TOOL_LOOP_KWARGS = frozenset({
     "tool_contracts",
     "initial_artifacts",
     "initial_bindings",
+    "forced_final_max_attempts",
+    "forced_final_circuit_breaker_threshold",
+    "finalization_fallback_models",
+    "retrieval_stagnation_turns",
 })
 
 
@@ -513,6 +534,56 @@ def _tool_error_signature(error: str) -> str:
         text = text.split(":", 1)[1].strip() or text
     text = " ".join(text.split())
     return text[:160]
+
+
+def _provider_empty_classification(exc: Exception, error_text: str) -> tuple[bool, str]:
+    """Best-effort classification of provider-empty failures."""
+    classification = getattr(exc, "classification", None)
+    if isinstance(classification, str):
+        normalized = classification.strip().lower()
+        if normalized.startswith("provider_empty"):
+            return True, normalized
+
+    lower = (error_text or "").strip().lower()
+    if "provider_empty_candidates" in lower or "empty content from llm" in lower:
+        return True, "provider_empty_candidates"
+    return False, ""
+
+
+def _normalize_model_chain(raw: Any) -> list[str]:
+    """Normalize fallback model config into a deterministic string list."""
+    if raw is None:
+        return []
+
+    values: list[str] = []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",")]
+        values.extend([p for p in parts if p])
+    elif isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            value = item.strip()
+            if value:
+                values.append(value)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped
+
+
+def _is_evidence_tool_name(tool_name: str) -> bool:
+    """Best-effort classification for evidence-producing non-control tools."""
+    name = (tool_name or "").strip().lower()
+    if not name or _is_budget_exempt_tool(name):
+        return False
+    return name.startswith(("entity_", "relationship_", "chunk_", "subgraph_", "community_", "bridge_"))
 
 
 def _extract_unfinished_todo_ids(error_text: str) -> list[str]:
@@ -1425,8 +1496,9 @@ _PRIMARY_FAILURE_PRIORITY: tuple[str, ...] = (
 )
 
 _TERMINAL_FAILURE_EVENT_CODES: frozenset[str] = frozenset({
-    EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN,
-    EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
+    EVENT_CODE_PROVIDER_EMPTY,
+    EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
+    EVENT_CODE_RETRIEVAL_STAGNATION,
     EVENT_CODE_CONTROL_CHURN_THRESHOLD,
 })
 
@@ -1452,6 +1524,8 @@ def _classify_failure_signals(
 
     for code in failure_event_codes:
         if code.startswith("PROVIDER_"):
+            classes.add("provider")
+        elif code.startswith("FINALIZATION_"):
             classes.add("provider")
         elif code.startswith("TOOL_VALIDATION_REJECTED_") or code == EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS:
             classes.add("composability")
@@ -2033,11 +2107,59 @@ async def _agent_loop(
             "execution_mode",
             "api_base",
             "service_tier",
+            "forced_final_max_attempts",
+            "forced_final_circuit_breaker_threshold",
+            "finalization_fallback_models",
+            "retrieval_stagnation_turns",
         )
         if k in kwargs
     }
     run_config_spec["runtime_policy"] = runtime_policy_kwargs
     run_config_hash = sha256_json(run_config_spec).replace("sha256:", "")
+
+    forced_final_max_attempts_raw = kwargs.pop(
+        "forced_final_max_attempts",
+        DEFAULT_FORCED_FINAL_MAX_ATTEMPTS,
+    )
+    try:
+        forced_final_max_attempts = int(forced_final_max_attempts_raw)
+    except Exception:
+        forced_final_max_attempts = DEFAULT_FORCED_FINAL_MAX_ATTEMPTS
+    forced_final_max_attempts = max(1, forced_final_max_attempts)
+
+    forced_final_breaker_threshold_raw = kwargs.pop(
+        "forced_final_circuit_breaker_threshold",
+        DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD,
+    )
+    try:
+        forced_final_circuit_breaker_threshold = int(forced_final_breaker_threshold_raw)
+    except Exception:
+        forced_final_circuit_breaker_threshold = DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD
+    forced_final_circuit_breaker_threshold = max(1, forced_final_circuit_breaker_threshold)
+
+    finalization_fallback_models = _normalize_model_chain(
+        kwargs.pop("finalization_fallback_models", None)
+    )
+
+    retrieval_stagnation_turns_raw = kwargs.pop(
+        "retrieval_stagnation_turns",
+        DEFAULT_RETRIEVAL_STAGNATION_TURNS,
+    )
+    try:
+        retrieval_stagnation_turns = int(retrieval_stagnation_turns_raw)
+    except Exception:
+        retrieval_stagnation_turns = DEFAULT_RETRIEVAL_STAGNATION_TURNS
+    retrieval_stagnation_turns = max(2, retrieval_stagnation_turns)
+
+    forced_final_attempts = 0
+    forced_final_circuit_breaker_opened = False
+    retrieval_stagnation_streak = 0
+    retrieval_stagnation_triggered = False
+    retrieval_stagnation_turn: int | None = None
+    finalization_events: list[str] = []
+    finalization_fallback_used = False
+    finalization_fallback_succeeded = False
+    finalization_fallback_attempts: list[dict[str, Any]] = []
 
     def _emit_foundation_event(payload: dict[str, Any]) -> None:
         nonlocal foundation_event_validation_errors, foundation_events_logged
@@ -2226,14 +2348,12 @@ async def _agent_loop(
             )
         except Exception as exc:
             error_text = str(exc).strip() or f"{type(exc).__name__}"
-            is_provider_empty = "Empty content from LLM" in error_text
-            event_code = (
-                EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN
-                if is_provider_empty and turn == 0
-                else EVENT_CODE_PROVIDER_EMPTY_RESPONSE
-                if is_provider_empty
-                else EVENT_CODE_TOOL_RUNTIME_ERROR
+            is_provider_empty, provider_classification = _provider_empty_classification(
+                exc,
+                error_text,
             )
+            event_code = EVENT_CODE_PROVIDER_EMPTY if is_provider_empty else EVENT_CODE_TOOL_RUNTIME_ERROR
+            provider_subevent = "first_turn" if turn == 0 else "turn"
             failure_event_codes.append(event_code)
             warning = (
                 "AGENT_LLM_CALL_FAILED: turn="
@@ -2261,6 +2381,8 @@ async def _agent_loop(
                         "category": "provider" if is_provider_empty else "execution",
                         "phase": "execution",
                         "retryable": bool(is_provider_empty),
+                        "provider_classification": provider_classification or None,
+                        "provider_subevent": provider_subevent if is_provider_empty else None,
                         "tool_name": "_inner_acall_llm",
                         "user_message": error_text,
                         "debug_ref": None,
@@ -2364,7 +2486,7 @@ async def _agent_loop(
             final_finish_reason = result.finish_reason
             # Log visibility: empty content on first turn is almost always a model failure
             if not result.content and turn == 0:
-                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN)
+                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY)
                 _emit_foundation_event(
                     {
                         "event_id": new_event_id(),
@@ -2381,10 +2503,12 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN,
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY,
                             "category": "provider",
                             "phase": "execution",
                             "retryable": True,
+                            "provider_classification": "provider_empty_candidates",
+                            "provider_subevent": "first_turn",
                             "tool_name": "_inner_acall_llm",
                             "user_message": "Provider returned empty content with no tool calls on first turn.",
                             "debug_ref": None,
@@ -2397,7 +2521,7 @@ async def _agent_loop(
                     model, result.finish_reason, kwargs.get("num_retries", 2),
                 )
             elif not result.content:
-                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_RESPONSE)
+                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY)
                 _emit_foundation_event(
                     {
                         "event_id": new_event_id(),
@@ -2414,10 +2538,12 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY,
                             "category": "provider",
                             "phase": "execution",
                             "retryable": True,
+                            "provider_classification": "provider_empty_candidates",
+                            "provider_subevent": "turn",
                             "tool_name": "_inner_acall_llm",
                             "user_message": "Provider returned empty content with no tool calls.",
                             "debug_ref": None,
@@ -3143,6 +3269,74 @@ async def _agent_loop(
         ):
             submit_requires_new_evidence = False
             submit_evidence_digest_at_last_failure = None
+
+        evidence_tools_executed = [
+            rec.tool
+            for rec in executed_records
+            if _is_evidence_tool_name(rec.tool) and not rec.error
+        ]
+        if evidence_tools_executed:
+            if new_evidence_this_turn:
+                retrieval_stagnation_streak = 0
+            else:
+                retrieval_stagnation_streak += 1
+        else:
+            retrieval_stagnation_streak = 0
+
+        if retrieval_stagnation_streak >= retrieval_stagnation_turns:
+            retrieval_stagnation_triggered = True
+            retrieval_stagnation_turn = turn + 1
+            failure_event_codes.append(EVENT_CODE_RETRIEVAL_STAGNATION)
+            warning = (
+                "RETRIEVAL_STAGNATION: "
+                f"{retrieval_stagnation_streak} consecutive evidence turns produced no new evidence."
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": "__retrieval_stagnation__", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": {
+                            "streak": retrieval_stagnation_streak,
+                            "turn": turn + 1,
+                            "evidence_tools": evidence_tools_executed,
+                        },
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": EVENT_CODE_RETRIEVAL_STAGNATION,
+                        "category": "retrieval",
+                        "phase": "post_execution",
+                        "retryable": False,
+                        "tool_name": "__retrieval_stagnation__",
+                        "user_message": warning,
+                        "debug_ref": None,
+                    },
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: Evidence has stagnated across consecutive retrieval turns. "
+                        "Stop repeating equivalent searches. Verify a different bridge entity, "
+                        "run a conversion tool, or submit your best answer now.]"
+                    ),
+                }
+            )
+            agent_result.conversation_trace.append(messages[-1])
+            force_final_reason = "retrieval_stagnation"
+            break
+
         for record in records:
             if record.tool != "submit_answer":
                 continue
@@ -3456,6 +3650,14 @@ async def _agent_loop(
                     "You MUST submit your best factual answer now from current evidence.]"
                 ),
             }
+        elif force_final_reason == "retrieval_stagnation":
+            force_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Retrieval stagnated with no new evidence. "
+                    "Submit your best factual answer now based only on retrieved evidence.]"
+                ),
+            }
         else:
             logger.warning(
                 "Agent loop exhausted max_turns=%d, forcing final answer",
@@ -3486,25 +3688,67 @@ async def _agent_loop(
             )
             agent_result.warnings.append(warning)
             logger.warning(warning)
-        try:
-            final_result = await _inner_acall_llm(
-                effective_model, messages, timeout=timeout, **kwargs,
+
+        # Finalization fallback lane:
+        # - Primary forced-final call uses the current effective model.
+        # - Optional fallback models are attempted only for finalization.
+        # - No tools are passed, and per-turn fallback chains are disabled.
+        forced_kwargs = dict(kwargs)
+        forced_kwargs.pop("fallback_models", None)
+        base_model_chain: list[str] = [effective_model]
+        for fb_model in finalization_fallback_models:
+            if fb_model.lower() == effective_model.lower():
+                continue
+            base_model_chain.append(fb_model)
+
+        def _forced_final_model_for_attempt(attempt_idx: int) -> str:
+            if attempt_idx < len(base_model_chain):
+                return base_model_chain[attempt_idx]
+            return base_model_chain[-1]
+
+        forced_final_error_streak = 0
+        last_forced_final_error_class: str | None = None
+        final_result = None
+        terminal_error_text: str | None = None
+        forced_final_failure_codes: list[str] = []
+
+        def _record_forced_final_error(
+            *,
+            attempt_idx: int,
+            final_model: str,
+            event_code: str,
+            error_text: str,
+            error_class: str,
+            is_provider_empty: bool,
+        ) -> bool:
+            nonlocal forced_final_error_streak, last_forced_final_error_class
+            nonlocal terminal_error_text, forced_final_circuit_breaker_opened
+            forced_final_failure_codes.append(event_code)
+            if final_model.lower() == effective_model.lower():
+                finalization_events.append("FINALIZATION_PRIMARY_FAILED")
+            else:
+                finalization_events.append("FINALIZATION_FALLBACK_FAILED")
+            finalization_fallback_attempts.append(
+                {
+                    "attempt_index": attempt_idx + 1,
+                    "model": final_model,
+                    "status": "error",
+                    "error_code": event_code,
+                    "error_text": error_text,
+                    "error_class": error_class,
+                }
             )
-        except Exception as exc:
-            error_text = str(exc).strip() or f"{type(exc).__name__}"
-            is_provider_empty = "Empty content from LLM" in error_text
-            event_code = (
-                EVENT_CODE_PROVIDER_EMPTY_RESPONSE
-                if is_provider_empty
-                else EVENT_CODE_TOOL_RUNTIME_ERROR
-            )
-            failure_event_codes.append(event_code)
-            warning = (
-                "AGENT_LLM_CALL_FAILED: forced_final model="
-                f"{effective_model} error={error_text}"
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
+            if error_class == last_forced_final_error_class:
+                forced_final_error_streak += 1
+            else:
+                forced_final_error_streak = 1
+                last_forced_final_error_class = error_class
+            terminal_error_text = error_text
+            if forced_final_error_streak < forced_final_circuit_breaker_threshold:
+                return False
+            forced_final_circuit_breaker_opened = True
+            finalization_events.append("FINALIZATION_CIRCUIT_BREAKER_OPEN")
+            forced_final_failure_codes.append(EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN)
             _emit_foundation_event(
                 {
                     "event_id": new_event_id(),
@@ -3513,42 +3757,63 @@ async def _agent_loop(
                     "run_id": foundation_run_id,
                     "session_id": foundation_session_id,
                     "actor_id": foundation_actor_id,
-                    "operation": {"name": "_inner_acall_llm", "version": None},
+                    "operation": {"name": "__finalization__", "version": None},
                     "inputs": {
                         "artifact_ids": sorted(available_artifacts),
-                        "params": {"turn": agent_result.turns + 1, "forced_final": True, "error": error_text},
+                        "params": {
+                            "attempts": forced_final_attempts,
+                            "threshold": forced_final_circuit_breaker_threshold,
+                            "error_class": error_class,
+                        },
                         "bindings": dict(available_bindings),
                     },
                     "outputs": {"artifact_ids": [], "payload_hashes": []},
                     "failure": {
-                        "error_code": event_code,
+                        "error_code": EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
                         "category": "provider" if is_provider_empty else "execution",
                         "phase": "execution",
-                        "retryable": bool(is_provider_empty),
-                        "tool_name": "_inner_acall_llm",
-                        "user_message": error_text,
+                        "retryable": False,
+                        "tool_name": "__finalization__",
+                        "user_message": (
+                            "Finalization circuit breaker opened after repeated same-class failures."
+                        ),
                         "debug_ref": None,
                     },
                 }
             )
-            final_content = error_text
-            final_finish_reason = "error"
-            final_result = None
+            return True
 
-        if final_result is None:
-            # Preserve partial trace/tool history instead of bubbling exception.
-            pass
-        else:
-            final_result_model = str(final_result.model).strip() or effective_model
-            agent_result.models_used.add(final_result_model)
-            if final_result_model and final_result_model not in attempted_models:
-                attempted_models.append(final_result_model)
-            if final_result.warnings:
-                agent_result.warnings.extend(final_result.warnings)
-            final_content = final_result.content
-            final_finish_reason = final_result.finish_reason
-            if not final_content:
-                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY_RESPONSE)
+        for attempt_idx in range(forced_final_max_attempts):
+            if forced_final_circuit_breaker_opened:
+                break
+            final_model = _forced_final_model_for_attempt(attempt_idx)
+            forced_final_attempts += 1
+            is_fallback_attempt = final_model.lower() != effective_model.lower()
+            if is_fallback_attempt and not finalization_fallback_used:
+                finalization_fallback_used = True
+                finalization_events.append("FINALIZATION_FALLBACK_USED")
+
+            try:
+                candidate_result = await _inner_acall_llm(
+                    final_model,
+                    messages,
+                    timeout=timeout,
+                    **forced_kwargs,
+                )
+            except Exception as exc:
+                error_text = str(exc).strip() or f"{type(exc).__name__}"
+                is_provider_empty, provider_classification = _provider_empty_classification(
+                    exc,
+                    error_text,
+                )
+                event_code = EVENT_CODE_PROVIDER_EMPTY if is_provider_empty else EVENT_CODE_TOOL_RUNTIME_ERROR
+                error_class = provider_classification or type(exc).__name__
+                warning = (
+                    "AGENT_LLM_CALL_FAILED: forced_final attempt="
+                    f"{attempt_idx + 1}/{forced_final_max_attempts} model={final_model} error={error_text}"
+                )
+                agent_result.warnings.append(warning)
+                logger.warning(warning)
                 _emit_foundation_event(
                     {
                         "event_id": new_event_id(),
@@ -3560,41 +3825,143 @@ async def _agent_loop(
                         "operation": {"name": "_inner_acall_llm", "version": None},
                         "inputs": {
                             "artifact_ids": sorted(available_artifacts),
-                            "params": {"turn": agent_result.turns + 1, "forced_final": True},
+                            "params": {
+                                "turn": agent_result.turns + 1,
+                                "forced_final": True,
+                                "attempt": attempt_idx + 1,
+                                "model": final_model,
+                                "error": error_text,
+                            },
                             "bindings": dict(available_bindings),
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": EVENT_CODE_PROVIDER_EMPTY_RESPONSE,
-                            "category": "provider",
+                            "error_code": event_code,
+                            "category": "provider" if is_provider_empty else "execution",
                             "phase": "execution",
-                            "retryable": True,
+                            "retryable": bool(is_provider_empty),
+                            "provider_classification": provider_classification or None,
+                            "provider_subevent": "finalization",
                             "tool_name": "_inner_acall_llm",
-                            "user_message": "Provider returned empty content on forced-final call.",
+                            "user_message": error_text,
                             "debug_ref": None,
                         },
                     }
                 )
-            total_cost += final_result.cost
-            inp, out, cached, cache_create = _extract_usage(final_result.usage or {})
+                _record_forced_final_error(
+                    attempt_idx=attempt_idx,
+                    final_model=final_model,
+                    event_code=event_code,
+                    error_text=error_text,
+                    error_class=error_class,
+                    is_provider_empty=is_provider_empty,
+                )
+                continue
+
+            final_result_model = str(candidate_result.model).strip() or final_model
+            agent_result.models_used.add(final_result_model)
+            if final_result_model and final_result_model not in attempted_models:
+                attempted_models.append(final_result_model)
+            if candidate_result.warnings:
+                agent_result.warnings.extend(candidate_result.warnings)
+
+            if not candidate_result.content:
+                empty_msg = "Provider returned empty content on forced-final call."
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "_inner_acall_llm", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {
+                                "turn": agent_result.turns + 1,
+                                "forced_final": True,
+                                "attempt": attempt_idx + 1,
+                                "model": final_model,
+                            },
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_PROVIDER_EMPTY,
+                            "category": "provider",
+                            "phase": "execution",
+                            "retryable": True,
+                            "provider_classification": "provider_empty_candidates",
+                            "provider_subevent": "finalization",
+                            "tool_name": "_inner_acall_llm",
+                            "user_message": empty_msg,
+                            "debug_ref": None,
+                        },
+                    }
+                )
+                _record_forced_final_error(
+                    attempt_idx=attempt_idx,
+                    final_model=final_model,
+                    event_code=EVENT_CODE_PROVIDER_EMPTY,
+                    error_text=empty_msg,
+                    error_class="provider_empty_candidates",
+                    is_provider_empty=True,
+                )
+                continue
+
+            forced_final_error_streak = 0
+            last_forced_final_error_class = None
+            final_result = candidate_result
+            final_content = candidate_result.content
+            final_finish_reason = candidate_result.finish_reason
+            finalization_fallback_attempts.append(
+                {
+                    "attempt_index": attempt_idx + 1,
+                    "model": final_model,
+                    "status": "success",
+                    "error_code": None,
+                    "error_text": "",
+                    "error_class": None,
+                }
+            )
+            if is_fallback_attempt:
+                finalization_fallback_succeeded = True
+                finalization_events.append("FINALIZATION_FALLBACK_SUCCEEDED")
+            else:
+                finalization_events.append("FINALIZATION_PRIMARY_SUCCEEDED")
+            total_cost += candidate_result.cost
+            inp, out, cached, cache_create = _extract_usage(candidate_result.usage or {})
             agent_result.total_input_tokens += inp
             agent_result.total_output_tokens += out
             agent_result.total_cached_tokens += cached
             agent_result.total_cache_creation_tokens += cache_create
             agent_result.turns += 1
-            # Capture forced final answer in trace
-            if final_content:
-                agent_result.conversation_trace.append({
-                    "role": "assistant",
-                    "content": final_content,
-                })
+            agent_result.conversation_trace.append({
+                "role": "assistant",
+                "content": final_content,
+            })
+            break
 
+        if final_result is None:
+            failure_event_codes.extend(forced_final_failure_codes)
+            if forced_final_circuit_breaker_opened:
+                warning = (
+                    "FINALIZATION_CIRCUIT_BREAKER_OPEN: halted forced-final retries after "
+                    f"{forced_final_attempts} attempt(s)."
+                )
+                agent_result.warnings.append(warning)
+                logger.warning(warning)
+            final_content = terminal_error_text or "Forced-final failed with no provider content."
+            final_finish_reason = "error"
+
+    run_completed = submit_answer_succeeded or final_finish_reason != "error"
     primary_failure_class, secondary_failure_classes = _classify_failure_signals(
         failure_event_codes=failure_event_codes,
         retrieval_no_hits_count=retrieval_no_hits_count,
         control_loop_suppressed_calls=control_loop_suppressed_calls,
         force_final_reason=force_final_reason,
-        submit_answer_succeeded=submit_answer_succeeded,
+        submit_answer_succeeded=run_completed,
     )
     first_terminal_failure_event_code = _first_terminal_failure_event_code(failure_event_codes)
     failure_event_code_counts: dict[str, int] = {}
@@ -3618,6 +3985,15 @@ async def _agent_loop(
     agent_result.metadata["sticky_fallback"] = sticky_fallback
     agent_result.metadata["max_turns"] = max_turns
     agent_result.metadata["max_tool_calls"] = max_tool_calls
+    agent_result.metadata["forced_final_attempts"] = forced_final_attempts
+    agent_result.metadata["forced_final_max_attempts"] = forced_final_max_attempts
+    agent_result.metadata["forced_final_circuit_breaker_threshold"] = forced_final_circuit_breaker_threshold
+    agent_result.metadata["forced_final_circuit_breaker_opened"] = forced_final_circuit_breaker_opened
+    agent_result.metadata["finalization_fallback_models"] = list(finalization_fallback_models)
+    agent_result.metadata["finalization_fallback_used"] = finalization_fallback_used
+    agent_result.metadata["finalization_fallback_succeeded"] = finalization_fallback_succeeded
+    agent_result.metadata["finalization_fallback_attempts"] = list(finalization_fallback_attempts)
+    agent_result.metadata["finalization_events"] = list(finalization_events)
     agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
     agent_result.metadata["budgeted_tool_calls_used"] = _count_budgeted_records(agent_result.tool_calls)
     agent_result.metadata["budget_exempt_tools"] = sorted(BUDGET_EXEMPT_TOOL_NAMES)
@@ -3672,6 +4048,10 @@ async def _agent_loop(
     agent_result.metadata["no_legal_noncontrol_turns"] = no_legal_noncontrol_turns
     agent_result.metadata["max_zero_exec_tool_turn_streak"] = max_zero_exec_tool_turn_streak
     agent_result.metadata["retrieval_no_hits_count"] = retrieval_no_hits_count
+    agent_result.metadata["retrieval_stagnation_turns"] = retrieval_stagnation_turns
+    agent_result.metadata["retrieval_stagnation_streak"] = retrieval_stagnation_streak
+    agent_result.metadata["retrieval_stagnation_triggered"] = retrieval_stagnation_triggered
+    agent_result.metadata["retrieval_stagnation_turn"] = retrieval_stagnation_turn
     agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
     agent_result.metadata["failure_event_code_counts"] = failure_event_code_counts
     agent_result.metadata["primary_failure_class"] = primary_failure_class

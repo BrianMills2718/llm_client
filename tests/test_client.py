@@ -763,6 +763,36 @@ class TestNonRetryableErrors:
         assert mock_comp.call_count == 2
         assert mock_sleep.call_count == 1
         assert mock_sleep.call_args.args[0] >= 14.0
+        assert any("retry_delay_source=parsed" in warning for warning in result.warnings)
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_retry_after_hint_is_used(
+        self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
+    ) -> None:
+        """Structured retry_after hints should be preferred over text parsing."""
+
+        class StructuredRetryError(Exception):
+            retry_after = 3.0
+
+        mock_comp.side_effect = [
+            StructuredRetryError("rate limit"),
+            _mock_response(),
+        ]
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_structured_retry_after",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_sleep.call_count == 1
+        assert mock_sleep.call_args.args[0] >= 3.0
+        assert any("retry_delay_source=structured" in warning for warning in result.warnings)
 
     @patch("llm_client.client.litellm.completion")
     def test_generic_quota_string_not_retried(self, mock_comp: MagicMock) -> None:
@@ -2165,6 +2195,7 @@ class TestFallbackModels:
         assert "RETRY 1/3" in result.warnings[0]
         assert "gpt-4" in result.warnings[0]
         assert "rate limit" in result.warnings[0]
+        assert "retry_delay_source=none" in result.warnings[0]
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
