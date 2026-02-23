@@ -579,6 +579,43 @@ tasks:
     assert task_result.background_mode is True
 
 
+@pytest.mark.asyncio
+async def test_run_graph_writes_long_thinking_dimensions_to_experiment_log(tmp_path: Path):
+    """Experiment JSONL should include reasoning/background telemetry dimensions."""
+    content = """
+graph:
+  id: long_thinking_dimensions
+  description: "long-thinking experiment dimensions"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 2
+    model: gpt-5.2-pro
+    prompt: "Deep review"
+    reasoning_effort: xhigh
+"""
+    f = tmp_path / "long_thinking_dimensions.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+    exp_log = tmp_path / "exp.jsonl"
+
+    async def capture_acall(model, messages, **kwargs):
+        return _FakeResult(routing_trace={"background_mode": True})
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=exp_log)
+
+    assert report.status == "completed"
+    lines = exp_log.read_text().strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["dimensions"]["reasoning_effort"] == "xhigh"
+    assert record["dimensions"]["background_mode"] is True
+
+
 # ---------------------------------------------------------------------------
 # Task execution with investigation questions
 # ---------------------------------------------------------------------------

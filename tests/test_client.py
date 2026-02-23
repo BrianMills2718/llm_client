@@ -1793,15 +1793,26 @@ class TestLongThinkingBackgroundRetrieval:
     """Tests for explicit background response retrieval helpers."""
 
     def test_retrieve_background_response_requires_openai_key(self) -> None:
-        from llm_client.client import _retrieve_background_response
+        from llm_client.client import _BackgroundRetrievalConfigurationError, _retrieve_background_response
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
-            with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
+            with pytest.raises(_BackgroundRetrievalConfigurationError, match="OPENAI_API_KEY is required"):
                 _retrieve_background_response(
                     response_id="resp_123",
                     api_base=None,
                     request_timeout=60,
                 )
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
+    def test_retrieve_background_response_rejects_non_openai_api_base(self) -> None:
+        from llm_client.client import _BackgroundRetrievalConfigurationError, _retrieve_background_response
+
+        with pytest.raises(_BackgroundRetrievalConfigurationError, match="OpenAI endpoints only"):
+            _retrieve_background_response(
+                response_id="resp_123",
+                api_base="https://openrouter.ai/api/v1",
+                request_timeout=60,
+            )
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     @patch("openai.OpenAI")
@@ -1855,6 +1866,57 @@ class TestLongThinkingBackgroundRetrieval:
         assert mock_async_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_async_openai.call_args.kwargs["timeout"] == 88
         client.responses.retrieve.assert_awaited_once_with("resp_async_123")
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
+    async def test_aretrieve_background_response_rejects_non_openai_api_base(self) -> None:
+        from llm_client.client import _BackgroundRetrievalConfigurationError, _aretrieve_background_response
+
+        with pytest.raises(_BackgroundRetrievalConfigurationError, match="OpenAI endpoints only"):
+            await _aretrieve_background_response(
+                response_id="resp_async_123",
+                api_base="https://openrouter.ai/api/v1",
+                request_timeout=60,
+            )
+
+    def test_poll_background_response_fails_fast_on_configuration_error(self) -> None:
+        from llm_client.client import _BackgroundRetrievalConfigurationError, _poll_background_response
+
+        with (
+            patch(
+                "llm_client.client._retrieve_background_response",
+                side_effect=_BackgroundRetrievalConfigurationError("unsupported api_base"),
+            ),
+            patch("time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(_BackgroundRetrievalConfigurationError, match="unsupported api_base"):
+                _poll_background_response(
+                    "resp_123",
+                    api_base="https://openrouter.ai/api/v1",
+                    poll_interval=1,
+                    timeout=30,
+                )
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apoll_background_response_fails_fast_on_configuration_error(self) -> None:
+        from llm_client.client import _BackgroundRetrievalConfigurationError, _apoll_background_response
+
+        with (
+            patch(
+                "llm_client.client._aretrieve_background_response",
+                side_effect=_BackgroundRetrievalConfigurationError("unsupported api_base"),
+            ),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            with pytest.raises(_BackgroundRetrievalConfigurationError, match="unsupported api_base"):
+                await _apoll_background_response(
+                    "resp_async_123",
+                    api_base="https://openrouter.ai/api/v1",
+                    poll_interval=1,
+                    timeout=30,
+                )
+        mock_sleep.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

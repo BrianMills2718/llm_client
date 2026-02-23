@@ -444,6 +444,7 @@ class TestModelIdentityContract:
         mock_tool_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
             "sticky_fallback": True,
+            "background_mode": True,
         }
 
         result = call_llm(
@@ -462,6 +463,7 @@ class TestModelIdentityContract:
         assert result.routing_trace is not None
         assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
         assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
@@ -489,6 +491,7 @@ class TestModelIdentityContract:
         mock_tool_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
             "sticky_fallback": True,
+            "background_mode": True,
         }
 
         result = await acall_llm(
@@ -507,6 +510,7 @@ class TestModelIdentityContract:
         assert result.routing_trace is not None
         assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
         assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
@@ -529,6 +533,7 @@ class TestModelIdentityContract:
         mock_mcp_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
             "sticky_fallback": True,
+            "background_mode": True,
         }
 
         result = call_llm(
@@ -547,6 +552,7 @@ class TestModelIdentityContract:
         assert result.routing_trace is not None
         assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
 
     @pytest.mark.asyncio
@@ -569,6 +575,7 @@ class TestModelIdentityContract:
         mock_mcp_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
             "sticky_fallback": True,
+            "background_mode": True,
         }
 
         result = await acall_llm(
@@ -587,6 +594,7 @@ class TestModelIdentityContract:
         assert result.routing_trace is not None
         assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)

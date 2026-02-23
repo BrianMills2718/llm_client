@@ -93,6 +93,7 @@ result = call_llm(
 
 Notes:
 - Requires `OPENAI_API_KEY`.
+- Background retrieval currently supports OpenAI API bases only (`api.openai.com`).
 - `background_timeout` caps total polling time.
 - `background_poll_interval` controls polling cadence.
 - `result.routing_trace["background_mode"]` indicates background-mode routing.

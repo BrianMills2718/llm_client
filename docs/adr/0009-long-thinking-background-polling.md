@@ -23,7 +23,9 @@ progress.
 5. Poll retrieval uses OpenAI SDK clients (`OpenAI` / `AsyncOpenAI`) because the
    current LiteLLM runtime exposes `responses()` as a function without a
    `.retrieve` method in this environment.
-6. Routing traces expose `background_mode` to support lightweight adoption
+6. Background retrieval validates `api_base` and fails fast for non-OpenAI
+   endpoints (for example OpenRouter), instead of retrying until timeout.
+7. Routing traces expose `background_mode` to support lightweight adoption
    telemetry.
 
 ## Consequences

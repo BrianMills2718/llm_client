@@ -499,3 +499,39 @@ Validation snapshot after queue progress:
    - Result: `Success: no issues found in 39 source files`
 5. `pytest -q`
    - Result: `827 passed, 1 skipped, 1 warning`
+
+## 25) Additional follow-up (next-step execution: guard + telemetry consistency)
+Implemented the next requested hardening pass:
+1. Added explicit non-OpenAI background retrieval guard in
+   `llm_client/client.py`:
+   - `_validate_background_retrieval_api_base(...)`
+   - `_BackgroundRetrievalConfigurationError`
+2. Background poll loops now fail fast on deterministic configuration errors
+   (unsupported endpoint / missing key) instead of retrying until timeout:
+   - `_poll_background_response(...)`
+   - `_apoll_background_response(...)`
+3. Agent-loop finalization now explicitly carries forward `background_mode` when
+   present in loop-provided routing traces.
+4. Added/expanded tests in `tests/test_client.py`:
+   - non-OpenAI `api_base` rejection (sync + async retrieval helpers),
+   - poll-loop fail-fast behavior on config errors.
+5. Expanded identity-contract coverage in
+   `tests/test_model_identity_contract.py` to assert
+   `routing_trace["background_mode"]` survives sync/async tool-loop and MCP-loop
+   finalization.
+6. Expanded task-graph coverage in `tests/test_task_graph.py` with an
+   experiment-log shape lock for long-thinking dimensions:
+   - `dimensions.reasoning_effort`
+   - `dimensions.background_mode`
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_client.py -k "LongThinkingBackgroundRetrieval or gpt52 or background"`
+   - Result: `9 passed`
+2. `pytest -q tests/test_model_identity_contract.py -k "tool_loop_preserves_agent_routing_trace or mcp_loop_preserves_agent_routing_trace"`
+   - Result: `4 passed`
+3. `pytest -q tests/test_task_graph.py -k "background_mode_capture or long_thinking_dimensions or reasoning_effort_passthrough"`
+   - Result: `2 passed` (plus deselected)
+4. `mypy llm_client`
+   - Result: `Success: no issues found in 39 source files`
+5. `pytest -q`
+   - Result: `837 passed, 1 skipped, 1 warning`

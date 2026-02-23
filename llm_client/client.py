@@ -2272,6 +2272,12 @@ def _finalize_agent_loop_result(
         if isinstance(existing_sticky, bool)
         else any("STICKY_FALLBACK" in w for w in (result.warnings or []))
     )
+    existing_background = existing_trace.get("background_mode")
+    background_mode = (
+        bool(existing_background)
+        if isinstance(existing_background, bool)
+        else None
+    )
     selected_model = (
         result.resolved_model
         or (str(result.model).strip() if isinstance(result.model, str) and str(result.model).strip() else None)
@@ -2289,6 +2295,7 @@ def _finalize_agent_loop_result(
             requested_api_base=requested_api_base,
             effective_api_base=_resolve_api_base_for_model(api_base_model, requested_api_base, config),
             sticky_fallback=sticky_fallback,
+            background_mode=background_mode,
             routing_policy=routing_policy,
         ),
     )
@@ -3075,6 +3082,32 @@ def _build_result_from_responses(
 # ---------------------------------------------------------------------------
 
 
+class _BackgroundRetrievalConfigurationError(RuntimeError):
+    """Raised when background retrieval cannot run with current endpoint/auth config."""
+
+
+def _validate_background_retrieval_api_base(api_base: str | None) -> None:
+    """Fail fast when background retrieval is routed to a non-OpenAI endpoint."""
+    if api_base is None:
+        return
+    base = str(api_base).strip()
+    if not base:
+        return
+
+    parsed = urllib.parse.urlparse(base)
+    hostname = (parsed.hostname or "").strip().lower()
+    if hostname == "api.openai.com" or hostname.endswith(".api.openai.com"):
+        return
+    if "openai.com" in hostname and "openrouter" not in hostname:
+        return
+
+    raise _BackgroundRetrievalConfigurationError(
+        "Background response retrieval for long-thinking models currently supports "
+        f"OpenAI endpoints only. Received api_base={base!r}. "
+        "Use https://api.openai.com/v1 (or default) for background retrieval."
+    )
+
+
 def _needs_background_mode(model: str, reasoning_effort: str | None) -> bool:
     """Check if a model+reasoning_effort combination needs background polling.
 
@@ -3134,6 +3167,9 @@ def _poll_background_response(
                 api_base=api_base,
                 request_timeout=request_timeout,
             )
+        except _BackgroundRetrievalConfigurationError:
+            # Endpoint/auth misconfiguration is deterministic; fail immediately.
+            raise
         except Exception as e:
             logger.warning("Background poll attempt %d failed: %s", attempt, e)
             _time.sleep(poll_interval)
@@ -3188,6 +3224,8 @@ async def _apoll_background_response(
                 api_base=api_base,
                 request_timeout=request_timeout,
             )
+        except _BackgroundRetrievalConfigurationError:
+            raise
         except Exception as e:
             logger.warning("Background poll attempt %d failed: %s", attempt, e)
             await asyncio.sleep(poll_interval)
@@ -3232,9 +3270,10 @@ def _retrieve_background_response(
     """
     from openai import OpenAI
 
+    _validate_background_retrieval_api_base(api_base)
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError(
+        raise _BackgroundRetrievalConfigurationError(
             "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
         )
 
@@ -3256,9 +3295,10 @@ async def _aretrieve_background_response(
     """Async retrieve for background responses by ID."""
     from openai import AsyncOpenAI
 
+    _validate_background_retrieval_api_base(api_base)
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError(
+        raise _BackgroundRetrievalConfigurationError(
             "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
         )
 
