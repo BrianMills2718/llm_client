@@ -29,3 +29,22 @@ couplings:
       - docs/adr/0006-actor-id-issuance-policy.md
     description: MCP validation reason-code and Foundation actor identity governance.
     required_reading: true
+
+  - sources:
+      - llm_client/io_log.py
+      - llm_client/observability/*.py
+    docs:
+      - docs/adr/0003-warning-taxonomy.md
+      - docs/CHATGPT_REVIEW_STATUS_2026-02-23.md
+    description: Observability sink/query compatibility and warning emission surface.
+    required_reading: true
+    uncertainty: No dedicated observability ADR yet; status dossier is interim source.
+
+  - sources:
+      - llm_client/task_graph.py
+      - llm_client/experiment_eval.py
+    docs:
+      - docs/TASK_GRAPH_DESIGN.md
+    description: Task-graph orchestration and evaluation lifecycle constraints.
+    required_reading: true
+    uncertainty: Task graph design doc may lag implementation details.

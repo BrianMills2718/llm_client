@@ -363,3 +363,27 @@ Validation snapshot after this pass:
 1. `make help-meta` lists new read-gate helper targets.
 2. `make read-gate-check-warn FILE=llm_client/errors.py` -> warning mode allows.
 3. `make read-gate-check FILE=llm_client/client.py` -> strict mode blocks when reads are missing.
+
+## 20) Additional follow-up (coverage expansion + CI smoke)
+Expanded required-reading coverage and added CI smoke checks for mode behavior:
+1. `scripts/relationships.yaml` now includes additional high-risk module groups:
+   - `llm_client/io_log.py`, `llm_client/observability/*.py`
+   - `llm_client/task_graph.py`, `llm_client/experiment_eval.py`
+2. Added smoke test file:
+   - `tests/test_required_reading_gate.py`
+   - verifies strict/warn/off behavior and uncoupled default warning mode.
+3. Expanded `.github/workflows/smoke-observability.yml` with:
+   - `Required-reading gate mode smoke`
+   - runs `pytest -q tests/test_required_reading_gate.py`
+
+Documented uncertainties (current best-judgment choices):
+1. Observability coupling currently references `docs/CHATGPT_REVIEW_STATUS_2026-02-23.md`
+   because there is no dedicated observability ADR yet.
+2. Task-graph coupling references `docs/TASK_GRAPH_DESIGN.md`; this is the best
+   available design source but may lag implementation details over time.
+3. Both uncertainties are explicitly recorded in `scripts/relationships.yaml`
+   and should be revisited if dedicated ADRs are added.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_required_reading_gate.py`
+2. `pytest -q`

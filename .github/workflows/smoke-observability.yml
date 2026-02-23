@@ -33,6 +33,10 @@ jobs:
             tests/test_io_log.py::TestLogCall::test_disabled_skips_logging \
             tests/test_model_identity_contract.py::TestModelIdentityContract::test_sync_identity_fields_with_explicit_routing_off
 
+      - name: Required-reading gate mode smoke
+        run: |
+          pytest -q tests/test_required_reading_gate.py
+
       - name: Foundation schema strict lane
         env:
           FOUNDATION_SCHEMA_STRICT: "1"

@@ -33,6 +33,9 @@ python scripts/meta/check_required_reading.py llm_client/client.py
 
 # Relax gate temporarily without code changes
 LLM_CLIENT_READ_GATE_MODE=warn python scripts/meta/check_required_reading.py llm_client/client.py
+
+# Read-gate smoke tests (strict/warn/off behavior)
+pytest -q tests/test_required_reading_gate.py
 ```
 
 ## Worktree Coordination Scripts (opt-in)
