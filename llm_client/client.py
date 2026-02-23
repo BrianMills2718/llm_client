@@ -5524,47 +5524,19 @@ def embed(
     Returns:
         EmbeddingResult with embeddings list, usage, and cost
     """
-    texts = [input] if isinstance(input, str) else list(input)
-    _log_t0 = time.monotonic()
+    from llm_client.embedding_runtime import embed_impl
 
-    call_kwargs: dict[str, Any] = {"model": model, "input": texts, "timeout": timeout}
-    if dimensions is not None:
-        call_kwargs["dimensions"] = dimensions
-    if api_base is not None:
-        call_kwargs["api_base"] = api_base
-    if api_key is not None:
-        call_kwargs["api_key"] = api_key
-    call_kwargs.update(kwargs)
-
-    _check_model_deprecation(model)
-    try:
-        with _rate_limit.acquire(model):
-            response = litellm.embedding(**call_kwargs)
-
-        embeddings = [item["embedding"] for item in response.data]
-        usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
-        try:
-            cost = litellm.completion_cost(completion_response=response)
-        except Exception:
-            cost = 0.0
-
-        result = EmbeddingResult(embeddings=embeddings, usage=usage, cost=cost, model=model)
-        _io_log.log_embedding(
-            model=model, input_count=len(texts),
-            input_chars=sum(len(t) for t in texts),
-            dimensions=len(result.embeddings[0]) if result.embeddings else None,
-            usage=result.usage, cost=result.cost,
-            latency_s=time.monotonic() - _log_t0, caller="embed", task=task, trace_id=trace_id,
-        )
-        return result
-    except Exception as e:
-        _io_log.log_embedding(
-            model=model, input_count=len(texts),
-            input_chars=sum(len(t) for t in texts), dimensions=None,
-            usage=None, cost=None,
-            latency_s=time.monotonic() - _log_t0, error=e, caller="embed", task=task, trace_id=trace_id,
-        )
-        raise
+    return embed_impl(
+        model,
+        input,
+        dimensions=dimensions,
+        timeout=timeout,
+        api_base=api_base,
+        api_key=api_key,
+        task=task,
+        trace_id=trace_id,
+        **kwargs,
+    )
 
 
 async def aembed(
@@ -5580,44 +5552,16 @@ async def aembed(
     **kwargs: Any,
 ) -> EmbeddingResult:
     """Async version of embed(). See embed() for full docs."""
-    texts = [input] if isinstance(input, str) else list(input)
-    _log_t0 = time.monotonic()
+    from llm_client.embedding_runtime import aembed_impl
 
-    call_kwargs: dict[str, Any] = {"model": model, "input": texts, "timeout": timeout}
-    if dimensions is not None:
-        call_kwargs["dimensions"] = dimensions
-    if api_base is not None:
-        call_kwargs["api_base"] = api_base
-    if api_key is not None:
-        call_kwargs["api_key"] = api_key
-    call_kwargs.update(kwargs)
-
-    _check_model_deprecation(model)
-    try:
-        async with _rate_limit.aacquire(model):
-            response = await litellm.aembedding(**call_kwargs)
-
-        embeddings = [item["embedding"] for item in response.data]
-        usage = dict(response.usage) if hasattr(response, "usage") and response.usage else {}
-        try:
-            cost = litellm.completion_cost(completion_response=response)
-        except Exception:
-            cost = 0.0
-
-        result = EmbeddingResult(embeddings=embeddings, usage=usage, cost=cost, model=model)
-        _io_log.log_embedding(
-            model=model, input_count=len(texts),
-            input_chars=sum(len(t) for t in texts),
-            dimensions=len(result.embeddings[0]) if result.embeddings else None,
-            usage=result.usage, cost=result.cost,
-            latency_s=time.monotonic() - _log_t0, caller="aembed", task=task, trace_id=trace_id,
-        )
-        return result
-    except Exception as e:
-        _io_log.log_embedding(
-            model=model, input_count=len(texts),
-            input_chars=sum(len(t) for t in texts), dimensions=None,
-            usage=None, cost=None,
-            latency_s=time.monotonic() - _log_t0, error=e, caller="aembed", task=task, trace_id=trace_id,
-        )
-        raise
+    return await aembed_impl(
+        model,
+        input,
+        dimensions=dimensions,
+        timeout=timeout,
+        api_base=api_base,
+        api_key=api_key,
+        task=task,
+        trace_id=trace_id,
+        **kwargs,
+    )

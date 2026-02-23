@@ -236,3 +236,21 @@ Validation snapshot after this pass:
    - Result: `Success: no issues found in 38 source files`
 3. `pytest -q`
    - Result: `798 passed, 1 skipped, 1 warning`
+
+## 13) Additional follow-up (embedding runtime extraction)
+Completed another facade split for embedding paths:
+1. Extracted embedding internals from `llm_client/client.py` into:
+   - `llm_client/embedding_runtime.py`
+   - `embed_impl(...)`
+   - `aembed_impl(...)`
+2. Converted `client.py` embedding entrypoints into thin lazy-import delegates.
+3. Preserved existing behavior for:
+   - model deprecation checks,
+   - sync/async rate limit acquisition,
+   - io-log embedding telemetry fields and error logging.
+
+Validation snapshot after this pass:
+1. `pytest -q`
+   - Result: `798 passed, 1 skipped, 1 warning`
+2. `mypy llm_client`
+   - Result: `Success: no issues found in 39 source files`
