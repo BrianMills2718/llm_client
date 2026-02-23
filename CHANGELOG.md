@@ -17,6 +17,10 @@ All notable changes to `llm-client` are documented in this file.
   - finalization fallback usage/success/event traces
   - forced-final attempt and circuit-breaker telemetry
   - retrieval stagnation trigger/streak/turn metadata
+- OpenRouter key-pool rotation for key-limit 403 responses:
+  - supports `OPENROUTER_API_KEYS` and numbered `OPENROUTER_API_KEY_<n>` vars
+  - rotates `OPENROUTER_API_KEY` to the next key and retries immediately
+  - emits `OPENROUTER_KEY_ROTATED` / `OPENROUTER_KEY_ROTATION_UNAVAILABLE` warnings
 - Digimon benchmark lane controls wired through runner:
   - `--lane-policy {pure,reliability}`
   - `--finalization-fallback-models`
@@ -32,6 +36,29 @@ All notable changes to `llm-client` are documented in this file.
   failure attribution clean when fallback finalization succeeds.
 - Benchmark summaries now report completion-conditioned accuracy plus provider,
   fallback, and retrieval-stagnation rates.
+
+## 0.7.0 - 2026-02-23
+
+### Breaking Changes
+
+- Removed model-semantics compatibility modes.
+  - `ClientConfig.result_model_semantics` removed.
+  - `LLM_CLIENT_RESULT_MODEL_SEMANTICS` removed.
+- `LLMCallResult.model` now has one fixed meaning:
+  - always the terminal executed model (same identity as `resolved_model`).
+- Removed semantics-adoption telemetry controls:
+  - `LLM_CLIENT_SEMANTICS_TELEMETRY` removed.
+- Removed semantics reporting CLI commands:
+  - `python -m llm_client semantics`
+  - `python -m llm_client semantics-snapshot`
+
+### Changed
+
+- Identity contract is now single-path and explicit:
+  - `requested_model` = caller input
+  - `resolved_model` / `execution_model` = executed model
+  - `routing_trace` = why routing/fallback changed the model
+- Observability smoke workflow now validates logging-disabled mode only.
 
 ## 0.6.1 - 2026-02-22
 

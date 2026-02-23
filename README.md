@@ -51,6 +51,15 @@ print(agent_result.billing_mode) # "subscription_included"
 export LLM_CLIENT_OPENROUTER_ROUTING=off
 ```
 
+OpenRouter key rotation on key-limit 403:
+- If OpenRouter returns `Key limit exceeded`, retry loops can auto-rotate to a
+  backup key and retry immediately.
+- Configure a key pool with either:
+  - `OPENROUTER_API_KEYS` (comma/semicolon/newline-delimited), or
+  - `OPENROUTER_API_KEY` plus numbered vars (`OPENROUTER_API_KEY_2`, `_3`, ...).
+- If an explicit `api_key=...` is passed at call time, automatic rotation is
+  disabled for that call.
+
 ### Typed routing/config (preferred)
 
 For deterministic behavior across environments, pass explicit `ClientConfig`:
@@ -60,44 +69,26 @@ from llm_client import ClientConfig, call_llm
 
 cfg = ClientConfig(
     routing_policy="direct",              # or "openrouter"
-    result_model_semantics="legacy",      # or "requested" / "resolved"
 )
 
 result = call_llm("gpt-5-mini", messages, config=cfg)
 ```
 
 Model identity fields on results:
-- `result.model` (legacy/compatibility surface, semantics configurable)
+- `result.model` (actual executed model)
 - `result.requested_model` (caller input)
 - `result.resolved_model` / `result.execution_model` (terminal executed model)
 - `result.routing_trace` (routing/fallback metadata)
 - `result.warning_records` (machine-readable `LLMC_WARN_*` warnings)
 
-Model-semantics env override:
+Foundation event schema strict mode:
+- MCP/tool loops validate emitted foundation events.
+- By default, invalid events are recorded as warnings in run metadata.
+- Enable strict failure mode to fail fast on any invalid event payload:
 
 ```bash
-export LLM_CLIENT_RESULT_MODEL_SEMANTICS=legacy      # default
-# or
-export LLM_CLIENT_RESULT_MODEL_SEMANTICS=requested
-export LLM_CLIENT_RESULT_MODEL_SEMANTICS=resolved
+export FOUNDATION_SCHEMA_STRICT=1
 ```
-
-Semantics adoption telemetry:
-- Metadata-only adoption telemetry is emitted as foundation events
-  (`event_type="ConfigChanged"`, operation `result_model_semantics_adoption`).
-- Captured fields: caller, config source (`explicit_config` or `env_or_default`),
-  selected semantics mode, and in-process observed count.
-- Disable with:
-
-```bash
-export LLM_CLIENT_SEMANTICS_TELEMETRY=off
-```
-
-Planned migration timeline:
-- `0.6.x`: default stays `legacy` (compatibility-first).
-- `0.7.x`: emit migration guidance and monitor adoption of explicit semantics.
-- `0.8.0` (target): flip default to `requested`; keep `legacy` as opt-in compatibility.
-- `1.0.0` (target): remove `legacy` default behavior after one full compatibility cycle.
 
 ### Structured output (Pydantic)
 
@@ -438,27 +429,6 @@ python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg
 - deterministic checks (`--det-checks`),
 - rubric-based LLM review (`--review-rubric` / `--review-model`),
 - policy gates (`--gate-policy`) with optional non-zero exit on failure.
-
-## Semantics Adoption Report
-
-Summarize `result_model_semantics` adoption from foundation telemetry events:
-
-```bash
-python -m llm_client semantics
-python -m llm_client semantics --days 14 --format json
-python -m llm_client semantics --caller call_llm
-python -m llm_client semantics-snapshot
-python -m llm_client semantics-snapshot --output ~/projects/data/semantics_daily.jsonl --print-json
-```
-
-This reports, by caller:
-- config source (`explicit_config` vs `env_or_default`)
-- semantics mode (`legacy` / `requested` / `resolved`)
-- count and share
-
-For migration tracking, `semantics-snapshot` appends a JSONL row with
-`captured_at`, active filters, and the same aggregate summary. This is designed
-for cron/scheduled collection during `0.7.x`.
 
 ## API keys
 

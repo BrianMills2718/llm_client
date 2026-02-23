@@ -4,6 +4,21 @@ Date: 2026-02-22
 Project path: `/home/brian/projects/llm_client`  
 Audience: external advisor (ChatGPT) with zero prior context
 
+## Update (2026-02-23 hard cutover)
+
+The model-semantics migration plan in this document is now superseded.
+Current architecture uses one fixed identity contract:
+1. `result.model` = terminal executed model.
+2. `requested_model` = caller input.
+3. `resolved_model` / `execution_model` = terminal executed model.
+4. `routing_trace` explains normalization/fallback decisions.
+
+Removed surfaces:
+1. `ClientConfig.result_model_semantics`
+2. `LLM_CLIENT_RESULT_MODEL_SEMANTICS`
+3. `LLM_CLIENT_SEMANTICS_TELEMETRY`
+4. CLI commands `semantics` and `semantics-snapshot`.
+
 ## Status Update (2026-02-22, post-implementation)
 
 The staged refactor has proceeded beyond week-1 stabilization:
@@ -38,7 +53,14 @@ The staged refactor has proceeded beyond week-1 stabilization:
    - operation `result_model_semantics_adoption`
    - params: caller, config_source, result_model_semantics, observed_count
    - opt-out: `LLM_CLIENT_SEMANTICS_TELEMETRY=off`
-10. Current test status: `pytest -q` => `760 passed, 1 skipped`.
+10. Foundation event hardening completed:
+   - strict mode env gate: `FOUNDATION_SCHEMA_STRICT=1`
+   - invalid foundation event payloads now raise in strict mode
+   - failure-path payloads moved to schema-safe fields (no extra forbidden keys)
+11. Forced-final policy hardening completed:
+   - explicit `FINALIZATION_TOOL_CALL_DISALLOWED` classification
+   - no tool execution in forced-final even if model returns tool-call-shaped output
+12. Current test status: `pytest -q` => `776 passed, 1 skipped`.
 
 ## 1. Why We Need Advice
 

@@ -57,14 +57,14 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import Counter, OrderedDict
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
 
 import litellm
 from pydantic import BaseModel
 
-from llm_client.config import ClientConfig, ResultModelSemantics
+from llm_client.config import ClientConfig
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
 from llm_client.routing import CallRequest, resolve_api_base_for_model, resolve_call
@@ -101,9 +101,14 @@ GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
 OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
 OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_API_KEYS_ENV = "OPENROUTER_API_KEYS"
 REQUIRE_TAGS_ENV = "LLM_CLIENT_REQUIRE_TAGS"
 AGENT_RETRY_SAFE_ENV = "LLM_CLIENT_AGENT_RETRY_SAFE"
-SEMANTICS_TELEMETRY_ENV = "LLM_CLIENT_SEMANTICS_TELEMETRY"
+
+_OPENROUTER_KEY_ROTATION_LOCK = threading.Lock()
+_OPENROUTER_KEY_RING: tuple[str, ...] = ()
+_OPENROUTER_KEY_RING_INDEX: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -263,83 +268,6 @@ def _mark_cache_hit(result: LLMCallResult) -> LLMCallResult:
         marginal_cost=0.0,
         cost_source="cache_hit",
     )
-
-
-_SEMANTICS_ADOPTION_LOCK = threading.Lock()
-_SEMANTICS_ADOPTION_COUNTS: Counter[tuple[str, str, str]] = Counter()
-
-
-def _semantics_telemetry_enabled() -> bool:
-    raw = os.environ.get(SEMANTICS_TELEMETRY_ENV, "1").strip().lower()
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    if raw in {"1", "true", "yes", "on", ""}:
-        return True
-    logger.warning(
-        "Invalid %s=%r; expected on/off boolean. Defaulting to on.",
-        SEMANTICS_TELEMETRY_ENV,
-        raw,
-    )
-    return True
-
-
-def _record_semantics_adoption(
-    *,
-    cfg: ClientConfig,
-    explicit_config: bool,
-    caller: str,
-    task: str | None,
-    trace_id: str | None,
-) -> None:
-    """Emit lightweight, metadata-only telemetry for semantics adoption."""
-    mode = str(cfg.result_model_semantics)
-    source = "explicit_config" if explicit_config else "env_or_default"
-
-    with _SEMANTICS_ADOPTION_LOCK:
-        key = (caller, source, mode)
-        _SEMANTICS_ADOPTION_COUNTS[key] += 1
-        observed_count = int(_SEMANTICS_ADOPTION_COUNTS[key])
-
-    if not _semantics_telemetry_enabled():
-        return
-
-    try:
-        from llm_client.foundation import coerce_run_id, new_event_id, new_session_id, now_iso
-
-        event = {
-            "event_id": new_event_id(),
-            "event_type": "ConfigChanged",
-            "timestamp": now_iso(),
-            "run_id": coerce_run_id(None, trace_id),
-            "session_id": new_session_id(),
-            "actor_id": "llm_client:semantics_telemetry",
-            "operation": {
-                "name": "result_model_semantics_adoption",
-                "version": "0.6.1",
-            },
-            "inputs": {
-                "artifact_ids": [],
-                "params": {
-                    "caller": caller,
-                    "config_source": source,
-                    "result_model_semantics": mode,
-                    "observed_count": observed_count,
-                },
-                "bindings": {},
-            },
-            "outputs": {
-                "artifact_ids": [],
-                "payload_hashes": [],
-            },
-        }
-        _io_log.log_foundation_event(
-            event=event,
-            caller=caller,
-            task=task,
-            trace_id=trace_id,
-        )
-    except Exception:
-        logger.debug("semantics-adoption telemetry emit failed", exc_info=True)
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -526,13 +454,14 @@ def _annotate_result_identity(
     resolved_model: str | None = None,
     routing_trace: dict[str, Any] | None = None,
     warning_records: list[dict[str, Any]] | None = None,
-    result_model_semantics: ResultModelSemantics = "legacy",
 ) -> LLMCallResult:
-    """Attach additive model-identity fields without changing legacy model semantics."""
+    """Attach model identity fields with fixed semantics."""
     if result.requested_model is None:
         result.requested_model = requested_model
     if resolved_model is not None and result.resolved_model is None:
         result.resolved_model = resolved_model
+    if result.resolved_model is None and isinstance(result.model, str) and result.model.strip():
+        result.resolved_model = result.model
     if result.execution_model is None and result.resolved_model is not None:
         result.execution_model = result.resolved_model
 
@@ -542,12 +471,9 @@ def _annotate_result_identity(
         merged.update(routing_trace)
         result.routing_trace = merged
 
-    if result_model_semantics == "requested":
-        result.model = result.requested_model or requested_model
-    elif result_model_semantics == "resolved":
-        resolved_identity = result.resolved_model or resolved_model
-        if resolved_identity:
-            result.model = resolved_identity
+    resolved_identity = result.resolved_model or resolved_model
+    if resolved_identity:
+        result.model = resolved_identity
 
     result.warning_records = _merge_warning_records(
         existing=result.warning_records,
@@ -616,6 +542,226 @@ _NON_RETRYABLE_PATTERNS = [
     "account deactivated",
     "account suspended",
 ]
+
+
+def _normalize_api_key_value(value: Any) -> str:
+    """Normalize API key env/input values."""
+    return str(value or "").strip().strip("\"'")
+
+
+def _split_api_keys(raw: str) -> list[str]:
+    """Split comma/semicolon/newline-delimited key lists."""
+    normalized: list[str] = []
+    for part in re.split(r"[,\n;]", raw):
+        value = _normalize_api_key_value(part)
+        if value:
+            normalized.append(value)
+    return normalized
+
+
+def _openrouter_key_candidates_from_env() -> tuple[str, ...]:
+    """Collect OpenRouter keys from supported env vars in stable order."""
+    candidates: list[str] = []
+
+    raw_multi = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEYS_ENV))
+    if raw_multi:
+        candidates.extend(_split_api_keys(raw_multi))
+
+    primary = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
+    if primary:
+        candidates.append(primary)
+
+    numbered_re = re.compile(rf"^{re.escape(OPENROUTER_API_KEY_ENV)}_(\d+)$")
+    numbered: list[tuple[int, str]] = []
+    for env_name, env_value in os.environ.items():
+        match = numbered_re.match(env_name)
+        if not match:
+            continue
+        normalized = _normalize_api_key_value(env_value)
+        if not normalized:
+            continue
+        numbered.append((int(match.group(1)), normalized))
+    numbered.sort(key=lambda item: item[0])
+    candidates.extend(value for _, value in numbered)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return tuple(deduped)
+
+
+def _mask_api_key(key: str | None) -> str:
+    """Return a safe, short key fingerprint for logs/warnings."""
+    normalized = _normalize_api_key_value(key)
+    if not normalized:
+        return "<empty>"
+    return f"...{normalized[-4:]}"
+
+
+def _is_openrouter_call(model: str, api_base: str | None) -> bool:
+    """Best-effort OpenRouter call detection."""
+    model_lower = str(model or "").strip().lower()
+    if model_lower.startswith("openrouter/"):
+        return True
+    base_lower = str(api_base or "").strip().lower()
+    return "openrouter.ai" in base_lower
+
+
+def _error_status_code(error: Exception) -> int | None:
+    """Extract HTTP status code from litellm/generic errors."""
+    for attr in ("status_code", "status", "http_status", "code"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+
+    response = getattr(error, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status", "code"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+
+    text = str(error)
+    match = re.search(r"\b(401|403|404|409|429|500|502|503)\b", text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _is_openrouter_key_limit_error(error: Exception) -> bool:
+    """Whether an error is OpenRouter's key-level 403 quota exhaustion."""
+    text = str(error or "").lower()
+    if "key limit exceeded" not in text and "key limit reached" not in text:
+        return False
+
+    status = _error_status_code(error)
+    if status not in {None, 403}:
+        return False
+
+    provider = str(getattr(error, "llm_provider", "") or "").lower()
+    model = str(getattr(error, "model", "") or "").lower()
+    if "openrouter" in provider or model.startswith("openrouter/") or "openrouter" in text:
+        return True
+    return status == 403 and "key limit" in text
+
+
+def _reset_openrouter_key_rotation_state() -> None:
+    """Test helper: reset OpenRouter key-ring cache/index."""
+    global _OPENROUTER_KEY_RING, _OPENROUTER_KEY_RING_INDEX  # noqa: PLW0603
+    with _OPENROUTER_KEY_ROTATION_LOCK:
+        _OPENROUTER_KEY_RING = ()
+        _OPENROUTER_KEY_RING_INDEX = 0
+
+
+def _rotate_openrouter_api_key() -> tuple[str, str, int] | None:
+    """Rotate OPENROUTER_API_KEY to the next configured key, if available."""
+    global _OPENROUTER_KEY_RING, _OPENROUTER_KEY_RING_INDEX  # noqa: PLW0603
+
+    with _OPENROUTER_KEY_ROTATION_LOCK:
+        ring = _openrouter_key_candidates_from_env()
+        if not ring:
+            return None
+
+        if ring != _OPENROUTER_KEY_RING:
+            _OPENROUTER_KEY_RING = ring
+            current_env_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
+            if current_env_key and current_env_key in ring:
+                _OPENROUTER_KEY_RING_INDEX = ring.index(current_env_key)
+            elif _OPENROUTER_KEY_RING_INDEX >= len(ring):
+                _OPENROUTER_KEY_RING_INDEX = 0
+
+        if len(ring) < 2:
+            return None
+
+        current_env_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
+        if current_env_key and current_env_key in ring:
+            current_idx = ring.index(current_env_key)
+        else:
+            current_idx = _OPENROUTER_KEY_RING_INDEX
+
+        next_idx = (current_idx + 1) % len(ring)
+        if next_idx == current_idx:
+            return None
+
+        old_key = ring[current_idx]
+        new_key = ring[next_idx]
+        os.environ[OPENROUTER_API_KEY_ENV] = new_key
+        _OPENROUTER_KEY_RING_INDEX = next_idx
+        return old_key, new_key, len(ring)
+
+
+def _maybe_retry_with_openrouter_key_rotation(
+    *,
+    error: Exception,
+    attempt: int,
+    max_retries: int,
+    current_model: str,
+    current_api_base: str | None,
+    user_kwargs: dict[str, Any],
+    warning_sink: list[str] | None,
+    on_retry: Callable[[int, Exception, float], None] | None,
+    caller: str,
+) -> bool:
+    """Rotate OpenRouter key on key-limit 403 and trigger immediate retry."""
+    explicit_api_key = bool(_normalize_api_key_value(user_kwargs.get("api_key")))
+    if explicit_api_key:
+        return False
+    if not _is_openrouter_call(current_model, current_api_base):
+        return False
+    if not _is_openrouter_key_limit_error(error):
+        return False
+
+    rotated = _rotate_openrouter_api_key()
+    if rotated is None:
+        msg = (
+            "OPENROUTER_KEY_ROTATION_UNAVAILABLE: received key-limit 403 but no "
+            "backup OpenRouter keys are configured."
+        )
+        if warning_sink is not None:
+            warning_sink.append(msg)
+        logger.warning("%s %s", caller, msg)
+        return False
+
+    old_key, new_key, pool_size = rotated
+    rotation_msg = (
+        "OPENROUTER_KEY_ROTATED: "
+        f"{_mask_api_key(old_key)} -> {_mask_api_key(new_key)} "
+        f"(pool={pool_size})"
+    )
+    if warning_sink is not None:
+        warning_sink.append(rotation_msg)
+    logger.warning("%s %s", caller, rotation_msg)
+
+    if attempt >= max_retries:
+        return False
+
+    retry_delay_source = "openrouter_key_rotation"
+    delay = 0.0
+    if on_retry is not None:
+        on_retry(attempt, error, delay)
+    if warning_sink is not None:
+        warning_sink.append(
+            f"RETRY {attempt + 1}/{max_retries + 1}: "
+            f"{current_model} ({type(error).__name__}: {error}) "
+            f"[retry_delay_source={retry_delay_source}]"
+        )
+    logger.warning(
+        "%s attempt %d/%d failed (retrying immediately, source=%s): %s",
+        caller,
+        attempt + 1,
+        max_retries + 1,
+        retry_delay_source,
+        error,
+    )
+    return True
 
 
 def _coerce_retry_delay_seconds(raw_value: Any) -> float | None:
@@ -1011,7 +1157,6 @@ class LLMStream:
         requested_model: str | None = None,
         resolved_model: str | None = None,
         routing_trace: dict[str, Any] | None = None,
-        result_model_semantics: ResultModelSemantics = "legacy",
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -1023,7 +1168,6 @@ class LLMStream:
         self._requested_model = requested_model
         self._resolved_model = resolved_model
         self._routing_trace = routing_trace
-        self._result_model_semantics = result_model_semantics
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -1083,7 +1227,6 @@ class LLMStream:
             requested_model=self._requested_model or self._model,
             resolved_model=self._resolved_model or self._model,
             routing_trace=self._routing_trace,
-            result_model_semantics=self._result_model_semantics,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -1118,7 +1261,6 @@ class AsyncLLMStream:
         requested_model: str | None = None,
         resolved_model: str | None = None,
         routing_trace: dict[str, Any] | None = None,
-        result_model_semantics: ResultModelSemantics = "legacy",
     ) -> None:
         self._iter = response_iter
         self._model = model
@@ -1130,7 +1272,6 @@ class AsyncLLMStream:
         self._requested_model = requested_model
         self._resolved_model = resolved_model
         self._routing_trace = routing_trace
-        self._result_model_semantics = result_model_semantics
         self._t0 = time.monotonic()
         self._chunks_text: list[str] = []
         self._raw_chunks: list[Any] = []
@@ -1190,7 +1331,6 @@ class AsyncLLMStream:
             requested_model=self._requested_model or self._model,
             resolved_model=self._resolved_model or self._model,
             routing_trace=self._routing_trace,
-            result_model_semantics=self._result_model_semantics,
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
@@ -2970,7 +3110,6 @@ def call_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -2981,13 +3120,6 @@ def call_llm(
         task, trace_id, max_budget, caller="call_llm",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="call_llm",
-        task=task,
-        trace_id=trace_id,
-    )
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -3065,7 +3197,6 @@ def call_llm(
                 sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
@@ -3107,7 +3238,6 @@ def call_llm(
                 sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
@@ -3174,7 +3304,6 @@ def call_llm(
                         effective_api_base=current_api_base,
                         routing_policy=routing_policy,
                     ),
-                    result_model_semantics=cfg.result_model_semantics,
                 )
                 _io_log.log_call(
                     model=current_model,
@@ -3249,7 +3378,6 @@ def call_llm(
                             sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                             routing_policy=routing_policy,
                         ),
-                        result_model_semantics=cfg.result_model_semantics,
                     )
                     if hooks and hooks.after_call:
                         hooks.after_call(result)
@@ -3261,6 +3389,18 @@ def call_llm(
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
+                    if _maybe_retry_with_openrouter_key_rotation(
+                        error=e,
+                        attempt=attempt,
+                        max_retries=effective_retries,
+                        current_model=current_model,
+                        current_api_base=current_api_base,
+                        user_kwargs=kwargs,
+                        warning_sink=_warnings,
+                        on_retry=r.on_retry,
+                        caller="call_llm",
+                    ):
+                        continue
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
                     delay, retry_delay_source = _compute_retry_delay(
@@ -3350,7 +3490,6 @@ def call_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -3360,13 +3499,6 @@ def call_llm_structured(
         task, trace_id, max_budget, caller="call_llm_structured",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="call_llm_structured",
-        task=task,
-        trace_id=trace_id,
-    )
     plan = resolve_call(
         CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
@@ -3393,7 +3525,6 @@ def call_llm_structured(
                 effective_api_base=api_base,
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
@@ -3425,7 +3556,6 @@ def call_llm_structured(
                         effective_api_base=current_api_base,
                         routing_policy=routing_policy,
                     ),
-                    result_model_semantics=cfg.result_model_semantics,
                 )
                 _io_log.log_call(
                     model=current_model,
@@ -3493,7 +3623,6 @@ def call_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -3505,6 +3634,18 @@ def call_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="call_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -3589,7 +3730,6 @@ def call_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -3609,6 +3749,18 @@ def call_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="call_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -3689,7 +3841,6 @@ def call_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
 
                         if hooks and hooks.after_call:
@@ -3702,6 +3853,18 @@ def call_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="call_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -3866,7 +4029,6 @@ async def acall_llm(
         finish_reason, and raw_response
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -3877,13 +4039,6 @@ async def acall_llm(
         task, trace_id, max_budget, caller="acall_llm",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="acall_llm",
-        task=task,
-        trace_id=trace_id,
-    )
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
@@ -3960,7 +4115,6 @@ async def acall_llm(
                 sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
@@ -4001,7 +4155,6 @@ async def acall_llm(
                 sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
@@ -4068,7 +4221,6 @@ async def acall_llm(
                         effective_api_base=current_api_base,
                         routing_policy=routing_policy,
                     ),
-                    result_model_semantics=cfg.result_model_semantics,
                 )
                 _io_log.log_call(
                     model=current_model,
@@ -4143,7 +4295,6 @@ async def acall_llm(
                             sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
                             routing_policy=routing_policy,
                         ),
-                        result_model_semantics=cfg.result_model_semantics,
                     )
                     if hooks and hooks.after_call:
                         hooks.after_call(result)
@@ -4155,6 +4306,18 @@ async def acall_llm(
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
+                    if _maybe_retry_with_openrouter_key_rotation(
+                        error=e,
+                        attempt=attempt,
+                        max_retries=effective_retries,
+                        current_model=current_model,
+                        current_api_base=current_api_base,
+                        user_kwargs=kwargs,
+                        warning_sink=_warnings,
+                        on_retry=r.on_retry,
+                        caller="acall_llm",
+                    ):
+                        continue
                     if not _check_retryable(e, r) or attempt >= effective_retries:
                         raise
                     delay, retry_delay_source = _compute_retry_delay(
@@ -4244,7 +4407,6 @@ async def acall_llm_structured(
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     _log_t0 = time.monotonic()
     task = kwargs.pop("task", None)
@@ -4254,13 +4416,6 @@ async def acall_llm_structured(
         task, trace_id, max_budget, caller="acall_llm_structured",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="acall_llm_structured",
-        task=task,
-        trace_id=trace_id,
-    )
     plan = resolve_call(
         CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
@@ -4287,7 +4442,6 @@ async def acall_llm_structured(
                 effective_api_base=api_base,
                 routing_policy=routing_policy,
             ),
-            result_model_semantics=cfg.result_model_semantics,
         )
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
@@ -4319,7 +4473,6 @@ async def acall_llm_structured(
                         effective_api_base=current_api_base,
                         routing_policy=routing_policy,
                     ),
-                    result_model_semantics=cfg.result_model_semantics,
                 )
                 _io_log.log_call(
                     model=current_model,
@@ -4387,7 +4540,6 @@ async def acall_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -4399,6 +4551,18 @@ async def acall_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="acall_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -4483,7 +4647,6 @@ async def acall_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
                         if hooks and hooks.after_call:
                             hooks.after_call(llm_result)
@@ -4503,6 +4666,18 @@ async def acall_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="acall_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -4583,7 +4758,6 @@ async def acall_llm_structured(
                                 effective_api_base=current_api_base,
                                 routing_policy=routing_policy,
                             ),
-                            result_model_semantics=cfg.result_model_semantics,
                         )
 
                         if hooks and hooks.after_call:
@@ -4596,6 +4770,18 @@ async def acall_llm_structured(
                         last_error = e
                         if hooks and hooks.on_error:
                             hooks.on_error(e, attempt)
+                        if _maybe_retry_with_openrouter_key_rotation(
+                            error=e,
+                            attempt=attempt,
+                            max_retries=r.max_retries,
+                            current_model=current_model,
+                            current_api_base=current_api_base,
+                            user_kwargs=kwargs,
+                            warning_sink=_warnings,
+                            on_retry=r.on_retry,
+                            caller="acall_llm_structured",
+                        ):
+                            continue
                         if not _check_retryable(e, r) or attempt >= r.max_retries:
                             raise
                         delay, retry_delay_source = _compute_retry_delay(
@@ -5050,7 +5236,6 @@ def stream_llm(
         LLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
@@ -5059,13 +5244,6 @@ def stream_llm(
         task, trace_id, max_budget, caller="stream_llm",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="stream_llm",
-        task=task,
-        trace_id=trace_id,
-    )
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
         return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -5117,12 +5295,23 @@ def stream_llm(
                             effective_api_base=current_api_base,
                             routing_policy=routing_policy,
                         ),
-                        result_model_semantics=cfg.result_model_semantics,
                     )
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
+                    if _maybe_retry_with_openrouter_key_rotation(
+                        error=e,
+                        attempt=attempt,
+                        max_retries=r.max_retries,
+                        current_model=current_model,
+                        current_api_base=current_api_base,
+                        user_kwargs=kwargs,
+                        warning_sink=_warnings,
+                        on_retry=r.on_retry,
+                        caller="stream_llm",
+                    ):
+                        continue
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
                     delay, retry_delay_source = _compute_retry_delay(
@@ -5190,7 +5379,6 @@ async def astream_llm(
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
     _check_model_deprecation(model)
-    explicit_config = config is not None
     cfg = config or ClientConfig.from_env()
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
@@ -5199,13 +5387,6 @@ async def astream_llm(
         task, trace_id, max_budget, caller="astream_llm",
     )
     _check_budget(trace_id, max_budget)
-    _record_semantics_adoption(
-        cfg=cfg,
-        explicit_config=explicit_config,
-        caller="astream_llm",
-        task=task,
-        trace_id=trace_id,
-    )
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
         return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -5257,12 +5438,23 @@ async def astream_llm(
                             effective_api_base=current_api_base,
                             routing_policy=routing_policy,
                         ),
-                        result_model_semantics=cfg.result_model_semantics,
                     )
                 except Exception as e:
                     last_error = e
                     if hooks and hooks.on_error:
                         hooks.on_error(e, attempt)
+                    if _maybe_retry_with_openrouter_key_rotation(
+                        error=e,
+                        attempt=attempt,
+                        max_retries=r.max_retries,
+                        current_model=current_model,
+                        current_api_base=current_api_base,
+                        user_kwargs=kwargs,
+                        warning_sink=_warnings,
+                        on_retry=r.on_retry,
+                        caller="astream_llm",
+                    ):
+                        continue
                     if not _check_retryable(e, r) or attempt >= r.max_retries:
                         raise
                     delay, retry_delay_source = _compute_retry_delay(

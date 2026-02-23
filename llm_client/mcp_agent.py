@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import os
 import re
 import time
 from contextlib import AsyncExitStack
@@ -146,6 +147,9 @@ DEFAULT_FORCED_FINAL_MAX_ATTEMPTS: int = 1
 DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD: int = 2
 """Open forced-final circuit breaker after this many same-class failures in a row."""
 
+FOUNDATION_SCHEMA_STRICT_ENV: str = "FOUNDATION_SCHEMA_STRICT"
+"""When true, invalid foundation events raise instead of only warning."""
+
 ARG_SELF_CONTAINED_TOOL_NAMES: frozenset[str] = frozenset({
     "chunk_get_text",
     "chunk_get_text_by_chunk_ids",
@@ -167,6 +171,7 @@ EVENT_CODE_PROVIDER_EMPTY = "PROVIDER_EMPTY_CANDIDATES"
 EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN = EVENT_CODE_PROVIDER_EMPTY
 EVENT_CODE_PROVIDER_EMPTY_RESPONSE = EVENT_CODE_PROVIDER_EMPTY
 EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN = "FINALIZATION_CIRCUIT_BREAKER_OPEN"
+EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED = "FINALIZATION_TOOL_CALL_DISALLOWED"
 EVENT_CODE_RETRIEVAL_STAGNATION = "RETRIEVAL_STAGNATION"
 EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
 
@@ -548,6 +553,12 @@ def _provider_empty_classification(exc: Exception, error_text: str) -> tuple[boo
     if "provider_empty_candidates" in lower or "empty content from llm" in lower:
         return True, "provider_empty_candidates"
     return False, ""
+
+
+def _foundation_schema_strict_enabled() -> bool:
+    """Whether invalid foundation events should fail fast."""
+    raw = os.environ.get(FOUNDATION_SCHEMA_STRICT_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _normalize_model_chain(raw: Any) -> list[str]:
@@ -1490,6 +1501,7 @@ def _is_retrieval_no_hits_result(
 _PRIMARY_FAILURE_PRIORITY: tuple[str, ...] = (
     "provider",
     "composability",
+    "policy",
     "retrieval",
     "control_churn",
     "reasoning",
@@ -1523,18 +1535,9 @@ def _classify_failure_signals(
     classes: set[str] = set()
 
     for code in failure_event_codes:
-        if code.startswith("PROVIDER_"):
-            classes.add("provider")
-        elif code.startswith("FINALIZATION_"):
-            classes.add("provider")
-        elif code.startswith("TOOL_VALIDATION_REJECTED_") or code == EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS:
-            classes.add("composability")
-        elif code.startswith("RETRIEVAL_"):
-            classes.add("retrieval")
-        elif code.startswith("CONTROL_CHURN_"):
-            classes.add("control_churn")
-        elif code.startswith("REASONING_"):
-            classes.add("reasoning")
+        cls = _failure_class_for_event_code(code)
+        if cls is not None:
+            classes.add(cls)
 
     if retrieval_no_hits_count > 0:
         classes.add("retrieval")
@@ -1547,6 +1550,25 @@ def _classify_failure_signals(
     if not ordered:
         return "none", []
     return ordered[0], ordered[1:]
+
+
+def _failure_class_for_event_code(code: str) -> str | None:
+    """Map event code to one stable failure class for rollups/classification."""
+    if code == EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED:
+        return "policy"
+    if code.startswith("PROVIDER_"):
+        return "provider"
+    if code.startswith("FINALIZATION_"):
+        return "provider"
+    if code.startswith("TOOL_VALIDATION_REJECTED_") or code == EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS:
+        return "composability"
+    if code.startswith("RETRIEVAL_"):
+        return "retrieval"
+    if code.startswith("CONTROL_CHURN_"):
+        return "control_churn"
+    if code.startswith("REASONING_"):
+        return "reasoning"
+    return None
 
 
 def _is_responses_api_raw_response(raw_response: Any) -> bool:
@@ -1908,7 +1930,7 @@ async def _acall_with_mcp(
         content=final_content,
         usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
-        model=model,
+        model=resolved_model or model,
         requested_model=model,
         resolved_model=resolved_model,
         routing_trace={
@@ -2136,6 +2158,17 @@ async def _agent_loop(
     except Exception:
         forced_final_circuit_breaker_threshold = DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD
     forced_final_circuit_breaker_threshold = max(1, forced_final_circuit_breaker_threshold)
+    forced_final_breaker_effective = (
+        forced_final_circuit_breaker_threshold <= forced_final_max_attempts
+    )
+    if not forced_final_breaker_effective:
+        warning = (
+            "FINALIZATION_BREAKER_INERT: circuit breaker threshold "
+            f"({forced_final_circuit_breaker_threshold}) exceeds forced_final_max_attempts "
+            f"({forced_final_max_attempts}); breaker cannot trigger under current config."
+        )
+        agent_result.warnings.append(warning)
+        logger.warning(warning)
 
     finalization_fallback_models = _normalize_model_chain(
         kwargs.pop("finalization_fallback_models", None)
@@ -2160,9 +2193,11 @@ async def _agent_loop(
     finalization_fallback_used = False
     finalization_fallback_succeeded = False
     finalization_fallback_attempts: list[dict[str, Any]] = []
+    finalization_primary_model: str | None = None
 
     def _emit_foundation_event(payload: dict[str, Any]) -> None:
         nonlocal foundation_event_validation_errors, foundation_events_logged
+        strict_foundation_schema = _foundation_schema_strict_enabled()
         try:
             validated = validate_foundation_event(payload)
         except Exception as exc:
@@ -2170,6 +2205,8 @@ async def _agent_loop(
             warning = f"FOUNDATION_EVENT_INVALID: {type(exc).__name__}: {exc}"
             agent_result.warnings.append(warning)
             logger.warning(warning)
+            if strict_foundation_schema:
+                raise RuntimeError(warning) from exc
             return
 
         foundation_events.append(validated)
@@ -2372,7 +2409,12 @@ async def _agent_loop(
                     "operation": {"name": "_inner_acall_llm", "version": None},
                     "inputs": {
                         "artifact_ids": sorted(available_artifacts),
-                        "params": {"turn": turn + 1, "error": error_text},
+                        "params": {
+                            "turn": turn + 1,
+                            "error": error_text,
+                            "provider_classification": provider_classification or "",
+                            "provider_subevent": provider_subevent if is_provider_empty else "",
+                        },
                         "bindings": dict(available_bindings),
                     },
                     "outputs": {"artifact_ids": [], "payload_hashes": []},
@@ -2381,8 +2423,6 @@ async def _agent_loop(
                         "category": "provider" if is_provider_empty else "execution",
                         "phase": "execution",
                         "retryable": bool(is_provider_empty),
-                        "provider_classification": provider_classification or None,
-                        "provider_subevent": provider_subevent if is_provider_empty else None,
                         "tool_name": "_inner_acall_llm",
                         "user_message": error_text,
                         "debug_ref": None,
@@ -2498,7 +2538,12 @@ async def _agent_loop(
                         "operation": {"name": "_inner_acall_llm", "version": None},
                         "inputs": {
                             "artifact_ids": sorted(available_artifacts),
-                            "params": {"turn": turn + 1, "finish_reason": result.finish_reason},
+                            "params": {
+                                "turn": turn + 1,
+                                "finish_reason": result.finish_reason,
+                                "provider_classification": "provider_empty_candidates",
+                                "provider_subevent": "first_turn",
+                            },
                             "bindings": dict(available_bindings),
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
@@ -2507,8 +2552,6 @@ async def _agent_loop(
                             "category": "provider",
                             "phase": "execution",
                             "retryable": True,
-                            "provider_classification": "provider_empty_candidates",
-                            "provider_subevent": "first_turn",
                             "tool_name": "_inner_acall_llm",
                             "user_message": "Provider returned empty content with no tool calls on first turn.",
                             "debug_ref": None,
@@ -2533,7 +2576,12 @@ async def _agent_loop(
                         "operation": {"name": "_inner_acall_llm", "version": None},
                         "inputs": {
                             "artifact_ids": sorted(available_artifacts),
-                            "params": {"turn": turn + 1, "finish_reason": result.finish_reason},
+                            "params": {
+                                "turn": turn + 1,
+                                "finish_reason": result.finish_reason,
+                                "provider_classification": "provider_empty_candidates",
+                                "provider_subevent": "turn",
+                            },
                             "bindings": dict(available_bindings),
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
@@ -2542,8 +2590,6 @@ async def _agent_loop(
                             "category": "provider",
                             "phase": "execution",
                             "retryable": True,
-                            "provider_classification": "provider_empty_candidates",
-                            "provider_subevent": "turn",
                             "tool_name": "_inner_acall_llm",
                             "user_message": "Provider returned empty content with no tool calls.",
                             "debug_ref": None,
@@ -3695,6 +3741,7 @@ async def _agent_loop(
         # - No tools are passed, and per-turn fallback chains are disabled.
         forced_kwargs = dict(kwargs)
         forced_kwargs.pop("fallback_models", None)
+        finalization_primary_model = effective_model
         base_model_chain: list[str] = [effective_model]
         for fb_model in finalization_fallback_models:
             if fb_model.lower() == effective_model.lower():
@@ -3831,6 +3878,8 @@ async def _agent_loop(
                                 "attempt": attempt_idx + 1,
                                 "model": final_model,
                                 "error": error_text,
+                                "provider_classification": provider_classification or "",
+                                "provider_subevent": "finalization" if is_provider_empty else "",
                             },
                             "bindings": dict(available_bindings),
                         },
@@ -3840,8 +3889,6 @@ async def _agent_loop(
                             "category": "provider" if is_provider_empty else "execution",
                             "phase": "execution",
                             "retryable": bool(is_provider_empty),
-                            "provider_classification": provider_classification or None,
-                            "provider_subevent": "finalization",
                             "tool_name": "_inner_acall_llm",
                             "user_message": error_text,
                             "debug_ref": None,
@@ -3865,6 +3912,52 @@ async def _agent_loop(
             if candidate_result.warnings:
                 agent_result.warnings.extend(candidate_result.warnings)
 
+            if candidate_result.tool_calls:
+                disallowed_msg = (
+                    "Forced-final returned tool calls while tools are disallowed."
+                )
+                _emit_foundation_event(
+                    {
+                        "event_id": new_event_id(),
+                        "event_type": "ToolFailed",
+                        "timestamp": now_iso(),
+                        "run_id": foundation_run_id,
+                        "session_id": foundation_session_id,
+                        "actor_id": foundation_actor_id,
+                        "operation": {"name": "_inner_acall_llm", "version": None},
+                        "inputs": {
+                            "artifact_ids": sorted(available_artifacts),
+                            "params": {
+                                "turn": agent_result.turns + 1,
+                                "forced_final": True,
+                                "attempt": attempt_idx + 1,
+                                "model": final_model,
+                                "tool_calls_count": len(candidate_result.tool_calls),
+                            },
+                            "bindings": dict(available_bindings),
+                        },
+                        "outputs": {"artifact_ids": [], "payload_hashes": []},
+                        "failure": {
+                            "error_code": EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
+                            "category": "policy",
+                            "phase": "post_validation",
+                            "retryable": False,
+                            "tool_name": "_inner_acall_llm",
+                            "user_message": disallowed_msg,
+                            "debug_ref": None,
+                        },
+                    }
+                )
+                _record_forced_final_error(
+                    attempt_idx=attempt_idx,
+                    final_model=final_model,
+                    event_code=EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
+                    error_text=disallowed_msg,
+                    error_class="finalization_tool_call_disallowed",
+                    is_provider_empty=False,
+                )
+                continue
+
             if not candidate_result.content:
                 empty_msg = "Provider returned empty content on forced-final call."
                 _emit_foundation_event(
@@ -3883,6 +3976,8 @@ async def _agent_loop(
                                 "forced_final": True,
                                 "attempt": attempt_idx + 1,
                                 "model": final_model,
+                                "provider_classification": "provider_empty_candidates",
+                                "provider_subevent": "finalization",
                             },
                             "bindings": dict(available_bindings),
                         },
@@ -3892,8 +3987,6 @@ async def _agent_loop(
                             "category": "provider",
                             "phase": "execution",
                             "retryable": True,
-                            "provider_classification": "provider_empty_candidates",
-                            "provider_subevent": "finalization",
                             "tool_name": "_inner_acall_llm",
                             "user_message": empty_msg,
                             "debug_ref": None,
@@ -3967,6 +4060,62 @@ async def _agent_loop(
     failure_event_code_counts: dict[str, int] = {}
     for code in failure_event_codes:
         failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
+    failure_event_class_counts: dict[str, int] = {}
+    provider_failure_event_code_counts: dict[str, int] = {}
+    for code, count in failure_event_code_counts.items():
+        cls = _failure_class_for_event_code(code)
+        if cls is None:
+            continue
+        failure_event_class_counts[cls] = failure_event_class_counts.get(cls, 0) + count
+        if cls == "provider":
+            provider_failure_event_code_counts[code] = count
+    provider_failure_event_total = sum(provider_failure_event_code_counts.values())
+    provider_caused_incompletion = (not run_completed) and primary_failure_class == "provider"
+
+    finalization_attempt_counts_by_model: dict[str, int] = {}
+    finalization_failure_counts_by_model: dict[str, int] = {}
+    finalization_success_counts_by_model: dict[str, int] = {}
+    finalization_failure_code_counts: dict[str, int] = {}
+    provider_empty_attempt_counts_by_model: dict[str, int] = {}
+    finalization_fallback_attempt_count = 0
+    for attempt in finalization_fallback_attempts:
+        model_name = str(attempt.get("model", "")).strip() or "<unknown>"
+        status = str(attempt.get("status", "")).strip().lower()
+        error_code = attempt.get("error_code")
+        finalization_attempt_counts_by_model[model_name] = (
+            finalization_attempt_counts_by_model.get(model_name, 0) + 1
+        )
+        if (
+            isinstance(finalization_primary_model, str)
+            and finalization_primary_model.strip()
+            and model_name.lower() != finalization_primary_model.lower()
+        ):
+            finalization_fallback_attempt_count += 1
+        if status == "success":
+            finalization_success_counts_by_model[model_name] = (
+                finalization_success_counts_by_model.get(model_name, 0) + 1
+            )
+            continue
+        finalization_failure_counts_by_model[model_name] = (
+            finalization_failure_counts_by_model.get(model_name, 0) + 1
+        )
+        if isinstance(error_code, str) and error_code:
+            finalization_failure_code_counts[error_code] = (
+                finalization_failure_code_counts.get(error_code, 0) + 1
+            )
+            if error_code == EVENT_CODE_PROVIDER_EMPTY:
+                provider_empty_attempt_counts_by_model[model_name] = (
+                    provider_empty_attempt_counts_by_model.get(model_name, 0) + 1
+                )
+    finalization_fallback_usage_rate = (
+        (finalization_fallback_attempt_count / forced_final_attempts)
+        if forced_final_attempts > 0 else 0.0
+    )
+    finalization_breaker_open_rate = 1.0 if forced_final_circuit_breaker_opened else 0.0
+    finalization_breaker_open_by_model: dict[str, int] = {}
+    if forced_final_circuit_breaker_opened and finalization_fallback_attempts:
+        breaker_model = str(finalization_fallback_attempts[-1].get("model", "")).strip() or "<unknown>"
+        finalization_breaker_open_by_model[breaker_model] = 1
 
     hard_bindings_spec = _hard_bindings_spec(available_bindings)
     full_bindings_spec = _full_bindings_spec(available_bindings)
@@ -3988,11 +4137,22 @@ async def _agent_loop(
     agent_result.metadata["forced_final_attempts"] = forced_final_attempts
     agent_result.metadata["forced_final_max_attempts"] = forced_final_max_attempts
     agent_result.metadata["forced_final_circuit_breaker_threshold"] = forced_final_circuit_breaker_threshold
+    agent_result.metadata["forced_final_breaker_effective"] = forced_final_breaker_effective
     agent_result.metadata["forced_final_circuit_breaker_opened"] = forced_final_circuit_breaker_opened
+    agent_result.metadata["finalization_primary_model"] = finalization_primary_model
     agent_result.metadata["finalization_fallback_models"] = list(finalization_fallback_models)
     agent_result.metadata["finalization_fallback_used"] = finalization_fallback_used
+    agent_result.metadata["finalization_fallback_attempt_count"] = finalization_fallback_attempt_count
+    agent_result.metadata["finalization_fallback_usage_rate"] = finalization_fallback_usage_rate
     agent_result.metadata["finalization_fallback_succeeded"] = finalization_fallback_succeeded
     agent_result.metadata["finalization_fallback_attempts"] = list(finalization_fallback_attempts)
+    agent_result.metadata["finalization_attempt_counts_by_model"] = finalization_attempt_counts_by_model
+    agent_result.metadata["finalization_failure_counts_by_model"] = finalization_failure_counts_by_model
+    agent_result.metadata["finalization_success_counts_by_model"] = finalization_success_counts_by_model
+    agent_result.metadata["finalization_failure_code_counts"] = finalization_failure_code_counts
+    agent_result.metadata["provider_empty_attempt_counts_by_model"] = provider_empty_attempt_counts_by_model
+    agent_result.metadata["finalization_breaker_open_rate"] = finalization_breaker_open_rate
+    agent_result.metadata["finalization_breaker_open_by_model"] = finalization_breaker_open_by_model
     agent_result.metadata["finalization_events"] = list(finalization_events)
     agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
     agent_result.metadata["budgeted_tool_calls_used"] = _count_budgeted_records(agent_result.tool_calls)
@@ -4054,6 +4214,10 @@ async def _agent_loop(
     agent_result.metadata["retrieval_stagnation_turn"] = retrieval_stagnation_turn
     agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
     agent_result.metadata["failure_event_code_counts"] = failure_event_code_counts
+    agent_result.metadata["failure_event_class_counts"] = failure_event_class_counts
+    agent_result.metadata["provider_failure_event_code_counts"] = provider_failure_event_code_counts
+    agent_result.metadata["provider_failure_event_total"] = provider_failure_event_total
+    agent_result.metadata["provider_caused_incompletion"] = provider_caused_incompletion
     agent_result.metadata["primary_failure_class"] = primary_failure_class
     agent_result.metadata["secondary_failure_classes"] = secondary_failure_classes
     agent_result.metadata["first_terminal_failure_event_code"] = first_terminal_failure_event_code
@@ -4188,7 +4352,7 @@ async def _acall_with_tools(
         content=final_content,
         usage=usage,
         cost=agent_result.metadata.get("total_cost", 0.0),
-        model=model,
+        model=resolved_model or model,
         requested_model=model,
         resolved_model=resolved_model,
         routing_trace={

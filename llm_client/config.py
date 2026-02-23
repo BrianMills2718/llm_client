@@ -12,10 +12,8 @@ logger = logging.getLogger(__name__)
 OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
 OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
-RESULT_MODEL_SEMANTICS_ENV = "LLM_CLIENT_RESULT_MODEL_SEMANTICS"
 
 RoutingPolicy = Literal["openrouter", "direct"]
-ResultModelSemantics = Literal["legacy", "requested", "resolved"]
 
 
 @dataclass(frozen=True)
@@ -24,7 +22,6 @@ class ClientConfig:
 
     routing_policy: RoutingPolicy = "openrouter"
     openrouter_api_base: str = OPENROUTER_DEFAULT_API_BASE
-    result_model_semantics: ResultModelSemantics = "legacy"
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -42,19 +39,7 @@ class ClientConfig:
             )
             routing_policy = "openrouter"
 
-        semantics_raw = os.environ.get(RESULT_MODEL_SEMANTICS_ENV, "legacy").strip().lower()
-        if semantics_raw in {"legacy", "requested", "resolved"}:
-            result_model_semantics: ResultModelSemantics = semantics_raw  # type: ignore[assignment]
-        else:
-            logger.warning(
-                "Invalid %s=%r; expected legacy/requested/resolved. Defaulting to legacy.",
-                RESULT_MODEL_SEMANTICS_ENV,
-                semantics_raw,
-            )
-            result_model_semantics = "legacy"
-
         return cls(
             routing_policy=routing_policy,
             openrouter_api_base=os.environ.get(OPENROUTER_API_BASE_ENV, OPENROUTER_DEFAULT_API_BASE),
-            result_model_semantics=result_model_semantics,
         )

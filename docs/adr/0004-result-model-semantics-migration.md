@@ -1,69 +1,44 @@
-# ADR 0004: `result.model` Semantics Migration Window
+# ADR 0004: Fixed `result.model` Semantics
 
 Status: Accepted  
-Date: 2026-02-22
+Date: 2026-02-23
 
 ## Context
 
-`LLMCallResult.model` is legacy and historically path-dependent. Week-1
-introduced additive identity fields (`requested_model`, `resolved_model`,
-`routing_trace`) and characterization tests. We now need a controlled migration
-path for consumers that want deterministic model semantics.
+`LLMCallResult.model` had compatibility modes and migration toggles. This made
+debugging harder and forced callers to know mode-specific behavior.
 
 ## Decision
 
-1. Keep default semantics as `legacy` for compatibility.
-2. Add typed config control:
-   - `ClientConfig.result_model_semantics="legacy"` (default)
-   - `ClientConfig.result_model_semantics="requested"`
-   - `ClientConfig.result_model_semantics="resolved"`
-3. Add env compatibility flag:
-   - `LLM_CLIENT_RESULT_MODEL_SEMANTICS=legacy|requested|resolved`
-4. Keep additive alias `execution_model` on `LLMCallResult` as a stable
-   operational identity alias for `resolved_model`.
-
-## Rationale
-
-This allows explicit migration for clients without a global breaking flip. The
-public contract can evolve behind explicit opt-in while preserving existing
-behavior for current callers.
+1. Remove semantics-mode switching.
+2. Remove semantics telemetry and related CLI reporting commands.
+3. Use one identity contract everywhere:
+   - `result.model`: terminal executed model.
+   - `result.requested_model`: caller input model.
+   - `result.resolved_model` / `result.execution_model`: terminal executed model.
+   - `result.routing_trace`: routing/fallback explanation.
 
 ## Consequences
 
 Positive:
-1. Explicit per-call semantic control via typed config.
-2. Backward compatibility by default.
-3. Cleaner long-term path to deprecate ambiguous `model`.
+1. No ambiguity in `result.model`.
+2. No mode/env drift between environments.
+3. Simpler client API and docs.
 
 Negative:
-1. Temporary dual-surface complexity (`model` plus identity fields).
-2. Callers must opt in to deterministic `model` semantics.
+1. Breaking change for clients that relied on legacy/model-mode behavior.
+2. Removed mode-adoption telemetry and semantics report commands.
 
-## Migration Plan
+## Rollout
 
-1. `0.6.1` (2026-02-22):
-   - Ship typed semantics controls and additive identity fields.
-   - Keep default `legacy`.
-2. `0.7.x` (target window: March-April 2026):
-   - Keep default `legacy`.
-   - Gather adoption telemetry and issue migration guidance for explicit
-     semantics selection.
-   - Collect daily rollups via
-     `python -m llm_client semantics-snapshot` to make the `0.8.0` default
-     decision evidence-based.
-   - Telemetry source:
-     - foundation event `ConfigChanged`
-     - operation `result_model_semantics_adoption`
-     - params: caller, config_source, result_model_semantics, observed_count.
-3. `0.8.0` (target window: Q2 2026):
-   - Flip default to `requested`.
-   - Retain explicit `legacy` compatibility mode for one full minor cycle.
-4. `1.0.0` (target window: Q3 2026):
-   - Remove `legacy` default behavior.
-   - Keep `requested` and `resolved` as supported explicit semantics.
+1. Version cut to `0.7.0`.
+2. Keep additive identity fields and routing trace as the canonical debugging
+   surface.
 
 ## Testing Contract
 
-1. Characterization tests for legacy behavior remain.
-2. Add explicit tests for `requested` and `resolved` semantics via
-   `ClientConfig`.
+1. Identity tests assert `result.model == result.resolved_model` when resolved
+   identity is known.
+2. MCP/agent tests assert fallback cases still preserve:
+   - `requested_model` as caller input.
+   - `routing_trace` attempted model chain.

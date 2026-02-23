@@ -13,7 +13,6 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONUNBUFFERED: "1"
       LLM_CLIENT_LOG_ENABLED: "0"
-      LLM_CLIENT_SEMANTICS_TELEMETRY: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,9 +27,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Smoke tests with logging/telemetry disabled
+      - name: Smoke tests with logging disabled
         run: |
           pytest -q \
             tests/test_io_log.py::TestLogCall::test_disabled_skips_logging \
-            tests/test_model_identity_contract.py::TestModelIdentityContract::test_semantics_telemetry_disabled_via_env \
-            tests/test_main_semantics.py::test_cmd_semantics_snapshot_appends_jsonl
+            tests/test_model_identity_contract.py::TestModelIdentityContract::test_sync_identity_fields_with_explicit_routing_off
+
+      - name: Foundation schema strict lane
+        env:
+          FOUNDATION_SCHEMA_STRICT: "1"
+        run: |
+          pytest -q \
+            tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_llm_exception_preserves_tool_history \
+            tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_tool_calls_are_disallowed_without_execution
