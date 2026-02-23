@@ -920,6 +920,14 @@ def _retry_delay_hint(error: Exception) -> tuple[float | None, str]:
     return None, "none"
 
 
+def _error_text(error: Exception) -> str:
+    """Return a stable non-empty error string for classification/logging."""
+    text = str(error).strip()
+    if text:
+        return text
+    return type(error).__name__
+
+
 def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
     """Check if an error is transient and worth retrying.
 
@@ -928,6 +936,10 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     """
     if isinstance(error, LLMEmptyResponseError):
         return bool(error.retryable)
+
+    # Timeout exceptions are transient even when message is empty.
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        return True
 
     # RuntimeError is used for non-retryable conditions (e.g., truncation)
     if isinstance(error, RuntimeError):
@@ -983,7 +995,7 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
         pass  # litellm not available, fall through to string matching
 
     # -- Fallback: string pattern matching for generic exceptions --------------
-    error_str = str(error).lower()
+    error_str = _error_text(error).lower()
 
     # Check non-retryable patterns first
     if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):

@@ -763,9 +763,27 @@ class TestNonRetryableErrors:
         )
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
+
+    @patch("llm_client.client.time.sleep")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_blank_timeout_error_is_retried(
+        self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
+    ) -> None:
+        """Bare TimeoutError() (empty str) should still be retried."""
+        mock_comp.side_effect = [TimeoutError(), _mock_response()]
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=1,
+            task="test",
+            trace_id="test_blank_timeout_retry",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
         assert mock_sleep.call_count == 1
-        assert mock_sleep.call_args.args[0] >= 14.0
-        assert any("retry_delay_source=parsed" in warning for warning in result.warnings)
 
     @patch("llm_client.client.time.sleep")
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)

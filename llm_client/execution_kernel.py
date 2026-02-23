@@ -10,6 +10,14 @@ from typing import Any, Awaitable, Callable, TypeVar
 T = TypeVar("T")
 
 
+def _error_text(exc: Exception) -> str:
+    """Return non-empty text for logging warnings/diagnostics."""
+    text = str(exc).strip()
+    if text:
+        return text
+    return type(exc).__name__
+
+
 def run_sync_with_retry(
     *,
     caller: str,
@@ -41,7 +49,7 @@ def run_sync_with_retry(
                 on_retry(attempt, exc, delay)
             warning_sink.append(
                 f"RETRY {attempt + 1}/{max_retries + 1}: "
-                f"{model} ({type(exc).__name__}: {exc}) "
+                f"{model} ({type(exc).__name__}: {_error_text(exc)}) "
                 f"[retry_delay_source={retry_delay_source}]"
             )
             logger.warning(
@@ -51,7 +59,7 @@ def run_sync_with_retry(
                 max_retries + 1,
                 delay,
                 retry_delay_source,
-                exc,
+                _error_text(exc),
             )
             time.sleep(delay)
 
@@ -89,7 +97,7 @@ async def run_async_with_retry(
                 on_retry(attempt, exc, delay)
             warning_sink.append(
                 f"RETRY {attempt + 1}/{max_retries + 1}: "
-                f"{model} ({type(exc).__name__}: {exc}) "
+                f"{model} ({type(exc).__name__}: {_error_text(exc)}) "
                 f"[retry_delay_source={retry_delay_source}]"
             )
             logger.warning(
@@ -99,7 +107,7 @@ async def run_async_with_retry(
                 max_retries + 1,
                 delay,
                 retry_delay_source,
-                exc,
+                _error_text(exc),
             )
             await asyncio.sleep(delay)
 
@@ -128,10 +136,15 @@ def run_sync_with_fallback(
                 if warning_sink is not None:
                     warning_sink.append(
                         f"FALLBACK: {current_model} -> {next_model} "
-                        f"({type(exc).__name__}: {exc})"
+                        f"({type(exc).__name__}: {_error_text(exc)})"
                     )
                 if logger is not None:
-                    logger.warning("Falling back from %s to %s: %s", current_model, next_model, exc)
+                    logger.warning(
+                        "Falling back from %s to %s: %s",
+                        current_model,
+                        next_model,
+                        _error_text(exc),
+                    )
                 continue
             raise
     if last_error is not None:
@@ -161,10 +174,15 @@ async def run_async_with_fallback(
                 if warning_sink is not None:
                     warning_sink.append(
                         f"FALLBACK: {current_model} -> {next_model} "
-                        f"({type(exc).__name__}: {exc})"
+                        f"({type(exc).__name__}: {_error_text(exc)})"
                     )
                 if logger is not None:
-                    logger.warning("Falling back from %s to %s: %s", current_model, next_model, exc)
+                    logger.warning(
+                        "Falling back from %s to %s: %s",
+                        current_model,
+                        next_model,
+                        _error_text(exc),
+                    )
                 continue
             raise
     if last_error is not None:

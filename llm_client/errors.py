@@ -105,6 +105,19 @@ _QUOTA_PATTERNS = [
 ]
 
 
+def _error_message(error: Exception) -> str:
+    """Return a non-empty error message for logs/wrapping.
+
+    Some exceptions (notably TimeoutError/asyncio.TimeoutError) stringify to an
+    empty string. In those cases we surface the exception type so downstream
+    error plumbing never records blank errors.
+    """
+    message = str(error).strip()
+    if message:
+        return message
+    return type(error).__name__
+
+
 def _litellm_error_types(module: Any, names: tuple[str, ...]) -> tuple[type[BaseException], ...]:
     """Resolve optional litellm exception classes without static attribute coupling."""
     out: list[type[BaseException]] = []
@@ -161,7 +174,7 @@ def classify_error(error: Exception) -> type[LLMError]:
         pass
 
     # Fallback: string pattern matching
-    error_str = str(error).lower()
+    error_str = _error_message(error).lower()
 
     if any(p in error_str for p in _QUOTA_PATTERNS):
         return LLMQuotaExhaustedError
@@ -189,4 +202,4 @@ def wrap_error(error: Exception) -> LLMError:
     if isinstance(error, LLMError):
         return error
     cls = classify_error(error)
-    return cls(str(error), original=error)
+    return cls(_error_message(error), original=error)

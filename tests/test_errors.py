@@ -174,6 +174,12 @@ class TestWrapError:
         wrapped = wrap_error(original)
         assert isinstance(wrapped, LLMRateLimitError)
 
+    def test_wrap_blank_timeout_message(self):
+        original = TimeoutError()
+        wrapped = wrap_error(original)
+        assert isinstance(wrapped, LLMTransientError)
+        assert str(wrapped) == "TimeoutError"
+
 
 # ---------------------------------------------------------------------------
 # Error hierarchy

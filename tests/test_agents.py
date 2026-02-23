@@ -10,6 +10,7 @@ Tests cover:
 - Codex SDK: routing, hooks, model suffix, structured, streaming, batch, fallback
 """
 
+import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ from llm_client import (
     stream_llm_with_tools,
 )
 from llm_client.agents import _build_agent_options, _messages_to_agent_prompt, _parse_agent_model
-from llm_client.errors import LLMError
+from llm_client.errors import LLMError, LLMTransientError
 from llm_client.client import _is_agent_model
 
 
@@ -843,6 +844,14 @@ class _FakeThread:
         return _FakeStreamedTurn(events=_events())
 
 
+class _SlowThread(_FakeThread):
+    """Fake thread that never returns promptly (for timeout tests)."""
+
+    async def run(self, input_: str, turn_options: object = None) -> _FakeTurn:
+        await asyncio.sleep(3600)
+        return self._turn
+
+
 class _FakeCodex:
     """Fake Codex client."""
 
@@ -959,6 +968,30 @@ class TestCodexCall:
     def test_model_suffix(self) -> None:
         result = call_llm("codex/gpt-5", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_codex_model_suffix", max_budget=0)
         assert result.model == "codex/gpt-5"
+
+    def test_codex_timeout_is_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Codex timeout errors should be non-empty and classified transient."""
+        fake_mod, codex_submod = _make_fake_codex_module()
+        slow_codex_cls = type("SlowCodex", (), {
+            "__init__": lambda self, options=None: None,
+            "start_thread": lambda self, options=None: _SlowThread(),
+        })
+        fake_mod.Codex = slow_codex_cls  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "openai_codex_sdk", fake_mod)
+        monkeypatch.setitem(sys.modules, "openai_codex_sdk.codex", codex_submod)
+
+        with pytest.raises(LLMTransientError) as excinfo:
+            call_llm(
+                "codex",
+                [{"role": "user", "content": "Hi"}],
+                timeout=1,
+                task="test",
+                trace_id="test_codex_timeout_explicit",
+                max_budget=0,
+            )
+        msg = str(excinfo.value)
+        assert "CODEX_TIMEOUT[codex_call]" in msg
+        assert "after 1s" in msg
 
 
 # ---------------------------------------------------------------------------

@@ -966,6 +966,27 @@ def _result_from_codex(
     )
 
 
+def _codex_timeout_message(
+    *,
+    model: str,
+    timeout_s: int,
+    working_directory: Any,
+    sandbox_mode: Any,
+    approval_policy: Any,
+    structured: bool = False,
+) -> str:
+    """Build a stable timeout message for Codex SDK calls."""
+    call_kind = "codex_structured_call" if structured else "codex_call"
+    wd = str(working_directory or "<unset>")
+    sandbox = str(sandbox_mode or "<unset>")
+    approval = str(approval_policy or "<unset>")
+    return (
+        f"CODEX_TIMEOUT[{call_kind}] after {int(timeout_s)}s "
+        f"(model={model}, working_directory={wd}, sandbox_mode={sandbox}, "
+        f"approval_policy={approval})"
+    )
+
+
 async def _acall_codex(
     model: str,
     messages: list[dict[str, Any]],
@@ -988,7 +1009,26 @@ async def _acall_codex(
             return await thread.run(prompt, turn_opts)
 
         if timeout > 0:
-            turn = await asyncio.wait_for(_run(), timeout=float(timeout))
+            turn_task = asyncio.create_task(_run())
+            try:
+                turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+            except asyncio.TimeoutError as exc:
+                turn_task.cancel()
+                # Bound cancellation wait so timeout plumbing cannot stall forever.
+                try:
+                    await asyncio.wait_for(turn_task, timeout=2.0)
+                except BaseException:
+                    pass
+                raise TimeoutError(
+                    _codex_timeout_message(
+                        model=model,
+                        timeout_s=timeout,
+                        working_directory=getattr(thread_opts, "working_directory", None),
+                        sandbox_mode=getattr(thread_opts, "sandbox_mode", None),
+                        approval_policy=getattr(thread_opts, "approval_policy", None),
+                        structured=False,
+                    )
+                ) from exc
         else:
             turn = await _run()
 
@@ -1054,7 +1094,25 @@ async def _acall_codex_structured(
             return await thread.run(prompt, turn_opts)
 
         if timeout > 0:
-            turn = await asyncio.wait_for(_run(), timeout=float(timeout))
+            turn_task = asyncio.create_task(_run())
+            try:
+                turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+            except asyncio.TimeoutError as exc:
+                turn_task.cancel()
+                try:
+                    await asyncio.wait_for(turn_task, timeout=2.0)
+                except BaseException:
+                    pass
+                raise TimeoutError(
+                    _codex_timeout_message(
+                        model=model,
+                        timeout_s=timeout,
+                        working_directory=getattr(thread_opts, "working_directory", None),
+                        sandbox_mode=getattr(thread_opts, "sandbox_mode", None),
+                        approval_policy=getattr(thread_opts, "approval_policy", None),
+                        structured=True,
+                    )
+                ) from exc
         else:
             turn = await _run()
 
