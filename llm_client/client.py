@@ -59,7 +59,7 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Literal, NoReturn, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Callable, Iterable, Literal, NoReturn, Protocol, TypeVar, cast, runtime_checkable
 
 import litellm
 from pydantic import BaseModel
@@ -2164,6 +2164,113 @@ def _resolve_call_plan(
     return plan
 
 
+def _build_inner_named_call_kwargs(
+    *,
+    num_retries: int,
+    base_delay: float,
+    max_delay: float,
+    retry_on: list[str] | None,
+    on_retry: Callable[[int, Exception, float], None] | None,
+    retry: RetryPolicy | None,
+    fallback_models: list[str] | None,
+    on_fallback: Callable[[str, Exception, str], None] | None,
+    reasoning_effort: str | None,
+    api_base: str | None,
+    hooks: Hooks | None,
+    execution_mode: ExecutionMode,
+    config: ClientConfig,
+) -> dict[str, Any]:
+    """Build kwargs propagated into inner per-turn call paths."""
+    inner_named: dict[str, Any] = {}
+    if num_retries != 2:
+        inner_named["num_retries"] = num_retries
+    if base_delay != 1.0:
+        inner_named["base_delay"] = base_delay
+    if max_delay != 30.0:
+        inner_named["max_delay"] = max_delay
+    if retry_on is not None:
+        inner_named["retry_on"] = retry_on
+    if on_retry is not None:
+        inner_named["on_retry"] = on_retry
+    if retry is not None:
+        inner_named["retry"] = retry
+    if fallback_models is not None:
+        inner_named["fallback_models"] = fallback_models
+    if on_fallback is not None:
+        inner_named["on_fallback"] = on_fallback
+    if reasoning_effort is not None:
+        inner_named["reasoning_effort"] = reasoning_effort
+    if api_base is not None:
+        inner_named["api_base"] = api_base
+    if hooks is not None:
+        inner_named["hooks"] = hooks
+    if execution_mode != "text":
+        inner_named["execution_mode"] = execution_mode
+    inner_named["config"] = config
+    return inner_named
+
+
+def _split_agent_loop_kwargs(
+    *,
+    kwargs: dict[str, Any],
+    loop_kwargs: Iterable[str],
+    task: str | None,
+    trace_id: str | None,
+    max_budget: float | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split kwargs into loop-specific and remaining values with task metadata."""
+    selected: dict[str, Any] = {}
+    remaining = dict(kwargs)
+    remaining["task"] = task
+    remaining["trace_id"] = trace_id
+    remaining["max_budget"] = max_budget
+    for key in loop_kwargs:
+        if key in remaining:
+            selected[key] = remaining.pop(key)
+    return selected, remaining
+
+
+def _finalize_agent_loop_result(
+    *,
+    result: LLMCallResult,
+    requested_model: str,
+    primary_model: str,
+    requested_api_base: str | None,
+    config: ClientConfig,
+    routing_policy: str,
+    caller: str,
+    messages: list[dict[str, Any]],
+    log_started_at: float,
+    task: str | None,
+    trace_id: str | None,
+) -> LLMCallResult:
+    """Attach identity/routing trace and emit final call log for loop results."""
+    finalized = _annotate_result_identity(
+        result,
+        requested_model=requested_model,
+        resolved_model=result.resolved_model,
+        routing_trace=_build_routing_trace(
+            requested_model=requested_model,
+            attempted_models=[primary_model],
+            selected_model=result.resolved_model,
+            requested_api_base=requested_api_base,
+            effective_api_base=_resolve_api_base_for_model(primary_model, requested_api_base, config),
+            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+            routing_policy=routing_policy,
+        ),
+    )
+    _io_log.log_call(
+        model=primary_model,
+        messages=messages,
+        result=finalized,
+        latency_s=time.monotonic() - log_started_at,
+        caller=caller,
+        task=task,
+        trace_id=trace_id,
+    )
+    return finalized
+
+
 def _truthy_env(value: Any) -> bool:
     """Parse common truthy env-style values."""
     if isinstance(value, bool):
@@ -3220,34 +3327,21 @@ def call_llm(
     )
     _check_budget(trace_id, max_budget)
 
-    # Named params that must flow through to per-turn _inner_acall_llm calls
-    # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
-    _inner_named: dict[str, Any] = {}
-    if num_retries != 2:
-        _inner_named["num_retries"] = num_retries
-    if base_delay != 1.0:
-        _inner_named["base_delay"] = base_delay
-    if max_delay != 30.0:
-        _inner_named["max_delay"] = max_delay
-    if retry_on is not None:
-        _inner_named["retry_on"] = retry_on
-    if on_retry is not None:
-        _inner_named["on_retry"] = on_retry
-    if retry is not None:
-        _inner_named["retry"] = retry
-    if fallback_models is not None:
-        _inner_named["fallback_models"] = fallback_models
-    if on_fallback is not None:
-        _inner_named["on_fallback"] = on_fallback
-    if reasoning_effort is not None:
-        _inner_named["reasoning_effort"] = reasoning_effort
-    if api_base is not None:
-        _inner_named["api_base"] = api_base
-    if hooks is not None:
-        _inner_named["hooks"] = hooks
-    if execution_mode != "text":
-        _inner_named["execution_mode"] = execution_mode
-    _inner_named["config"] = cfg
+    _inner_named = _build_inner_named_call_kwargs(
+        num_retries=num_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        hooks=hooks,
+        execution_mode=execution_mode,
+        config=cfg,
+    )
 
     plan = _resolve_call_plan(
         model=model,
@@ -3274,32 +3368,29 @@ def call_llm(
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
         from llm_client.agents import _run_sync
-        mcp_kw: dict[str, Any] = {}
-        remaining = dict(kwargs)
-        remaining["task"] = task
-        remaining["trace_id"] = trace_id
-        remaining["max_budget"] = max_budget
-        for k in MCP_LOOP_KWARGS:
-            if k in remaining:
-                mcp_kw[k] = remaining.pop(k)
+        mcp_kw, remaining = _split_agent_loop_kwargs(
+            kwargs=kwargs,
+            loop_kwargs=MCP_LOOP_KWARGS,
+            task=task,
+            trace_id=trace_id,
+            max_budget=max_budget,
+        )
         result = _run_sync(_acall_with_mcp(
             primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         ))
-        result = _annotate_result_identity(
-            result,
+        result = _finalize_agent_loop_result(
+            result=result,
             requested_model=model,
-            resolved_model=result.resolved_model,
-            routing_trace=_build_routing_trace(
-                requested_model=model,
-                attempted_models=[primary_model],
-                selected_model=result.resolved_model,
-                requested_api_base=api_base,
-                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
-                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                routing_policy=routing_policy,
-            ),
+            primary_model=primary_model,
+            requested_api_base=api_base,
+            config=cfg,
+            routing_policy=routing_policy,
+            caller="call_llm",
+            messages=messages,
+            log_started_at=_log_t0,
+            task=task,
+            trace_id=trace_id,
         )
-        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
     # Direct Python tool loop: non-agent model + python_tools → in-process tool-calling loop
@@ -3309,14 +3400,13 @@ def call_llm(
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
         from llm_client.agents import _run_sync
         from llm_client.models import supports_tool_calling
-        tool_kw: dict[str, Any] = {}
-        remaining = dict(kwargs)
-        remaining["task"] = task
-        remaining["trace_id"] = trace_id
-        remaining["max_budget"] = max_budget
-        for k in TOOL_LOOP_KWARGS:
-            if k in remaining:
-                tool_kw[k] = remaining.pop(k)
+        tool_kw, remaining = _split_agent_loop_kwargs(
+            kwargs=kwargs,
+            loop_kwargs=TOOL_LOOP_KWARGS,
+            task=task,
+            trace_id=trace_id,
+            max_budget=max_budget,
+        )
         if not supports_tool_calling(model):
             from llm_client.tool_shim import _acall_with_tool_shim
             result = _run_sync(_acall_with_tool_shim(
@@ -3326,21 +3416,19 @@ def call_llm(
             result = _run_sync(_acall_with_tools(
                 primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             ))
-        result = _annotate_result_identity(
-            result,
+        result = _finalize_agent_loop_result(
+            result=result,
             requested_model=model,
-            resolved_model=result.resolved_model,
-            routing_trace=_build_routing_trace(
-                requested_model=model,
-                attempted_models=[primary_model],
-                selected_model=result.resolved_model,
-                requested_api_base=api_base,
-                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
-                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                routing_policy=routing_policy,
-            ),
+            primary_model=primary_model,
+            requested_api_base=api_base,
+            config=cfg,
+            routing_policy=routing_policy,
+            caller="call_llm",
+            messages=messages,
+            log_started_at=_log_t0,
+            task=task,
+            trace_id=trace_id,
         )
-        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
         return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -4143,32 +4231,21 @@ async def acall_llm(
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
     # inside the agent loop (retry, fallback, hooks, reasoning, api_base).
-    _inner_named: dict[str, Any] = {}
-    if num_retries != 2:
-        _inner_named["num_retries"] = num_retries
-    if base_delay != 1.0:
-        _inner_named["base_delay"] = base_delay
-    if max_delay != 30.0:
-        _inner_named["max_delay"] = max_delay
-    if retry_on is not None:
-        _inner_named["retry_on"] = retry_on
-    if on_retry is not None:
-        _inner_named["on_retry"] = on_retry
-    if retry is not None:
-        _inner_named["retry"] = retry
-    if fallback_models is not None:
-        _inner_named["fallback_models"] = fallback_models
-    if on_fallback is not None:
-        _inner_named["on_fallback"] = on_fallback
-    if reasoning_effort is not None:
-        _inner_named["reasoning_effort"] = reasoning_effort
-    if api_base is not None:
-        _inner_named["api_base"] = api_base
-    if hooks is not None:
-        _inner_named["hooks"] = hooks
-    if execution_mode != "text":
-        _inner_named["execution_mode"] = execution_mode
-    _inner_named["config"] = cfg
+    _inner_named = _build_inner_named_call_kwargs(
+        num_retries=num_retries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        hooks=hooks,
+        execution_mode=execution_mode,
+        config=cfg,
+    )
 
     plan = _resolve_call_plan(
         model=model,
@@ -4194,32 +4271,29 @@ async def acall_llm(
     # MCP agent loop: non-agent model + (mcp_servers or mcp_sessions) → tool-calling loop
     if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
-        mcp_kw: dict[str, Any] = {}
-        remaining = dict(kwargs)
-        remaining["task"] = task
-        remaining["trace_id"] = trace_id
-        remaining["max_budget"] = max_budget
-        for k in MCP_LOOP_KWARGS:
-            if k in remaining:
-                mcp_kw[k] = remaining.pop(k)
+        mcp_kw, remaining = _split_agent_loop_kwargs(
+            kwargs=kwargs,
+            loop_kwargs=MCP_LOOP_KWARGS,
+            task=task,
+            trace_id=trace_id,
+            max_budget=max_budget,
+        )
         result = await _acall_with_mcp(
             primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
         )
-        result = _annotate_result_identity(
-            result,
+        result = _finalize_agent_loop_result(
+            result=result,
             requested_model=model,
-            resolved_model=result.resolved_model,
-            routing_trace=_build_routing_trace(
-                requested_model=model,
-                attempted_models=[primary_model],
-                selected_model=result.resolved_model,
-                requested_api_base=api_base,
-                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
-                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                routing_policy=routing_policy,
-            ),
+            primary_model=primary_model,
+            requested_api_base=api_base,
+            config=cfg,
+            routing_policy=routing_policy,
+            caller="acall_llm",
+            messages=messages,
+            log_started_at=_log_t0,
+            task=task,
+            trace_id=trace_id,
         )
-        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 
     # Direct Python tool loop: non-agent model + python_tools → in-process tool-calling loop
@@ -4228,14 +4302,13 @@ async def acall_llm(
             raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
         from llm_client.models import supports_tool_calling
-        tool_kw: dict[str, Any] = {}
-        remaining = dict(kwargs)
-        remaining["task"] = task
-        remaining["trace_id"] = trace_id
-        remaining["max_budget"] = max_budget
-        for k in TOOL_LOOP_KWARGS:
-            if k in remaining:
-                tool_kw[k] = remaining.pop(k)
+        tool_kw, remaining = _split_agent_loop_kwargs(
+            kwargs=kwargs,
+            loop_kwargs=TOOL_LOOP_KWARGS,
+            task=task,
+            trace_id=trace_id,
+            max_budget=max_budget,
+        )
         if not supports_tool_calling(model):
             from llm_client.tool_shim import _acall_with_tool_shim
             result = await _acall_with_tool_shim(
@@ -4245,21 +4318,19 @@ async def acall_llm(
             result = await _acall_with_tools(
                 primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
             )
-        result = _annotate_result_identity(
-            result,
+        result = _finalize_agent_loop_result(
+            result=result,
             requested_model=model,
-            resolved_model=result.resolved_model,
-            routing_trace=_build_routing_trace(
-                requested_model=model,
-                attempted_models=[primary_model],
-                selected_model=result.resolved_model,
-                requested_api_base=api_base,
-                effective_api_base=_resolve_api_base_for_model(primary_model, api_base, cfg),
-                sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                routing_policy=routing_policy,
-            ),
+            primary_model=primary_model,
+            requested_api_base=api_base,
+            config=cfg,
+            routing_policy=routing_policy,
+            caller="acall_llm",
+            messages=messages,
+            log_started_at=_log_t0,
+            task=task,
+            trace_id=trace_id,
         )
-        _io_log.log_call(model=primary_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
         return result
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)

@@ -254,3 +254,20 @@ Validation snapshot after this pass:
    - Result: `798 passed, 1 skipped, 1 warning`
 2. `mypy llm_client`
    - Result: `Success: no issues found in 39 source files`
+
+## 14) Additional follow-up (agent-loop kwarg/finalization dedupe)
+Completed a targeted code-smell reduction inside `call_llm` + `acall_llm`:
+1. Added shared helper for inner call kwargs propagation:
+   - `_build_inner_named_call_kwargs(...)`
+2. Added shared helper for MCP/tool loop kwarg partitioning:
+   - `_split_agent_loop_kwargs(...)`
+3. Added shared helper for loop result identity + logging finalization:
+   - `_finalize_agent_loop_result(...)`
+4. Replaced duplicated sync/async MCP and Python-tool loop blocks with the
+   shared helpers, preserving existing behavior and contracts.
+
+Validation snapshot after this pass:
+1. `mypy llm_client`
+   - Result: `Success: no issues found in 39 source files`
+2. `pytest -q`
+   - Result: `798 passed, 1 skipped, 1 warning`
