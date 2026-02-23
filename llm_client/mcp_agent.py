@@ -714,6 +714,58 @@ def _tool_error_signature(error: str) -> str:
     return text[:160]
 
 
+_FINAL_ANSWER_LINE_RE = re.compile(
+    r"(?im)^\s*(?:\*\*+\s*)?(?:final\s+answer|answer)\s*[:\-]\s*(.+?)\s*$"
+)
+_FORCED_REFUSAL_RE = re.compile(
+    r"^\s*(?:unknown|cannot\s+determine|can't\s+determine|insufficient(?:\s+evidence)?|not\s+found)\.?\s*$",
+    flags=re.IGNORECASE,
+)
+_DATE_PHRASE_RE = re.compile(
+    r"\b\d{1,2}\s+(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|"
+    r"jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{3,4}\b",
+    flags=re.IGNORECASE,
+)
+_YEAR_TOKEN_RE = re.compile(r"\b\d{3,4}\b")
+
+
+def _normalize_forced_final_answer(content: str) -> str:
+    """Extract a short factual answer span from forced-final free text."""
+    text = (content or "").strip()
+    if not text:
+        return ""
+
+    def _clean(candidate: str) -> str:
+        c = (candidate or "").strip()
+        c = c.strip("`*_ \t\r\n")
+        c = c.rstrip(".")
+        c = " ".join(c.split())
+        return c
+
+    answer_match = _FINAL_ANSWER_LINE_RE.search(text)
+    if answer_match:
+        candidate = _clean(answer_match.group(1))
+        if candidate and not _FORCED_REFUSAL_RE.match(candidate):
+            return " ".join(candidate.split()[:8])
+
+    date_hits = list(_DATE_PHRASE_RE.finditer(text))
+    if date_hits:
+        return _clean(date_hits[-1].group(0))
+
+    year_hits = list(_YEAR_TOKEN_RE.finditer(text))
+    if year_hits:
+        return _clean(year_hits[-1].group(0))
+
+    if answer_match:
+        # If explicit answer line exists but is refusal-like, keep it as a last resort.
+        candidate = _clean(answer_match.group(1))
+        if candidate:
+            return " ".join(candidate.split()[:8])
+
+    first_line = _clean(text.splitlines()[0] if text.splitlines() else text)
+    return " ".join(first_line.split()[:8])
+
+
 def _provider_failure_classification(exc: Exception, error_text: str) -> tuple[bool, str, str, bool]:
     """Best-effort provider failure classification for taxonomy + retry semantics."""
     classification = getattr(exc, "classification", None)
@@ -1365,6 +1417,14 @@ async def _execute_forced_finalization(
     # - No tools are passed, and per-turn fallback chains are disabled.
     forced_kwargs = dict(kwargs)
     forced_kwargs.pop("fallback_models", None)
+    # Forced-final is a terminal rescue path; keep retries bounded so final
+    # submission does not spend multiple full timeout windows before returning.
+    forced_retry_value = forced_kwargs.get("num_retries", 1)
+    try:
+        forced_retry_value = int(forced_retry_value)
+    except Exception:
+        forced_retry_value = 1
+    forced_kwargs["num_retries"] = max(0, min(forced_retry_value, 1))
     finalization_primary_model = effective_model
     base_model_chain: list[str] = [effective_model]
     for fb_model in finalization_fallback_models:
@@ -3366,10 +3426,18 @@ async def _agent_loop(
         "max_tokens" not in kwargs
         and "max_completion_tokens" not in kwargs
     ):
-        # Tool-calling turns do not need long free-form completions; smaller
-        # completions reduce context-window pressure on long agent traces.
+        # Keep a higher default cap for long tool-calling traces to avoid
+        # non-retryable finish_reason='length' truncation on provider lanes.
+        # Override via env when needed per deployment/benchmark.
+        max_completion_default = 8192
+        try:
+            max_completion_default = int(
+                os.getenv("LLM_CLIENT_MCP_MAX_COMPLETION_TOKENS", str(max_completion_default))
+            )
+        except Exception:
+            max_completion_default = 8192
         kwargs = dict(kwargs)
-        kwargs["max_completion_tokens"] = 4096
+        kwargs["max_completion_tokens"] = max(1024, max_completion_default)
 
     for turn in range(max_turns):
         if max_tool_calls is not None:
@@ -5093,7 +5161,12 @@ async def _agent_loop(
         if accept_forced_answer_on_max_tool_calls and final_content.strip():
             submit_forced_accept_on_budget_exhaustion = True
             submit_answer_succeeded = True
-            submitted_answer_value = submitted_answer_value or final_content.strip()
+            normalized_forced_answer = _normalize_forced_final_answer(final_content)
+            submitted_answer_value = (
+                submitted_answer_value
+                or normalized_forced_answer
+                or final_content.strip()
+            )
             required_submit_missing = False
             if forced_exhaustion_reason == "budget":
                 warning = (

@@ -270,6 +270,10 @@ Notes:
   `forced_final_circuit_breaker_threshold`.
 - Retrieval stagnation fuse (`retrieval_stagnation_turns`) terminates long
   evidence loops that produce no new evidence digest.
+- MCP loop default completion cap is `8192` tokens; override with
+  `LLM_CLIENT_MCP_MAX_COMPLETION_TOKENS` (minimum applied: `1024`).
+- Forced-final accepted submit answers are normalized to a short factual span
+  (e.g., explicit answer/date/year) before final metadata output.
 
 ### Batch/parallel calls
 
