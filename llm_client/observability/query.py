@@ -269,6 +269,9 @@ def get_background_mode_adoption(
         "invalid_lines": 0,
         "records_with_reasoning_effort_key": 0,
         "records_with_background_mode_key": 0,
+        "records_with_routing_trace": 0,
+        "model_switches": 0,
+        "fallback_records": 0,
         "with_reasoning_effort": 0,
         "background_mode_true": 0,
         "background_mode_false": 0,
@@ -312,6 +315,39 @@ def get_background_mode_adoption(
             if not isinstance(dims, dict):
                 summary["background_mode_unknown"] += 1
                 continue
+
+            result_payload = record.get("result")
+            if isinstance(result_payload, dict):
+                switched = False
+                requested = result_payload.get("requested_model")
+                resolved = result_payload.get("resolved_model")
+                if (
+                    isinstance(requested, str)
+                    and requested.strip()
+                    and isinstance(resolved, str)
+                    and resolved.strip()
+                    and requested.strip() != resolved.strip()
+                ):
+                    switched = True
+
+                routing_trace = result_payload.get("routing_trace")
+                if isinstance(routing_trace, dict):
+                    summary["records_with_routing_trace"] += 1
+                    if routing_trace.get("normalized_from") != routing_trace.get("normalized_to"):
+                        if routing_trace.get("normalized_from") and routing_trace.get("normalized_to"):
+                            switched = True
+
+                    attempted_models = routing_trace.get("attempted_models")
+                    if isinstance(attempted_models, list):
+                        valid_attempts = [
+                            m for m in attempted_models
+                            if isinstance(m, str) and m.strip()
+                        ]
+                        if len(valid_attempts) > 1:
+                            summary["fallback_records"] += 1
+
+                if switched:
+                    summary["model_switches"] += 1
 
             if "reasoning_effort" in dims:
                 summary["records_with_reasoning_effort_key"] += 1

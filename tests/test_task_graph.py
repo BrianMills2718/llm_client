@@ -252,12 +252,16 @@ class _FakeResult:
         content: str = "done",
         cost: float = 0.01,
         routing_trace: dict[str, object] | None = None,
+        requested_model: str | None = None,
+        resolved_model: str | None = None,
     ):
         self.content = content
         self.cost = cost
         self.usage = {"prompt_tokens": 100, "completion_tokens": 50}
         self.finish_reason = "stop"
         self.routing_trace = routing_trace
+        self.requested_model = requested_model
+        self.resolved_model = resolved_model
 
 
 @pytest.mark.asyncio
@@ -567,7 +571,19 @@ tasks:
     graph = load_graph(f)
 
     async def capture_acall(model, messages, **kwargs):
-        return _FakeResult(routing_trace={"background_mode": True})
+        return _FakeResult(
+            routing_trace={
+                "background_mode": True,
+                "normalized_from": "gpt-5.2-pro",
+                "normalized_to": "openrouter/openai/gpt-5.2-pro",
+                "attempted_models": [
+                    "gpt-5.2-pro",
+                    "openrouter/openai/gpt-5.2-pro",
+                ],
+            },
+            requested_model="gpt-5.2-pro",
+            resolved_model="openrouter/openai/gpt-5.2-pro",
+        )
 
     mock_acall = AsyncMock(side_effect=capture_acall)
     with patch("llm_client.task_graph._acall_llm", mock_acall):
@@ -602,7 +618,19 @@ tasks:
     exp_log = tmp_path / "exp.jsonl"
 
     async def capture_acall(model, messages, **kwargs):
-        return _FakeResult(routing_trace={"background_mode": True})
+        return _FakeResult(
+            routing_trace={
+                "background_mode": True,
+                "normalized_from": "gpt-5.2-pro",
+                "normalized_to": "openrouter/openai/gpt-5.2-pro",
+                "attempted_models": [
+                    "gpt-5.2-pro",
+                    "openrouter/openai/gpt-5.2-pro",
+                ],
+            },
+            requested_model="gpt-5.2-pro",
+            resolved_model="openrouter/openai/gpt-5.2-pro",
+        )
 
     mock_acall = AsyncMock(side_effect=capture_acall)
     with patch("llm_client.task_graph._acall_llm", mock_acall):
@@ -614,6 +642,12 @@ tasks:
     record = json.loads(lines[0])
     assert record["dimensions"]["reasoning_effort"] == "xhigh"
     assert record["dimensions"]["background_mode"] is True
+    assert record["result"]["requested_model"] == "gpt-5.2-pro"
+    assert record["result"]["resolved_model"] == "openrouter/openai/gpt-5.2-pro"
+    assert record["result"]["routing_trace"]["attempted_models"] == [
+        "gpt-5.2-pro",
+        "openrouter/openai/gpt-5.2-pro",
+    ]
 
 
 # ---------------------------------------------------------------------------

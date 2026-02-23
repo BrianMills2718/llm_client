@@ -60,6 +60,9 @@ def test_cmd_adoption_table_output(monkeypatch, capsys) -> None:
             "invalid_lines": 0,
             "records_with_reasoning_effort_key": 2,
             "records_with_background_mode_key": 2,
+            "records_with_routing_trace": 2,
+            "model_switches": 1,
+            "fallback_records": 1,
             "with_reasoning_effort": 2,
             "background_mode_true": 2,
             "background_mode_false": 0,
@@ -88,6 +91,7 @@ def test_cmd_adoption_table_output(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "Long-Thinking Adoption:" in out
     assert "background=true:" in out
+    assert "Model switches:" in out
     assert "100.0%" in out
     assert "xhigh: 2" in out
 

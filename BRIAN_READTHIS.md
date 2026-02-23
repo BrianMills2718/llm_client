@@ -76,6 +76,23 @@ Then tighten back later.
 - If we run strict mode immediately, you get daily noisy failures that are not actionable.
 - That is why cron is currently in warn-only mode.
 
+## One-command fix to start collecting real samples
+Run this once (or occasionally):
+
+```bash
+cd /home/brian/projects/llm_client
+./scripts/adoption_probe.sh
+```
+
+What it does:
+- makes one real long-thinking call (`gpt-5.2-pro` + `reasoning_effort=high`)
+- appends one fresh task-graph experiment row with routing trace + background mode
+- gives the adoption gate real data to evaluate
+
+Requirements:
+- `OPENAI_API_KEY` must be set
+- this incurs real API cost (small, but non-zero)
+
 ## When to switch to strict mode
 Once logs show enough data (at least 20 matching reasoning samples), switch cron to strict:
 

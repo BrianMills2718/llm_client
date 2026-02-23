@@ -116,6 +116,9 @@ class TaskResult(BaseModel):
     agent_output: str | None = None  # Truncated agent response
     reasoning_effort: str | None = None
     background_mode: bool | None = None
+    requested_model: str | None = None
+    resolved_model: str | None = None
+    routing_trace: dict[str, Any] | None = None
     spec_hash: str = ""
     uncertainties: list[Uncertainty] = []
     error: str | None = None
@@ -578,7 +581,18 @@ async def _execute_task(
     usage = result.usage or {}
     tokens_in = usage.get("prompt_tokens", 0) if isinstance(usage, dict) else 0
     tokens_out = usage.get("completion_tokens", 0) if isinstance(usage, dict) else 0
+    requested_model = getattr(result, "requested_model", None)
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        requested_model = None
+
+    resolved_model = getattr(result, "resolved_model", None)
+    if not isinstance(resolved_model, str) or not resolved_model.strip():
+        resolved_model = None
+
     routing_trace = getattr(result, "routing_trace", None)
+    if not isinstance(routing_trace, dict):
+        routing_trace = None
+
     background_mode = None
     if isinstance(routing_trace, dict):
         bg_value = routing_trace.get("background_mode")
@@ -607,6 +621,9 @@ async def _execute_task(
         agent_output=agent_output,
         reasoning_effort=task.reasoning_effort,
         background_mode=background_mode,
+        requested_model=requested_model,
+        resolved_model=resolved_model,
+        routing_trace=routing_trace,
         spec_hash=frozen_hash,
         error=None if passed else "; ".join(
             v.reason for v in val_results if not v.passed and v.reason
@@ -647,6 +664,9 @@ def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecor
             "cost_usd": tr.cost_usd,
             "tokens_in": tr.tokens_in,
             "tokens_out": tr.tokens_out,
+            "requested_model": tr.requested_model,
+            "resolved_model": tr.resolved_model,
+            "routing_trace": tr.routing_trace,
             "validation_results": [v.model_dump() for v in tr.validation_results],
         },
         dimensions={

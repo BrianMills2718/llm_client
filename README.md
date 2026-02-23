@@ -488,6 +488,16 @@ You can also use the wrapper script (env-configurable defaults):
 ./scripts/adoption_gate.sh
 ```
 
+If your gate reports `missing_reasoning_effort_dimension` (legacy records), run one
+live probe to append a fresh long-thinking record:
+
+```bash
+./scripts/adoption_probe.sh
+```
+
+That probe uses `gpt-5.2-pro` + `reasoning_effort=high` by default and writes one
+task-graph experiment row with routing/effort/background fields.
+
 Cron example (daily at 06:15 UTC, log to file, no GitHub Actions):
 
 ```cron

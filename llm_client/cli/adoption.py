@@ -97,10 +97,13 @@ def cmd_adoption(args: argparse.Namespace) -> None:
     print(f"Records considered: {summary.get('records_considered')}")
     print(f"Records w/ effort key: {summary.get('records_with_reasoning_effort_key')}")
     print(f"Records w/ bg key:     {summary.get('records_with_background_mode_key')}")
+    print(f"Records w/ routing:    {summary.get('records_with_routing_trace')}")
     print(f"With effort set:    {summary.get('with_reasoning_effort')}")
     print(f"background=true:    {summary.get('background_mode_true')}")
     print(f"background=false:   {summary.get('background_mode_false')}")
     print(f"background=unknown: {summary.get('background_mode_unknown')}")
+    print(f"Model switches:     {summary.get('model_switches')}")
+    print(f"Fallback records:   {summary.get('fallback_records')}")
     print(
         "Background rate "
         f"(among reasoning): {_pct(float(summary.get('background_mode_rate_among_reasoning', 0.0)))}"

@@ -500,6 +500,18 @@ class TestBackgroundModeAdoption:
                         {
                             "run_id": "alpha.run",
                             "timestamp": "2026-02-23T10:00:00Z",
+                            "result": {
+                                "requested_model": "gpt-5.2-pro",
+                                "resolved_model": "openrouter/openai/gpt-5.2-pro",
+                                "routing_trace": {
+                                    "normalized_from": "gpt-5.2-pro",
+                                    "normalized_to": "openrouter/openai/gpt-5.2-pro",
+                                    "attempted_models": [
+                                        "gpt-5.2-pro",
+                                        "openrouter/openai/gpt-5.2-pro",
+                                    ],
+                                },
+                            },
                             "dimensions": {
                                 "reasoning_effort": "xhigh",
                                 "background_mode": True,
@@ -510,6 +522,13 @@ class TestBackgroundModeAdoption:
                         {
                             "run_id": "alpha.run",
                             "timestamp": "2026-02-23T10:01:00Z",
+                            "result": {
+                                "requested_model": "gpt-5.2-pro",
+                                "resolved_model": "gpt-5.2-pro",
+                                "routing_trace": {
+                                    "attempted_models": ["gpt-5.2-pro"],
+                                },
+                            },
                             "dimensions": {
                                 "reasoning_effort": "high",
                                 "background_mode": False,
@@ -542,6 +561,9 @@ class TestBackgroundModeAdoption:
         assert summary["reasoning_effort_counts"]["high"] == 1
         assert summary["background_mode_rate_among_reasoning"] == 0.5
         assert summary["background_mode_rate_overall"] == pytest.approx(1 / 3)
+        assert summary["records_with_routing_trace"] == 2
+        assert summary["model_switches"] == 1
+        assert summary["fallback_records"] == 1
 
     def test_applies_since_and_run_id_prefix_filters(self, tmp_path):
         experiments = tmp_path / "experiments.jsonl"
