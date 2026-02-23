@@ -49,8 +49,9 @@ All notable changes to `llm-client` are documented in this file.
 
 - `call_llm` / `acall_llm` now use shared retry+fallback kernel paths instead
   of duplicated in-function retry/fallback loops.
-- `call_llm_structured` / `acall_llm_structured` responses-API branches now
-  use shared execution-kernel retry primitives instead of local retry loops.
+- `call_llm_structured` / `acall_llm_structured` now route retry behavior for
+  responses, native-schema, and instructor branches through shared
+  execution-kernel retry primitives instead of local retry loops.
 - Routing resolution now goes through a shared `_resolve_call_plan(...)` path
   for text/structured/stream entrypoints, so normalization events are logged
   consistently from one resolver seam.
