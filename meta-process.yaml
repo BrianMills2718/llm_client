@@ -22,6 +22,12 @@ meta_process:
       enabled: false
       strict: false
       config_file: scripts/doc_coupling.yaml
+    required_reading:
+      enabled: true
+      mode: strict
+      uncoupled_mode: strict
+      config_file: scripts/relationships.yaml
+      show_success: false
     mock_policy:
       enabled: false
     adr_governance:

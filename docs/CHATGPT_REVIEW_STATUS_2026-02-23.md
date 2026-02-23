@@ -309,3 +309,27 @@ Validation snapshot after this pass:
    - Result: blocked with explicit missing-doc list
 3. `python scripts/meta/check_required_reading.py llm_client/client.py --reads-file <file containing required docs>`
    - Result: pass with required-doc summary
+
+## 17) Additional follow-up (configurable read-gate modes)
+Added explicit configuration and runtime overrides for required-reading
+enforcement:
+1. `meta-process.yaml` now includes:
+   - `meta_process.quality.required_reading.enabled`
+   - `mode` (`strict` | `warn` | `off`)
+   - `uncoupled_mode` (`strict` | `warn` | `off`)
+   - `config_file`
+   - `show_success`
+2. `scripts/meta/check_required_reading.py` now supports:
+   - strict blocking mode (default),
+   - warn-only mode (non-blocking),
+   - off mode,
+   - env overrides (`LLM_CLIENT_READ_GATE_*`).
+3. `.claude/hooks/gate-edit.sh` now:
+   - gates `llm_client/` edits (not template `src/` paths),
+   - resolves checker from `scripts/meta/check_required_reading.py`,
+   - supports custom reads file via `LLM_CLIENT_READS_FILE`.
+
+Validation snapshot after this pass:
+1. strict mode with missing reads: blocks (exit 1)
+2. warn mode with missing reads: warns and allows (exit 0)
+3. off mode with missing reads: allows (exit 0)

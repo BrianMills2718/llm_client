@@ -30,6 +30,9 @@ python scripts/meta/check_plan_blockers.py --strict
 
 # Required-reading gate check (used by .claude/hooks/gate-edit.sh)
 python scripts/meta/check_required_reading.py llm_client/client.py
+
+# Relax gate temporarily without code changes
+LLM_CLIENT_READ_GATE_MODE=warn python scripts/meta/check_required_reading.py llm_client/client.py
 ```
 
 ## Worktree Coordination Scripts (opt-in)
@@ -52,3 +55,9 @@ Edit config files in repo root to customize behavior:
 - `meta-process.yaml` - Meta-process settings
 - `docs/plans/CLAUDE.md` - plan index
 - `scripts/relationships.yaml` - source/doc couplings and required-reading defaults
+
+Required-reading gate controls:
+- `meta_process.quality.required_reading.enabled`
+- `meta_process.quality.required_reading.mode` (`strict` | `warn` | `off`)
+- `meta_process.quality.required_reading.uncoupled_mode` (`strict` | `warn` | `off`)
+- `meta_process.quality.required_reading.show_success`
