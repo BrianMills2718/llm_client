@@ -450,6 +450,7 @@ python -m llm_client experiments --compare-cohorts baseline forced_reduced force
 python -m llm_client experiments --compare-diff RUN_BASE RUN_CANDIDATE
 python -m llm_client experiments --detail RUN_ID
 python -m llm_client adoption --run-id-prefix nightly_ --format table
+python -m llm_client adoption --run-id-prefix nightly_ --since 2026-02-20 --min-rate 0.95 --metric among_reasoning --min-samples 20
 python -m llm_client experiments --detail RUN_ID --det-checks default
 python -m llm_client experiments --detail RUN_ID --review-rubric extraction_quality
 python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg_llm_em_gte":80}}' --gate-fail-exit-code
@@ -474,6 +475,8 @@ summary = get_background_mode_adoption(
 )
 print(summary["background_mode_rate_among_reasoning"])
 ```
+
+`adoption` can enforce a local gate without GitHub Actions: when `--min-rate` is set, the command exits non-zero on failure (unless `--warn-only`). This is scheduler-friendly for cron/Jenkins/Buildkite.
 
 ## API keys
 

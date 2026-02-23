@@ -118,6 +118,42 @@ class TestModelIdentityContract:
         assert result.routing_trace["normalized_from"] == "gpt-4"
         assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_sync_fallback_trace_shows_switch_and_reason(
+        self,
+        mock_completion: MagicMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "on")
+        mock_completion.side_effect = [
+            RuntimeError("primary failed"),
+            _mock_response(content="Recovered"),
+        ]
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=0,
+            fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="identity.sync.fallback.trace",
+            max_budget=0,
+        )
+
+        assert result.content == "Recovered"
+        assert result.model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == [
+            "openrouter/openai/gpt-4",
+            "openrouter/openai/gpt-3.5-turbo",
+        ]
+        assert result.routing_trace["selected_model"] == "openrouter/openai/gpt-3.5-turbo"
+        assert any("FALLBACK: openrouter/openai/gpt-4" in w for w in (result.warnings or []))
+
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
