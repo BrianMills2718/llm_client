@@ -429,6 +429,24 @@ class TestFailureTaxonomy:
         )
         assert first_terminal == "CONTROL_CHURN_THRESHOLD_EXCEEDED"
 
+    def test_submit_forced_accept_budget_exhaustion_is_informational(self) -> None:
+        import llm_client.mcp_agent as mcp_agent
+
+        primary, secondary = mcp_agent._classify_failure_signals(
+            failure_event_codes=["SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"],
+            retrieval_no_hits_count=0,
+            control_loop_suppressed_calls=0,
+            force_final_reason=None,
+            submit_answer_succeeded=True,
+        )
+        first_terminal = mcp_agent._first_terminal_failure_event_code(
+            ["SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"]
+        )
+
+        assert primary == "none"
+        assert secondary == []
+        assert first_terminal is None
+
     def test_provider_credits_exhausted_classification(self) -> None:
         import llm_client.mcp_agent as mcp_agent
 

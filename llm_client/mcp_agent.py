@@ -2755,6 +2755,10 @@ def _classify_failure_signals(
 
 def _failure_class_for_event_code(code: str) -> str | None:
     """Map event code to one stable failure class for rollups/classification."""
+    if code == EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION:
+        # This event records a degraded success path (forced-answer acceptance
+        # after tool budget exhaustion), not an incompletion/failure class.
+        return None
     if code == EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED:
         return "policy"
     if code.startswith("REQUIRED_SUBMIT_"):

@@ -84,3 +84,56 @@ def test_register_parser_sets_handler() -> None:
     args = parser.parse_args(["adoption", "--format", "json"])
     assert args.command == "adoption"
     assert callable(args.handler)
+
+
+def test_cmd_adoption_real_jsonl_since_and_prefix_filters(tmp_path, capsys) -> None:
+    experiments = tmp_path / "experiments.jsonl"
+    experiments.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "run_id": "nightly_001",
+                        "timestamp": "2026-02-23T10:00:00Z",
+                        "dimensions": {"reasoning_effort": "xhigh", "background_mode": True},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "run_id": "nightly_000",
+                        "timestamp": "2026-02-22T10:00:00Z",
+                        "dimensions": {"reasoning_effort": "high", "background_mode": False},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "run_id": "other_001",
+                        "timestamp": "2026-02-23T10:00:00Z",
+                        "dimensions": {"reasoning_effort": "xhigh", "background_mode": True},
+                    }
+                ),
+                "{invalid json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        experiments_path=str(experiments),
+        since="2026-02-23T00:00:00Z",
+        run_id_prefix="nightly_",
+        format="json",
+    )
+    cmd_adoption(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exists"] is True
+    assert payload["total_records"] == 4
+    assert payload["invalid_lines"] == 1
+    assert payload["records_considered"] == 1
+    assert payload["with_reasoning_effort"] == 1
+    assert payload["background_mode_true"] == 1
+    assert payload["background_mode_false"] == 0
+    assert payload["background_mode_rate_among_reasoning"] == 1.0
+    assert payload["reasoning_effort_counts"] == {"xhigh": 1}
+    assert payload["since"] == "2026-02-23T00:00:00+00:00"
