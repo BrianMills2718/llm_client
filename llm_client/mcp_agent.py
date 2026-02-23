@@ -2296,6 +2296,23 @@ def _disclosure_message(hidden_entries: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def _deficit_labels_from_hidden_entries(hidden_entries: list[dict[str, Any]]) -> list[str]:
+    """Canonical missing-artifact/capability labels from hidden tool requirements."""
+    labels: set[str] = set()
+    for entry in hidden_entries:
+        if not isinstance(entry, dict):
+            continue
+        missing = entry.get("missing_requirements")
+        if not isinstance(missing, list):
+            continue
+        for raw in missing:
+            req = _capability_requirement_from_raw(raw)
+            if req is None:
+                continue
+            labels.add(_short_requirement(req))
+    return sorted(labels)
+
+
 def _analyze_lane_closure(
     *,
     normalized_tool_contracts: dict[str, dict[str, Any]],
@@ -2921,6 +2938,12 @@ async def _agent_loop(
     tool_disclosure_unavailable_reason_tokens_est = 0
     tool_disclosure_repair_suggestions = 0
     no_legal_noncontrol_turns = 0
+    deficit_no_progress_streak = 0
+    max_deficit_no_progress_streak = 0
+    deficit_no_progress_nudges = 0
+    deficit_no_progress_last_nudged = 0
+    prev_turn_deficit_digest: str | None = None
+    prev_turn_had_evidence_tools = False
     zero_exec_tool_turn_streak = 0
     max_zero_exec_tool_turn_streak = 0
     plain_text_no_tool_turn_streak = 0
@@ -3106,6 +3129,8 @@ async def _agent_loop(
         hidden_disclosure: list[dict[str, Any]] = []
         hidden_disclosure_total = 0
         disclosure_repair_hints: list[str] = []
+        current_turn_deficit_labels: list[str] = []
+        current_turn_deficit_digest: str | None = None
         if progressive_tool_disclosure and normalized_tool_contracts:
             disclosed_tools, hidden_disclosure, hidden_disclosure_total = _filter_tools_for_disclosure(
                 openai_tools=openai_tools,
@@ -3132,6 +3157,9 @@ async def _agent_loop(
                             continue
                         seen_repair_hints.add(name)
                         disclosure_repair_hints.append(name)
+                current_turn_deficit_labels = _deficit_labels_from_hidden_entries(hidden_disclosure)
+                if current_turn_deficit_labels:
+                    current_turn_deficit_digest = sha256_json(current_turn_deficit_labels).replace("sha256:", "")
                 hidden_names = [h["tool"] for h in hidden_disclosure]
                 disclosure_reason = _disclosure_message(hidden_disclosure)
                 disclosure_msg = {
@@ -3163,6 +3191,45 @@ async def _agent_loop(
                     f"{turn + 1}: {', '.join(hidden_names)}"
                 )
 
+        if prev_turn_had_evidence_tools and current_turn_deficit_digest:
+            if prev_turn_deficit_digest == current_turn_deficit_digest:
+                deficit_no_progress_streak += 1
+            else:
+                deficit_no_progress_streak = 0
+        elif not prev_turn_had_evidence_tools:
+            deficit_no_progress_streak = 0
+
+        if deficit_no_progress_streak > max_deficit_no_progress_streak:
+            max_deficit_no_progress_streak = deficit_no_progress_streak
+
+        if (
+            deficit_no_progress_streak >= 2
+            and deficit_no_progress_streak > deficit_no_progress_last_nudged
+            and current_turn_deficit_labels
+        ):
+            deficit_no_progress_nudges += 1
+            deficit_no_progress_last_nudged = deficit_no_progress_streak
+            suggested = [
+                name
+                for name in disclosure_repair_hints
+                if name and not _is_budget_exempt_tool(name)
+            ][:3]
+            suggested_hint = f" Try: {', '.join(suggested)}." if suggested else ""
+            deficit_msg = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Recent evidence calls did not reduce unresolved artifacts. "
+                    "Still missing: "
+                    + ", ".join(current_turn_deficit_labels[:4])
+                    + ". Choose the next call to close one missing requirement."
+                    + suggested_hint
+                    + "]"
+                ),
+            }
+            messages.append(deficit_msg)
+            agent_result.conversation_trace.append(deficit_msg)
+
+        if progressive_tool_disclosure and normalized_tool_contracts:
             noncontrol_disclosed = [
                 t for t in disclosed_tools
                 if isinstance(t, dict)
@@ -4195,6 +4262,10 @@ async def _agent_loop(
             retrieval_stagnation_streak = 0
             retrieval_stagnation_alerted_for_current_streak = False
 
+        # Persist deficit snapshot for next-turn deficit-progress evaluation.
+        prev_turn_had_evidence_tools = bool(evidence_tools_executed)
+        prev_turn_deficit_digest = current_turn_deficit_digest
+
         if (
             retrieval_stagnation_streak >= retrieval_stagnation_turns
             and not retrieval_stagnation_alerted_for_current_streak
@@ -4731,6 +4802,8 @@ async def _agent_loop(
     agent_result.metadata["tool_disclosure_repair_suggestions"] = tool_disclosure_repair_suggestions
     agent_result.metadata["lane_closure_analysis"] = lane_closure_analysis
     agent_result.metadata["no_legal_noncontrol_turns"] = no_legal_noncontrol_turns
+    agent_result.metadata["deficit_no_progress_streak_max"] = max_deficit_no_progress_streak
+    agent_result.metadata["deficit_no_progress_nudges"] = deficit_no_progress_nudges
     agent_result.metadata["max_zero_exec_tool_turn_streak"] = max_zero_exec_tool_turn_streak
     agent_result.metadata["retrieval_no_hits_count"] = retrieval_no_hits_count
     agent_result.metadata["retrieval_stagnation_turns"] = retrieval_stagnation_turns
