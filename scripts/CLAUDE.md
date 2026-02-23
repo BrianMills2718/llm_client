@@ -61,3 +61,7 @@ Required-reading gate controls:
 - `meta_process.quality.required_reading.mode` (`strict` | `warn` | `off`)
 - `meta_process.quality.required_reading.uncoupled_mode` (`strict` | `warn` | `off`)
 - `meta_process.quality.required_reading.show_success`
+
+Current project default:
+- Coupled source files: `strict`
+- Uncoupled source files: `warn`

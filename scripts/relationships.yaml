@@ -3,35 +3,29 @@
 required_reading:
   defaults:
     - CLAUDE.md
-    - docs/CHATGPT_REVIEW_STATUS_2026-02-23.md
 
 couplings:
   - sources:
       - llm_client/client.py
-      - llm_client/stream_runtime.py
-      - llm_client/batch_runtime.py
-      - llm_client/embedding_runtime.py
+      - llm_client/*_runtime.py
+      - llm_client/execution_kernel.py
+      - llm_client/routing.py
+      - llm_client/config.py
     docs:
       - docs/adr/0001-model-identity-v0.md
       - docs/adr/0002-routing-config-precedence.md
       - docs/adr/0003-warning-taxonomy.md
       - docs/adr/0004-result-model-semantics-migration.md
-    description: Core call path identity, routing, and warning contracts.
+    description: Core call path identity, routing, warning, and execution contracts.
     required_reading: true
 
   - sources:
       - llm_client/mcp_agent.py
       - llm_client/foundation.py
+      - llm_client/agents.py
+      - llm_client/tool_shim.py
     docs:
       - docs/adr/0005-reason-code-registry-governance.md
       - docs/adr/0006-actor-id-issuance-policy.md
     description: MCP validation reason-code and Foundation actor identity governance.
-    required_reading: true
-
-  - sources:
-      - llm_client/routing.py
-      - llm_client/config.py
-    docs:
-      - docs/adr/0002-routing-config-precedence.md
-    description: Routing policy and config precedence.
     required_reading: true

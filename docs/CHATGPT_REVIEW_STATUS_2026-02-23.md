@@ -333,3 +333,20 @@ Validation snapshot after this pass:
 1. strict mode with missing reads: blocks (exit 1)
 2. warn mode with missing reads: warns and allows (exit 0)
 3. off mode with missing reads: allows (exit 0)
+
+## 18) Additional follow-up (strict-start tuning profile)
+Applied the next tuning pass for adoption ergonomics while keeping strict
+contract protection where it matters:
+1. `meta-process.yaml` now sets:
+   - `required_reading.mode: strict`
+   - `required_reading.uncoupled_mode: warn`
+2. `scripts/relationships.yaml` was tightened to use focused strict couplings:
+   - core call path + runtime/routing/execution modules -> ADR 0001/0002/0003/0004
+   - MCP/Foundation/agent loop governance modules -> ADR 0005/0006
+3. Removed status-dossier doc from global defaults so every edit only requires
+   baseline `CLAUDE.md` unless the target file is in a strict coupling set.
+
+Validation snapshot after this pass:
+1. Coupled file with missing reads: strict block (exit 1)
+2. Uncoupled file with missing reads: warning only (exit 0)
+3. Coupled file with required docs read: pass (exit 0)
