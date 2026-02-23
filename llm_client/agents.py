@@ -965,7 +965,15 @@ async def _acall_codex(
         else:
             turn = await _run()
 
-        return _result_from_codex(model, turn.final_response, turn.usage, turn)
+        final_response = (turn.final_response or "").strip()
+        if not final_response:
+            turn_count = getattr(turn, "num_turns", None)
+            raise ValueError(
+                "Empty response from Codex SDK"
+                + (f" (num_turns={turn_count})" if turn_count is not None else "")
+            )
+
+        return _result_from_codex(model, final_response, turn.usage, turn)
     finally:
         _cleanup_tmp(tmp_dir)
 

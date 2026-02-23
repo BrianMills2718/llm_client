@@ -2430,6 +2430,9 @@ def _is_agent_model(model: str) -> bool:
     for prefix in ("claude-code", "codex", "openai-agents"):
         if lower == prefix or lower.startswith(prefix + "/"):
             return True
+    # Support common Codex aliases such as codex-mini-latest.
+    if lower.startswith("codex-"):
+        return True
     return False
 
 
@@ -2497,12 +2500,53 @@ def _validate_execution_contract(
     agent_only = sorted(k for k in kwargs if k in check_set)
     if agent_only:
         non_agent = [m for m in models if not _is_agent_model(m)]
-        if non_agent:
+        agent_models = [m for m in models if _is_agent_model(m)]
+        if non_agent and not agent_models:
             raise LLMCapabilityError(
                 f"{caller}: agent-only kwargs {agent_only} are incompatible with "
                 f"non-agent model(s) {non_agent}. Use codex/claude-code or remove "
                 "agent-only kwargs."
             )
+        if non_agent and agent_models:
+            logger.warning(
+                "%s: mixed agent/non-agent fallback chain detected; agent-only kwargs %s "
+                "will be ignored on non-agent fallback legs.",
+                caller,
+                agent_only,
+            )
+
+
+def _coerce_model_kwargs_for_execution(
+    *,
+    current_model: str,
+    kwargs: dict[str, Any],
+    warning_sink: list[str] | None,
+) -> dict[str, Any]:
+    """Strip kwargs unsupported for the current execution leg.
+
+    This enables mixed agent/non-agent fallback chains by removing agent-only
+    kwargs when executing non-agent models.
+    """
+    if _is_agent_model(current_model):
+        return kwargs
+
+    removed = sorted(k for k in kwargs if k in _AGENT_ONLY_KWARGS)
+    if not removed:
+        return kwargs
+
+    model_kwargs = dict(kwargs)
+    for key in removed:
+        model_kwargs.pop(key, None)
+
+    detail = (
+        f"COERCE_PARAMS model={current_model} policy=coerce_and_warn "
+        f"removed={','.join(removed)} "
+        "rule=agent_fallback_compatibility"
+    )
+    logger.warning(detail)
+    if warning_sink is not None:
+        warning_sink.append(detail)
+    return model_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -3133,6 +3177,83 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _background_mode_for_model(
+    *,
+    model: str,
+    use_responses: bool,
+    reasoning_effort: str | None,
+) -> bool | None:
+    """Return background mode flag for routing trace / execution policy."""
+    if not use_responses:
+        return None
+    return _needs_background_mode(model, reasoning_effort)
+
+
+def _background_polling_config(model_kwargs: dict[str, Any]) -> tuple[int, int]:
+    """Return validated (timeout, poll_interval) for background polling."""
+    timeout = _coerce_positive_int(
+        model_kwargs.get("background_timeout"),
+        _BACKGROUND_DEFAULT_TIMEOUT,
+    )
+    poll_interval = _coerce_positive_int(
+        model_kwargs.get("background_poll_interval"),
+        _BACKGROUND_POLL_INTERVAL,
+    )
+    return timeout, poll_interval
+
+
+def _maybe_poll_background_response(
+    response: Any,
+    *,
+    api_base: str | None,
+    request_timeout: int | None,
+    model_kwargs: dict[str, Any],
+) -> Any:
+    """Poll a non-terminal background response to completion when possible."""
+    bg_status = getattr(response, "status", None)
+    if not bg_status or bg_status == "completed":
+        return response
+
+    response_id = getattr(response, "id", None)
+    if not response_id:
+        return response
+
+    bg_timeout, bg_poll_interval = _background_polling_config(model_kwargs)
+    return _poll_background_response(
+        response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+        timeout=bg_timeout,
+        poll_interval=bg_poll_interval,
+    )
+
+
+async def _maybe_apoll_background_response(
+    response: Any,
+    *,
+    api_base: str | None,
+    request_timeout: int | None,
+    model_kwargs: dict[str, Any],
+) -> Any:
+    """Async variant of background polling helper."""
+    bg_status = getattr(response, "status", None)
+    if not bg_status or bg_status == "completed":
+        return response
+
+    response_id = getattr(response, "id", None)
+    if not response_id:
+        return response
+
+    bg_timeout, bg_poll_interval = _background_polling_config(model_kwargs)
+    return await _apoll_background_response(
+        response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+        timeout=bg_timeout,
+        poll_interval=bg_poll_interval,
+    )
+
+
 def _poll_background_response(
     response_id: str,
     *,
@@ -3738,8 +3859,78 @@ def call_llm(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
+        model_kwargs = _coerce_model_kwargs_for_execution(
+            current_model=current_model,
+            kwargs=kwargs,
+            warning_sink=_warnings,
+        )
+
+        if not is_agent and ("mcp_servers" in model_kwargs or "mcp_sessions" in model_kwargs):
+            from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
+            from llm_client.agents import _run_sync
+            mcp_kw, remaining = _split_agent_loop_kwargs(
+                kwargs=model_kwargs,
+                loop_kwargs=MCP_LOOP_KWARGS,
+                task=task,
+                trace_id=trace_id,
+                max_budget=max_budget,
+            )
+            inner_named_loop = dict(_inner_named)
+            inner_named_loop.pop("fallback_models", None)
+            result = _run_sync(_acall_with_mcp(
+                current_model,
+                messages,
+                timeout=timeout,
+                **inner_named_loop,
+                **mcp_kw,
+                **remaining,
+            ))
+            if model_idx > 0:
+                logger.info("call_llm fallback leg %d used MCP loop on %s", model_idx + 1, current_model)
+            return result
+
+        if not is_agent and "python_tools" in model_kwargs:
+            from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
+            from llm_client.agents import _run_sync
+            from llm_client.models import supports_tool_calling
+            tool_kw, remaining = _split_agent_loop_kwargs(
+                kwargs=model_kwargs,
+                loop_kwargs=TOOL_LOOP_KWARGS,
+                task=task,
+                trace_id=trace_id,
+                max_budget=max_budget,
+            )
+            inner_named_loop = dict(_inner_named)
+            inner_named_loop.pop("fallback_models", None)
+            if not supports_tool_calling(current_model):
+                from llm_client.tool_shim import _acall_with_tool_shim
+                result = _run_sync(_acall_with_tool_shim(
+                    current_model,
+                    messages,
+                    timeout=timeout,
+                    **inner_named_loop,
+                    **tool_kw,
+                    **remaining,
+                ))
+            else:
+                result = _run_sync(_acall_with_tools(
+                    current_model,
+                    messages,
+                    timeout=timeout,
+                    **inner_named_loop,
+                    **tool_kw,
+                    **remaining,
+                ))
+            if model_idx > 0:
+                logger.info("call_llm fallback leg %d used Python tool loop on %s", model_idx + 1, current_model)
+            return result
+
         use_responses = not is_agent and _is_responses_api_model(current_model)
-        background_mode = _needs_background_mode(current_model, reasoning_effort) if use_responses else None
+        background_mode = _background_mode_for_model(
+            model=current_model,
+            use_responses=use_responses,
+            reasoning_effort=reasoning_effort,
+        )
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
@@ -3747,7 +3938,7 @@ def call_llm(
             and _should_use_gemini_native(
                 current_model,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
         )
@@ -3760,7 +3951,7 @@ def call_llm(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
         elif use_gemini_native:
@@ -3772,13 +3963,13 @@ def call_llm(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
 
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, **kwargs)
+            key = _cache_key(current_model, messages, **model_kwargs)
             cached = cache.get(key)
             if cached is not None:
                 cached_result = _mark_cache_hit(cached)
@@ -3808,7 +3999,7 @@ def call_llm(
                 return cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
+            hooks.before_call(current_model, messages, model_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
         if is_agent and not agent_retry_safe_enabled:
@@ -3830,31 +4021,17 @@ def call_llm(
 
                 result = _route_call(
                     current_model, messages,
-                    timeout=timeout, **kwargs,
+                    timeout=timeout, **model_kwargs,
                 )
             elif use_responses:
                 with _rate_limit.acquire(current_model):
                     response = litellm.responses(**call_kwargs)
-                # Background mode: poll until completed
-                bg_status = getattr(response, "status", None)
-                if bg_status and bg_status != "completed":
-                    response_id = getattr(response, "id", None)
-                    if response_id:
-                        bg_timeout = _coerce_positive_int(
-                            kwargs.get("background_timeout"),
-                            _BACKGROUND_DEFAULT_TIMEOUT,
-                        )
-                        bg_poll_interval = _coerce_positive_int(
-                            kwargs.get("background_poll_interval"),
-                            _BACKGROUND_POLL_INTERVAL,
-                        )
-                        response = _poll_background_response(
-                            response_id,
-                            api_base=current_api_base,
-                            request_timeout=timeout,
-                            timeout=bg_timeout,
-                            poll_interval=bg_poll_interval,
-                        )
+                response = _maybe_poll_background_response(
+                    response,
+                    api_base=current_api_base,
+                    request_timeout=timeout,
+                    model_kwargs=model_kwargs,
+                )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
                 with _rate_limit.acquire(current_model):
@@ -3862,7 +4039,7 @@ def call_llm(
                         current_model,
                         messages,
                         timeout=timeout,
-                        kwargs=kwargs,
+                        kwargs=model_kwargs,
                     )
                 result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
             else:
@@ -3924,7 +4101,7 @@ def call_llm(
                 max_retries=max_retries,
                 current_model=current_model,
                 current_api_base=current_api_base,
-                user_kwargs=kwargs,
+                user_kwargs=model_kwargs,
                 warning_sink=_warnings,
                 on_retry=r.on_retry,
                 caller="call_llm",
@@ -4047,10 +4224,10 @@ def call_llm_structured(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        background_mode = (
-            _needs_background_mode(current_model, reasoning_effort)
-            if _is_responses_api_model(current_model)
-            else None
+        background_mode = _background_mode_for_model(
+            model=current_model,
+            use_responses=_is_responses_api_model(current_model),
+            reasoning_effort=reasoning_effort,
         )
         key: str | None = None
         if cache is not None:
@@ -4676,8 +4853,76 @@ async def acall_llm(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
+        model_kwargs = _coerce_model_kwargs_for_execution(
+            current_model=current_model,
+            kwargs=kwargs,
+            warning_sink=_warnings,
+        )
+
+        if not is_agent and ("mcp_servers" in model_kwargs or "mcp_sessions" in model_kwargs):
+            from llm_client.mcp_agent import MCP_LOOP_KWARGS, _acall_with_mcp
+            mcp_kw, remaining = _split_agent_loop_kwargs(
+                kwargs=model_kwargs,
+                loop_kwargs=MCP_LOOP_KWARGS,
+                task=task,
+                trace_id=trace_id,
+                max_budget=max_budget,
+            )
+            inner_named_loop = dict(_inner_named)
+            inner_named_loop.pop("fallback_models", None)
+            result = await _acall_with_mcp(
+                current_model,
+                messages,
+                timeout=timeout,
+                **inner_named_loop,
+                **mcp_kw,
+                **remaining,
+            )
+            if model_idx > 0:
+                logger.info("acall_llm fallback leg %d used MCP loop on %s", model_idx + 1, current_model)
+            return result
+
+        if not is_agent and "python_tools" in model_kwargs:
+            from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
+            from llm_client.models import supports_tool_calling
+            tool_kw, remaining = _split_agent_loop_kwargs(
+                kwargs=model_kwargs,
+                loop_kwargs=TOOL_LOOP_KWARGS,
+                task=task,
+                trace_id=trace_id,
+                max_budget=max_budget,
+            )
+            inner_named_loop = dict(_inner_named)
+            inner_named_loop.pop("fallback_models", None)
+            if not supports_tool_calling(current_model):
+                from llm_client.tool_shim import _acall_with_tool_shim
+                result = await _acall_with_tool_shim(
+                    current_model,
+                    messages,
+                    timeout=timeout,
+                    **inner_named_loop,
+                    **tool_kw,
+                    **remaining,
+                )
+            else:
+                result = await _acall_with_tools(
+                    current_model,
+                    messages,
+                    timeout=timeout,
+                    **inner_named_loop,
+                    **tool_kw,
+                    **remaining,
+                )
+            if model_idx > 0:
+                logger.info("acall_llm fallback leg %d used Python tool loop on %s", model_idx + 1, current_model)
+            return result
+
         use_responses = not is_agent and _is_responses_api_model(current_model)
-        background_mode = _needs_background_mode(current_model, reasoning_effort) if use_responses else None
+        background_mode = _background_mode_for_model(
+            model=current_model,
+            use_responses=use_responses,
+            reasoning_effort=reasoning_effort,
+        )
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
@@ -4685,7 +4930,7 @@ async def acall_llm(
             and _should_use_gemini_native(
                 current_model,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
         )
@@ -4698,7 +4943,7 @@ async def acall_llm(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
         elif use_gemini_native:
@@ -4710,13 +4955,13 @@ async def acall_llm(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
 
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, **kwargs)
+            key = _cache_key(current_model, messages, **model_kwargs)
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 cached_result = _mark_cache_hit(cached)
@@ -4746,7 +4991,7 @@ async def acall_llm(
                 return cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
+            hooks.before_call(current_model, messages, model_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
         if is_agent and not agent_retry_safe_enabled:
@@ -4768,31 +5013,17 @@ async def acall_llm(
 
                 result = await _route_acall(
                     current_model, messages,
-                    timeout=timeout, **kwargs,
+                    timeout=timeout, **model_kwargs,
                 )
             elif use_responses:
                 async with _rate_limit.aacquire(current_model):
                     response = await litellm.aresponses(**call_kwargs)
-                # Background mode: poll until completed
-                bg_status = getattr(response, "status", None)
-                if bg_status and bg_status != "completed":
-                    response_id = getattr(response, "id", None)
-                    if response_id:
-                        bg_timeout = _coerce_positive_int(
-                            kwargs.get("background_timeout"),
-                            _BACKGROUND_DEFAULT_TIMEOUT,
-                        )
-                        bg_poll_interval = _coerce_positive_int(
-                            kwargs.get("background_poll_interval"),
-                            _BACKGROUND_POLL_INTERVAL,
-                        )
-                        response = await _apoll_background_response(
-                            response_id,
-                            api_base=current_api_base,
-                            request_timeout=timeout,
-                            timeout=bg_timeout,
-                            poll_interval=bg_poll_interval,
-                        )
+                response = await _maybe_apoll_background_response(
+                    response,
+                    api_base=current_api_base,
+                    request_timeout=timeout,
+                    model_kwargs=model_kwargs,
+                )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
                 async with _rate_limit.aacquire(current_model):
@@ -4800,7 +5031,7 @@ async def acall_llm(
                         current_model,
                         messages,
                         timeout=timeout,
-                        kwargs=kwargs,
+                        kwargs=model_kwargs,
                     )
                 result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
             else:
@@ -4862,7 +5093,7 @@ async def acall_llm(
                 max_retries=max_retries,
                 current_model=current_model,
                 current_api_base=current_api_base,
-                user_kwargs=kwargs,
+                user_kwargs=model_kwargs,
                 warning_sink=_warnings,
                 on_retry=r.on_retry,
                 caller="acall_llm",
@@ -4985,10 +5216,10 @@ async def acall_llm_structured(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        background_mode = (
-            _needs_background_mode(current_model, reasoning_effort)
-            if _is_responses_api_model(current_model)
-            else None
+        background_mode = _background_mode_for_model(
+            model=current_model,
+            use_responses=_is_responses_api_model(current_model),
+            reasoning_effort=reasoning_effort,
         )
         key: str | None = None
         if cache is not None:

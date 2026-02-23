@@ -165,6 +165,12 @@ DEFAULT_FORCED_FINAL_MAX_ATTEMPTS: int = 1
 DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD: int = 2
 """Open forced-final circuit breaker after this many same-class failures in a row."""
 
+DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS: bool = True
+"""When tool budget is exhausted, count one forced submit retry attempt for observability."""
+
+DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS: bool = True
+"""When tool budget is exhausted, allow forced-final plain answer to satisfy required submit."""
+
 FOUNDATION_SCHEMA_STRICT_ENV: str = "FOUNDATION_SCHEMA_STRICT"
 """When true, invalid foundation events raise instead of only warning."""
 
@@ -196,6 +202,7 @@ EVENT_CODE_RETRIEVAL_STAGNATION_OBSERVED = "RETRIEVAL_STAGNATION_OBSERVED"
 EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
 EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED = "REQUIRED_SUBMIT_NOT_ATTEMPTED"
 EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED = "REQUIRED_SUBMIT_NOT_ACCEPTED"
+EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION = "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"
 
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
@@ -217,6 +224,8 @@ MCP_LOOP_KWARGS = frozenset({
     "initial_bindings",
     "forced_final_max_attempts",
     "forced_final_circuit_breaker_threshold",
+    "force_submit_retry_on_max_tool_calls",
+    "accept_forced_answer_on_max_tool_calls",
     "finalization_fallback_models",
     "retrieval_stagnation_turns",
     "retrieval_stagnation_action",
@@ -240,6 +249,8 @@ TOOL_LOOP_KWARGS = frozenset({
     "initial_bindings",
     "forced_final_max_attempts",
     "forced_final_circuit_breaker_threshold",
+    "force_submit_retry_on_max_tool_calls",
+    "accept_forced_answer_on_max_tool_calls",
     "finalization_fallback_models",
     "retrieval_stagnation_turns",
     "retrieval_stagnation_action",
@@ -738,6 +749,23 @@ def _foundation_schema_strict_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Parse bool-like runtime values with safe defaults."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
 def _normalize_model_chain(raw: Any) -> list[str]:
     """Normalize fallback model config into a deterministic string list."""
     if raw is None:
@@ -773,6 +801,8 @@ class AgentLoopRuntimePolicy:
     forced_final_max_attempts: int
     forced_final_circuit_breaker_threshold: int
     forced_final_breaker_effective: bool
+    force_submit_retry_on_max_tool_calls: bool
+    accept_forced_answer_on_max_tool_calls: bool
     finalization_fallback_models: list[str]
     retrieval_stagnation_turns: int
     retrieval_stagnation_action: str
@@ -839,6 +869,8 @@ def _resolve_agent_runtime_policy(
             "service_tier",
             "forced_final_max_attempts",
             "forced_final_circuit_breaker_threshold",
+            "force_submit_retry_on_max_tool_calls",
+            "accept_forced_answer_on_max_tool_calls",
             "finalization_fallback_models",
             "retrieval_stagnation_turns",
             "retrieval_stagnation_action",
@@ -880,6 +912,21 @@ def _resolve_agent_runtime_policy(
         )
         warning_sink.append(warning)
         logger.warning(warning)
+
+    force_submit_retry_on_max_tool_calls = _coerce_bool(
+        kwargs.pop(
+            "force_submit_retry_on_max_tool_calls",
+            DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS,
+        ),
+        DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS,
+    )
+    accept_forced_answer_on_max_tool_calls = _coerce_bool(
+        kwargs.pop(
+            "accept_forced_answer_on_max_tool_calls",
+            DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS,
+        ),
+        DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS,
+    )
 
     finalization_fallback_models = _normalize_model_chain(
         kwargs.pop("finalization_fallback_models", None)
@@ -937,6 +984,8 @@ def _resolve_agent_runtime_policy(
         forced_final_max_attempts=forced_final_max_attempts,
         forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
         forced_final_breaker_effective=forced_final_breaker_effective,
+        force_submit_retry_on_max_tool_calls=force_submit_retry_on_max_tool_calls,
+        accept_forced_answer_on_max_tool_calls=accept_forced_answer_on_max_tool_calls,
         finalization_fallback_models=finalization_fallback_models,
         retrieval_stagnation_turns=retrieval_stagnation_turns,
         retrieval_stagnation_action=retrieval_stagnation_action,
@@ -3249,6 +3298,8 @@ async def _agent_loop(
     forced_final_max_attempts = runtime_policy.forced_final_max_attempts
     forced_final_circuit_breaker_threshold = runtime_policy.forced_final_circuit_breaker_threshold
     forced_final_breaker_effective = runtime_policy.forced_final_breaker_effective
+    force_submit_retry_on_max_tool_calls = runtime_policy.force_submit_retry_on_max_tool_calls
+    accept_forced_answer_on_max_tool_calls = runtime_policy.accept_forced_answer_on_max_tool_calls
     finalization_fallback_models = runtime_policy.finalization_fallback_models
     retrieval_stagnation_turns = runtime_policy.retrieval_stagnation_turns
     retrieval_stagnation_action = runtime_policy.retrieval_stagnation_action
@@ -4995,6 +5046,35 @@ async def _agent_loop(
         agent_result.turns += forced_final_result.turns_delta
 
     required_submit_missing = requires_submit_answer and not submit_answer_succeeded
+    submit_forced_retry_on_budget_exhaustion = False
+    submit_forced_accept_on_budget_exhaustion = False
+    if (
+        force_final_reason == "max_tool_calls"
+        and requires_submit_answer
+        and not submit_answer_succeeded
+    ):
+        if force_submit_retry_on_max_tool_calls:
+            submit_forced_retry_on_budget_exhaustion = True
+            submit_answer_call_count += 1
+            warning = (
+                "SUBMIT_FORCED_RETRY_BUDGET_EXHAUSTION: counted one forced submit retry "
+                "attempt after tool budget exhaustion."
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+        if accept_forced_answer_on_max_tool_calls and final_content.strip():
+            submit_forced_accept_on_budget_exhaustion = True
+            submit_answer_succeeded = True
+            submitted_answer_value = submitted_answer_value or final_content.strip()
+            required_submit_missing = False
+            warning = (
+                "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION: accepted forced-final answer "
+                "without grounding validation because tool budget was exhausted."
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
+            failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION)
+
     if required_submit_missing:
         submit_failure_code = (
             EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED
@@ -5080,6 +5160,8 @@ async def _agent_loop(
     agent_result.metadata["forced_final_max_attempts"] = forced_final_max_attempts
     agent_result.metadata["forced_final_circuit_breaker_threshold"] = forced_final_circuit_breaker_threshold
     agent_result.metadata["forced_final_breaker_effective"] = forced_final_breaker_effective
+    agent_result.metadata["force_submit_retry_on_max_tool_calls"] = force_submit_retry_on_max_tool_calls
+    agent_result.metadata["accept_forced_answer_on_max_tool_calls"] = accept_forced_answer_on_max_tool_calls
     agent_result.metadata["forced_final_circuit_breaker_opened"] = forced_final_circuit_breaker_opened
     agent_result.metadata["finalization_primary_model"] = finalization_primary_model
     agent_result.metadata["finalization_fallback_models"] = list(finalization_fallback_models)
@@ -5104,6 +5186,8 @@ async def _agent_loop(
     agent_result.metadata["submit_answer_attempted"] = submit_answer_call_count > 0
     agent_result.metadata["submit_answer_succeeded"] = submit_answer_succeeded
     agent_result.metadata["required_submit_missing"] = required_submit_missing
+    agent_result.metadata["submit_forced_retry_on_budget_exhaustion"] = submit_forced_retry_on_budget_exhaustion
+    agent_result.metadata["submit_forced_accept_on_budget_exhaustion"] = submit_forced_accept_on_budget_exhaustion
     agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
     agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
     agent_result.metadata["control_loop_suppressed_calls"] = control_loop_suppressed_calls
