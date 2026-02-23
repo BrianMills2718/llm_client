@@ -2245,17 +2245,39 @@ def _finalize_agent_loop_result(
     trace_id: str | None,
 ) -> LLMCallResult:
     """Attach identity/routing trace and emit final call log for loop results."""
+    existing_trace = result.routing_trace if isinstance(result.routing_trace, dict) else {}
+    existing_attempted = existing_trace.get("attempted_models")
+    attempted_models = (
+        [str(m).strip() for m in existing_attempted if isinstance(m, str) and str(m).strip()]
+        if isinstance(existing_attempted, list)
+        else []
+    )
+    if not attempted_models:
+        attempted_models = [primary_model]
+
+    existing_sticky = existing_trace.get("sticky_fallback")
+    sticky_fallback = (
+        bool(existing_sticky)
+        if isinstance(existing_sticky, bool)
+        else any("STICKY_FALLBACK" in w for w in (result.warnings or []))
+    )
+    selected_model = (
+        result.resolved_model
+        or (str(result.model).strip() if isinstance(result.model, str) and str(result.model).strip() else None)
+    )
+    api_base_model = selected_model or primary_model
+
     finalized = _annotate_result_identity(
         result,
         requested_model=requested_model,
         resolved_model=result.resolved_model,
         routing_trace=_build_routing_trace(
             requested_model=requested_model,
-            attempted_models=[primary_model],
-            selected_model=result.resolved_model,
+            attempted_models=attempted_models,
+            selected_model=selected_model,
             requested_api_base=requested_api_base,
-            effective_api_base=_resolve_api_base_for_model(primary_model, requested_api_base, config),
-            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+            effective_api_base=_resolve_api_base_for_model(api_base_model, requested_api_base, config),
+            sticky_fallback=sticky_fallback,
             routing_policy=routing_policy,
         ),
     )

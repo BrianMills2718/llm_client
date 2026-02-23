@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from llm_client import (
+    LLMCallResult,
     acall_llm,
     acall_llm_structured,
     astream_llm,
@@ -419,6 +420,168 @@ class TestModelIdentityContract:
         assert result.routing_trace is not None
         assert result.routing_trace["attempted_models"] == ["requested-model", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
+
+    @patch("llm_client.models.supports_tool_calling", return_value=True)
+    @patch("llm_client.mcp_agent._acall_with_tools")
+    def test_sync_call_llm_tool_loop_preserves_agent_routing_trace(
+        self,
+        mock_tool_loop: MagicMock,
+        _mock_supports_tools: MagicMock,
+    ) -> None:
+        mock_tool_loop.return_value = LLMCallResult(
+            content="done",
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model="fallback-model",
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=["STICKY_FALLBACK: gpt-4 -> fallback-model"],
+        )
+        mock_tool_loop.return_value.requested_model = "gpt-4"
+        mock_tool_loop.return_value.resolved_model = "fallback-model"
+        mock_tool_loop.return_value.routing_trace = {
+            "attempted_models": ["gpt-4", "fallback-model"],
+            "sticky_fallback": True,
+        }
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            python_tools=[object()],
+            task="test",
+            trace_id="identity.sync.tools.loop.trace",
+            max_budget=0,
+            config=ClientConfig(routing_policy="direct"),
+        )
+
+        assert result.model == "fallback-model"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "fallback-model"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
+        assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["selected_model"] == "fallback-model"
+
+    @pytest.mark.asyncio
+    @patch("llm_client.models.supports_tool_calling", return_value=True)
+    @patch("llm_client.mcp_agent._acall_with_tools")
+    async def test_async_call_llm_tool_loop_preserves_agent_routing_trace(
+        self,
+        mock_tool_loop: AsyncMock,
+        _mock_supports_tools: MagicMock,
+    ) -> None:
+        mock_tool_loop.return_value = LLMCallResult(
+            content="done",
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model="fallback-model",
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=["STICKY_FALLBACK: gpt-4 -> fallback-model"],
+        )
+        mock_tool_loop.return_value.requested_model = "gpt-4"
+        mock_tool_loop.return_value.resolved_model = "fallback-model"
+        mock_tool_loop.return_value.routing_trace = {
+            "attempted_models": ["gpt-4", "fallback-model"],
+            "sticky_fallback": True,
+        }
+
+        result = await acall_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            python_tools=[object()],
+            task="test",
+            trace_id="identity.async.tools.loop.trace",
+            max_budget=0,
+            config=ClientConfig(routing_policy="direct"),
+        )
+
+        assert result.model == "fallback-model"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "fallback-model"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
+        assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["selected_model"] == "fallback-model"
+
+    @patch("llm_client.mcp_agent._acall_with_mcp")
+    def test_sync_call_llm_mcp_loop_preserves_agent_routing_trace(
+        self,
+        mock_mcp_loop: MagicMock,
+    ) -> None:
+        mock_mcp_loop.return_value = LLMCallResult(
+            content="done",
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model="fallback-model",
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=["STICKY_FALLBACK: gpt-4 -> fallback-model"],
+        )
+        mock_mcp_loop.return_value.requested_model = "gpt-4"
+        mock_mcp_loop.return_value.resolved_model = "fallback-model"
+        mock_mcp_loop.return_value.routing_trace = {
+            "attempted_models": ["gpt-4", "fallback-model"],
+            "sticky_fallback": True,
+        }
+
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+            task="test",
+            trace_id="identity.sync.mcp.loop.trace",
+            max_budget=0,
+            config=ClientConfig(routing_policy="direct"),
+        )
+
+        assert result.model == "fallback-model"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "fallback-model"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
+        assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["selected_model"] == "fallback-model"
+
+    @pytest.mark.asyncio
+    @patch("llm_client.mcp_agent._acall_with_mcp")
+    async def test_async_call_llm_mcp_loop_preserves_agent_routing_trace(
+        self,
+        mock_mcp_loop: AsyncMock,
+    ) -> None:
+        mock_mcp_loop.return_value = LLMCallResult(
+            content="done",
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model="fallback-model",
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=["STICKY_FALLBACK: gpt-4 -> fallback-model"],
+        )
+        mock_mcp_loop.return_value.requested_model = "gpt-4"
+        mock_mcp_loop.return_value.resolved_model = "fallback-model"
+        mock_mcp_loop.return_value.routing_trace = {
+            "attempted_models": ["gpt-4", "fallback-model"],
+            "sticky_fallback": True,
+        }
+
+        result = await acall_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+            task="test",
+            trace_id="identity.async.mcp.loop.trace",
+            max_budget=0,
+            config=ClientConfig(routing_policy="direct"),
+        )
+
+        assert result.model == "fallback-model"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "fallback-model"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == ["gpt-4", "fallback-model"]
+        assert result.routing_trace["sticky_fallback"] is True
+        assert result.routing_trace["selected_model"] == "fallback-model"
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")

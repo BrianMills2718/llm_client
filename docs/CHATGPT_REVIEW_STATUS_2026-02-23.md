@@ -386,3 +386,24 @@ Expanded required-reading coverage and added CI smoke checks for mode behavior:
 Validation snapshot after this pass:
 1. `pytest -q tests/test_required_reading_gate.py`
 2. `pytest -q`
+
+## 21) Additional follow-up (agent-loop routing trace preservation)
+Hardened call-path identity finalization so agent-loop metadata is not collapsed
+at the client boundary:
+1. `llm_client/client.py` `_finalize_agent_loop_result` now preserves
+   loop-provided routing metadata when present:
+   - `attempted_models` from loop result trace (instead of forcing `[primary_model]`)
+   - `sticky_fallback` from loop trace (fallback to warning-derived detection)
+2. Effective `api_base` and `selected_model` attribution now resolve against the
+   finalized/selected model identity when available.
+3. Added contract tests in `tests/test_model_identity_contract.py` for:
+   - sync `call_llm` + `python_tools` loop path
+   - async `acall_llm` + `python_tools` loop path
+   - sync `call_llm` + `mcp_servers` loop path
+   - async `acall_llm` + `mcp_servers` loop path
+   Each test locks that loop-provided `attempted_models` and
+   `sticky_fallback` survive finalization.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_model_identity_contract.py tests/test_mcp_agent.py tests/test_routing.py`
+2. `pytest -q`
