@@ -58,6 +58,12 @@ All notable changes to `llm-client` are documented in this file.
   - Codex SDK timeouts now raise explicit structured messages
     (`CODEX_TIMEOUT[codex_call|codex_structured_call]`) including model and
     execution context (`working_directory`, `sandbox_mode`, `approval_policy`).
+  - Codex timeout enforcement now uses a hard-timeout pattern
+    (`asyncio.wait` + bounded cancellation grace) instead of relying only on
+    `asyncio.wait_for`, which can stall when cancellation is suppressed.
+  - Timeout diagnostics now include Codex exec lifecycle fields (first/last
+    event timing, line counts, subprocess argv/pid) and best-effort process
+    termination telemetry when cancellation does not complete.
   - Codex turn tasks now perform bounded cleanup on cancellation/timeouts to
     reduce lingering subprocess transport warnings after outer watchdog aborts.
   - Retry classification now treats timeout exception classes as retryable even

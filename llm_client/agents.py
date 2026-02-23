@@ -23,7 +23,9 @@ import logging
 import os
 import queue
 import re
+import signal
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -764,6 +766,137 @@ def _cleanup_tmp(tmp_dir: str | None) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _safe_error_text(exc: BaseException) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    return type(exc).__name__
+
+
+def _compact_json(payload: dict[str, Any], *, max_chars: int = 1800) -> str:
+    try:
+        rendered = _json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+    except Exception:
+        rendered = str(payload)
+    if len(rendered) <= max_chars:
+        return rendered
+    return rendered[:max_chars] + "...(truncated)"
+
+
+def _collect_process_tree_snapshot(root_pid: int, *, max_nodes: int = 20) -> list[dict[str, Any]]:
+    """Collect a small process-tree snapshot rooted at *root_pid*.
+
+    Best-effort only: returns [] on parse/command failures.
+    """
+    if root_pid <= 0:
+        return []
+    try:
+        out = subprocess.check_output(
+            ["ps", "-eo", "pid=,ppid=,stat=,etime=,pcpu=,pmem=,command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=1.5,
+        )
+    except Exception:
+        return []
+
+    nodes: dict[int, dict[str, Any]] = {}
+    children: dict[int, list[int]] = {}
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split(None, 6)
+        if len(parts) < 7:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except Exception:
+            continue
+        rec = {
+            "pid": pid,
+            "ppid": ppid,
+            "stat": parts[2],
+            "etime": parts[3],
+            "pcpu": parts[4],
+            "pmem": parts[5],
+            "command": parts[6][:220],
+        }
+        nodes[pid] = rec
+        children.setdefault(ppid, []).append(pid)
+
+    if root_pid not in nodes:
+        return []
+
+    out_nodes: list[dict[str, Any]] = []
+    q: list[int] = [root_pid]
+    seen: set[int] = set()
+    while q and len(out_nodes) < max_nodes:
+        pid = q.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        node = nodes.get(pid)
+        if node is None:
+            continue
+        out_nodes.append(node)
+        q.extend(children.get(pid, []))
+    return out_nodes
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _terminate_pid_tree(root_pid: int, *, grace_s: float = 0.8) -> dict[str, Any]:
+    """Best-effort terminate a process tree rooted at *root_pid*."""
+    snapshot = _collect_process_tree_snapshot(root_pid, max_nodes=64)
+    pids = [int(n["pid"]) for n in snapshot if isinstance(n.get("pid"), int)]
+    if root_pid not in pids:
+        pids.append(root_pid)
+    # Children first when possible
+    pids = list(dict.fromkeys(reversed(pids)))
+
+    result: dict[str, Any] = {
+        "root_pid": root_pid,
+        "target_pids": pids,
+        "term_sent": [],
+        "kill_sent": [],
+        "alive_after": [],
+    }
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            cast(list[int], result["term_sent"]).append(pid)
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + max(0.0, grace_s)
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _process_exists(pid)]
+        if not alive:
+            break
+        time.sleep(0.05)
+
+    alive_after_term = [pid for pid in pids if _process_exists(pid)]
+    for pid in alive_after_term:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            cast(list[int], result["kill_sent"]).append(pid)
+        except Exception:
+            pass
+
+    result["alive_after"] = [pid for pid in pids if _process_exists(pid)]
+    return result
+
+
 _codex_patched = False
 
 
@@ -787,18 +920,46 @@ def _patch_codex_buffer_limit() -> None:
 
         @functools.wraps(_original_run)
         async def _patched_run(self: Any, args: Any) -> Any:
+            start_mono = time.monotonic()
+            run_diag: dict[str, Any] = {
+                "started_s": 0.0,
+                "lines_seen": 0,
+                "first_line_s": None,
+                "last_line_s": None,
+                "proc_pid": None,
+                "proc_argv": None,
+                "proc_started_s": None,
+                "exception_type": None,
+                "exception": None,
+                "ended_s": None,
+            }
+            setattr(self, "_llmc_last_run_diag", run_diag)
             # Monkey-patch create_subprocess_exec to inject limit=4MB
             _orig_create = _aio.create_subprocess_exec
 
             async def _create_with_limit(*a: Any, **kw: Any) -> Any:
                 kw.setdefault("limit", 4 * 1024 * 1024)
-                return await _orig_create(*a, **kw)
+                proc = await _orig_create(*a, **kw)
+                run_diag["proc_pid"] = int(getattr(proc, "pid", 0) or 0) or None
+                run_diag["proc_argv"] = [str(x) for x in a[:8]]
+                run_diag["proc_started_s"] = round(time.monotonic() - start_mono, 3)
+                return proc
 
             _aio.create_subprocess_exec = cast(Any, _create_with_limit)
             try:
                 async for line in _original_run(self, args):
+                    now_s = round(time.monotonic() - start_mono, 3)
+                    run_diag["lines_seen"] = int(run_diag.get("lines_seen", 0) or 0) + 1
+                    if run_diag["first_line_s"] is None:
+                        run_diag["first_line_s"] = now_s
+                    run_diag["last_line_s"] = now_s
                     yield line
+            except BaseException as exc:
+                run_diag["exception_type"] = type(exc).__name__
+                run_diag["exception"] = _safe_error_text(exc)
+                raise
             finally:
+                run_diag["ended_s"] = round(time.monotonic() - start_mono, 3)
                 _aio.create_subprocess_exec = cast(Any, _orig_create)
 
         setattr(CodexExec, "run", _patched_run)
@@ -973,6 +1134,7 @@ def _codex_timeout_message(
     working_directory: Any,
     sandbox_mode: Any,
     approval_policy: Any,
+    diagnostics: dict[str, Any] | None = None,
     structured: bool = False,
 ) -> str:
     """Build a stable timeout message for Codex SDK calls."""
@@ -980,10 +1142,83 @@ def _codex_timeout_message(
     wd = str(working_directory or "<unset>")
     sandbox = str(sandbox_mode or "<unset>")
     approval = str(approval_policy or "<unset>")
-    return (
+    message = (
         f"CODEX_TIMEOUT[{call_kind}] after {int(timeout_s)}s "
         f"(model={model}, working_directory={wd}, sandbox_mode={sandbox}, "
         f"approval_policy={approval})"
+    )
+    if diagnostics:
+        message += f" diagnostics={_compact_json(diagnostics)}"
+    return message
+
+
+def _codex_exec_diagnostics(thread: Any) -> dict[str, Any]:
+    """Collect Codex exec run diagnostics + process tree snapshot."""
+    exec_obj = getattr(thread, "_exec", None)
+    if exec_obj is None:
+        return {}
+    raw = getattr(exec_obj, "_llmc_last_run_diag", None)
+    if not isinstance(raw, dict):
+        return {}
+    diag = dict(raw)
+    pid = diag.get("proc_pid")
+    if isinstance(pid, int) and pid > 0:
+        diag["process_tree"] = _collect_process_tree_snapshot(pid)
+    return diag
+
+
+async def _await_codex_turn_with_hard_timeout(
+    turn_coro: Any,
+    *,
+    timeout_s: int,
+    cancel_grace_s: float = 2.0,
+) -> tuple[Any, dict[str, Any]]:
+    """Await Codex turn with a hard timeout not blocked by cancellation stalls.
+
+    ``asyncio.wait_for`` can block while waiting for task cancellation if the
+    underlying coroutine suppresses cancellation. This helper enforces timeout
+    using ``asyncio.wait`` and bounded cancel-grace.
+    """
+    start_mono = time.monotonic()
+    turn_task = asyncio.create_task(turn_coro)
+    done, _pending = await asyncio.wait(
+        {turn_task},
+        timeout=float(timeout_s),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if turn_task in done:
+        return await turn_task, {
+            "elapsed_s": round(time.monotonic() - start_mono, 3),
+            "timed_out": False,
+        }
+
+    # Hard timeout path
+    turn_task.cancel()
+    cancel_started = time.monotonic()
+    done_after_cancel, _pending_after_cancel = await asyncio.wait(
+        {turn_task},
+        timeout=cancel_grace_s,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    cancel_completed = turn_task in done_after_cancel
+    if not cancel_completed:
+        logger.warning(
+            "Codex turn cancellation exceeded grace window (%.1fs); proceeding with timeout",
+            cancel_grace_s,
+        )
+    raise TimeoutError(
+        _compact_json(
+            {
+                "timed_out": True,
+                "timeout_s": int(timeout_s),
+                "elapsed_s": round(time.monotonic() - start_mono, 3),
+                "cancel_grace_s": round(cancel_grace_s, 3),
+                "cancel_wait_s": round(time.monotonic() - cancel_started, 3),
+                "cancel_completed": cancel_completed,
+                "task_done": turn_task.done(),
+            },
+            max_chars=700,
+        )
     )
 
 
@@ -1008,24 +1243,43 @@ async def _acall_codex(
         async def _run() -> Any:
             return await thread.run(prompt, turn_opts)
 
+        run_started = time.monotonic()
         if timeout > 0:
-            turn_task = asyncio.create_task(_run())
             try:
-                turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+                turn, _ = await _await_codex_turn_with_hard_timeout(
+                    _run(),
+                    timeout_s=int(timeout),
+                )
             except asyncio.CancelledError:
-                turn_task.cancel()
-                try:
-                    await asyncio.wait_for(turn_task, timeout=2.0)
-                except BaseException:
-                    pass
                 raise
             except asyncio.TimeoutError as exc:
-                turn_task.cancel()
-                # Bound cancellation wait so timeout plumbing cannot stall forever.
-                try:
-                    await asyncio.wait_for(turn_task, timeout=2.0)
-                except BaseException:
-                    pass
+                timeout_diag: dict[str, Any] = {
+                    "phase": "await_thread_run",
+                    "elapsed_s": round(time.monotonic() - run_started, 3),
+                }
+                # Parse internal timeout diagnostics payload when present.
+                payload = _safe_error_text(exc).strip()
+                if payload.startswith("{") and payload.endswith("}"):
+                    try:
+                        parsed = _json.loads(payload)
+                        if isinstance(parsed, dict):
+                            timeout_diag["hard_timeout"] = parsed
+                    except Exception:
+                        timeout_diag["hard_timeout_raw"] = payload[:300]
+                else:
+                    timeout_diag["hard_timeout_raw"] = payload[:300]
+                exec_diag = _codex_exec_diagnostics(thread)
+                if exec_diag:
+                    timeout_diag["exec"] = exec_diag
+                    hard = timeout_diag.get("hard_timeout")
+                    if (
+                        isinstance(hard, dict)
+                        and hard.get("cancel_completed") is False
+                        and isinstance(exec_diag.get("proc_pid"), int)
+                        and int(exec_diag["proc_pid"]) > 0
+                    ):
+                        timeout_diag["forced_terminate"] = _terminate_pid_tree(int(exec_diag["proc_pid"]))
+                logger.warning("Codex timeout diagnostics: %s", _compact_json(timeout_diag, max_chars=2500))
                 raise TimeoutError(
                     _codex_timeout_message(
                         model=model,
@@ -1033,6 +1287,7 @@ async def _acall_codex(
                         working_directory=getattr(thread_opts, "working_directory", None),
                         sandbox_mode=getattr(thread_opts, "sandbox_mode", None),
                         approval_policy=getattr(thread_opts, "approval_policy", None),
+                        diagnostics=timeout_diag,
                         structured=False,
                     )
                 ) from exc
@@ -1100,23 +1355,42 @@ async def _acall_codex_structured(
         async def _run() -> Any:
             return await thread.run(prompt, turn_opts)
 
+        run_started = time.monotonic()
         if timeout > 0:
-            turn_task = asyncio.create_task(_run())
             try:
-                turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+                turn, _ = await _await_codex_turn_with_hard_timeout(
+                    _run(),
+                    timeout_s=int(timeout),
+                )
             except asyncio.CancelledError:
-                turn_task.cancel()
-                try:
-                    await asyncio.wait_for(turn_task, timeout=2.0)
-                except BaseException:
-                    pass
                 raise
             except asyncio.TimeoutError as exc:
-                turn_task.cancel()
-                try:
-                    await asyncio.wait_for(turn_task, timeout=2.0)
-                except BaseException:
-                    pass
+                timeout_diag: dict[str, Any] = {
+                    "phase": "await_thread_run",
+                    "elapsed_s": round(time.monotonic() - run_started, 3),
+                }
+                payload = _safe_error_text(exc).strip()
+                if payload.startswith("{") and payload.endswith("}"):
+                    try:
+                        parsed = _json.loads(payload)
+                        if isinstance(parsed, dict):
+                            timeout_diag["hard_timeout"] = parsed
+                    except Exception:
+                        timeout_diag["hard_timeout_raw"] = payload[:300]
+                else:
+                    timeout_diag["hard_timeout_raw"] = payload[:300]
+                exec_diag = _codex_exec_diagnostics(thread)
+                if exec_diag:
+                    timeout_diag["exec"] = exec_diag
+                    hard = timeout_diag.get("hard_timeout")
+                    if (
+                        isinstance(hard, dict)
+                        and hard.get("cancel_completed") is False
+                        and isinstance(exec_diag.get("proc_pid"), int)
+                        and int(exec_diag["proc_pid"]) > 0
+                    ):
+                        timeout_diag["forced_terminate"] = _terminate_pid_tree(int(exec_diag["proc_pid"]))
+                logger.warning("Codex structured timeout diagnostics: %s", _compact_json(timeout_diag, max_chars=2500))
                 raise TimeoutError(
                     _codex_timeout_message(
                         model=model,
@@ -1124,6 +1398,7 @@ async def _acall_codex_structured(
                         working_directory=getattr(thread_opts, "working_directory", None),
                         sandbox_mode=getattr(thread_opts, "sandbox_mode", None),
                         approval_policy=getattr(thread_opts, "approval_policy", None),
+                        diagnostics=timeout_diag,
                         structured=True,
                     )
                 ) from exc
