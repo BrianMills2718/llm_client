@@ -182,6 +182,8 @@ EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED = "FINALIZATION_TOOL_CALL_DISALLOWE
 EVENT_CODE_RETRIEVAL_STAGNATION = "RETRIEVAL_STAGNATION"
 EVENT_CODE_RETRIEVAL_STAGNATION_OBSERVED = "RETRIEVAL_STAGNATION_OBSERVED"
 EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
+EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED = "REQUIRED_SUBMIT_NOT_ATTEMPTED"
+EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED = "REQUIRED_SUBMIT_NOT_ACCEPTED"
 
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
@@ -2470,6 +2472,8 @@ _TERMINAL_FAILURE_EVENT_CODES: frozenset[str] = frozenset({
     EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
     EVENT_CODE_RETRIEVAL_STAGNATION,
     EVENT_CODE_CONTROL_CHURN_THRESHOLD,
+    EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED,
+    EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED,
 })
 
 
@@ -2513,6 +2517,8 @@ def _classify_failure_signals(
 def _failure_class_for_event_code(code: str) -> str | None:
     """Map event code to one stable failure class for rollups/classification."""
     if code == EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED:
+        return "policy"
+    if code.startswith("REQUIRED_SUBMIT_"):
         return "policy"
     if code.startswith("PROVIDER_"):
         return "provider"
@@ -3005,6 +3011,7 @@ async def _agent_loop(
     artifact_timeline = tool_state.artifact_timeline
     requires_submit_answer = tool_state.requires_submit_answer
     submit_answer_succeeded = False
+    submit_answer_call_count = 0
     force_final_reason: str | None = None
     pending_submit_todo_ids: list[str] = []
 
@@ -4370,6 +4377,7 @@ async def _agent_loop(
         for record in records:
             if record.tool != "submit_answer":
                 continue
+            submit_answer_call_count += 1
             if record.error:
                 submit_error_this_turn = True
                 submit_errors.append(str(record.error))
@@ -4743,7 +4751,57 @@ async def _agent_loop(
         )
         agent_result.turns += forced_final_result.turns_delta
 
-    run_completed = submit_answer_succeeded or final_finish_reason != "error"
+    required_submit_missing = requires_submit_answer and not submit_answer_succeeded
+    if required_submit_missing:
+        submit_failure_code = (
+            EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED
+            if submit_answer_call_count == 0
+            else EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED
+        )
+        if not failure_event_codes:
+            # Classify missing required submit as terminal/policy only when no
+            # stronger prior failure signal has already explained the run.
+            failure_event_codes.append(submit_failure_code)
+        warning = (
+            "REQUIRED_SUBMIT: submit_answer tool is available but no accepted submit was recorded. "
+            f"submit_answer_call_count={submit_answer_call_count}."
+        )
+        agent_result.warnings.append(warning)
+        logger.warning(warning)
+        _emit_foundation_event(
+            {
+                "event_id": new_event_id(),
+                "event_type": "ToolFailed",
+                "timestamp": now_iso(),
+                "run_id": foundation_run_id,
+                "session_id": foundation_session_id,
+                "actor_id": foundation_actor_id,
+                "operation": {"name": "submit_answer", "version": None},
+                "inputs": {
+                    "artifact_ids": sorted(available_artifacts),
+                    "params": {
+                        "submit_answer_call_count": submit_answer_call_count,
+                        "submit_answer_succeeded": submit_answer_succeeded,
+                        "reason": "required_submit_not_satisfied",
+                    },
+                    "bindings": dict(available_bindings),
+                },
+                "outputs": {"artifact_ids": [], "payload_hashes": []},
+                "failure": {
+                    "error_code": submit_failure_code,
+                    "category": "policy",
+                    "phase": "post_validation",
+                    "retryable": False,
+                    "tool_name": "submit_answer",
+                    "user_message": warning,
+                    "debug_ref": None,
+                },
+            }
+        )
+
+    run_completed = (not required_submit_missing) and (
+        submit_answer_succeeded or final_finish_reason != "error"
+    )
     failure_summary = _summarize_failure_events(
         failure_event_codes=failure_event_codes,
         retrieval_no_hits_count=retrieval_no_hits_count,
@@ -4798,6 +4856,11 @@ async def _agent_loop(
     agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
     agent_result.metadata["budgeted_tool_calls_used"] = _count_budgeted_records(agent_result.tool_calls)
     agent_result.metadata["budget_exempt_tools"] = sorted(BUDGET_EXEMPT_TOOL_NAMES)
+    agent_result.metadata["requires_submit_answer"] = requires_submit_answer
+    agent_result.metadata["submit_answer_call_count"] = submit_answer_call_count
+    agent_result.metadata["submit_answer_attempted"] = submit_answer_call_count > 0
+    agent_result.metadata["submit_answer_succeeded"] = submit_answer_succeeded
+    agent_result.metadata["required_submit_missing"] = required_submit_missing
     agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
     agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
     agent_result.metadata["control_loop_suppressed_calls"] = control_loop_suppressed_calls
