@@ -170,6 +170,18 @@ _DEFAULT_MODELS: list[dict[str, Any]] = [
         "structured_output": True,
         "tags": ["2m-context"],
     },
+    {
+        "name": "gpt-5.2-pro",
+        "litellm_id": "gpt-5.2-pro",
+        "provider": "openai",
+        "api_key_env": "OPENAI_API_KEY",
+        "intelligence": 50,
+        "speed": 5,
+        "cost": 94.5,  # blended: $21 input + $168 output per 1M
+        "context": 128_000,
+        "structured_output": True,
+        "tags": ["frontier", "long-thinking", "deep-review"],
+    },
 ]
 
 _DEFAULT_TASKS: dict[str, dict[str, Any]] = {
@@ -207,6 +219,11 @@ _DEFAULT_TASKS: dict[str, dict[str, Any]] = {
         "description": "LLM-as-judge rubric scoring of task outputs",
         "require": {"structured_output": True, "min_intelligence": 30},
         "prefer": ["-cost", "intelligence"],
+    },
+    "deep_review": {
+        "description": "Research-grade architectural review (long-thinking)",
+        "require": {"min_intelligence": 48},
+        "prefer": ["intelligence"],
     },
 }
 

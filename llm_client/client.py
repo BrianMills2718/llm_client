@@ -1536,14 +1536,20 @@ def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-_RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
+_RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-pro"}
 _GPT5_ALWAYS_STRIP_SAMPLING = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
 _GPT5_REASONING_GATED_SAMPLING = {
     "gpt-5.1",
     "gpt-5.2",
+    "gpt-5.2-pro",
     "gpt-5.1-chat-latest",
     "gpt-5.2-chat-latest",
 }
+# Models that support long-thinking (5-10 min) and need background polling
+_LONG_THINKING_MODELS = {"gpt-5.2-pro"}
+_LONG_THINKING_REASONING_EFFORTS = {"high", "xhigh"}
+_BACKGROUND_POLL_INTERVAL = 15  # seconds between polls
+_BACKGROUND_DEFAULT_TIMEOUT = 900  # 15 minutes
 _GPT5_SAMPLING_PARAMS = ("temperature", "top_p", "logprobs", "top_logprobs")
 _UNSUPPORTED_PARAM_POLICY_ENV = "LLM_CLIENT_UNSUPPORTED_PARAM_POLICY"
 _UNSUPPORTED_PARAM_POLICIES = frozenset({"coerce_and_warn", "coerce_silent", "error"})
@@ -2282,7 +2288,7 @@ def _finalize_agent_loop_result(
         ),
     )
     _io_log.log_call(
-        model=primary_model,
+        model=selected_model or primary_model,
         messages=messages,
         result=finalized,
         latency_s=time.monotonic() - log_started_at,
@@ -2839,9 +2845,18 @@ def _prepare_responses_kwargs(
             response_format
         )
 
+    # Pass through reasoning_effort for models that support it (gpt-5.2-pro etc.)
+    reasoning_effort = kwargs.pop("reasoning_effort", None)
+    if reasoning_effort and _base_model_name(model) in _GPT5_REASONING_GATED_SAMPLING:
+        resp_kwargs["reasoning"] = {"effort": reasoning_effort}
+
+    # Enable background mode for long-thinking models
+    if _needs_background_mode(model, reasoning_effort):
+        resp_kwargs["background"] = True
+
     # Strip parameters that break GPT-5 or don't apply to responses API
     for key in ("max_tokens", "max_output_tokens", "messages",
-                "reasoning_effort", "thinking", "temperature", "unsupported_param_policy"):
+                "thinking", "temperature", "unsupported_param_policy"):
         kwargs.pop(key, None)
 
     # Convert tools from ChatCompletions format to Responses API format.
@@ -3040,6 +3055,134 @@ def _build_result_from_responses(
         raw_response=response,
         warnings=warnings or [],
         cost_source=cost_source,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Background polling for long-thinking models (gpt-5.2-pro xhigh etc.)
+# ---------------------------------------------------------------------------
+
+
+def _needs_background_mode(model: str, reasoning_effort: str | None) -> bool:
+    """Check if a model+reasoning_effort combination needs background polling.
+
+    Long-thinking models like gpt-5.2-pro with high/xhigh reasoning can
+    think for 5-10 minutes, exceeding normal HTTP timeouts.
+    """
+    base = _base_model_name(model)
+    return (
+        base in _LONG_THINKING_MODELS
+        and reasoning_effort is not None
+        and reasoning_effort.lower() in _LONG_THINKING_REASONING_EFFORTS
+    )
+
+
+def _poll_background_response(
+    response_id: str,
+    *,
+    poll_interval: int = _BACKGROUND_POLL_INTERVAL,
+    timeout: int = _BACKGROUND_DEFAULT_TIMEOUT,
+) -> Any:
+    """Poll for a background Responses API response until completed.
+
+    Synchronous polling loop. Calls litellm.responses.retrieve()
+    at regular intervals until status is 'completed' or timeout.
+
+    Args:
+        response_id: The response ID returned from the initial background request.
+        poll_interval: Seconds between poll attempts.
+        timeout: Max total wait time in seconds.
+
+    Returns:
+        The completed response object.
+
+    Raises:
+        TimeoutError: If the response doesn't complete within timeout.
+        RuntimeError: If the response fails or is cancelled.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    attempt = 0
+    while _time.monotonic() < deadline:
+        try:
+            response = litellm.responses.retrieve(response_id=response_id)
+        except Exception as e:
+            logger.warning("Background poll attempt %d failed: %s", attempt, e)
+            _time.sleep(poll_interval)
+            attempt += 1
+            continue
+
+        status = getattr(response, "status", None)
+        if status == "completed":
+            logger.info(
+                "Background response %s completed after %d polls",
+                response_id, attempt + 1,
+            )
+            return response
+        if status in ("failed", "cancelled"):
+            error = getattr(response, "error", None)
+            raise RuntimeError(
+                f"Background response {response_id} {status}: {error}"
+            )
+
+        logger.debug(
+            "Background response %s status=%s, poll %d",
+            response_id, status, attempt + 1,
+        )
+        _time.sleep(poll_interval)
+        attempt += 1
+
+    raise TimeoutError(
+        f"Background response {response_id} did not complete within {timeout}s"
+    )
+
+
+async def _apoll_background_response(
+    response_id: str,
+    *,
+    poll_interval: int = _BACKGROUND_POLL_INTERVAL,
+    timeout: int = _BACKGROUND_DEFAULT_TIMEOUT,
+) -> Any:
+    """Async version of _poll_background_response.
+
+    Uses asyncio.sleep between polls to avoid blocking the event loop.
+    """
+    import asyncio
+
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while time.monotonic() < deadline:
+        try:
+            response = await litellm.aresponses.retrieve(response_id=response_id)
+        except Exception as e:
+            logger.warning("Background poll attempt %d failed: %s", attempt, e)
+            await asyncio.sleep(poll_interval)
+            attempt += 1
+            continue
+
+        status = getattr(response, "status", None)
+        if status == "completed":
+            logger.info(
+                "Background response %s completed after %d polls",
+                response_id, attempt + 1,
+            )
+            return response
+        if status in ("failed", "cancelled"):
+            error = getattr(response, "error", None)
+            raise RuntimeError(
+                f"Background response {response_id} {status}: {error}"
+            )
+
+        logger.debug(
+            "Background response %s status=%s, poll %d",
+            response_id, status, attempt + 1,
+        )
+        await asyncio.sleep(poll_interval)
+        attempt += 1
+
+    raise TimeoutError(
+        f"Background response {response_id} did not complete within {timeout}s"
     )
 
 
@@ -3558,6 +3701,15 @@ def call_llm(
             elif use_responses:
                 with _rate_limit.acquire(current_model):
                     response = litellm.responses(**call_kwargs)
+                # Background mode: poll until completed
+                bg_status = getattr(response, "status", None)
+                if bg_status and bg_status != "completed":
+                    response_id = getattr(response, "id", None)
+                    if response_id:
+                        bg_timeout = kwargs.get("timeout", _BACKGROUND_DEFAULT_TIMEOUT)
+                        response = _poll_background_response(
+                            response_id, timeout=bg_timeout,
+                        )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
                 with _rate_limit.acquire(current_model):
@@ -4460,6 +4612,15 @@ async def acall_llm(
             elif use_responses:
                 async with _rate_limit.aacquire(current_model):
                     response = await litellm.aresponses(**call_kwargs)
+                # Background mode: poll until completed
+                bg_status = getattr(response, "status", None)
+                if bg_status and bg_status != "completed":
+                    response_id = getattr(response, "id", None)
+                    if response_id:
+                        bg_timeout = kwargs.get("timeout", _BACKGROUND_DEFAULT_TIMEOUT)
+                        response = await _apoll_background_response(
+                            response_id, timeout=bg_timeout,
+                        )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
                 async with _rate_limit.aacquire(current_model):

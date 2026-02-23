@@ -37,8 +37,8 @@ class TestGetModel:
     def test_extraction_returns_highest_intelligence_structured(self):
         # available_only=False so we don't need env vars set
         model = get_model("extraction", available_only=False)
-        # gemini-3-flash has intelligence=46 and structured_output=True
-        assert model == "gemini/gemini-3-flash"
+        # gpt-5.2-pro has intelligence=50 and structured_output=True (highest)
+        assert model == "gpt-5.2-pro"
 
     def test_bulk_cheap_returns_cheapest(self):
         model = get_model("bulk_cheap", available_only=False)
@@ -57,20 +57,21 @@ class TestGetModel:
     def test_agent_reasoning_filters_high_intelligence(self):
         model = get_model("agent_reasoning", available_only=False)
         # min_intelligence=42, prefer intelligence
-        # gemini-3-flash (46), gpt-5 (45), deepseek (42)
-        assert model == "gemini/gemini-3-flash"
+        # gpt-5.2-pro (50), gemini-3-flash (46), gpt-5 (45), deepseek (42)
+        assert model == "gpt-5.2-pro"
 
     def test_synthesis_prefers_intelligence_then_cost(self):
         model = get_model("synthesis", available_only=False)
         # min_intelligence=40, prefer intelligence then -cost
-        # gemini-3-flash (46), gpt-5 (45), deepseek (42), gpt-5-mini (41)
-        assert model == "gemini/gemini-3-flash"
+        # gpt-5.2-pro (50), gemini-3-flash (46), gpt-5 (45), deepseek (42)
+        assert model == "gpt-5.2-pro"
 
     def test_code_generation_prefers_intelligence_then_speed(self):
         model = get_model("code_generation", available_only=False)
         # min_intelligence=38, prefer intelligence then speed
-        # gemini-3-flash (46, speed=207), gpt-5 (45, speed=98), deepseek (42, speed=36)
-        assert model == "gemini/gemini-3-flash"
+        # gpt-5.2-pro (50, speed=5), gemini-3-flash (46, speed=207)
+        # gpt-5.2-pro wins on intelligence even though slower
+        assert model == "gpt-5.2-pro"
 
     def test_unknown_task_raises_keyerror(self):
         with pytest.raises(KeyError, match="Unknown task"):
@@ -127,7 +128,7 @@ class TestGetModel:
     def test_use_performance_false_ignores_db(self):
         """use_performance=False returns same as static selection."""
         model = get_model("extraction", available_only=False, use_performance=False)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gpt-5.2-pro"
 
 
 # ---------------------------------------------------------------------------
@@ -178,34 +179,35 @@ class TestPerformanceDemotion:
 
     def test_demotes_high_error_rate_model(self):
         """Model with >15% error rate gets demoted behind alternatives."""
-        # gemini-3-flash (intel=46) normally wins extraction
+        # gpt-5.2-pro (intel=50) normally wins extraction
         # Give it 50% error rate
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 5, 5)
-        # gpt-5 (intel=45) is reliable
-        self._insert_calls("openrouter/openai/gpt-5", "extraction", 20, 0)
+        self._insert_calls("gpt-5.2-pro", "extraction", 5, 5)
+        # gemini-3-flash (intel=46) is reliable
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 20, 0)
 
         model = get_model("extraction", available_only=False)
-        assert model == "openrouter/openai/gpt-5"
+        assert model == "gemini/gemini-3-flash"
 
     def test_no_demotion_below_min_calls(self):
         """Models with fewer than min_calls aren't penalized."""
-        # gemini-3-flash has 100% error rate but only 3 calls
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 0, 3)
+        # gpt-5.2-pro has 100% error rate but only 3 calls
+        self._insert_calls("gpt-5.2-pro", "extraction", 0, 3)
 
         model = get_model("extraction", available_only=False, min_calls=10)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gpt-5.2-pro"
 
     def test_no_demotion_below_threshold(self):
         """Models with error rate below threshold aren't penalized."""
-        # gemini-3-flash has 10% error rate (below 15% threshold)
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 18, 2)
+        # gpt-5.2-pro has 10% error rate (below 15% threshold)
+        self._insert_calls("gpt-5.2-pro", "extraction", 18, 2)
 
         model = get_model("extraction", available_only=False)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gpt-5.2-pro"
 
     def test_all_unreliable_preserves_prefer_order(self):
         """When ALL qualifying models are unreliable, original prefer order is kept."""
-        # All 5 models that qualify for extraction (structured_output + intel>=35)
+        # All models that qualify for extraction (structured_output + intel>=35)
+        self._insert_calls("gpt-5.2-pro", "extraction", 5, 10)
         self._insert_calls("gemini/gemini-3-flash", "extraction", 5, 10)
         self._insert_calls("openrouter/openai/gpt-5", "extraction", 5, 10)
         self._insert_calls("openrouter/deepseek/deepseek-chat", "extraction", 5, 10)
@@ -213,28 +215,28 @@ class TestPerformanceDemotion:
         self._insert_calls("openrouter/x-ai/grok-4.1-fast", "extraction", 5, 10)
 
         model = get_model("extraction", available_only=False)
-        # gemini-3-flash (intel=46) still wins by static prefer
-        assert model == "gemini/gemini-3-flash"
+        # gpt-5.2-pro (intel=50) still wins by static prefer
+        assert model == "gpt-5.2-pro"
 
     def test_no_performance_data_neutral(self):
         """Models with no performance data are not penalized."""
         # No data inserted — all models have no performance history
         model = get_model("extraction", available_only=False)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gpt-5.2-pro"
 
     def test_custom_threshold(self):
         """Custom error_threshold is respected."""
-        # gemini-3-flash has 10% error rate
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 18, 2)
-        self._insert_calls("openrouter/openai/gpt-5", "extraction", 20, 0)
+        # gpt-5.2-pro has 10% error rate
+        self._insert_calls("gpt-5.2-pro", "extraction", 18, 2)
+        self._insert_calls("gemini/gemini-3-flash", "extraction", 20, 0)
 
         # Default threshold (15%) — not demoted
         model = get_model("extraction", available_only=False, error_threshold=0.15)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gpt-5.2-pro"
 
         # Stricter threshold (5%) — demoted
         model = get_model("extraction", available_only=False, error_threshold=0.05)
-        assert model == "openrouter/openai/gpt-5"
+        assert model == "gemini/gemini-3-flash"
 
 
 # ---------------------------------------------------------------------------
