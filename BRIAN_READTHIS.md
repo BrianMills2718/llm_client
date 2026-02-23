@@ -19,7 +19,7 @@ That script checks if long-thinking/background behavior stays above your thresho
 Run this once:
 
 ```bash
-(crontab -l 2>/dev/null; echo '15 6 * * * cd /home/brian/projects/llm_client && PYTHON_BIN=/home/brian/projects/llm_client/.venv/bin/python LLM_CLIENT_ADOPTION_WARN_ONLY=1 ./scripts/adoption_gate.sh >> /home/brian/projects/llm_client/adoption_gate.log 2>&1') | crontab -
+(crontab -l 2>/dev/null; echo '15 6 * * * cd /home/brian/projects/llm_client && PYTHON_BIN=/home/brian/projects/llm_client/.venv/bin/python LLM_CLIENT_ADOPTION_WARN_ONLY=1 LLM_CLIENT_ADOPTION_SINCE_DAYS=7 ./scripts/adoption_gate.sh >> /home/brian/projects/llm_client/adoption_gate.log 2>&1') | crontab -
 ```
 
 This means:
@@ -27,6 +27,7 @@ This means:
 - use your local repo path
 - use your local virtualenv Python
 - run in warn-only mode first (no non-zero exit)
+- use rolling window: last 7 days of records
 - append output to `adoption_gate.log`
 
 ### Step 2: verify it is installed
@@ -85,3 +86,7 @@ Then verify:
 ```bash
 crontab -l | grep adoption_gate.sh
 ```
+
+Current cron line should include both:
+- `LLM_CLIENT_ADOPTION_WARN_ONLY=1`
+- `LLM_CLIENT_ADOPTION_SINCE_DAYS=7`
