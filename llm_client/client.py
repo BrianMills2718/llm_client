@@ -537,6 +537,10 @@ def _build_structured_call_result(
     )
 
 
+class _NativeSchemaFallback(Exception):
+    """Signal native-schema rejection and trigger instructor fallback."""
+
+
 # ---------------------------------------------------------------------------
 # Retry infrastructure
 # ---------------------------------------------------------------------------
@@ -3788,9 +3792,6 @@ def call_llm_structured(
                 },
             }
 
-            class _NativeSchemaFallback(Exception):
-                """Signal schema rejection to trigger instructor fallback."""
-
             def _invoke_native_schema_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 try:
                     with _rate_limit.acquire(current_model):
@@ -4709,9 +4710,6 @@ async def acall_llm_structured(
                     "strict": True,
                 },
             }
-
-            class _NativeSchemaFallback(Exception):
-                """Signal schema rejection to trigger instructor fallback."""
 
             async def _invoke_native_schema_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 try:
