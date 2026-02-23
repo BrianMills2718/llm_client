@@ -306,6 +306,8 @@ class TestFailureTaxonomy:
         "PROVIDER_CREDITS_EXHAUSTED",
         "FINALIZATION_CIRCUIT_BREAKER_OPEN",
         "FINALIZATION_TOOL_CALL_DISALLOWED",
+        "REQUIRED_SUBMIT_NOT_ATTEMPTED",
+        "REQUIRED_SUBMIT_NOT_ACCEPTED",
         "RETRIEVAL_NO_HITS",
         "RETRIEVAL_STAGNATION",
         "RETRIEVAL_STAGNATION_OBSERVED",
@@ -338,6 +340,8 @@ class TestFailureTaxonomy:
             ("PROVIDER_CREDITS_EXHAUSTED", "provider"),
             ("FINALIZATION_CIRCUIT_BREAKER_OPEN", "provider"),
             ("FINALIZATION_TOOL_CALL_DISALLOWED", "policy"),
+            ("REQUIRED_SUBMIT_NOT_ATTEMPTED", "policy"),
+            ("REQUIRED_SUBMIT_NOT_ACCEPTED", "policy"),
             ("RETRIEVAL_NO_HITS", "retrieval"),
             ("RETRIEVAL_STAGNATION", "retrieval"),
             ("RETRIEVAL_STAGNATION_OBSERVED", "retrieval"),
@@ -2254,6 +2258,45 @@ class TestAgentDiagnostics:
             )
             for msg in agent_result.conversation_trace
         )
+
+    async def test_required_submit_not_attempted_is_policy_failure(self) -> None:
+        """If submit_answer is available but never called, classify as required-submit policy failure."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        llm_results = [
+            _make_llm_result(content="June 1982", finish_reason="stop"),
+        ]
+
+        async def mock_executor(tc, ml):
+            return ([], [])
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "submit_answer"}}],
+                agent_result,
+                mock_executor,
+                1,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "June 1982"
+        assert finish == "stop"
+        assert agent_result.metadata["requires_submit_answer"] is True
+        assert agent_result.metadata["submit_answer_call_count"] == 0
+        assert agent_result.metadata["submit_answer_attempted"] is False
+        assert agent_result.metadata["submit_answer_succeeded"] is False
+        assert agent_result.metadata["required_submit_missing"] is True
+        assert "REQUIRED_SUBMIT_NOT_ATTEMPTED" in agent_result.metadata["failure_event_codes"]
+        assert agent_result.metadata["primary_failure_class"] == "policy"
+        assert agent_result.metadata["first_terminal_failure_event_code"] == "REQUIRED_SUBMIT_NOT_ATTEMPTED"
 
     async def test_autofill_reasoning_for_todo_reset(self) -> None:
         """todo_reset missing tool_reasoning is auto-filled and executed in strict mode."""
