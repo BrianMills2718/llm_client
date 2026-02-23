@@ -350,3 +350,16 @@ Validation snapshot after this pass:
 1. Coupled file with missing reads: strict block (exit 1)
 2. Uncoupled file with missing reads: warning only (exit 0)
 3. Coupled file with required docs read: pass (exit 0)
+
+## 19) Additional follow-up (Makefile normalization + gate helpers)
+Completed a maintenance pass on project tooling entrypoints:
+1. Replaced duplicated `Makefile` content with one canonical target set.
+2. Removed stale `src/` references and aligned checks to `llm_client/`.
+3. Added read-gate helper targets:
+   - `make read-gate-check FILE=...`
+   - `make read-gate-check-warn FILE=...`
+
+Validation snapshot after this pass:
+1. `make help-meta` lists new read-gate helper targets.
+2. `make read-gate-check-warn FILE=llm_client/errors.py` -> warning mode allows.
+3. `make read-gate-check FILE=llm_client/client.py` -> strict mode blocks when reads are missing.
