@@ -213,3 +213,26 @@ Validation snapshot after this pass:
    - Result: `798 passed, 1 skipped, 1 warning`
 3. `mypy llm_client`
    - Result: `Success: no issues found in 37 source files`
+
+## 12) Additional follow-up (batch runtime extraction)
+Completed the next architecture split for batch paths:
+1. Extracted batch internals from `llm_client/client.py` into:
+   - `llm_client/batch_runtime.py`
+   - `acall_llm_batch_impl(...)`
+   - `call_llm_batch_impl(...)`
+   - `acall_llm_structured_batch_impl(...)`
+   - `call_llm_structured_batch_impl(...)`
+2. Converted `client.py` batch entrypoints into thin facade delegates with lazy
+   imports to reduce client-module surface area.
+3. Preserved callback/concurrency contracts:
+   - per-item success/error callbacks,
+   - semaphore-based max concurrency,
+   - sync wrappers still use thread handoff when already in a running loop.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_client.py -k "batch"`
+   - Result: `11 passed, 201 deselected`
+2. `mypy llm_client`
+   - Result: `Success: no issues found in 38 source files`
+3. `pytest -q`
+   - Result: `798 passed, 1 skipped, 1 warning`

@@ -5045,42 +5045,31 @@ async def acall_llm_batch(
         List of LLMCallResult (or Exception if return_exceptions=True),
         in the same order as messages_list
     """
-    if not messages_list:
-        return []
+    from llm_client.batch_runtime import acall_llm_batch_impl
 
-    sem = asyncio.Semaphore(max_concurrent)
-
-    async def _call_one(idx: int, messages: list[dict[str, Any]]) -> LLMCallResult:
-        async with sem:
-            try:
-                result = await acall_llm(
-                    model, messages,
-                    timeout=timeout,
-                    num_retries=num_retries,
-                    reasoning_effort=reasoning_effort,
-                    api_base=api_base,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    retry_on=retry_on,
-                    on_retry=on_retry,
-                    cache=cache,
-                    retry=retry,
-                    fallback_models=fallback_models,
-                    on_fallback=on_fallback,
-                    hooks=hooks,
-                    config=config,
-                    **kwargs,
-                )
-                if on_item_complete is not None:
-                    on_item_complete(idx, result)
-                return result
-            except Exception as e:
-                if on_item_error is not None:
-                    on_item_error(idx, e)
-                raise
-
-    tasks = [_call_one(i, msgs) for i, msgs in enumerate(messages_list)]
-    return await asyncio.gather(*tasks, return_exceptions=return_exceptions)  # type: ignore[return-value]
+    return await acall_llm_batch_impl(
+        model,
+        messages_list,
+        max_concurrent=max_concurrent,
+        return_exceptions=return_exceptions,
+        on_item_complete=on_item_complete,
+        on_item_error=on_item_error,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        config=config,
+        **kwargs,
+    )
 
 
 def call_llm_batch(
@@ -5115,8 +5104,11 @@ def call_llm_batch(
 
     See :func:`acall_llm_batch` for full parameter documentation.
     """
-    coro = acall_llm_batch(
-        model, messages_list,
+    from llm_client.batch_runtime import call_llm_batch_impl
+
+    return call_llm_batch_impl(
+        model,
+        messages_list,
         max_concurrent=max_concurrent,
         return_exceptions=return_exceptions,
         on_item_complete=on_item_complete,
@@ -5137,14 +5129,6 @@ def call_llm_batch(
         config=config,
         **kwargs,
     )
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
 
 
 async def acall_llm_structured_batch(
@@ -5181,42 +5165,32 @@ async def acall_llm_structured_batch(
         List of (parsed_model, LLMCallResult) tuples (or Exception if
         return_exceptions=True), in input order.
     """
-    if not messages_list:
-        return []
+    from llm_client.batch_runtime import acall_llm_structured_batch_impl
 
-    sem = asyncio.Semaphore(max_concurrent)
-
-    async def _call_one(idx: int, messages: list[dict[str, Any]]) -> tuple[T, LLMCallResult]:
-        async with sem:
-            try:
-                result = await acall_llm_structured(
-                    model, messages, response_model,
-                    timeout=timeout,
-                    num_retries=num_retries,
-                    reasoning_effort=reasoning_effort,
-                    api_base=api_base,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    retry_on=retry_on,
-                    on_retry=on_retry,
-                    cache=cache,
-                    retry=retry,
-                    fallback_models=fallback_models,
-                    on_fallback=on_fallback,
-                    hooks=hooks,
-                    config=config,
-                    **kwargs,
-                )
-                if on_item_complete is not None:
-                    on_item_complete(idx, result)
-                return result
-            except Exception as e:
-                if on_item_error is not None:
-                    on_item_error(idx, e)
-                raise
-
-    tasks = [_call_one(i, msgs) for i, msgs in enumerate(messages_list)]
-    return await asyncio.gather(*tasks, return_exceptions=return_exceptions)  # type: ignore[return-value]
+    return await acall_llm_structured_batch_impl(
+        model,
+        messages_list,
+        response_model,
+        max_concurrent=max_concurrent,
+        return_exceptions=return_exceptions,
+        on_item_complete=on_item_complete,
+        on_item_error=on_item_error,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        cache=cache,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        config=config,
+        **kwargs,
+    )
 
 
 def call_llm_structured_batch(
@@ -5248,8 +5222,12 @@ def call_llm_structured_batch(
 
     See :func:`acall_llm_batch` for concurrency semantics.
     """
-    coro = acall_llm_structured_batch(
-        model, messages_list, response_model,
+    from llm_client.batch_runtime import call_llm_structured_batch_impl
+
+    return call_llm_structured_batch_impl(
+        model,
+        messages_list,
+        response_model,
         max_concurrent=max_concurrent,
         return_exceptions=return_exceptions,
         on_item_complete=on_item_complete,
@@ -5270,14 +5248,6 @@ def call_llm_structured_batch(
         config=config,
         **kwargs,
     )
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
