@@ -3635,85 +3635,89 @@ def call_llm_structured(
                     }
                 }
 
-                for attempt in range(r.max_retries + 1):
-                    try:
-                        with _rate_limit.acquire(current_model):
-                            response = litellm.responses(**resp_kwargs)
-                        raw_content = getattr(response, "output_text", None) or ""
-                        if not raw_content.strip():
-                            raise ValueError("Empty content from LLM (responses API structured)")
-                        parsed = response_model.model_validate_json(raw_content)
-                        content = str(parsed.model_dump_json())
-                        usage = _extract_responses_usage(response)
-                        cost, cost_source = _parse_cost_result(_compute_responses_cost(response, usage), default_source="computed")
+                def _invoke_responses_attempt(attempt: int) -> tuple[T, LLMCallResult]:
+                    with _rate_limit.acquire(current_model):
+                        response = litellm.responses(**resp_kwargs)
+                    raw_content = getattr(response, "output_text", None) or ""
+                    if not raw_content.strip():
+                        raise ValueError("Empty content from LLM (responses API structured)")
+                    parsed = response_model.model_validate_json(raw_content)
+                    content = str(parsed.model_dump_json())
+                    usage = _extract_responses_usage(response)
+                    cost, cost_source = _parse_cost_result(
+                        _compute_responses_cost(response, usage),
+                        default_source="computed",
+                    )
 
-                        if attempt > 0:
-                            logger.info("call_llm_structured (responses) succeeded after %d retries", attempt)
+                    if attempt > 0:
+                        logger.info("call_llm_structured (responses) succeeded after %d retries", attempt)
 
-                        llm_result = LLMCallResult(
-                            content=content, usage=usage, cost=cost,
-                            model=current_model, finish_reason="stop",
-                            raw_response=response, warnings=_warnings,
-                            cost_source=cost_source,
-                        )
-                        llm_result = _annotate_result_identity(
-                            llm_result,
+                    llm_result = LLMCallResult(
+                        content=content, usage=usage, cost=cost,
+                        model=current_model, finish_reason="stop",
+                        raw_response=response, warnings=_warnings,
+                        cost_source=cost_source,
+                    )
+                    llm_result = _annotate_result_identity(
+                        llm_result,
+                        requested_model=model,
+                        resolved_model=current_model,
+                        routing_trace=_build_routing_trace(
                             requested_model=model,
-                            resolved_model=current_model,
-                            routing_trace=_build_routing_trace(
-                                requested_model=model,
-                                attempted_models=models[:model_idx + 1],
-                                selected_model=current_model,
-                                requested_api_base=api_base,
-                                effective_api_base=current_api_base,
-                                routing_policy=routing_policy,
-                            ),
-                        )
-                        if hooks and hooks.after_call:
-                            hooks.after_call(llm_result)
-                        if cache is not None:
-                            cache.set(key, llm_result)
-                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured", task=task, trace_id=trace_id)
-                        return parsed, llm_result
-                    except Exception as e:
-                        last_error = e
-                        if hooks and hooks.on_error:
-                            hooks.on_error(e, attempt)
-                        if _maybe_retry_with_openrouter_key_rotation(
-                            error=e,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=current_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            routing_policy=routing_policy,
+                        ),
+                    )
+                    if hooks and hooks.after_call:
+                        hooks.after_call(llm_result)
+                    if cache is not None:
+                        cache.set(key, llm_result)
+                    _io_log.log_call(
+                        model=current_model,
+                        messages=messages,
+                        result=llm_result,
+                        latency_s=time.monotonic() - _log_t0,
+                        caller="call_llm_structured",
+                        task=task,
+                        trace_id=trace_id,
+                    )
+                    return parsed, llm_result
+
+                try:
+                    return run_sync_with_retry(
+                        caller="call_llm_structured",
+                        model=current_model,
+                        max_retries=r.max_retries,
+                        invoke=_invoke_responses_attempt,
+                        should_retry=lambda exc: _check_retryable(exc, r),
+                        compute_delay=lambda attempt, exc: _compute_retry_delay(
                             attempt=attempt,
-                            max_retries=r.max_retries,
+                            error=exc,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        ),
+                        warning_sink=_warnings,
+                        logger=logger,
+                        on_error=(hooks.on_error if hooks and hooks.on_error else None),
+                        on_retry=r.on_retry,
+                        maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                            error=exc,
+                            attempt=attempt,
+                            max_retries=max_retries,
                             current_model=current_model,
                             current_api_base=current_api_base,
                             user_kwargs=kwargs,
                             warning_sink=_warnings,
                             on_retry=r.on_retry,
                             caller="call_llm_structured",
-                        ):
-                            continue
-                        if not _check_retryable(e, r) or attempt >= r.max_retries:
-                            raise
-                        delay, retry_delay_source = _compute_retry_delay(
-                            attempt=attempt,
-                            error=e,
-                            policy=r,
-                            backoff_fn=backoff_fn,
-                        )
-                        if r.on_retry is not None:
-                            r.on_retry(attempt, e, delay)
-                        _warnings.append(
-                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e}) "
-                            f"[retry_delay_source={retry_delay_source}]"
-                        )
-                        logger.warning(
-                            "call_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
-                        )
-                        time.sleep(delay)
-                if last_error is None:
-                    raise RuntimeError("call_llm_structured failed without captured exception")
-                raise wrap_error(last_error) from last_error
+                        ),
+                    )
+                except Exception as e:
+                    last_error = e
+                    raise
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.completion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth
@@ -4561,85 +4565,89 @@ async def acall_llm_structured(
                     }
                 }
 
-                for attempt in range(r.max_retries + 1):
-                    try:
-                        async with _rate_limit.aacquire(current_model):
-                            response = await litellm.aresponses(**resp_kwargs)
-                        raw_content = getattr(response, "output_text", None) or ""
-                        if not raw_content.strip():
-                            raise ValueError("Empty content from LLM (responses API structured)")
-                        parsed = response_model.model_validate_json(raw_content)
-                        content = str(parsed.model_dump_json())
-                        usage = _extract_responses_usage(response)
-                        cost, cost_source = _parse_cost_result(_compute_responses_cost(response, usage), default_source="computed")
+                async def _invoke_responses_attempt(attempt: int) -> tuple[T, LLMCallResult]:
+                    async with _rate_limit.aacquire(current_model):
+                        response = await litellm.aresponses(**resp_kwargs)
+                    raw_content = getattr(response, "output_text", None) or ""
+                    if not raw_content.strip():
+                        raise ValueError("Empty content from LLM (responses API structured)")
+                    parsed = response_model.model_validate_json(raw_content)
+                    content = str(parsed.model_dump_json())
+                    usage = _extract_responses_usage(response)
+                    cost, cost_source = _parse_cost_result(
+                        _compute_responses_cost(response, usage),
+                        default_source="computed",
+                    )
 
-                        if attempt > 0:
-                            logger.info("acall_llm_structured (responses) succeeded after %d retries", attempt)
+                    if attempt > 0:
+                        logger.info("acall_llm_structured (responses) succeeded after %d retries", attempt)
 
-                        llm_result = LLMCallResult(
-                            content=content, usage=usage, cost=cost,
-                            model=current_model, finish_reason="stop",
-                            raw_response=response, warnings=_warnings,
-                            cost_source=cost_source,
-                        )
-                        llm_result = _annotate_result_identity(
-                            llm_result,
+                    llm_result = LLMCallResult(
+                        content=content, usage=usage, cost=cost,
+                        model=current_model, finish_reason="stop",
+                        raw_response=response, warnings=_warnings,
+                        cost_source=cost_source,
+                    )
+                    llm_result = _annotate_result_identity(
+                        llm_result,
+                        requested_model=model,
+                        resolved_model=current_model,
+                        routing_trace=_build_routing_trace(
                             requested_model=model,
-                            resolved_model=current_model,
-                            routing_trace=_build_routing_trace(
-                                requested_model=model,
-                                attempted_models=models[:model_idx + 1],
-                                selected_model=current_model,
-                                requested_api_base=api_base,
-                                effective_api_base=current_api_base,
-                                routing_policy=routing_policy,
-                            ),
-                        )
-                        if hooks and hooks.after_call:
-                            hooks.after_call(llm_result)
-                        if cache is not None:
-                            await _async_cache_set(cache, key, llm_result)
-                        _io_log.log_call(model=current_model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured", task=task, trace_id=trace_id)
-                        return parsed, llm_result
-                    except Exception as e:
-                        last_error = e
-                        if hooks and hooks.on_error:
-                            hooks.on_error(e, attempt)
-                        if _maybe_retry_with_openrouter_key_rotation(
-                            error=e,
+                            attempted_models=models[:model_idx + 1],
+                            selected_model=current_model,
+                            requested_api_base=api_base,
+                            effective_api_base=current_api_base,
+                            routing_policy=routing_policy,
+                        ),
+                    )
+                    if hooks and hooks.after_call:
+                        hooks.after_call(llm_result)
+                    if cache is not None:
+                        await _async_cache_set(cache, key, llm_result)
+                    _io_log.log_call(
+                        model=current_model,
+                        messages=messages,
+                        result=llm_result,
+                        latency_s=time.monotonic() - _log_t0,
+                        caller="acall_llm_structured",
+                        task=task,
+                        trace_id=trace_id,
+                    )
+                    return parsed, llm_result
+
+                try:
+                    return await run_async_with_retry(
+                        caller="acall_llm_structured",
+                        model=current_model,
+                        max_retries=r.max_retries,
+                        invoke=_invoke_responses_attempt,
+                        should_retry=lambda exc: _check_retryable(exc, r),
+                        compute_delay=lambda attempt, exc: _compute_retry_delay(
                             attempt=attempt,
-                            max_retries=r.max_retries,
+                            error=exc,
+                            policy=r,
+                            backoff_fn=backoff_fn,
+                        ),
+                        warning_sink=_warnings,
+                        logger=logger,
+                        on_error=(hooks.on_error if hooks and hooks.on_error else None),
+                        on_retry=r.on_retry,
+                        maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                            error=exc,
+                            attempt=attempt,
+                            max_retries=max_retries,
                             current_model=current_model,
                             current_api_base=current_api_base,
                             user_kwargs=kwargs,
                             warning_sink=_warnings,
                             on_retry=r.on_retry,
                             caller="acall_llm_structured",
-                        ):
-                            continue
-                        if not _check_retryable(e, r) or attempt >= r.max_retries:
-                            raise
-                        delay, retry_delay_source = _compute_retry_delay(
-                            attempt=attempt,
-                            error=e,
-                            policy=r,
-                            backoff_fn=backoff_fn,
-                        )
-                        if r.on_retry is not None:
-                            r.on_retry(attempt, e, delay)
-                        _warnings.append(
-                            f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                            f"{current_model} ({type(e).__name__}: {e}) "
-                            f"[retry_delay_source={retry_delay_source}]"
-                        )
-                        logger.warning(
-                            "acall_llm_structured attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                            attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
-                        )
-                        await asyncio.sleep(delay)
-                if last_error is None:
-                    raise RuntimeError("acall_llm_structured failed without captured exception")
-                raise wrap_error(last_error) from last_error
+                        ),
+                    )
+                except Exception as e:
+                    last_error = e
+                    raise
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.acompletion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth

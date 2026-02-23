@@ -155,6 +155,10 @@ and identity contracts:
 3. Switched YAML loads in `models.py` and `task_graph.py` to dynamic
    `import_module("yaml")` usage to keep typecheck deterministic without external
    stub dependency drift.
+4. Converged structured Responses-API retry behavior onto shared execution-kernel
+   primitives in both sync and async paths:
+   - `call_llm_structured` responses branch now uses `run_sync_with_retry(...)`
+   - `acall_llm_structured` responses branch now uses `run_async_with_retry(...)`
 
 Validation snapshot after this pass:
 1. `pytest -q tests/test_model_identity_contract.py`
