@@ -45,6 +45,8 @@ All notable changes to `llm-client` are documented in this file.
   of duplicated in-function retry/fallback loops.
 - `_agent_loop` now stages tool/contract initialization through typed
   `AgentLoopToolState` construction (`_initialize_agent_tool_state`).
+- `_agent_loop` final metadata writeout is extracted into
+  `_apply_agent_loop_metadata(...)` to reduce core-loop monolith size.
 - `python -m llm_client` is now a thin command router; command logic moved out
   of `llm_client.__main__` into per-command modules.
 - Top-level `llm_client` exports observability APIs via
