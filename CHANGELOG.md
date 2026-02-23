@@ -13,6 +13,10 @@ All notable changes to `llm-client` are documented in this file.
   - `events.py`, `experiments.py`, `query.py`
 - Modular CLI command package in `llm_client.cli`:
   - `cost.py`, `traces.py`, `scores.py`, `experiments.py`, `backfill.py`
+- Regression coverage for architecture seams:
+  - `tests/test_execution_kernel.py` (sync/async retry/fallback parity)
+  - `tests/test_cli_smoke.py` (CLI split smoke/help coverage)
+  - `tests/test_io_log_compat.py` (`io_log` delegation compatibility)
 - MCP agent runtime controls for finalization reliability:
   - `finalization_fallback_models`
   - `forced_final_max_attempts`
@@ -45,6 +49,9 @@ All notable changes to `llm-client` are documented in this file.
   of `llm_client.__main__` into per-command modules.
 - Top-level `llm_client` exports observability APIs via
   `llm_client.observability` boundaries.
+- `llm_client.observability.experiments` and `llm_client.observability.query`
+  now own concrete experiment/query implementations; `llm_client.io_log`
+  delegates these APIs as a compatibility shim.
 - Provider-empty taxonomy is canonicalized as `PROVIDER_EMPTY_CANDIDATES`
   (legacy aliases retained for compatibility).
 - Forced-final path now attempts bounded model chains and keeps run-level

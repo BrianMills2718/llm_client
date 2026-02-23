@@ -129,3 +129,15 @@ Validation snapshot after this pass:
    - Result: `381 passed`
 2. `pytest -q`
    - Result: `771 passed, 1 skipped, 1 warning`
+
+Additional follow-up in same branch:
+1. Moved concrete experiment/query logic out of `io_log.py` into:
+   - `llm_client/observability/experiments.py`
+   - `llm_client/observability/query.py`
+2. Converted `io_log` query/experiment APIs to compatibility delegates.
+3. Added seam-lock tests:
+   - `tests/test_execution_kernel.py`
+   - `tests/test_cli_smoke.py`
+   - `tests/test_io_log_compat.py`
+4. Full-suite validation after this follow-up:
+   - `783 passed, 1 skipped, 1 warning`

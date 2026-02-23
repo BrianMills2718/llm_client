@@ -97,6 +97,7 @@ from llm_client.observability import (
     activate_feature_profile,
     activate_experiment_run,
     compare_runs,
+    compare_cohorts,
     configure_feature_profile,
     configure_experiment_enforcement,
     configure_agent_spec_enforcement,
@@ -326,6 +327,7 @@ __all__ = [
     "get_run",
     "get_run_items",
     "compare_runs",
+    "compare_cohorts",
     "render_prompt",
     # AgentSpec
     "AgentSpecValidationError",

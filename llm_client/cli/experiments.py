@@ -11,6 +11,10 @@ from typing import Any
 def cmd_experiments(args: argparse.Namespace) -> None:
     from llm_client import io_log
 
+    if args.compare_cohorts is not None:
+        _cmd_experiments_compare_cohorts(args)
+        return
+
     if args.compare_diff:
         _cmd_experiments_compare_diff(args)
         return
@@ -27,6 +31,10 @@ def cmd_experiments(args: argparse.Namespace) -> None:
         dataset=args.dataset,
         model=args.model,
         project=args.project,
+        condition_id=args.condition_id,
+        scenario_id=args.scenario_id,
+        phase=args.phase,
+        seed=args.seed,
         since=args.since,
         limit=args.limit,
     )
@@ -39,7 +47,7 @@ def cmd_experiments(args: argparse.Namespace) -> None:
         print("No experiment runs found.")
         return
 
-    headers = ["Run ID", "Dataset", "Model", "Items", "Status", "Metrics", "Cost", "Wall", "Time"]
+    headers = ["Run ID", "Dataset", "Model", "Condition", "Seed", "Items", "Status", "Metrics", "Cost", "Wall", "Time"]
     col_widths = [max(len(h), 6) for h in headers]
 
     display_rows = []
@@ -47,6 +55,8 @@ def cmd_experiments(args: argparse.Namespace) -> None:
         rid = r["run_id"][:12]
         ds = (r["dataset"] or "-")[:20]
         mdl = (r["model"] or "-")[:25]
+        condition = (r.get("condition_id") or "-")[:18]
+        seed = str(r.get("seed")) if r.get("seed") is not None else "-"
         items = f"{r['n_completed'] or 0}/{r['n_items'] or 0}"
         status = r["status"] or "-"
 
@@ -59,7 +69,7 @@ def cmd_experiments(args: argparse.Namespace) -> None:
         wall = f"{r['wall_time_s']:.0f}s" if r.get("wall_time_s") else "-"
         ts = r["timestamp"][:16] if r.get("timestamp") else "-"
 
-        row = (rid, ds, mdl, items, status, metrics_str, cost, wall, ts)
+        row = (rid, ds, mdl, condition, seed, items, status, metrics_str, cost, wall, ts)
         display_rows.append(row)
         for i, v in enumerate(row):
             col_widths[i] = max(col_widths[i], len(str(v)))
@@ -70,6 +80,85 @@ def cmd_experiments(args: argparse.Namespace) -> None:
     print("─" * (sum(col_widths) + 2 * (len(col_widths) - 1)))
     for row in display_rows:
         print(fmt.format(*row))
+
+
+def _cmd_experiments_compare_cohorts(args: argparse.Namespace) -> None:
+    from llm_client import io_log
+
+    condition_ids = args.compare_cohorts if args.compare_cohorts else None
+    try:
+        result = io_log.compare_cohorts(
+            condition_ids=condition_ids,
+            baseline_condition_id=args.baseline_condition_id,
+            dataset=args.dataset,
+            model=args.model,
+            project=args.project,
+            scenario_id=args.scenario_id,
+            phase=args.phase,
+            since=args.since,
+            limit=args.limit,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2))
+        return
+
+    cohorts = result.get("cohorts") or []
+    baseline = result.get("baseline_condition_id")
+    if not cohorts:
+        print("No cohort runs found.")
+        return
+
+    print("\nCohort Comparison:")
+    print("─" * 80)
+    print(f"Baseline condition: {baseline}")
+    print()
+
+    for cohort in cohorts:
+        condition_id = cohort.get("condition_id")
+        n_runs = cohort.get("n_runs")
+        seeds = cohort.get("seeds") or []
+        metrics = cohort.get("metrics") or {}
+        print(f"[{condition_id}] runs={n_runs} seeds={len(seeds)}")
+        metric_rows = []
+        for metric_name, stats in sorted(metrics.items()):
+            if not isinstance(stats, dict):
+                continue
+            mean = stats.get("mean")
+            ci_low = stats.get("ci95_low")
+            ci_high = stats.get("ci95_high")
+            n = stats.get("n")
+            metric_rows.append((metric_name, mean, ci_low, ci_high, n))
+        for metric_name, mean, ci_low, ci_high, n in metric_rows[:12]:
+            print(f"  {metric_name}: mean={mean} ci95=[{ci_low}, {ci_high}] n={n}")
+        if len(metric_rows) > 12:
+            print(f"  ... {len(metric_rows) - 12} more metrics")
+        print()
+
+    deltas = result.get("matched_seed_deltas_from_baseline") or []
+    if deltas:
+        print("Matched-Seed Deltas From Baseline:")
+        for delta in deltas:
+            condition = delta.get("condition_id")
+            n_pairs = delta.get("n_matched_pairs")
+            print(f"  {condition}: matched_pairs={n_pairs}")
+            metric_deltas = delta.get("metric_deltas") or {}
+            shown = 0
+            for metric_name, stats in sorted(metric_deltas.items()):
+                if not isinstance(stats, dict):
+                    continue
+                print(
+                    f"    {metric_name}: "
+                    f"mean_delta={stats.get('mean')} ci95=[{stats.get('ci95_low')}, {stats.get('ci95_high')}] n={stats.get('n')}"
+                )
+                shown += 1
+                if shown >= 12:
+                    break
+            if len(metric_deltas) > shown:
+                print(f"    ... {len(metric_deltas) - shown} more metrics")
 
 
 def _cmd_experiments_compare(args: argparse.Namespace) -> None:
@@ -375,8 +464,22 @@ def register_parser(subparsers: Any) -> None:
     parser.add_argument("--dataset", help="Filter to a dataset")
     parser.add_argument("--model", help="Filter to a model")
     parser.add_argument("--project", help="Filter to a project")
+    parser.add_argument("--condition-id", help="Filter to a cohort condition_id")
+    parser.add_argument("--scenario-id", help="Filter to a scenario_id")
+    parser.add_argument("--phase", help="Filter to an experiment phase label")
+    parser.add_argument("--seed", type=int, help="Filter to a numeric seed")
     parser.add_argument("--since", help="Only show runs since this ISO date")
     parser.add_argument("--limit", type=int, default=50, help="Max runs to show")
+    parser.add_argument(
+        "--compare-cohorts",
+        nargs="*",
+        metavar="CONDITION_ID",
+        help="Compare cohort aggregates by condition_id (optionally constrain to listed condition IDs)",
+    )
+    parser.add_argument(
+        "--baseline-condition-id",
+        help="Baseline condition_id for --compare-cohorts matched-seed deltas",
+    )
     parser.add_argument("--compare", nargs="+", metavar="RUN_ID", help="Compare 2+ run IDs side-by-side")
     parser.add_argument(
         "--compare-diff",

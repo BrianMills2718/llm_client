@@ -101,6 +101,10 @@ class TestExperimentTables:
         ).fetchall()}
         assert "idx_expr_dataset" in indexes
         assert "idx_expr_model" in indexes
+        assert "idx_expr_condition_id" in indexes
+        assert "idx_expr_seed" in indexes
+        assert "idx_expr_scenario_id" in indexes
+        assert "idx_expr_phase" in indexes
         assert "idx_expri_run_id" in indexes
 
 
@@ -136,6 +140,24 @@ class TestStartRun:
         assert json.loads(row[2]) == {"backend": "direct", "timeout": 120}
         assert json.loads(row[3]) == ["em", "f1", "llm_em"]
         assert row[4] == "running"
+        db.close()
+
+    def test_writes_cohort_fields(self, tmp_path):
+        rid = io_log.start_run(
+            dataset="MuSiQue",
+            model="o4-mini",
+            condition_id="forced_off",
+            seed=42,
+            replicate=3,
+            scenario_id="phase1_matrix",
+            phase="phase1",
+        )
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT condition_id, seed, replicate, scenario_id, phase FROM experiment_runs WHERE run_id = ?",
+            (rid,),
+        ).fetchone()
+        assert row == ("forced_off", 42, 3, "phase1_matrix", "phase1")
         db.close()
 
     def test_writes_jsonl(self, tmp_path):
@@ -403,6 +425,33 @@ class TestGetRuns:
         assert len(runs) == 1
         assert runs[0]["model"] == "o4-mini"
 
+    def test_filter_condition_scenario_phase_seed(self, tmp_path):
+        io_log.start_run(
+            dataset="X",
+            model="m1",
+            run_id="r1",
+            condition_id="baseline",
+            scenario_id="s1",
+            phase="phase1",
+            seed=10,
+        )
+        io_log.start_run(
+            dataset="X",
+            model="m1",
+            run_id="r2",
+            condition_id="off",
+            scenario_id="s1",
+            phase="phase1",
+            seed=11,
+        )
+
+        runs = io_log.get_runs(condition_id="off")
+        assert len(runs) == 1
+        assert runs[0]["run_id"] == "r2"
+        runs = io_log.get_runs(scenario_id="s1", phase="phase1", seed=10)
+        assert len(runs) == 1
+        assert runs[0]["run_id"] == "r1"
+
     def test_limit(self, tmp_path):
         for i in range(5):
             io_log.start_run(dataset="X", model="Y", run_id=f"r{i}")
@@ -417,12 +466,24 @@ class TestGetRuns:
 
 class TestGetRun:
     def test_get_run_by_id(self, tmp_path):
-        rid = io_log.start_run(dataset="X", model="Y", run_id="run_123")
+        rid = io_log.start_run(
+            dataset="X",
+            model="Y",
+            run_id="run_123",
+            condition_id="baseline",
+            seed=101,
+            scenario_id="phase1",
+            phase="p1",
+        )
         row = io_log.get_run(rid)
         assert row is not None
         assert row["run_id"] == "run_123"
         assert row["dataset"] == "X"
         assert row["model"] == "Y"
+        assert row["condition_id"] == "baseline"
+        assert row["seed"] == 101
+        assert row["scenario_id"] == "phase1"
+        assert row["phase"] == "p1"
 
     def test_get_run_missing(self, tmp_path):
         assert io_log.get_run("missing") is None
@@ -506,6 +567,78 @@ class TestCompareRuns:
         assert deltas["shared_items"] == 2
         assert deltas["improved"]["em"] == ["q1"]
         assert deltas["regressed"]["em"] == ["q2"]
+
+
+class TestCompareCohorts:
+    def test_compare_cohorts_aggregates_and_matches_seed(self, tmp_path):
+        # baseline seed 1
+        r1 = io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="base_s1",
+            condition_id="baseline",
+            scenario_id="scen",
+            phase="phase1",
+            seed=1,
+        )
+        io_log.log_item(run_id=r1, item_id="q1", metrics={"em": 1.0})
+        io_log.finish_run(run_id=r1, summary_metrics={"score": 10.0})
+
+        # candidate seed 1 (matched with baseline)
+        r2 = io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="off_s1",
+            condition_id="off",
+            scenario_id="scen",
+            phase="phase1",
+            seed=1,
+        )
+        io_log.log_item(run_id=r2, item_id="q1", metrics={"em": 1.0})
+        io_log.finish_run(run_id=r2, summary_metrics={"score": 12.0})
+
+        # candidate seed 2 (not matched with baseline)
+        r3 = io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="off_s2",
+            condition_id="off",
+            scenario_id="scen",
+            phase="phase1",
+            seed=2,
+        )
+        io_log.log_item(run_id=r3, item_id="q1", metrics={"em": 1.0})
+        io_log.finish_run(run_id=r3, summary_metrics={"score": 9.0})
+
+        result = io_log.compare_cohorts(
+            dataset="X",
+            scenario_id="scen",
+            phase="phase1",
+            baseline_condition_id="baseline",
+            limit=20,
+        )
+
+        assert result["baseline_condition_id"] == "baseline"
+        cohorts = {row["condition_id"]: row for row in result["cohorts"]}
+        assert "baseline" in cohorts
+        assert "off" in cohorts
+        assert cohorts["baseline"]["n_runs"] == 1
+        assert cohorts["off"]["n_runs"] == 2
+        assert "score" in cohorts["off"]["metrics"]
+        assert cohorts["off"]["metrics"]["score"]["n"] == 2.0
+
+        deltas = {row["condition_id"]: row for row in result["matched_seed_deltas_from_baseline"]}
+        assert deltas["off"]["n_matched_pairs"] == 1
+        assert deltas["off"]["metric_deltas"]["score"]["mean"] == 2.0
+
+    def test_compare_cohorts_rejects_missing_baseline(self, tmp_path):
+        io_log.start_run(dataset="X", model="m", run_id="r1", condition_id="baseline")
+        with pytest.raises(ValueError, match="baseline_condition_id not found"):
+            io_log.compare_cohorts(
+                dataset="X",
+                condition_ids=["baseline"],
+                baseline_condition_id="missing",
+            )
 
 
 # ---------------------------------------------------------------------------

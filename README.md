@@ -416,7 +416,9 @@ Use the built-in CLI to inspect and compare benchmark/eval runs recorded via
 
 ```bash
 python -m llm_client experiments
+python -m llm_client experiments --condition-id forced_off --scenario-id phase1_falsification --phase phase1
 python -m llm_client experiments --compare RUN_BASE RUN_CANDIDATE
+python -m llm_client experiments --compare-cohorts baseline forced_reduced forced_off --baseline-condition-id baseline --scenario-id phase1_falsification --phase phase1
 python -m llm_client experiments --compare-diff RUN_BASE RUN_CANDIDATE
 python -m llm_client experiments --detail RUN_ID
 python -m llm_client experiments --detail RUN_ID --det-checks default
@@ -429,6 +431,8 @@ python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg
 - deterministic checks (`--det-checks`),
 - rubric-based LLM review (`--review-rubric` / `--review-model`),
 - policy gates (`--gate-policy`) with optional non-zero exit on failure.
+
+Run-level cohort metadata is also supported through `start_run(..., condition_id=..., seed=..., replicate=..., scenario_id=..., phase=...)`, with cohort-level aggregate comparisons available via `compare_cohorts(...)` and `experiments --compare-cohorts`.
 
 ## API keys
 
