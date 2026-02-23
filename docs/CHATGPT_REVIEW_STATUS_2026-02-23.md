@@ -168,3 +168,28 @@ Validation snapshot after this pass:
    - Result: `793 passed, 1 skipped, 1 warning`
 3. `mypy llm_client`
    - Result: `Success: no issues found in 36 source files`
+
+## 10) Additional follow-up (structured fallback convergence)
+Completed the next architecture ratchet for structured flows:
+1. Replaced manual model-fallback loops in:
+   - `call_llm_structured`
+   - `acall_llm_structured`
+   with shared execution-kernel fallback primitives:
+   - `run_sync_with_fallback(...)`
+   - `run_async_with_fallback(...)`
+2. Kept existing retry semantics but removed bespoke outer fallback control flow.
+3. Added shared structured result builder in `client.py`:
+   - `_build_structured_call_result(...)`
+   to reduce duplicated result/identity assembly logic across responses,
+   native-schema, and instructor branches.
+4. Expanded contract tests for structured fallback identity:
+   - sync/async tests now assert normalized attempted-model chains and final
+     `resolved_model` after fallback.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_model_identity_contract.py tests/test_client.py -k "structured or fallback"`
+   - Result: `42 passed, 183 deselected`
+2. `pytest -q`
+   - Result: `798 passed, 1 skipped, 1 warning`
+3. `mypy llm_client`
+   - Result: `Success: no issues found in 36 source files`

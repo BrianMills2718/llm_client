@@ -12,6 +12,8 @@ All notable changes to `llm-client` are documented in this file.
 - Expanded identity characterization coverage:
   - `tests/test_model_identity_contract.py` now covers structured and
     streaming entrypoints (sync/async) in addition to text + MCP flows
+  - added explicit structured fallback-chain characterization (sync/async)
+    covering normalized attempted-model traces and resolved model identity
 - Observability boundary modules in `llm_client.observability`:
   - `events.py`, `experiments.py`, `query.py`
 - Modular CLI command package in `llm_client.cli`:
@@ -53,9 +55,14 @@ All notable changes to `llm-client` are documented in this file.
 - `call_llm_structured` / `acall_llm_structured` now route retry behavior for
   responses, native-schema, and instructor branches through shared
   execution-kernel retry primitives instead of local retry loops.
+- `call_llm_structured` / `acall_llm_structured` now also route outer
+  model-chain fallback behavior through shared execution-kernel fallback
+  primitives (`run_sync_with_fallback` / `run_async_with_fallback`).
 - Routing resolution now goes through a shared `_resolve_call_plan(...)` path
   for text/structured/stream entrypoints, so normalization events are logged
   consistently from one resolver seam.
+- Structured result assembly/identity annotation now uses shared helper
+  `_build_structured_call_result(...)` to reduce duplicated logic.
 - `_agent_loop` now stages tool/contract initialization through typed
   `AgentLoopToolState` construction (`_initialize_agent_tool_state`).
 - `_agent_loop` final metadata writeout is extracted into

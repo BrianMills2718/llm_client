@@ -232,6 +232,87 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-5"]
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_fallback_chain_records_attempted_models(
+        self,
+        mock_completion: MagicMock,
+        _mock_supports_schema: MagicMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "on")
+        mock_completion.side_effect = [
+            RuntimeError("primary failed"),
+            _mock_response(content='{"message":"Recovered"}'),
+        ]
+
+        parsed, result = call_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            _StructuredPayload,
+            num_retries=0,
+            fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="identity.structured.sync.fallback",
+            max_budget=0,
+        )
+
+        assert parsed.message == "Recovered"
+        assert result.model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == [
+            "openrouter/openai/gpt-4",
+            "openrouter/openai/gpt-3.5-turbo",
+        ]
+        assert result.routing_trace["normalized_from"] == "gpt-4"
+        assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
+        assert any(w.startswith("FALLBACK:") for w in (result.warnings or []))
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
+    async def test_async_structured_fallback_chain_records_attempted_models(
+        self,
+        mock_acompletion: AsyncMock,
+        _mock_supports_schema: MagicMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "on")
+        mock_acompletion.side_effect = [
+            RuntimeError("primary failed"),
+            _mock_response(content='{"message":"Recovered"}'),
+        ]
+
+        parsed, result = await acall_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            _StructuredPayload,
+            num_retries=0,
+            fallback_models=["gpt-3.5-turbo"],
+            task="test",
+            trace_id="identity.structured.async.fallback",
+            max_budget=0,
+        )
+
+        assert parsed.message == "Recovered"
+        assert result.model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "openrouter/openai/gpt-3.5-turbo"
+        assert result.routing_trace is not None
+        assert result.routing_trace["attempted_models"] == [
+            "openrouter/openai/gpt-4",
+            "openrouter/openai/gpt-3.5-turbo",
+        ]
+        assert result.routing_trace["normalized_from"] == "gpt-4"
+        assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
+        assert any(w.startswith("FALLBACK:") for w in (result.warnings or []))
+
     @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
     @patch("llm_client.client.litellm.completion")
     def test_stream_identity_fields_with_explicit_routing_off(
