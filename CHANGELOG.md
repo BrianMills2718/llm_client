@@ -58,6 +58,8 @@ All notable changes to `llm-client` are documented in this file.
   - Codex SDK timeouts now raise explicit structured messages
     (`CODEX_TIMEOUT[codex_call|codex_structured_call]`) including model and
     execution context (`working_directory`, `sandbox_mode`, `approval_policy`).
+  - Codex turn tasks now perform bounded cleanup on cancellation/timeouts to
+    reduce lingering subprocess transport warnings after outer watchdog aborts.
   - Retry classification now treats timeout exception classes as retryable even
     when the exception message is empty.
 - `call_llm_structured` / `acall_llm_structured` now route retry behavior for

@@ -1012,6 +1012,13 @@ async def _acall_codex(
             turn_task = asyncio.create_task(_run())
             try:
                 turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+            except asyncio.CancelledError:
+                turn_task.cancel()
+                try:
+                    await asyncio.wait_for(turn_task, timeout=2.0)
+                except BaseException:
+                    pass
+                raise
             except asyncio.TimeoutError as exc:
                 turn_task.cancel()
                 # Bound cancellation wait so timeout plumbing cannot stall forever.
@@ -1097,6 +1104,13 @@ async def _acall_codex_structured(
             turn_task = asyncio.create_task(_run())
             try:
                 turn = await asyncio.wait_for(turn_task, timeout=float(timeout))
+            except asyncio.CancelledError:
+                turn_task.cancel()
+                try:
+                    await asyncio.wait_for(turn_task, timeout=2.0)
+                except BaseException:
+                    pass
+                raise
             except asyncio.TimeoutError as exc:
                 turn_task.cancel()
                 try:
