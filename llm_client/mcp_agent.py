@@ -617,7 +617,7 @@ class AgentLoopToolState:
     """Initial tool/contract state used by _agent_loop execution stages."""
 
     normalized_tool_contracts: dict[str, dict[str, Any]]
-    tool_parameter_index: dict[str, set[str]]
+    tool_parameter_index: dict[str, dict[str, Any]]
     available_artifacts: set[str]
     initial_artifact_snapshot: list[str]
     available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]]
@@ -2898,11 +2898,12 @@ async def _agent_loop(
     foundation_event_types: dict[str, int] = {}
     foundation_event_validation_errors = 0
     foundation_events_logged = 0
+    _io_log: Any | None = None
     try:
-        from llm_client import io_log as _io_log  # local import to avoid module-cycle hazards
-        active_run_id = _io_log.get_active_experiment_run_id()
+        from llm_client import io_log as _io_log_module  # local import to avoid module-cycle hazards
+        _io_log = _io_log_module
+        active_run_id = _io_log_module.get_active_experiment_run_id()
     except Exception:
-        _io_log = None
         active_run_id = None
     foundation_run_id = coerce_run_id(
         active_run_id if isinstance(active_run_id, str) else None,
@@ -3483,7 +3484,7 @@ async def _agent_loop(
             tool_name = str(tc.get("function", {}).get("name", "")).strip()
             tc_id = tc.get("id", "")
             parsed_args = _extract_tool_call_args(tc)
-            validation = validate_tool_call_inputs(
+            gate_validation = validate_tool_call_inputs(
                 tool_name=tool_name or "<unknown>",
                 parsed_args=parsed_args,
                 tool_parameters=tool_parameter_index.get(tool_name),
@@ -3494,16 +3495,16 @@ async def _agent_loop(
                 error_code_missing_reasoning=EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
                 error_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
             )
-            if validation.is_valid:
+            if gate_validation.is_valid:
                 filtered_gate_calls.append(tc)
                 continue
 
             gate_rejected_calls += 1
-            if validation.error_code == EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING:
+            if gate_validation.error_code == EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING:
                 rejected_missing_reasoning_calls += 1
-            gate_reason = validation.reason or "Compliance gate rejected tool call."
+            gate_reason = gate_validation.reason or "Compliance gate rejected tool call."
             gate_error = f"Validation error: {gate_reason}"
-            gate_error_code = validation.error_code or EVENT_CODE_TOOL_VALIDATION_SCHEMA
+            gate_error_code = gate_validation.error_code or EVENT_CODE_TOOL_VALIDATION_SCHEMA
             failure_event_codes.append(gate_error_code)
             gate_violation_events.append(
                 {
@@ -3511,13 +3512,13 @@ async def _agent_loop(
                     "tool": tool_name or "<unknown>",
                     "reason": gate_reason,
                     "error_code": gate_error_code,
-                    "failure_phase": validation.failure_phase or "input_validation",
+                    "failure_phase": gate_validation.failure_phase or "input_validation",
                     "available_artifacts": sorted(available_artifacts),
                     "available_capabilities": _capability_state_snapshot(available_capabilities),
                     "available_bindings": dict(available_bindings),
-                    "call_bindings": dict(validation.call_bindings),
+                    "call_bindings": dict(gate_validation.call_bindings),
                     "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
-                    "missing_requirements": list(validation.missing_requirements or []),
+                    "missing_requirements": list(gate_validation.missing_requirements or []),
                 }
             )
             gate_rejected_records.append(
@@ -3536,9 +3537,9 @@ async def _agent_loop(
                         {
                             "error": gate_error,
                             "error_code": gate_error_code,
-                            "failure_phase": validation.failure_phase or "input_validation",
-                            "call_bindings": validation.call_bindings,
-                            "missing_requirements": validation.missing_requirements,
+                            "failure_phase": gate_validation.failure_phase or "input_validation",
+                            "call_bindings": gate_validation.call_bindings,
+                            "missing_requirements": gate_validation.missing_requirements,
                         }
                     ),
                 }
@@ -3561,7 +3562,7 @@ async def _agent_loop(
                     "failure": {
                         "error_code": gate_error_code,
                         "category": "validation",
-                        "phase": validation.failure_phase or "input_validation",
+                        "phase": gate_validation.failure_phase or "input_validation",
                         "retryable": True,
                         "tool_name": tool_name or "<unknown>",
                         "user_message": gate_error,
@@ -3594,7 +3595,7 @@ async def _agent_loop(
                     filtered_contract_calls.append(tc)
                     continue
 
-                validation = _validate_tool_contract_call(
+                contract_validation = _validate_tool_contract_call(
                     tool_name=tool_name,
                     contract=contract,
                     parsed_args=parsed_args,
@@ -3602,26 +3603,28 @@ async def _agent_loop(
                     available_capabilities=available_capabilities,
                     available_bindings=available_bindings,
                 )
-                if validation.is_valid:
+                if contract_validation.is_valid:
                     filtered_contract_calls.append(tc)
                     continue
 
                 contract_rejected_calls += 1
-                err = f"Tool contract violation: {validation.reason}"
+                err = f"Tool contract violation: {contract_validation.reason}"
                 contract_violation_events.append({
                     "turn": turn + 1,
                     "tool": tool_name or "<unknown>",
-                    "reason": validation.reason,
-                    "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
-                    "failure_phase": validation.failure_phase or "input_validation",
+                    "reason": contract_validation.reason,
+                    "error_code": contract_validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+                    "failure_phase": contract_validation.failure_phase or "input_validation",
                     "available_artifacts": sorted(available_artifacts),
                     "available_capabilities": _capability_state_snapshot(available_capabilities),
                     "available_bindings": dict(available_bindings),
-                    "call_bindings": dict(validation.call_bindings),
+                    "call_bindings": dict(contract_validation.call_bindings),
                     "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
-                    "missing_requirements": list(validation.missing_requirements or []),
+                    "missing_requirements": list(contract_validation.missing_requirements or []),
                 })
-                failure_event_codes.append(validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE)
+                failure_event_codes.append(
+                    contract_validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE
+                )
                 contract_rejected_records.append(
                     MCPToolCallRecord(
                         server="__contract__",
@@ -3636,10 +3639,10 @@ async def _agent_loop(
                     "content": _json.dumps(
                         {
                             "error": err,
-                            "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
-                            "failure_phase": validation.failure_phase or "input_validation",
-                            "call_bindings": validation.call_bindings,
-                            "missing_requirements": validation.missing_requirements,
+                            "error_code": contract_validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+                            "failure_phase": contract_validation.failure_phase or "input_validation",
+                            "call_bindings": contract_validation.call_bindings,
+                            "missing_requirements": contract_validation.missing_requirements,
                         }
                     ),
                 })
@@ -3659,9 +3662,9 @@ async def _agent_loop(
                         },
                         "outputs": {"artifact_ids": [], "payload_hashes": []},
                         "failure": {
-                            "error_code": validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+                            "error_code": contract_validation.error_code or EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
                             "category": "validation",
-                            "phase": validation.failure_phase or "input_validation",
+                            "phase": contract_validation.failure_phase or "input_validation",
                             "retryable": False,
                             "tool_name": tool_name or "<unknown>",
                             "user_message": err,
@@ -4166,7 +4169,7 @@ async def _agent_loop(
                 status = str(parsed.get("status", "")).strip().lower()
                 if status and status not in {"submitted", "ok", "success"}:
                     submit_error_this_turn = True
-                    validation = parsed.get("validation_error")
+                    validation_payload = parsed.get("validation_error")
                     reason_code = ""
                     detail = ""
                     recovery_policy = parsed.get("recovery_policy")
@@ -4175,9 +4178,9 @@ async def _agent_loop(
                         and bool(recovery_policy.get("new_evidence_required_before_retry"))
                     ):
                         submit_needs_new_evidence_signal = True
-                    if isinstance(validation, dict):
-                        reason_code = str(validation.get("reason_code", "")).strip()
-                        detail = str(validation.get("message", "")).strip()
+                    if isinstance(validation_payload, dict):
+                        reason_code = str(validation_payload.get("reason_code", "")).strip()
+                        detail = str(validation_payload.get("message", "")).strip()
                     err_parts = [f"submit_answer not accepted (status={status})"]
                     if reason_code:
                         err_parts.append(f"reason_code={reason_code}")
@@ -4357,11 +4360,11 @@ async def _agent_loop(
             if not record.error:
                 continue
             sig = _tool_error_signature(str(record.error))
-            key = (record.tool, sig)
-            count = tool_error_counts.get(key, 0) + 1
-            tool_error_counts[key] = count
+            error_key = (record.tool, sig)
+            count = tool_error_counts.get(error_key, 0) + 1
+            tool_error_counts[error_key] = count
 
-            last_nudged = tool_error_nudges.get(key, 0)
+            last_nudged = tool_error_nudges.get(error_key, 0)
             if count >= 2 and count > last_nudged:
                 todo_hint = (
                     " If this is a TODO completion error, reopen upstream TODO(s) "
@@ -4380,7 +4383,7 @@ async def _agent_loop(
                 }
                 messages.append(err_msg)
                 agent_result.conversation_trace.append(err_msg)
-                tool_error_nudges[key] = count
+                tool_error_nudges[error_key] = count
                 logger.warning(
                     "Loop detection: repeated tool error from '%s' (count=%d): %s",
                     record.tool, count, sig,

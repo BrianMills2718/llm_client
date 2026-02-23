@@ -14,7 +14,7 @@ import statistics
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from llm_client import io_log as _io_log
 
@@ -470,7 +470,7 @@ class ExperimentRun:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: Any,
-    ) -> bool:
+    ) -> Literal[False]:
         try:
             if not self._finished:
                 final_status = "completed" if exc_type is None else self._status_on_exception
@@ -492,7 +492,7 @@ class ExperimentRun:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: Any,
-    ) -> bool:
+    ) -> Literal[False]:
         return self.__exit__(exc_type, exc, tb)
 
     def log_item(
@@ -1011,10 +1011,10 @@ def compare_cohorts(
     baseline_runs = cohorts[resolved_baseline]
     baseline_by_key: dict[tuple[int, int | None], dict[str, Any]] = {}
     for run in baseline_runs:
-        key = _matched_key(run)
-        if key is None:
+        baseline_key = _matched_key(run)
+        if baseline_key is None:
             continue
-        baseline_by_key.setdefault(key, run)
+        baseline_by_key.setdefault(baseline_key, run)
 
     matched_deltas: list[dict[str, Any]] = []
     baseline_metrics_by_key = {key: _numeric_summary_metrics(run) for key, run in baseline_by_key.items()}
@@ -1023,15 +1023,15 @@ def compare_cohorts(
             continue
         candidate_by_key: dict[tuple[int, int | None], dict[str, Any]] = {}
         for run in cohorts[condition]:
-            key = _matched_key(run)
-            if key is None:
+            candidate_key = _matched_key(run)
+            if candidate_key is None:
                 continue
-            candidate_by_key.setdefault(key, run)
+            candidate_by_key.setdefault(candidate_key, run)
         shared_keys = sorted(set(baseline_by_key).intersection(candidate_by_key))
         delta_values: dict[str, list[float]] = {}
-        for key in shared_keys:
-            base_metrics = baseline_metrics_by_key.get(key, {})
-            cand_metrics = _numeric_summary_metrics(candidate_by_key[key])
+        for match_key in shared_keys:
+            base_metrics = baseline_metrics_by_key.get(match_key, {})
+            cand_metrics = _numeric_summary_metrics(candidate_by_key[match_key])
             for metric_name in sorted(set(base_metrics).intersection(cand_metrics)):
                 delta_values.setdefault(metric_name, []).append(cand_metrics[metric_name] - base_metrics[metric_name])
         matched_deltas.append(
