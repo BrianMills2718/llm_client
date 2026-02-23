@@ -70,6 +70,7 @@ def test_coupled_file_passes_when_required_docs_are_read() -> None:
             "docs/adr/0002-routing-config-precedence.md",
             "docs/adr/0003-warning-taxonomy.md",
             "docs/adr/0004-result-model-semantics-migration.md",
+            "docs/adr/0009-long-thinking-background-polling.md",
         ],
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

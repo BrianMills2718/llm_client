@@ -407,3 +407,95 @@ at the client boundary:
 Validation snapshot after this pass:
 1. `pytest -q tests/test_model_identity_contract.py tests/test_mcp_agent.py tests/test_routing.py`
 2. `pytest -q`
+
+## 22) Additional follow-up (long-thinking reliability hardening)
+Hardened `gpt-5.2-pro` long-thinking behavior and traceability:
+1. `llm_client/client.py`
+   - wired explicit `reasoning_effort` into `_prepare_responses_kwargs(...)`
+     (named argument now wins over forwarded kwargs).
+   - added safe parsing for per-call polling controls:
+     - `background_timeout`
+     - `background_poll_interval`
+   - added robust retrieval helpers:
+     - `_retrieve_background_response(...)`
+     - `_aretrieve_background_response(...)`
+     using OpenAI SDK clients (`OpenAI` / `AsyncOpenAI`) for `response_id`
+     retrieval.
+   - polling now passes explicit `api_base` and request timeout context.
+   - routing trace now includes optional `background_mode` for adoption tracking.
+2. `llm_client/task_graph.py`
+   - added optional task-level `reasoning_effort` passthrough so graph tasks can
+     request long-thinking effort levels.
+3. Tests expanded in `tests/test_client.py`:
+   - `gpt-5.2-pro` Responses detection.
+   - background mode + reasoning payload emission.
+   - sync/async pending-background polling handoff assertions.
+   - retrieval helper behavior (API key requirement + OpenAI client call shape).
+4. Read-gate coupling updated:
+   - `scripts/relationships.yaml` now requires ADR 0009 for `client.py`.
+   - `tests/test_required_reading_gate.py` updated accordingly.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_client.py -k "gpt52 or background or LongThinkingBackgroundRetrieval or ResponsesAPIDetection"`
+   - Result: `10 passed`
+2. `pytest -q`
+   - Result: `824 passed, 1 skipped, 1 warning`
+
+## 23) 24-hour execution queue (autonomous run plan)
+Goal: close remaining long-thinking contract gaps, then continue architecture
+ratchet with small, reversible steps.
+
+### 0-4h: Contract closure (high priority)
+1. Add explicit tests for `routing_trace["background_mode"]` in sync/async
+   `call_llm` paths.
+2. Add `task_graph` coverage for `reasoning_effort` passthrough and nullable
+   `agent` handling safety in experiment records.
+3. Keep default tests offline-safe and deterministic.
+
+### 4-12h: Telemetry + observability consistency
+1. Ensure long-thinking traces are preserved through result finalization paths
+   (text + structured + agent-loop return points).
+2. Add lightweight metadata counters in graph/reporting surfaces for how often
+   long-thinking effort/background mode is used.
+
+### 12-24h: Cleanup + migration prep
+1. Remove any duplicate long-thinking decision logic that can drift between
+   sync/async paths.
+2. Tighten docs/examples for `gpt-5.2-pro` behavior and polling controls.
+3. Run full suite and mypy; prepare one consolidated commit with validation
+   evidence.
+
+### Known uncertainties
+1. LiteLLM runtime here exposes `responses()` as a function without `.retrieve`;
+   retrieval therefore uses OpenAI SDK directly for now.
+2. Background polling semantics for non-OpenAI providers remain out-of-scope and
+   should be explicitly rejected/guarded in future ADR work.
+
+## 24) 24-hour queue progress update (current session)
+Executed now from the queue:
+1. Added/expanded contract tests for background-mode routing trace visibility in
+   sync/async `gpt-5.2-pro` calls (`tests/test_client.py`).
+2. Hardened task-graph telemetry:
+   - `TaskResult.reasoning_effort`
+   - `TaskResult.background_mode`
+   - experiment-record dimensions now include both fields.
+3. Added task-graph tests for:
+   - reasoning-effort passthrough,
+   - background-mode capture from routing trace,
+   - nullable `agent` fallback safety in experiment records.
+4. Fixed potential nullable-agent runtime hazard in experiment logging by
+   normalizing to `codex` label when `agent` is unset.
+5. Removed mypy environment fragility from `llm_client/scoring.py` by switching
+   YAML import to dynamic `import_module("yaml")` (same pattern as other modules).
+
+Validation snapshot after queue progress:
+1. `pytest -q tests/test_client.py -k "gpt52 or background or LongThinkingBackgroundRetrieval or ResponsesAPIDetection"`
+   - Result: `10 passed`
+2. `pytest -q tests/test_task_graph.py -k "reasoning_effort_passthrough or background_mode_capture or null_agent or experiment_record_defaults"`
+   - Result: `2 passed` (plus deselected)
+3. `pytest -q tests/test_scoring.py`
+   - Result: `23 passed`
+4. `mypy llm_client`
+   - Result: `Success: no issues found in 39 source files`
+5. `pytest -q`
+   - Result: `827 passed, 1 skipped, 1 warning`

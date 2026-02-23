@@ -151,6 +151,8 @@ Model override semantics:
 - If `model` starts with `codex` or `claude-code`, agent SDK kwargs are applied.
 - If `model` is a provider model (for example `gemini/gemini-2.5-flash`), the task runs through standard `llm_client` completion/tool-loop routing and agent-only kwargs are not injected.
 - This allows mixed graphs like `gemini -> codex -> claude-code` in one DAG.
+- Optional `reasoning_effort` on a task is forwarded to `acall_llm(...)` for
+  long-thinking models (for example `gpt-5.2-pro` with `high`/`xhigh`).
 
 ### Experiment Record (JSONL)
 
@@ -180,9 +182,9 @@ Written per-task to `~/projects/data/task_graph/experiments.jsonl`:
   },
 
   "dimensions": {
-    "beliefs_created": 23,
-    "cost_per_belief": 0.00052,
-    "extraction_time_s": 34.2
+    "cost_per_second": 0.00035,
+    "reasoning_effort": "xhigh",
+    "background_mode": true
   },
 
   "outcome": "confirmed",

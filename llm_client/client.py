@@ -296,6 +296,7 @@ def _build_routing_trace(
     requested_api_base: str | None = None,
     effective_api_base: str | None = None,
     sticky_fallback: bool | None = None,
+    background_mode: bool | None = None,
     routing_policy: str | None = None,
 ) -> dict[str, Any]:
     """Build a minimal routing trace for week-1 contract characterization."""
@@ -310,6 +311,8 @@ def _build_routing_trace(
         trace["selected_model"] = selected_model
     if sticky_fallback is not None:
         trace["sticky_fallback"] = bool(sticky_fallback)
+    if background_mode is not None:
+        trace["background_mode"] = bool(background_mode)
     if (
         requested_api_base is None
         and effective_api_base is not None
@@ -509,6 +512,7 @@ def _build_structured_call_result(
     attempted_models: list[str],
     requested_api_base: str | None,
     effective_api_base: str | None,
+    background_mode: bool | None = None,
     routing_policy: str,
 ) -> LLMCallResult:
     """Build and identity-annotate a structured-call result consistently."""
@@ -532,6 +536,7 @@ def _build_structured_call_result(
             selected_model=current_model,
             requested_api_base=requested_api_base,
             effective_api_base=effective_api_base,
+            background_mode=background_mode,
             routing_policy=routing_policy,
         ),
     )
@@ -2807,6 +2812,7 @@ def _prepare_responses_kwargs(
     messages: list[dict[str, Any]],
     *,
     timeout: int,
+    reasoning_effort: str | None,
     api_base: str | None,
     kwargs: dict[str, Any],
     warning_sink: list[str] | None = None,
@@ -2845,18 +2851,24 @@ def _prepare_responses_kwargs(
             response_format
         )
 
-    # Pass through reasoning_effort for models that support it (gpt-5.2-pro etc.)
-    reasoning_effort = kwargs.pop("reasoning_effort", None)
-    if reasoning_effort and _base_model_name(model) in _GPT5_REASONING_GATED_SAMPLING:
-        resp_kwargs["reasoning"] = {"effort": reasoning_effort}
+    # Pass through reasoning_effort for models that support it (gpt-5.2-pro etc.).
+    # Named arg wins; kwargs fallback supports legacy/internal call paths.
+    effort = reasoning_effort
+    if effort is None:
+        effort = kwargs.pop("reasoning_effort", None)
+    else:
+        kwargs.pop("reasoning_effort", None)
+    if effort and _base_model_name(model) in _GPT5_REASONING_GATED_SAMPLING:
+        resp_kwargs["reasoning"] = {"effort": effort}
 
     # Enable background mode for long-thinking models
-    if _needs_background_mode(model, reasoning_effort):
+    if _needs_background_mode(model, effort):
         resp_kwargs["background"] = True
 
     # Strip parameters that break GPT-5 or don't apply to responses API
     for key in ("max_tokens", "max_output_tokens", "messages",
-                "thinking", "temperature", "unsupported_param_policy"):
+                "thinking", "temperature", "unsupported_param_policy",
+                "background_timeout", "background_poll_interval"):
         kwargs.pop(key, None)
 
     # Convert tools from ChatCompletions format to Responses API format.
@@ -3077,9 +3089,20 @@ def _needs_background_mode(model: str, reasoning_effort: str | None) -> bool:
     )
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    """Best-effort int coercion with positive guard and fallback."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _poll_background_response(
     response_id: str,
     *,
+    api_base: str | None = None,
+    request_timeout: int | None = None,
     poll_interval: int = _BACKGROUND_POLL_INTERVAL,
     timeout: int = _BACKGROUND_DEFAULT_TIMEOUT,
 ) -> Any:
@@ -3106,7 +3129,11 @@ def _poll_background_response(
     attempt = 0
     while _time.monotonic() < deadline:
         try:
-            response = litellm.responses.retrieve(response_id=response_id)
+            response = _retrieve_background_response(
+                response_id=response_id,
+                api_base=api_base,
+                request_timeout=request_timeout,
+            )
         except Exception as e:
             logger.warning("Background poll attempt %d failed: %s", attempt, e)
             _time.sleep(poll_interval)
@@ -3141,6 +3168,8 @@ def _poll_background_response(
 async def _apoll_background_response(
     response_id: str,
     *,
+    api_base: str | None = None,
+    request_timeout: int | None = None,
     poll_interval: int = _BACKGROUND_POLL_INTERVAL,
     timeout: int = _BACKGROUND_DEFAULT_TIMEOUT,
 ) -> Any:
@@ -3154,7 +3183,11 @@ async def _apoll_background_response(
     attempt = 0
     while time.monotonic() < deadline:
         try:
-            response = await litellm.aresponses.retrieve(response_id=response_id)
+            response = await _aretrieve_background_response(
+                response_id=response_id,
+                api_base=api_base,
+                request_timeout=request_timeout,
+            )
         except Exception as e:
             logger.warning("Background poll attempt %d failed: %s", attempt, e)
             await asyncio.sleep(poll_interval)
@@ -3184,6 +3217,58 @@ async def _apoll_background_response(
     raise TimeoutError(
         f"Background response {response_id} did not complete within {timeout}s"
     )
+
+
+def _retrieve_background_response(
+    *,
+    response_id: str,
+    api_base: str | None,
+    request_timeout: int | None,
+) -> Any:
+    """Retrieve a background response by ID.
+
+    LiteLLM currently exposes `responses()` as a function (no `.retrieve` attr) in
+    this environment, so retrieval uses OpenAI SDK clients directly.
+    """
+    from openai import OpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
+        )
+
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    if api_base:
+        client_kwargs["base_url"] = api_base
+    if request_timeout is not None:
+        client_kwargs["timeout"] = request_timeout
+    client = OpenAI(**client_kwargs)
+    return client.responses.retrieve(response_id)
+
+
+async def _aretrieve_background_response(
+    *,
+    response_id: str,
+    api_base: str | None,
+    request_timeout: int | None,
+) -> Any:
+    """Async retrieve for background responses by ID."""
+    from openai import AsyncOpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
+        )
+
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    if api_base:
+        client_kwargs["base_url"] = api_base
+    if request_timeout is not None:
+        client_kwargs["timeout"] = request_timeout
+    client = AsyncOpenAI(**client_kwargs)
+    return await client.responses.retrieve(response_id)
 
 
 # ---------------------------------------------------------------------------
@@ -3608,6 +3693,7 @@ def call_llm(
         last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
+        background_mode = _needs_background_mode(current_model, reasoning_effort) if use_responses else None
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
@@ -3626,6 +3712,7 @@ def call_llm(
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
+                reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
@@ -3659,6 +3746,7 @@ def call_llm(
                         selected_model=current_model,
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     ),
                 )
@@ -3706,9 +3794,20 @@ def call_llm(
                 if bg_status and bg_status != "completed":
                     response_id = getattr(response, "id", None)
                     if response_id:
-                        bg_timeout = kwargs.get("timeout", _BACKGROUND_DEFAULT_TIMEOUT)
+                        bg_timeout = _coerce_positive_int(
+                            kwargs.get("background_timeout"),
+                            _BACKGROUND_DEFAULT_TIMEOUT,
+                        )
+                        bg_poll_interval = _coerce_positive_int(
+                            kwargs.get("background_poll_interval"),
+                            _BACKGROUND_POLL_INTERVAL,
+                        )
                         response = _poll_background_response(
-                            response_id, timeout=bg_timeout,
+                            response_id,
+                            api_base=current_api_base,
+                            request_timeout=timeout,
+                            timeout=bg_timeout,
+                            poll_interval=bg_poll_interval,
                         )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
@@ -3738,6 +3837,7 @@ def call_llm(
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
                     sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 ),
             )
@@ -3901,6 +4001,11 @@ def call_llm_structured(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
+        background_mode = (
+            _needs_background_mode(current_model, reasoning_effort)
+            if _is_responses_api_model(current_model)
+            else None
+        )
         key: str | None = None
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
@@ -3918,6 +4023,7 @@ def call_llm_structured(
                         selected_model=current_model,
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     ),
                 )
@@ -3942,7 +4048,10 @@ def call_llm_structured(
             schema = _strict_json_schema(response_model.model_json_schema())
             resp_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
-                timeout=timeout, api_base=current_api_base, kwargs=kwargs,
+                timeout=timeout,
+                reasoning_effort=reasoning_effort,
+                api_base=current_api_base,
+                kwargs=kwargs,
                 warning_sink=_warnings,
             )
             resp_kwargs["text"] = {
@@ -3983,6 +4092,7 @@ def call_llm_structured(
                     attempted_models=models[:model_idx + 1],
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 )
                 if hooks and hooks.after_call:
@@ -4087,6 +4197,7 @@ def call_llm_structured(
                         attempted_models=models[:model_idx + 1],
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     )
                     if hooks and hooks.after_call:
@@ -4203,6 +4314,7 @@ def call_llm_structured(
                     attempted_models=models[:model_idx + 1],
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 )
 
@@ -4519,6 +4631,7 @@ async def acall_llm(
         last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
+        background_mode = _needs_background_mode(current_model, reasoning_effort) if use_responses else None
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         use_gemini_native = (
             not is_agent
@@ -4537,6 +4650,7 @@ async def acall_llm(
             call_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
                 timeout=timeout,
+                reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
                 kwargs=kwargs,
                 warning_sink=_warnings,
@@ -4570,6 +4684,7 @@ async def acall_llm(
                         selected_model=current_model,
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     ),
                 )
@@ -4617,9 +4732,20 @@ async def acall_llm(
                 if bg_status and bg_status != "completed":
                     response_id = getattr(response, "id", None)
                     if response_id:
-                        bg_timeout = kwargs.get("timeout", _BACKGROUND_DEFAULT_TIMEOUT)
+                        bg_timeout = _coerce_positive_int(
+                            kwargs.get("background_timeout"),
+                            _BACKGROUND_DEFAULT_TIMEOUT,
+                        )
+                        bg_poll_interval = _coerce_positive_int(
+                            kwargs.get("background_poll_interval"),
+                            _BACKGROUND_POLL_INTERVAL,
+                        )
                         response = await _apoll_background_response(
-                            response_id, timeout=bg_timeout,
+                            response_id,
+                            api_base=current_api_base,
+                            request_timeout=timeout,
+                            timeout=bg_timeout,
+                            poll_interval=bg_poll_interval,
                         )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
@@ -4649,6 +4775,7 @@ async def acall_llm(
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
                     sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 ),
             )
@@ -4812,6 +4939,11 @@ async def acall_llm_structured(
         nonlocal last_model_attempted
         last_model_attempted = current_model
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
+        background_mode = (
+            _needs_background_mode(current_model, reasoning_effort)
+            if _is_responses_api_model(current_model)
+            else None
+        )
         key: str | None = None
         if cache is not None:
             key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
@@ -4829,6 +4961,7 @@ async def acall_llm_structured(
                         selected_model=current_model,
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     ),
                 )
@@ -4853,7 +4986,10 @@ async def acall_llm_structured(
             schema = _strict_json_schema(response_model.model_json_schema())
             resp_kwargs = _prepare_responses_kwargs(
                 current_model, messages,
-                timeout=timeout, api_base=current_api_base, kwargs=kwargs,
+                timeout=timeout,
+                reasoning_effort=reasoning_effort,
+                api_base=current_api_base,
+                kwargs=kwargs,
                 warning_sink=_warnings,
             )
             resp_kwargs["text"] = {
@@ -4894,6 +5030,7 @@ async def acall_llm_structured(
                     attempted_models=models[:model_idx + 1],
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 )
                 if hooks and hooks.after_call:
@@ -4998,6 +5135,7 @@ async def acall_llm_structured(
                         attempted_models=models[:model_idx + 1],
                         requested_api_base=api_base,
                         effective_api_base=current_api_base,
+                        background_mode=background_mode,
                         routing_policy=routing_policy,
                     )
                     if hooks and hooks.after_call:
@@ -5114,6 +5252,7 @@ async def acall_llm_structured(
                     attempted_models=models[:model_idx + 1],
                     requested_api_base=api_base,
                     effective_api_base=current_api_base,
+                    background_mode=background_mode,
                     routing_policy=routing_policy,
                 )
 

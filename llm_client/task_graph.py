@@ -60,7 +60,7 @@ class TaskDef(BaseModel):
 
     id: str
     difficulty: int
-    agent: str = "codex"
+    agent: str | None = "codex"
     prompt: str
     depends_on: list[str] = []
     mcp_servers: list[str] = []
@@ -71,6 +71,7 @@ class TaskDef(BaseModel):
     investigate_first: list[str] = []
     timeout: int = 300  # Per-task timeout in seconds
     skip_git_repo_check: bool = False  # Codex-only: bypass trusted-repo guard
+    reasoning_effort: str | None = None  # "low", "medium", "high", "xhigh"
 
 
 class GraphMeta(BaseModel):
@@ -113,6 +114,8 @@ class TaskResult(BaseModel):
     tokens_out: int = 0
     validation_results: list[ValidationResult] = []
     agent_output: str | None = None  # Truncated agent response
+    reasoning_effort: str | None = None
+    background_mode: bool | None = None
     spec_hash: str = ""
     uncertainties: list[Uncertainty] = []
     error: str | None = None
@@ -494,6 +497,10 @@ async def _execute_task(
         "execution_mode": "workspace_agent" if model_is_agent else "text",
     }
 
+    # Reasoning effort (for long-thinking models like gpt-5.2-pro)
+    if task.reasoning_effort:
+        kwargs["reasoning_effort"] = task.reasoning_effort
+
     # MCP servers
     if task.mcp_servers:
         mcp_configs = {}
@@ -571,6 +578,12 @@ async def _execute_task(
     usage = result.usage or {}
     tokens_in = usage.get("prompt_tokens", 0) if isinstance(usage, dict) else 0
     tokens_out = usage.get("completion_tokens", 0) if isinstance(usage, dict) else 0
+    routing_trace = getattr(result, "routing_trace", None)
+    background_mode = None
+    if isinstance(routing_trace, dict):
+        bg_value = routing_trace.get("background_mode")
+        if isinstance(bg_value, bool):
+            background_mode = bg_value
 
     if task.validators:
         val_results = run_validators(task.validators)
@@ -592,6 +605,8 @@ async def _execute_task(
         tokens_out=tokens_out,
         validation_results=val_results,
         agent_output=agent_output,
+        reasoning_effort=task.reasoning_effort,
+        background_mode=background_mode,
         spec_hash=frozen_hash,
         error=None if passed else "; ".join(
             v.reason for v in val_results if not v.passed and v.reason
@@ -609,6 +624,7 @@ def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecor
     from llm_client.git_utils import get_git_head
 
     task = graph.tasks[tr.task_id]
+    agent_label = (task.agent or "codex").strip() or "codex"
     if tr.status == TaskStatus.COMPLETED:
         outcome = "confirmed"
     elif tr.status == TaskStatus.FAILED:
@@ -621,10 +637,10 @@ def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecor
         task_id=tr.task_id,
         wave=tr.wave,
         timestamp=datetime.now(timezone.utc).isoformat(),
-        hypothesis=f"{task.agent} at tier {tr.difficulty} can handle {tr.task_id}",
+        hypothesis=f"{agent_label} at tier {tr.difficulty} can handle {tr.task_id}",
         difficulty=tr.difficulty,
         model_selected=tr.model_selected,
-        agent=task.agent,
+        agent=agent_label,
         result={
             "status": tr.status.value,
             "duration_s": tr.duration_s,
@@ -635,6 +651,8 @@ def _make_experiment_record(graph: TaskGraph, tr: TaskResult) -> ExperimentRecor
         },
         dimensions={
             "cost_per_second": round(tr.cost_usd / tr.duration_s, 6) if tr.duration_s > 0 else 0,
+            "reasoning_effort": tr.reasoning_effort,
+            "background_mode": tr.background_mode,
         },
         outcome=outcome,
         git_commit=get_git_head(),

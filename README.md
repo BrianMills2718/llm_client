@@ -75,8 +75,30 @@ cfg = ClientConfig(
 result = call_llm("gpt-5-mini", messages, config=cfg)
 ```
 
+### Long-thinking mode (`gpt-5.2-pro`)
+
+`gpt-5.2-pro` supports long-thinking runs. When you set
+`reasoning_effort="high"` or `"xhigh"`, the client automatically enables
+Responses background mode and polls to completion.
+
+```python
+result = call_llm(
+    "gpt-5.2-pro",
+    messages,
+    reasoning_effort="xhigh",
+    background_timeout=900,        # optional, seconds (default 900)
+    background_poll_interval=15,   # optional, seconds (default 15)
+)
+```
+
+Notes:
+- Requires `OPENAI_API_KEY`.
+- `background_timeout` caps total polling time.
+- `background_poll_interval` controls polling cadence.
+- `result.routing_trace["background_mode"]` indicates background-mode routing.
+
 Model identity fields on results:
-- `result.model` (actual executed model)
+- `result.model` (legacy compatibility field; do not rely on it for routing provenance)
 - `result.requested_model` (caller input)
 - `result.resolved_model` / `result.execution_model` (terminal executed model)
 - `result.routing_trace` (routing/fallback metadata)
@@ -404,7 +426,7 @@ Fourteen functions (7 sync + 7 async):
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.marginal_cost`, `.cost_source`, `.billing_mode`, `.cache_hit`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude only), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
+`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude models and `gpt-5.2-pro` long-thinking), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
 
 `stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
 

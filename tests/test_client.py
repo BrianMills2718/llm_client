@@ -1295,6 +1295,10 @@ class TestResponsesAPIDetection:
         from llm_client.client import _is_responses_api_model
         assert _is_responses_api_model("gpt-5-nano") is True
 
+    def test_gpt52_pro_detected(self) -> None:
+        from llm_client.client import _is_responses_api_model
+        assert _is_responses_api_model("gpt-5.2-pro") is True
+
     def test_gpt4_not_detected(self) -> None:
         from llm_client.client import _is_responses_api_model
         assert _is_responses_api_model("gpt-4o") is False
@@ -1481,6 +1485,64 @@ class TestResponsesAPIRouting:
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")
+    def test_gpt52_pro_xhigh_enables_background_with_reasoning(
+        self,
+        mock_resp: MagicMock,
+        mock_cost: MagicMock,
+    ) -> None:
+        """gpt-5.2-pro with xhigh reasoning should use background mode and reasoning payload."""
+        mock_resp.return_value = _mock_responses_api_response()
+        result = call_llm(
+            "gpt-5.2-pro",
+            [{"role": "user", "content": "Deep review"}],
+            reasoning_effort="xhigh",
+            task="test",
+            trace_id="test_gpt52_background_reasoning",
+            max_budget=0,
+        )
+        kwargs = mock_resp.call_args.kwargs
+        assert kwargs["background"] is True
+        assert kwargs["reasoning"] == {"effort": "xhigh"}
+        assert isinstance(result.routing_trace, dict)
+        assert result.routing_trace.get("background_mode") is True
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client._poll_background_response")
+    @patch("llm_client.client.litellm.responses")
+    def test_gpt52_background_in_progress_polls_until_complete(
+        self,
+        mock_resp: MagicMock,
+        mock_poll: MagicMock,
+        mock_cost: MagicMock,
+    ) -> None:
+        """If initial background response is pending, sync poller should be used."""
+        initial = _mock_responses_api_response(output_text="", status="in_progress")
+        initial.id = "resp_sync_123"
+        completed = _mock_responses_api_response(output_text="done", status="completed")
+        mock_resp.return_value = initial
+        mock_poll.return_value = completed
+
+        result = call_llm(
+            "gpt-5.2-pro",
+            [{"role": "user", "content": "Deep review"}],
+            reasoning_effort="xhigh",
+            background_timeout=123,
+            background_poll_interval=7,
+            task="test",
+            trace_id="test_gpt52_sync_background_poll",
+            max_budget=0,
+        )
+
+        assert result.content == "done"
+        mock_poll.assert_called_once()
+        poll_args = mock_poll.call_args
+        assert poll_args.args[0] == "resp_sync_123"
+        assert poll_args.kwargs["timeout"] == 123
+        assert poll_args.kwargs["poll_interval"] == 7
+        assert poll_args.kwargs["request_timeout"] == 60
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.responses")
     def test_gpt5_strips_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
         """GPT-5 responses API does not support temperature — should be stripped."""
         mock_resp.return_value = _mock_responses_api_response()
@@ -1656,6 +1718,44 @@ class TestAsyncResponsesAPIRouting:
 
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client._apoll_background_response", new_callable=AsyncMock)
+    @patch("llm_client.client.litellm.aresponses")
+    async def test_async_gpt52_background_in_progress_polls_until_complete(
+        self,
+        mock_aresp: MagicMock,
+        mock_apoll: AsyncMock,
+        mock_cost: MagicMock,
+    ) -> None:
+        """Async path should poll until completed when background response is pending."""
+        initial = _mock_responses_api_response(output_text="", status="in_progress")
+        initial.id = "resp_async_123"
+        completed = _mock_responses_api_response(output_text="done", status="completed")
+        mock_aresp.return_value = initial
+        mock_apoll.return_value = completed
+
+        result = await acall_llm(
+            "gpt-5.2-pro",
+            [{"role": "user", "content": "Deep review"}],
+            reasoning_effort="xhigh",
+            background_timeout=240,
+            background_poll_interval=11,
+            task="test",
+            trace_id="test_gpt52_async_background_poll",
+            max_budget=0,
+        )
+
+        assert result.content == "done"
+        mock_apoll.assert_awaited_once()
+        poll_args = mock_apoll.call_args
+        assert poll_args.args[0] == "resp_async_123"
+        assert poll_args.kwargs["timeout"] == 240
+        assert poll_args.kwargs["poll_interval"] == 11
+        assert poll_args.kwargs["request_timeout"] == 60
+        assert isinstance(result.routing_trace, dict)
+        assert result.routing_trace.get("background_mode") is True
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.aresponses")
     async def test_async_gpt5_tool_call_output_without_text(self, mock_aresp: MagicMock, mock_cost: MagicMock) -> None:
         """Async Responses API function_call output should map to tool_calls."""
@@ -1687,6 +1787,74 @@ class TestAsyncResponsesAPIRouting:
         result = await acall_llm("deepseek/deepseek-chat", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_non_gpt5", max_budget=0)
         assert result.content == "Hello!"
         mock_acomp.assert_called_once()
+
+
+class TestLongThinkingBackgroundRetrieval:
+    """Tests for explicit background response retrieval helpers."""
+
+    def test_retrieve_background_response_requires_openai_key(self) -> None:
+        from llm_client.client import _retrieve_background_response
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
+                _retrieve_background_response(
+                    response_id="resp_123",
+                    api_base=None,
+                    request_timeout=60,
+                )
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
+    @patch("openai.OpenAI")
+    def test_retrieve_background_response_uses_openai_client(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        from llm_client.client import _retrieve_background_response
+
+        fake_response = MagicMock()
+        client = MagicMock()
+        client.responses.retrieve.return_value = fake_response
+        mock_openai.return_value = client
+
+        result = _retrieve_background_response(
+            response_id="resp_123",
+            api_base="https://api.openai.com/v1",
+            request_timeout=77,
+        )
+
+        assert result is fake_response
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "test-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+        assert mock_openai.call_args.kwargs["timeout"] == 77
+        client.responses.retrieve.assert_called_once_with("resp_123")
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
+    @patch("openai.AsyncOpenAI")
+    async def test_aretrieve_background_response_uses_async_openai_client(
+        self,
+        mock_async_openai: MagicMock,
+    ) -> None:
+        from llm_client.client import _aretrieve_background_response
+
+        fake_response = MagicMock()
+        client = MagicMock()
+        client.responses.retrieve = AsyncMock(return_value=fake_response)
+        mock_async_openai.return_value = client
+
+        result = await _aretrieve_background_response(
+            response_id="resp_async_123",
+            api_base="https://api.openai.com/v1",
+            request_timeout=88,
+        )
+
+        assert result is fake_response
+        mock_async_openai.assert_called_once()
+        assert mock_async_openai.call_args.kwargs["api_key"] == "test-key"
+        assert mock_async_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+        assert mock_async_openai.call_args.kwargs["timeout"] == 88
+        client.responses.retrieve.assert_awaited_once_with("resp_async_123")
 
 
 # ---------------------------------------------------------------------------

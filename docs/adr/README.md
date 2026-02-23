@@ -11,5 +11,6 @@ compatibility contracts in `llm_client`.
 - `0006-actor-id-issuance-policy.md`
 - `0007-observability-contract-boundary.md`
 - `0008-task-graph-evaluation-contract-boundary.md`
+- `0009-long-thinking-background-polling.md`
 
 Status: active.

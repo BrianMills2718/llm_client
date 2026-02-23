@@ -17,6 +17,7 @@ from llm_client.task_graph import (
     TaskGraph,
     TaskResult,
     TaskStatus,
+    _make_experiment_record,
     _resolve_templates,
     _validate_dag,
     load_graph,
@@ -246,11 +247,17 @@ async def test_run_graph_dry_run(simple_yaml: Path):
 
 class _FakeResult:
     """Minimal mock of LLMCallResult."""
-    def __init__(self, content: str = "done", cost: float = 0.01):
+    def __init__(
+        self,
+        content: str = "done",
+        cost: float = 0.01,
+        routing_trace: dict[str, object] | None = None,
+    ):
         self.content = content
         self.cost = cost
         self.usage = {"prompt_tokens": 100, "completion_tokens": 50}
         self.finish_reason = "stop"
+        self.routing_trace = routing_trace
 
 
 @pytest.mark.asyncio
@@ -500,6 +507,78 @@ tasks:
     assert "mcp_servers" in captured_kwargs
 
 
+@pytest.mark.asyncio
+async def test_reasoning_effort_passthrough_to_call_kwargs(tmp_path: Path):
+    """Task-level reasoning_effort should be forwarded to acall_llm kwargs."""
+    content = """
+graph:
+  id: reasoning_effort_passthrough
+  description: "reasoning_effort passthrough"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 2
+    model: gpt-5.2-pro
+    prompt: "Deep review"
+    reasoning_effort: xhigh
+"""
+    f = tmp_path / "reasoning_effort_passthrough.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("reasoning_effort") == "xhigh"
+    task_result = report.task_results[0]
+    assert task_result.reasoning_effort == "xhigh"
+    assert task_result.background_mode is None
+
+
+@pytest.mark.asyncio
+async def test_task_result_captures_background_mode_from_routing_trace(tmp_path: Path):
+    """Task result telemetry should capture background_mode from call routing trace."""
+    content = """
+graph:
+  id: background_mode_capture
+  description: "background mode capture"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 2
+    model: gpt-5.2-pro
+    prompt: "Deep review"
+    reasoning_effort: xhigh
+"""
+    f = tmp_path / "background_mode_capture.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    async def capture_acall(model, messages, **kwargs):
+        return _FakeResult(routing_trace={"background_mode": True})
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    task_result = report.task_results[0]
+    assert task_result.reasoning_effort == "xhigh"
+    assert task_result.background_mode is True
+
+
 # ---------------------------------------------------------------------------
 # Task execution with investigation questions
 # ---------------------------------------------------------------------------
@@ -582,3 +661,28 @@ def test_experiment_record_serialization():
     data = json.loads(record.model_dump_json())
     assert data["run_id"] == "test"
     assert data["outcome"] == "confirmed"
+
+
+def test_make_experiment_record_defaults_null_agent_to_codex():
+    """Nullable task.agent should not break experiment record serialization."""
+    graph = TaskGraph(
+        meta=GraphMeta(id="agent_default"),
+        tasks={
+            "t1": TaskDef(id="t1", difficulty=1, prompt="do work", agent=None),
+        },
+        waves=[["t1"]],
+    )
+    task_result = TaskResult(
+        task_id="t1",
+        status=TaskStatus.COMPLETED,
+        wave=0,
+        difficulty=1,
+        reasoning_effort="xhigh",
+        background_mode=True,
+    )
+
+    record = _make_experiment_record(graph, task_result)
+    assert record.agent == "codex"
+    assert "codex at tier 1 can handle t1" == record.hypothesis
+    assert record.dimensions["reasoning_effort"] == "xhigh"
+    assert record.dimensions["background_mode"] is True

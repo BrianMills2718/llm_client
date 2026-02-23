@@ -22,13 +22,14 @@ import asyncio
 import json
 import logging
 import time
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+_yaml = import_module("yaml")
 
 # Rubric resolution directories (checked in order):
 # 1. Project-local rubrics/ (cwd)
@@ -151,7 +152,7 @@ def list_rubrics() -> list[str]:
 def _load_rubric_file(path: Path) -> Rubric:
     """Parse a rubric YAML file into a Rubric model."""
     with open(path) as f:
-        data = yaml.safe_load(f)
+        data = _yaml.safe_load(f)
     return Rubric(**data)
 
 
