@@ -596,6 +596,42 @@ class TestBackgroundModeAdoption:
         assert summary["background_mode_rate_among_reasoning"] == 1.0
         assert summary["reasoning_effort_counts"] == {"xhigh": 1}
 
+    def test_ignores_reasoning_effort_none_string(self, tmp_path):
+        experiments = tmp_path / "experiments.jsonl"
+        experiments.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run.1",
+                            "timestamp": "2026-02-23T10:00:00Z",
+                            "dimensions": {
+                                "reasoning_effort": "none",
+                                "background_mode": False,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run.2",
+                            "timestamp": "2026-02-23T10:01:00Z",
+                            "dimensions": {
+                                "reasoning_effort": "high",
+                                "background_mode": True,
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
+
+        summary = io_log.get_background_mode_adoption(experiments_path=experiments)
+        assert summary["records_considered"] == 2
+        assert summary["records_with_reasoning_effort_key"] == 2
+        assert summary["with_reasoning_effort"] == 1
+        assert summary["reasoning_effort_counts"] == {"high": 1}
+
     def test_returns_empty_summary_for_missing_file(self, tmp_path):
         summary = io_log.get_background_mode_adoption(
             experiments_path=tmp_path / "missing.jsonl"

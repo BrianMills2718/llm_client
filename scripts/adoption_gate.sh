@@ -9,7 +9,8 @@ cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 EXPERIMENTS_PATH="${LLM_CLIENT_EXPERIMENTS_PATH:-$HOME/projects/data/task_graph/experiments.jsonl}"
-RUN_ID_PREFIX="${LLM_CLIENT_ADOPTION_RUN_ID_PREFIX:-nightly_}"
+RUN_ID_PREFIX="${LLM_CLIENT_ADOPTION_RUN_ID_PREFIX:-}"
+# Optional: set LLM_CLIENT_ADOPTION_RUN_ID_PREFIX (e.g., nightly_) to filter.
 SINCE="${LLM_CLIENT_ADOPTION_SINCE:-}"
 SINCE_DAYS="${LLM_CLIENT_ADOPTION_SINCE_DAYS:-}"
 MIN_RATE="${LLM_CLIENT_ADOPTION_MIN_RATE:-0.95}"
@@ -39,12 +40,15 @@ fi
 cmd=(
   "$PYTHON_BIN" -m llm_client adoption
   --experiments-path "$EXPERIMENTS_PATH"
-  --run-id-prefix "$RUN_ID_PREFIX"
   --min-rate "$MIN_RATE"
   --metric "$METRIC"
   --min-samples "$MIN_SAMPLES"
   --gate-fail-exit-code "$EXIT_CODE"
 )
+
+if [[ -n "$RUN_ID_PREFIX" ]]; then
+  cmd+=(--run-id-prefix "$RUN_ID_PREFIX")
+fi
 
 if [[ -n "$SINCE" ]]; then
   cmd+=(--since "$SINCE")

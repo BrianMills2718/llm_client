@@ -17,6 +17,8 @@ def test_cmd_adoption_json_output(monkeypatch, capsys) -> None:
             "total_records": 10,
             "records_considered": 8,
             "invalid_lines": 1,
+            "records_with_reasoning_effort_key": 4,
+            "records_with_background_mode_key": 4,
             "with_reasoning_effort": 4,
             "background_mode_true": 3,
             "background_mode_false": 1,
@@ -56,6 +58,8 @@ def test_cmd_adoption_table_output(monkeypatch, capsys) -> None:
             "total_records": 5,
             "records_considered": 5,
             "invalid_lines": 0,
+            "records_with_reasoning_effort_key": 2,
+            "records_with_background_mode_key": 2,
             "with_reasoning_effort": 2,
             "background_mode_true": 2,
             "background_mode_false": 0,
@@ -149,6 +153,8 @@ def test_cmd_adoption_real_jsonl_since_and_prefix_filters(tmp_path, capsys) -> N
     assert payload["total_records"] == 4
     assert payload["invalid_lines"] == 1
     assert payload["records_considered"] == 1
+    assert payload["records_with_reasoning_effort_key"] == 1
+    assert payload["records_with_background_mode_key"] == 1
     assert payload["with_reasoning_effort"] == 1
     assert payload["background_mode_true"] == 1
     assert payload["background_mode_false"] == 0
@@ -165,6 +171,8 @@ def test_cmd_adoption_gate_fail_exits_nonzero(monkeypatch, capsys) -> None:
             "total_records": 10,
             "records_considered": 10,
             "invalid_lines": 0,
+            "records_with_reasoning_effort_key": 10,
+            "records_with_background_mode_key": 10,
             "with_reasoning_effort": 10,
             "background_mode_true": 4,
             "background_mode_false": 6,
@@ -205,6 +213,8 @@ def test_cmd_adoption_gate_warn_only_does_not_exit(monkeypatch, capsys) -> None:
             "total_records": 1,
             "records_considered": 1,
             "invalid_lines": 0,
+            "records_with_reasoning_effort_key": 1,
+            "records_with_background_mode_key": 1,
             "with_reasoning_effort": 1,
             "background_mode_true": 0,
             "background_mode_false": 1,
@@ -233,3 +243,43 @@ def test_cmd_adoption_gate_warn_only_does_not_exit(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "Gate:" in out
     assert "Verdict:          FAIL" in out
+
+
+def test_cmd_adoption_gate_reports_missing_reasoning_dimension(monkeypatch, capsys) -> None:
+    def fake_summary(**kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "experiments_path": "/tmp/experiments.jsonl",
+            "exists": True,
+            "total_records": 6,
+            "records_considered": 6,
+            "invalid_lines": 0,
+            "records_with_reasoning_effort_key": 0,
+            "records_with_background_mode_key": 0,
+            "with_reasoning_effort": 0,
+            "background_mode_true": 0,
+            "background_mode_false": 0,
+            "background_mode_unknown": 6,
+            "background_mode_rate_among_reasoning": 0.0,
+            "background_mode_rate_overall": 0.0,
+            "reasoning_effort_counts": {},
+            "run_id_prefix": None,
+            "since": None,
+        }
+
+    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    args = argparse.Namespace(
+        experiments_path=None,
+        since=None,
+        run_id_prefix=None,
+        format="json",
+        min_rate=0.8,
+        metric="among_reasoning",
+        min_samples=5,
+        warn_only=True,
+        gate_fail_exit_code=2,
+    )
+    cmd_adoption(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["gate"]["passed"] is False
+    assert payload["gate"]["reason"] == "missing_reasoning_effort_dimension"

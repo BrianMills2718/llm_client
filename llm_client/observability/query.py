@@ -267,6 +267,8 @@ def get_background_mode_adoption(
         "total_records": 0,
         "records_considered": 0,
         "invalid_lines": 0,
+        "records_with_reasoning_effort_key": 0,
+        "records_with_background_mode_key": 0,
         "with_reasoning_effort": 0,
         "background_mode_true": 0,
         "background_mode_false": 0,
@@ -311,11 +313,17 @@ def get_background_mode_adoption(
                 summary["background_mode_unknown"] += 1
                 continue
 
+            if "reasoning_effort" in dims:
+                summary["records_with_reasoning_effort_key"] += 1
+            if "background_mode" in dims:
+                summary["records_with_background_mode_key"] += 1
+
             raw_effort = dims.get("reasoning_effort")
             if isinstance(raw_effort, str) and raw_effort.strip():
                 effort = raw_effort.strip().lower()
-                summary["with_reasoning_effort"] += 1
-                reasoning_effort_counts[effort] = reasoning_effort_counts.get(effort, 0) + 1
+                if effort not in {"none", "null"}:
+                    summary["with_reasoning_effort"] += 1
+                    reasoning_effort_counts[effort] = reasoning_effort_counts.get(effort, 0) + 1
 
             raw_bg = dims.get("background_mode")
             bg = _normalize_bool(raw_bg)

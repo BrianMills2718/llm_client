@@ -7,6 +7,7 @@ It runs:
 - `./scripts/adoption_gate.sh`
 
 That script checks if long-thinking/background behavior stays above your threshold.
+By default it now checks all runs (no run-id prefix filter).
 
 ## Why this matters
 - If behavior drifts, this catches it fast.
@@ -70,7 +71,8 @@ LLM_CLIENT_ADOPTION_MIN_SAMPLES=5 LLM_CLIENT_ADOPTION_MIN_RATE=0.80 ./scripts/ad
 Then tighten back later.
 
 ## Current concern (documented)
-- Right now your `nightly_` sample count is low (`insufficient_samples`).
+- Right now your logs have records but almost no `reasoning_effort/background_mode` dimensions.
+- This causes `insufficient_samples` or `missing_reasoning_effort_dimension`.
 - If we run strict mode immediately, you get daily noisy failures that are not actionable.
 - That is why cron is currently in warn-only mode.
 
@@ -90,3 +92,6 @@ crontab -l | grep adoption_gate.sh
 Current cron line should include both:
 - `LLM_CLIENT_ADOPTION_WARN_ONLY=1`
 - `LLM_CLIENT_ADOPTION_SINCE_DAYS=7`
+
+Optional filter (only if you need it later):
+- `LLM_CLIENT_ADOPTION_RUN_ID_PREFIX=nightly_`

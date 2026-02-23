@@ -32,9 +32,18 @@ def _apply_gate(summary: dict[str, Any], args: argparse.Namespace) -> dict[str, 
         raise ValueError(f"--min-samples must be >= 0, got {args.min_samples!r}")
 
     actual_rate, samples = _gate_metric(summary, args.metric)
+    considered = int(summary.get("records_considered", 0))
+    effort_dim_key_count = int(summary.get("records_with_reasoning_effort_key", 0))
     if samples < args.min_samples:
-        passed = False
-        reason = "insufficient_samples"
+        if args.metric == "among_reasoning" and considered > 0 and effort_dim_key_count == 0:
+            passed = False
+            reason = "missing_reasoning_effort_dimension"
+        elif args.metric == "among_reasoning" and considered > 0 and samples == 0:
+            passed = False
+            reason = "no_reasoning_effort_records"
+        else:
+            passed = False
+            reason = "insufficient_samples"
     elif actual_rate < min_rate:
         passed = False
         reason = "rate_below_threshold"
@@ -86,6 +95,8 @@ def cmd_adoption(args: argparse.Namespace) -> None:
     print(f"Total lines:        {summary.get('total_records')}")
     print(f"Invalid lines:      {summary.get('invalid_lines')}")
     print(f"Records considered: {summary.get('records_considered')}")
+    print(f"Records w/ effort key: {summary.get('records_with_reasoning_effort_key')}")
+    print(f"Records w/ bg key:     {summary.get('records_with_background_mode_key')}")
     print(f"With effort set:    {summary.get('with_reasoning_effort')}")
     print(f"background=true:    {summary.get('background_mode_true')}")
     print(f"background=false:   {summary.get('background_mode_false')}")
