@@ -640,6 +640,83 @@ class TestCompareCohorts:
                 baseline_condition_id="missing",
             )
 
+    def test_compare_cohorts_matches_seed_and_replicate_pairs(self, tmp_path):
+        # baseline: one matched pair (seed=1, replicate=0), others unmatched
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="base_s1_r0",
+            condition_id="baseline",
+            seed=1,
+            replicate=0,
+        )
+        io_log.finish_run(run_id="base_s1_r0", summary_metrics={"score": 10.0})
+
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="base_s1_r1",
+            condition_id="baseline",
+            seed=1,
+            replicate=1,
+        )
+        io_log.finish_run(run_id="base_s1_r1", summary_metrics={"score": 20.0})
+
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="base_unseeded",
+            condition_id="baseline",
+        )
+        io_log.finish_run(run_id="base_unseeded", summary_metrics={"score": 99.0})
+
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="off_s1_r0",
+            condition_id="off",
+            seed=1,
+            replicate=0,
+        )
+        io_log.finish_run(run_id="off_s1_r0", summary_metrics={"score": 11.0})
+
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="off_s1_r2",
+            condition_id="off",
+            seed=1,
+            replicate=2,
+        )
+        io_log.finish_run(run_id="off_s1_r2", summary_metrics={"score": 13.0})
+
+        io_log.start_run(
+            dataset="X",
+            model="m",
+            run_id="off_unseeded",
+            condition_id="off",
+        )
+        io_log.finish_run(run_id="off_unseeded", summary_metrics={"score": 17.0})
+
+        result = io_log.compare_cohorts(
+            dataset="X",
+            baseline_condition_id="baseline",
+            limit=50,
+        )
+
+        deltas = {row["condition_id"]: row for row in result["matched_seed_deltas_from_baseline"]}
+        assert deltas["off"]["n_matched_pairs"] == 1
+        assert deltas["off"]["matched_keys"] == [[1, 0]]
+        assert deltas["off"]["metric_deltas"]["score"]["mean"] == 1.0
+
+    def test_compare_cohorts_rejects_non_positive_limit(self, tmp_path):
+        with pytest.raises(ValueError, match="limit must be > 0"):
+            io_log.compare_cohorts(limit=0)
+
+    def test_compare_cohorts_rejects_empty_condition_ids(self, tmp_path):
+        with pytest.raises(ValueError, match="condition_ids must contain at least one non-empty value"):
+            io_log.compare_cohorts(condition_ids=["", "   "])
+
 
 # ---------------------------------------------------------------------------
 # Full lifecycle

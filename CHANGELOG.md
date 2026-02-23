@@ -23,7 +23,9 @@ All notable changes to `llm-client` are documented in this file.
   - `forced_final_circuit_breaker_threshold`
 - Retrieval stagnation fuse for evidence loops:
   - `retrieval_stagnation_turns`
+  - `retrieval_stagnation_action` (`force_final` | `observe`)
   - terminal event code `RETRIEVAL_STAGNATION`
+  - non-terminal diagnostics code `RETRIEVAL_STAGNATION_OBSERVED`
 - Extended MCP agent metadata and diagnostics:
   - finalization fallback usage/success/event traces
   - forced-final attempt and circuit-breaker telemetry

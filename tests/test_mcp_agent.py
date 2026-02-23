@@ -247,6 +247,7 @@ class TestFailureTaxonomy:
         "FINALIZATION_TOOL_CALL_DISALLOWED",
         "RETRIEVAL_NO_HITS",
         "RETRIEVAL_STAGNATION",
+        "RETRIEVAL_STAGNATION_OBSERVED",
     }
 
     def test_runtime_event_codes_match_canonical_failure_set(self) -> None:
@@ -277,6 +278,7 @@ class TestFailureTaxonomy:
             ("FINALIZATION_TOOL_CALL_DISALLOWED", "policy"),
             ("RETRIEVAL_NO_HITS", "retrieval"),
             ("RETRIEVAL_STAGNATION", "retrieval"),
+            ("RETRIEVAL_STAGNATION_OBSERVED", "retrieval"),
         ],
     )
     def test_event_code_primary_failure_class_mapping(
@@ -2553,6 +2555,110 @@ class TestAgentDiagnostics:
         assert agent_result.metadata["retrieval_stagnation_triggered"] is True
         failure_counts = agent_result.metadata["failure_event_code_counts"]
         assert failure_counts.get("RETRIEVAL_STAGNATION", 0) >= 1
+
+    async def test_retrieval_stagnation_observe_does_not_force_final(self) -> None:
+        """Observe mode logs stagnation but allows the loop to continue."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="chunk_text_search",
+                        arguments={"query_text": "same query"},
+                        result='{"chunks":[{"chunk_id":"chunk_1","text":"same evidence","score":0.9}]}',
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"tc_search_{executor_call_count}",
+                        "content": '{"chunks":[{"chunk_id":"chunk_1","text":"same evidence","score":0.9}]}',
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_1",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 1"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_2",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 2"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_3",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 3"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_4",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"same query","tool_reasoning":"search 4"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="best effort answer"),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "chunk_text_search"}}],
+                agent_result,
+                mock_executor,
+                10,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                timeout=60,
+                kwargs={
+                    "retrieval_stagnation_turns": 2,
+                    "retrieval_stagnation_action": "observe",
+                },
+            )
+
+        assert content == "best effort answer"
+        assert finish == "stop"
+        assert executor_call_count == 4
+        assert agent_result.metadata["retrieval_stagnation_triggered"] is True
+        assert agent_result.metadata["retrieval_stagnation_action"] == "observe"
+        assert agent_result.metadata["first_terminal_failure_event_code"] is None
+        failure_counts = agent_result.metadata["failure_event_code_counts"]
+        assert failure_counts.get("RETRIEVAL_STAGNATION_OBSERVED", 0) >= 1
 
     async def test_submit_needs_revision_is_not_treated_as_success(self) -> None:
         """submit_answer status=needs_revision must not terminate the loop as submitted."""
