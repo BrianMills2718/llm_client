@@ -1,5 +1,6 @@
 """Tests for llm_client. All mock litellm.completion (no real API calls)."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -801,6 +802,121 @@ class TestNonRetryableErrors:
         with pytest.raises(Exception, match="insufficient quota"):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_generic_quota", max_budget=0)
         assert mock_comp.call_count == 1
+
+
+class TestOpenRouterKeyRotation:
+    """OpenRouter key-limit handling should rotate keys when possible."""
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_rotates_key_on_key_limit_403(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-aaa1")
+        monkeypatch.setenv("OPENROUTER_API_KEY_2", "or-key-bbb2")
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        client_mod._reset_openrouter_key_rotation_state()
+
+        class OpenRouterKeyLimitError(Exception):
+            status_code = 403
+            llm_provider = "openrouter"
+            model = "openrouter/openai/gpt-5-mini"
+
+        seen_keys: list[str | None] = []
+
+        def _side_effect(**kwargs: object) -> MagicMock:
+            seen_keys.append(os.environ.get("OPENROUTER_API_KEY"))
+            if len(seen_keys) == 1:
+                raise OpenRouterKeyLimitError("OpenRouter error: Key limit exceeded (total limit)")
+            return _mock_response()
+
+        mock_comp.side_effect = _side_effect
+
+        result = call_llm(
+            "openrouter/openai/gpt-5-mini",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_openrouter_rotate",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+        assert seen_keys == ["or-key-aaa1", "or-key-bbb2"]
+        assert os.environ.get("OPENROUTER_API_KEY") == "or-key-bbb2"
+        assert any("OPENROUTER_KEY_ROTATED" in warning for warning in result.warnings)
+
+    @patch("llm_client.client.litellm.completion")
+    def test_key_limit_without_backup_key_fails_without_retry(
+        self,
+        mock_comp: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-aaa1")
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY_2", raising=False)
+        client_mod._reset_openrouter_key_rotation_state()
+
+        class OpenRouterKeyLimitError(Exception):
+            status_code = 403
+            llm_provider = "openrouter"
+            model = "openrouter/openai/gpt-5-mini"
+
+        mock_comp.side_effect = OpenRouterKeyLimitError(
+            "OpenRouter error: Key limit exceeded (total limit)",
+        )
+
+        with pytest.raises(Exception, match="Key limit exceeded"):
+            call_llm(
+                "openrouter/openai/gpt-5-mini",
+                [{"role": "user", "content": "Hi"}],
+                num_retries=2,
+                task="test",
+                trace_id="test_openrouter_rotate_unavailable",
+                max_budget=0,
+            )
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.client.litellm.completion")
+    def test_explicit_api_key_disables_rotation(
+        self,
+        mock_comp: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-aaa1")
+        monkeypatch.setenv("OPENROUTER_API_KEY_2", "or-key-bbb2")
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        client_mod._reset_openrouter_key_rotation_state()
+
+        class OpenRouterKeyLimitError(Exception):
+            status_code = 403
+            llm_provider = "openrouter"
+            model = "openrouter/openai/gpt-5-mini"
+
+        seen_api_keys: list[str | None] = []
+
+        def _side_effect(**kwargs: object) -> MagicMock:
+            seen_api_keys.append(kwargs.get("api_key") if isinstance(kwargs, dict) else None)
+            raise OpenRouterKeyLimitError("OpenRouter error: Key limit exceeded (total limit)")
+
+        mock_comp.side_effect = _side_effect
+
+        with pytest.raises(Exception, match="Key limit exceeded"):
+            call_llm(
+                "openrouter/openai/gpt-5-mini",
+                [{"role": "user", "content": "Hi"}],
+                api_key="manual-key-9999",
+                num_retries=2,
+                task="test",
+                trace_id="test_openrouter_explicit_key",
+                max_budget=0,
+            )
+        assert mock_comp.call_count == 1
+        assert seen_api_keys == ["manual-key-9999"]
+        assert os.environ.get("OPENROUTER_API_KEY") == "or-key-aaa1"
 
 
 class TestThinkingModelDetection:
