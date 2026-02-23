@@ -47,6 +47,12 @@ All notable changes to `llm-client` are documented in this file.
   - `--forced-final-max-attempts`
   - `--forced-final-circuit-breaker-threshold`
   - `--retrieval-stagnation-turns`
+- Codex process-isolation runtime controls for non-streaming calls:
+  - `codex_process_isolation` (kwarg)
+  - `codex_process_start_method` (kwarg / `LLM_CLIENT_CODEX_PROCESS_START_METHOD`)
+  - `codex_process_grace_s` (kwarg / `LLM_CLIENT_CODEX_PROCESS_GRACE_S`)
+  - `LLM_CLIENT_CODEX_PROCESS_ISOLATION` (env default toggle)
+  - process-safe result serialization for text/structured codex calls
 
 ### Changed
 
@@ -96,6 +102,9 @@ All notable changes to `llm-client` are documented in this file.
   failure attribution clean when fallback finalization succeeds.
 - Benchmark summaries now report completion-conditioned accuracy plus provider,
   fallback, and retrieval-stagnation rates.
+- Codex text/structured call paths can now run in a dedicated child process and
+  enforce hard worker termination when SDK cancellation does not complete,
+  preventing parent-loop stalls from cancellation-unresponsive turns.
 
 ## 0.7.0 - 2026-02-23
 

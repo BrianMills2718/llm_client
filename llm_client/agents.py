@@ -20,6 +20,7 @@ import asyncio
 import concurrent.futures
 import json as _json
 import logging
+import multiprocessing as _mp
 import os
 import queue
 import re
@@ -29,7 +30,9 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 from pydantic import BaseModel
@@ -85,7 +88,13 @@ _AGENT_KWARGS = frozenset({
     "api_key", "base_url",
     # Codex MCP server control
     "codex_home", "mcp_servers",
+    # Codex runtime isolation controls
+    "codex_process_isolation", "codex_process_start_method", "codex_process_grace_s",
 })
+
+_CODEX_PROCESS_ISOLATION_ENV = "LLM_CLIENT_CODEX_PROCESS_ISOLATION"
+_CODEX_PROCESS_START_METHOD_ENV = "LLM_CLIENT_CODEX_PROCESS_START_METHOD"
+_CODEX_PROCESS_GRACE_ENV = "LLM_CLIENT_CODEX_PROCESS_GRACE_S"
 
 
 def _normalize_codex_reasoning_effort(value: Any) -> str:
@@ -155,6 +164,50 @@ def _run_sync(coro: Any) -> Any:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, coro).result()
     return asyncio.run(coro)
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _codex_process_isolation_enabled(kwargs: dict[str, Any]) -> bool:
+    """Resolve Codex process isolation policy.
+
+    Explicit kwarg wins; otherwise use env default.
+    """
+    if "codex_process_isolation" in kwargs:
+        return _as_bool(kwargs.get("codex_process_isolation"), default=False)
+    return _as_bool(os.environ.get(_CODEX_PROCESS_ISOLATION_ENV), default=False)
+
+
+def _codex_process_start_method(kwargs: dict[str, Any]) -> str:
+    available = set(_mp.get_all_start_methods())
+    requested = str(
+        kwargs.get("codex_process_start_method")
+        or os.environ.get(_CODEX_PROCESS_START_METHOD_ENV, "")
+    ).strip().lower()
+    if requested in available:
+        return requested
+    if "fork" in available:
+        return "fork"
+    return "spawn"
+
+
+def _codex_process_grace_s(kwargs: dict[str, Any]) -> float:
+    raw = kwargs.get("codex_process_grace_s", os.environ.get(_CODEX_PROCESS_GRACE_ENV, 3.0))
+    try:
+        return max(0.5, float(raw))
+    except Exception:
+        return 3.0
 
 
 # ===========================================================================
@@ -1127,6 +1180,65 @@ def _result_from_codex(
     )
 
 
+def _serialize_llm_result(result: LLMCallResult) -> dict[str, Any]:
+    """Serialize LLMCallResult for transfer across process boundaries."""
+    raw_summary: dict[str, Any] | None = None
+    raw = result.raw_response
+    if raw is not None:
+        raw_summary = {"type": type(raw).__name__}
+        for key in ("num_turns",):
+            if hasattr(raw, key):
+                try:
+                    raw_summary[key] = getattr(raw, key)
+                except Exception:
+                    pass
+
+    return {
+        "content": result.content,
+        "usage": result.usage,
+        "cost": result.cost,
+        "model": result.model,
+        "requested_model": result.requested_model,
+        "resolved_model": result.resolved_model,
+        "execution_model": result.execution_model,
+        "routing_trace": result.routing_trace,
+        "tool_calls": result.tool_calls,
+        "finish_reason": result.finish_reason,
+        "warnings": result.warnings,
+        "warning_records": result.warning_records,
+        "full_text": result.full_text,
+        "cost_source": result.cost_source,
+        "billing_mode": result.billing_mode,
+        "marginal_cost": result.marginal_cost,
+        "cache_hit": result.cache_hit,
+        "raw_response_summary": raw_summary,
+    }
+
+
+def _deserialize_llm_result(payload: dict[str, Any]) -> LLMCallResult:
+    """Deserialize LLMCallResult from a process-safe payload."""
+    return LLMCallResult(
+        content=str(payload.get("content", "")),
+        usage=cast(dict[str, Any], payload.get("usage", {})),
+        cost=float(payload.get("cost", 0.0) or 0.0),
+        model=str(payload.get("model", "")),
+        requested_model=cast(str | None, payload.get("requested_model")),
+        resolved_model=cast(str | None, payload.get("resolved_model")),
+        execution_model=cast(str | None, payload.get("execution_model")),
+        routing_trace=cast(dict[str, Any] | None, payload.get("routing_trace")),
+        tool_calls=cast(list[dict[str, Any]], payload.get("tool_calls", [])),
+        finish_reason=str(payload.get("finish_reason", "")),
+        raw_response=payload.get("raw_response_summary"),
+        warnings=cast(list[str], payload.get("warnings", [])),
+        warning_records=cast(list[dict[str, Any]], payload.get("warning_records", [])),
+        full_text=cast(str | None, payload.get("full_text")),
+        cost_source=str(payload.get("cost_source", "unspecified")),
+        billing_mode=str(payload.get("billing_mode", "unknown")),
+        marginal_cost=cast(float | None, payload.get("marginal_cost")),
+        cache_hit=bool(payload.get("cache_hit", False)),
+    )
+
+
 def _codex_timeout_message(
     *,
     model: str,
@@ -1222,7 +1334,7 @@ async def _await_codex_turn_with_hard_timeout(
     )
 
 
-async def _acall_codex(
+async def _acall_codex_inproc(
     model: str,
     messages: list[dict[str, Any]],
     *,
@@ -1307,6 +1419,159 @@ async def _acall_codex(
         _cleanup_tmp(tmp_dir)
 
 
+def _codex_text_worker_entry(
+    conn: Any,
+    model: str,
+    messages: list[dict[str, Any]],
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> None:
+    """Worker entry for process-isolated Codex text calls."""
+    try:
+        local_kwargs = dict(kwargs)
+        local_kwargs["codex_process_isolation"] = False
+        result = _run_sync(
+            _acall_codex_inproc(model, messages, timeout=timeout, **local_kwargs)
+        )
+        conn.send({"ok": True, "result": _serialize_llm_result(result)})
+    except BaseException as exc:
+        conn.send(
+            {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error_message": _safe_error_text(exc),
+                "traceback": traceback.format_exc(limit=30),
+            }
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _call_codex_in_isolated_process(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> LLMCallResult:
+    """Run a Codex call in a child process to guarantee hard kill on hangs."""
+    start_method = _codex_process_start_method(kwargs)
+    grace_s = _codex_process_grace_s(kwargs)
+    ctx = _mp.get_context(start_method)
+    recv_conn, send_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_codex_text_worker_entry,
+        args=(send_conn, model, messages, int(timeout), dict(kwargs)),
+        daemon=True,
+    )
+    proc.start()
+    send_conn.close()
+
+    wait_s = (float(timeout) if timeout > 0 else 3600.0) + grace_s
+    if not recv_conn.poll(wait_s):
+        forced: dict[str, Any] | None = None
+        if proc.is_alive() and isinstance(proc.pid, int) and proc.pid > 0:
+            forced = _terminate_pid_tree(int(proc.pid), grace_s=max(0.3, grace_s / 2))
+        try:
+            proc.join(timeout=max(0.5, grace_s))
+        except Exception:
+            pass
+        timeout_diag = {
+            "phase": "isolated_worker_wait",
+            "start_method": start_method,
+            "wait_s": round(wait_s, 3),
+            "worker_pid": proc.pid,
+            "worker_exitcode": proc.exitcode,
+            "forced_terminate": forced,
+        }
+        raise TimeoutError(
+            _codex_timeout_message(
+                model=model,
+                timeout_s=max(int(timeout), 0),
+                working_directory=kwargs.get("working_directory"),
+                sandbox_mode=kwargs.get("sandbox_mode"),
+                approval_policy=kwargs.get("approval_policy"),
+                diagnostics=timeout_diag,
+                structured=False,
+            )
+        )
+
+    payload: dict[str, Any]
+    try:
+        payload = cast(dict[str, Any], recv_conn.recv())
+    except EOFError as exc:
+        raise RuntimeError(
+            f"CODEX_WORKER_EOF[start_method={start_method}, pid={proc.pid}, exitcode={proc.exitcode}]"
+        ) from exc
+    finally:
+        try:
+            recv_conn.close()
+        except Exception:
+            pass
+        try:
+            proc.join(timeout=1.0)
+        except Exception:
+            pass
+        if proc.is_alive() and isinstance(proc.pid, int) and proc.pid > 0:
+            _terminate_pid_tree(int(proc.pid), grace_s=0.5)
+
+    if payload.get("ok") is True:
+        result_payload = cast(dict[str, Any], payload.get("result", {}))
+        return _deserialize_llm_result(result_payload)
+
+    err_type = str(payload.get("error_type") or "RuntimeError")
+    err_message = str(payload.get("error_message") or "Codex worker failed")
+    err_trace = str(payload.get("traceback") or "")
+    diagnostics = {
+        "phase": "isolated_worker_result",
+        "start_method": start_method,
+        "worker_pid": proc.pid,
+        "worker_exitcode": proc.exitcode,
+        "worker_error_type": err_type,
+    }
+    if err_type in {"TimeoutError", "CancelledError"}:
+        raise TimeoutError(
+            _codex_timeout_message(
+                model=model,
+                timeout_s=max(int(timeout), 0),
+                working_directory=kwargs.get("working_directory"),
+                sandbox_mode=kwargs.get("sandbox_mode"),
+                approval_policy=kwargs.get("approval_policy"),
+                diagnostics=diagnostics,
+                structured=False,
+            )
+            + f" worker_error={err_message}"
+        )
+    raise RuntimeError(
+        "CODEX_WORKER_ERROR"
+        f"[{err_type}, start_method={start_method}, pid={proc.pid}, exitcode={proc.exitcode}] "
+        f"{err_message}"
+        + (f"\n{err_trace}" if err_trace else "")
+    )
+
+
+async def _acall_codex(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 300,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Call Codex SDK and return an LLMCallResult."""
+    if _codex_process_isolation_enabled(kwargs):
+        return await asyncio.to_thread(
+            _call_codex_in_isolated_process,
+            model,
+            messages,
+            timeout=timeout,
+            kwargs=dict(kwargs),
+        )
+    return await _acall_codex_inproc(model, messages, timeout=timeout, **kwargs)
+
+
 def _call_codex(
     model: str,
     messages: list[dict[str, Any]],
@@ -1332,7 +1597,7 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
-async def _acall_codex_structured(
+async def _acall_codex_structured_inproc(
     model: str,
     messages: list[dict[str, Any]],
     response_model: type[BaseModel],
@@ -1424,6 +1689,204 @@ async def _acall_codex_structured(
         return validated, llm_result
     finally:
         _cleanup_tmp(tmp_dir)
+
+
+def _codex_structured_worker_entry(
+    conn: Any,
+    model: str,
+    messages: list[dict[str, Any]],
+    schema: dict[str, Any],
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> None:
+    """Worker entry for process-isolated Codex structured calls."""
+    try:
+        local_kwargs = dict(kwargs)
+        local_kwargs["codex_process_isolation"] = False
+        kwargs2, tmp_dir = _prepare_codex_mcp(local_kwargs)
+        try:
+            prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
+                model, messages, output_schema=schema, **kwargs2,
+            )
+            Codex = sdk[0]
+            codex = Codex(options=codex_opts)
+            thread = codex.start_thread(options=thread_opts)
+
+            async def _run() -> Any:
+                return await thread.run(prompt, turn_opts)
+
+            if timeout > 0:
+                turn, _ = _run_sync(
+                    _await_codex_turn_with_hard_timeout(_run(), timeout_s=int(timeout))
+                )
+            else:
+                turn = _run_sync(_run())
+
+            raw_text = (turn.final_response or "").strip()
+            if not raw_text:
+                raise ValueError("Empty response from Codex — no structured output")
+            llm_result = _result_from_codex(model, turn.final_response, turn.usage, turn)
+            conn.send(
+                {
+                    "ok": True,
+                    "raw_text": raw_text,
+                    "llm_result": _serialize_llm_result(llm_result),
+                }
+            )
+        finally:
+            _cleanup_tmp(tmp_dir)
+    except BaseException as exc:
+        conn.send(
+            {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error_message": _safe_error_text(exc),
+                "traceback": traceback.format_exc(limit=30),
+            }
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _call_codex_structured_in_isolated_process(
+    model: str,
+    messages: list[dict[str, Any]],
+    response_model: type[BaseModel],
+    *,
+    timeout: int,
+    kwargs: dict[str, Any],
+) -> tuple[BaseModel, LLMCallResult]:
+    """Run a Codex structured call in a child process."""
+    start_method = _codex_process_start_method(kwargs)
+    grace_s = _codex_process_grace_s(kwargs)
+    ctx = _mp.get_context(start_method)
+    recv_conn, send_conn = ctx.Pipe(duplex=False)
+    schema = response_model.model_json_schema()
+    proc = ctx.Process(
+        target=_codex_structured_worker_entry,
+        args=(send_conn, model, messages, schema, int(timeout), dict(kwargs)),
+        daemon=True,
+    )
+    proc.start()
+    send_conn.close()
+
+    wait_s = (float(timeout) if timeout > 0 else 3600.0) + grace_s
+    if not recv_conn.poll(wait_s):
+        forced: dict[str, Any] | None = None
+        if proc.is_alive() and isinstance(proc.pid, int) and proc.pid > 0:
+            forced = _terminate_pid_tree(int(proc.pid), grace_s=max(0.3, grace_s / 2))
+        try:
+            proc.join(timeout=max(0.5, grace_s))
+        except Exception:
+            pass
+        timeout_diag = {
+            "phase": "isolated_worker_wait",
+            "start_method": start_method,
+            "wait_s": round(wait_s, 3),
+            "worker_pid": proc.pid,
+            "worker_exitcode": proc.exitcode,
+            "forced_terminate": forced,
+        }
+        raise TimeoutError(
+            _codex_timeout_message(
+                model=model,
+                timeout_s=max(int(timeout), 0),
+                working_directory=kwargs.get("working_directory"),
+                sandbox_mode=kwargs.get("sandbox_mode"),
+                approval_policy=kwargs.get("approval_policy"),
+                diagnostics=timeout_diag,
+                structured=True,
+            )
+        )
+
+    payload: dict[str, Any]
+    try:
+        payload = cast(dict[str, Any], recv_conn.recv())
+    except EOFError as exc:
+        raise RuntimeError(
+            f"CODEX_STRUCTURED_WORKER_EOF[start_method={start_method}, pid={proc.pid}, exitcode={proc.exitcode}]"
+        ) from exc
+    finally:
+        try:
+            recv_conn.close()
+        except Exception:
+            pass
+        try:
+            proc.join(timeout=1.0)
+        except Exception:
+            pass
+        if proc.is_alive() and isinstance(proc.pid, int) and proc.pid > 0:
+            _terminate_pid_tree(int(proc.pid), grace_s=0.5)
+
+    if payload.get("ok") is True:
+        raw_text = str(payload.get("raw_text", ""))
+        try:
+            parsed_data = _json.loads(raw_text)
+        except _json.JSONDecodeError:
+            parsed_data = _json.loads(_strip_fences(raw_text))
+        validated = response_model.model_validate(parsed_data)
+        llm_payload = cast(dict[str, Any], payload.get("llm_result", {}))
+        llm_result = _deserialize_llm_result(llm_payload)
+        llm_result.content = validated.model_dump_json()
+        return validated, llm_result
+
+    err_type = str(payload.get("error_type") or "RuntimeError")
+    err_message = str(payload.get("error_message") or "Codex structured worker failed")
+    diagnostics = {
+        "phase": "isolated_worker_result",
+        "start_method": start_method,
+        "worker_pid": proc.pid,
+        "worker_exitcode": proc.exitcode,
+        "worker_error_type": err_type,
+    }
+    if err_type in {"TimeoutError", "CancelledError"}:
+        raise TimeoutError(
+            _codex_timeout_message(
+                model=model,
+                timeout_s=max(int(timeout), 0),
+                working_directory=kwargs.get("working_directory"),
+                sandbox_mode=kwargs.get("sandbox_mode"),
+                approval_policy=kwargs.get("approval_policy"),
+                diagnostics=diagnostics,
+                structured=True,
+            )
+            + f" worker_error={err_message}"
+        )
+    raise RuntimeError(
+        "CODEX_STRUCTURED_WORKER_ERROR"
+        f"[{err_type}, start_method={start_method}, pid={proc.pid}, exitcode={proc.exitcode}] "
+        f"{err_message}"
+    )
+
+
+async def _acall_codex_structured(
+    model: str,
+    messages: list[dict[str, Any]],
+    response_model: type[BaseModel],
+    *,
+    timeout: int = 300,
+    **kwargs: Any,
+) -> tuple[BaseModel, LLMCallResult]:
+    """Call Codex SDK with structured output (JSON schema)."""
+    if _codex_process_isolation_enabled(kwargs):
+        return await asyncio.to_thread(
+            _call_codex_structured_in_isolated_process,
+            model,
+            messages,
+            response_model,
+            timeout=timeout,
+            kwargs=dict(kwargs),
+        )
+    return await _acall_codex_structured_inproc(
+        model,
+        messages,
+        response_model,
+        timeout=timeout,
+        **kwargs,
+    )
 
 
 def _call_codex_structured(

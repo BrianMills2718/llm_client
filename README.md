@@ -179,6 +179,34 @@ For code-generation/editing workflows that depend on workspace side effects,
 always set `execution_mode="workspace_agent"` to prevent accidental routing to
 chat-only models.
 
+### Codex process isolation (hang containment)
+
+For `codex` calls that occasionally become cancellation-unresponsive under long
+tool loops, you can run non-streaming turns in a dedicated worker process:
+
+```python
+result = call_llm(
+    "codex/gpt-5",
+    messages,
+    execution_mode="workspace_agent",
+    codex_process_isolation=True,
+    codex_process_start_method="fork",   # optional
+    codex_process_grace_s=3.0,           # optional
+)
+```
+
+Environment defaults are also supported:
+
+```bash
+export LLM_CLIENT_CODEX_PROCESS_ISOLATION=1
+export LLM_CLIENT_CODEX_PROCESS_START_METHOD=fork
+export LLM_CLIENT_CODEX_PROCESS_GRACE_S=3.0
+```
+
+When enabled, `llm_client` can hard-terminate the worker process if the SDK
+turn does not honor cancellation within the timeout window. Timeout/error
+diagnostics remain surfaced in `CODEX_TIMEOUT[...]` messages.
+
 ### Observability tags
 
 - `task`, `trace_id`, and `max_budget` are optional in normal local usage.

@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+import llm_client.agents as agents_mod
 from llm_client import (
     Hooks,
     LLMCallResult,
@@ -47,6 +48,7 @@ from llm_client.client import _is_agent_model
 def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Week-1 invariant: routing policy must be explicit in tests."""
     monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+    monkeypatch.setenv("LLM_CLIENT_CODEX_PROCESS_ISOLATION", "0")
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +995,75 @@ class TestCodexCall:
         assert "CODEX_TIMEOUT[codex_call]" in msg
         assert "after 1s" in msg
 
+    def test_codex_process_isolation_dispatches_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: dict[str, object] = {}
+
+        def _fake_isolated(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int,
+            kwargs: dict[str, object],
+        ) -> LLMCallResult:
+            calls["model"] = model
+            calls["timeout"] = timeout
+            calls["kwargs"] = dict(kwargs)
+            calls["messages_len"] = len(messages)
+            return LLMCallResult(
+                content="ok-from-isolated",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+            )
+
+        monkeypatch.setattr(agents_mod, "_call_codex_in_isolated_process", _fake_isolated)
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_process_isolation=True,
+            timeout=17,
+            task="test",
+            trace_id="test_codex_isolation_dispatch",
+            max_budget=0,
+        )
+        assert result.content == "ok-from-isolated"
+        assert calls["model"] == "codex"
+        assert calls["timeout"] == 17
+        assert calls["messages_len"] == 1
+
+    def test_codex_process_isolation_env_dispatches_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: dict[str, object] = {}
+
+        def _fake_isolated(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int,
+            kwargs: dict[str, object],
+        ) -> LLMCallResult:
+            calls["used"] = True
+            return LLMCallResult(
+                content="env-isolated",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+            )
+
+        monkeypatch.setenv("LLM_CLIENT_CODEX_PROCESS_ISOLATION", "1")
+        monkeypatch.setattr(agents_mod, "_call_codex_in_isolated_process", _fake_isolated)
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            timeout=17,
+            task="test",
+            trace_id="test_codex_isolation_dispatch_env",
+            max_budget=0,
+        )
+        assert result.content == "env-isolated"
+        assert calls["used"] is True
+
 
 # ---------------------------------------------------------------------------
 # Codex structured (mocked)
@@ -1042,6 +1113,49 @@ class TestCodexStructured:
         )
         assert isinstance(parsed, _CityInfo)
         assert parsed.name == "Tokyo"
+
+    def test_structured_process_isolation_dispatches_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: dict[str, object] = {}
+
+        def _fake_structured_isolated(
+            model: str,
+            messages: list[dict[str, object]],
+            response_model: type[BaseModel],
+            *,
+            timeout: int,
+            kwargs: dict[str, object],
+        ) -> tuple[BaseModel, LLMCallResult]:
+            calls["model"] = model
+            calls["timeout"] = timeout
+            parsed = response_model.model_validate({"name": "Tokyo", "country": "Japan"})
+            llm_result = LLMCallResult(
+                content=parsed.model_dump_json(),
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+            )
+            return parsed, llm_result
+
+        monkeypatch.setattr(
+            agents_mod,
+            "_call_codex_structured_in_isolated_process",
+            _fake_structured_isolated,
+        )
+        parsed, meta = call_llm_structured(
+            "codex",
+            [{"role": "user", "content": "Info about Tokyo"}],
+            response_model=_CityInfo,
+            codex_process_isolation=True,
+            timeout=19,
+            task="test",
+            trace_id="test_codex_structured_isolation_dispatch",
+            max_budget=0,
+        )
+        assert parsed.name == "Tokyo"
+        assert meta.model == "codex"
+        assert calls["model"] == "codex"
+        assert calls["timeout"] == 19
 
     def test_structured_with_fenced_json(self, monkeypatch) -> None:
         """Codex sometimes wraps JSON in code fences — should still parse."""
