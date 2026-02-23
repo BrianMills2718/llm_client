@@ -110,7 +110,7 @@ def cmd_scores(args: argparse.Namespace) -> None:
         if args.format == "json":
             data = []
             for row in rows:
-                entry: dict = {}
+                entry: dict[str, Any] = {}
                 for i, col in enumerate(group_cols):
                     entry[col] = row[i]
                 gc = len(group_cols)

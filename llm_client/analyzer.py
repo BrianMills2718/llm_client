@@ -588,7 +588,7 @@ def check_scorer_reliability(
 
 def _update_floors(
     experiments: dict[str, list[ExperimentRecord]],
-    floors_path: Path | None = None,
+    floors_path: str | Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Update model_floors.json based on experiment results.
 

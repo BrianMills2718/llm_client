@@ -27,7 +27,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from llm_client.client import acall_llm as _acall_llm
@@ -357,11 +357,13 @@ async def run_graph(
             for task_id in wave
         ]
 
-        results = await asyncio.gather(*wave_tasks, return_exceptions=True)
+        results: list[TaskResult | BaseException] = await asyncio.gather(
+            *wave_tasks, return_exceptions=True,
+        )
 
         wave_failed = False
         for task_id, result in zip(wave, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 task_results[task_id] = TaskResult(
                     task_id=task_id,
                     status=TaskStatus.FAILED,
@@ -371,8 +373,9 @@ async def run_graph(
                 )
                 wave_failed = True
             else:
-                task_results[task_id] = result
-                if result.status == TaskStatus.COMPLETED:
+                task_result = result
+                task_results[task_id] = task_result
+                if task_result.status == TaskStatus.COMPLETED:
                     task_outputs[task_id] = graph.tasks[task_id].outputs
                 else:
                     wave_failed = True
@@ -435,6 +438,7 @@ async def _execute_task(
     """Execute a single task through its full lifecycle."""
 
     task_start = time.monotonic()
+    val_results: list[ValidationResult] = []
 
     # --- SPEC_LOCKED ---
     frozen_hash = spec_hash(task.model_dump())
@@ -567,7 +571,6 @@ async def _execute_task(
     tokens_in = usage.get("prompt_tokens", 0) if isinstance(usage, dict) else 0
     tokens_out = usage.get("completion_tokens", 0) if isinstance(usage, dict) else 0
 
-    val_results: list[ValidationResult] = []
     if task.validators:
         val_results = run_validators(task.validators)
 

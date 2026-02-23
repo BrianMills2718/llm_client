@@ -18,7 +18,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -205,7 +205,10 @@ def load_model_floors(path: str | Path | None = None) -> dict[str, dict[str, Any
         path = Path(path)
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    loaded = json.loads(path.read_text())
+    if not isinstance(loaded, dict):
+        return {}
+    return cast(dict[str, dict[str, Any]], loaded)
 
 
 def save_model_floors(
@@ -250,6 +253,6 @@ def get_effective_tier(
     if task_id not in floors:
         return declared_tier
     floor_data = floors[task_id]
-    floor = floor_data.get("floor", declared_tier)
+    floor = int(floor_data.get("floor", declared_tier))
     # Never go above declared tier (upgrades require human approval)
     return min(declared_tier, max(floor, 0))

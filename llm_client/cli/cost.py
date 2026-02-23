@@ -58,7 +58,7 @@ def cmd_cost(args: argparse.Namespace) -> None:
     if args.format == "json":
         data = []
         for row in rows:
-            entry: dict = {}
+            entry: dict[str, Any] = {}
             for i, col in enumerate(group_cols):
                 entry[col] = row[i]
             entry["calls"] = row[len(group_cols)]
@@ -112,7 +112,7 @@ def cmd_cost(args: argparse.Namespace) -> None:
     db.close()
 
 
-def _print_calls_table(rows: list, group_cols: list[str]) -> None:
+def _print_calls_table(rows: list[Any], group_cols: list[str]) -> None:
     if not rows:
         print("No LLM calls found.")
         return
@@ -146,7 +146,7 @@ def _print_calls_table(rows: list, group_cols: list[str]) -> None:
         print(fmt.format(*vals))
 
 
-def _print_embeddings_table(rows: list, group_cols: list[str]) -> None:
+def _print_embeddings_table(rows: list[Any], group_cols: list[str]) -> None:
     if not rows:
         return
 

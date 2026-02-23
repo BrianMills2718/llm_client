@@ -252,7 +252,7 @@ def _load_config() -> dict[str, Any]:
 
 def _load_yaml_file(path: Path) -> dict[str, Any]:
     """Load a YAML config file. Merges with defaults for missing keys."""
-    import yaml  # lazy import — only needed if user has a config file
+    import yaml  # type: ignore[import-untyped]  # lazy import — only needed if user has a config file
 
     raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):
@@ -529,10 +529,15 @@ def _query_performance_jsonl(
 
     result = []
     for (grp_task, grp_model), records in sorted(groups.items()):
-        total_cost = sum(
-            r.get("marginal_cost") if r.get("marginal_cost") is not None else (r.get("cost") or 0)
-            for r in records
-        )
+        total_cost = 0.0
+        for r in records:
+            raw_cost = r.get("marginal_cost")
+            if raw_cost is None:
+                raw_cost = r.get("cost")
+            if isinstance(raw_cost, bool):
+                continue
+            if isinstance(raw_cost, (int, float)):
+                total_cost += float(raw_cost)
         latencies = [r["latency_s"] for r in records if r.get("latency_s") is not None]
         avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
         errors = sum(1 for r in records if r.get("error") is not None)
@@ -565,7 +570,7 @@ def supports_tool_calling(litellm_id: str) -> bool:
     for m in config["models"]:
         entry = m if isinstance(m, dict) else m.model_dump()
         if entry.get("litellm_id") == litellm_id:
-            return entry.get("tool_calling", True)
+            return bool(entry.get("tool_calling", True))
     return True  # unknown models assumed capable
 
 

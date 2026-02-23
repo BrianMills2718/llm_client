@@ -16,6 +16,8 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class LLMError(Exception):
     """Base for all llm_client errors."""
@@ -54,7 +56,7 @@ class LLMEmptyResponseError(LLMError):
         *,
         retryable: bool,
         classification: str,
-        diagnostics: dict | None = None,
+        diagnostics: dict[str, Any] | None = None,
         original: Exception | None = None,
     ) -> None:
         super().__init__(message, original=original)
@@ -87,6 +89,16 @@ _QUOTA_PATTERNS = [
 ]
 
 
+def _litellm_error_types(module: Any, names: tuple[str, ...]) -> tuple[type[BaseException], ...]:
+    """Resolve optional litellm exception classes without static attribute coupling."""
+    out: list[type[BaseException]] = []
+    for name in names:
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            out.append(candidate)
+    return tuple(out)
+
+
 def classify_error(error: Exception) -> type[LLMError]:
     """Classify any exception into an LLMError subtype.
 
@@ -95,30 +107,39 @@ def classify_error(error: Exception) -> type[LLMError]:
     try:
         import litellm as _lt
 
-        if isinstance(error, (_lt.AuthenticationError, _lt.PermissionDeniedError)):
+        auth_types = _litellm_error_types(_lt, ("AuthenticationError", "PermissionDeniedError"))
+        if auth_types and isinstance(error, auth_types):
             return LLMAuthError
 
-        if isinstance(error, _lt.NotFoundError):
+        not_found_types = _litellm_error_types(_lt, ("NotFoundError",))
+        if not_found_types and isinstance(error, not_found_types):
             return LLMModelNotFoundError
 
-        if isinstance(error, _lt.ContentPolicyViolationError):
+        content_types = _litellm_error_types(_lt, ("ContentPolicyViolationError",))
+        if content_types and isinstance(error, content_types):
             return LLMContentFilterError
 
-        if isinstance(error, _lt.BudgetExceededError):
+        budget_types = _litellm_error_types(_lt, ("BudgetExceededError",))
+        if budget_types and isinstance(error, budget_types):
             return LLMQuotaExhaustedError
 
-        if isinstance(error, _lt.RateLimitError):
+        rate_types = _litellm_error_types(_lt, ("RateLimitError",))
+        if rate_types and isinstance(error, rate_types):
             error_str = str(error).lower()
             if any(p in error_str for p in _QUOTA_PATTERNS):
                 return LLMQuotaExhaustedError
             return LLMRateLimitError
 
-        if isinstance(error, (
-            _lt.InternalServerError,
-            _lt.ServiceUnavailableError,
-            _lt.APIConnectionError,
-            _lt.BadGatewayError,
-        )):
+        transient_types = _litellm_error_types(
+            _lt,
+            (
+                "InternalServerError",
+                "ServiceUnavailableError",
+                "APIConnectionError",
+                "BadGatewayError",
+            ),
+        )
+        if transient_types and isinstance(error, transient_types):
             return LLMTransientError
     except ImportError:
         pass

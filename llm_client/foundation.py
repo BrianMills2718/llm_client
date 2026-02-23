@@ -326,7 +326,7 @@ FoundationEvent = Annotated[
     Field(discriminator="event_type"),
 ]
 
-_FOUNDATION_EVENT_ADAPTER = TypeAdapter(FoundationEvent)
+_FOUNDATION_EVENT_ADAPTER: TypeAdapter[FoundationEvent] = TypeAdapter(FoundationEvent)
 
 
 def validate_foundation_event(event_payload: Mapping[str, Any]) -> dict[str, Any]:

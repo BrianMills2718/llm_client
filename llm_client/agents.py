@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -143,7 +143,7 @@ def _import_sdk() -> tuple[Any, ...]:
         (AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, ToolUseBlock, query)
     """
     try:
-        from claude_agent_sdk import (  # type: ignore[import-untyped]
+        from claude_agent_sdk import (
             AssistantMessage,
             ClaudeAgentOptions,
             ResultMessage,
@@ -333,7 +333,7 @@ async def _acall_agent(
     """Call Claude Agent SDK and return an LLMCallResult."""
     prompt, options, sdk = _build_agent_options(model, messages, **kwargs)
     AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
-    from claude_agent_sdk import ToolResultBlock  # type: ignore[import-untyped]
+    from claude_agent_sdk import ToolResultBlock
 
     # Track text per assistant message so we can return only the final one
     all_messages_text: list[list[str]] = []
@@ -408,7 +408,7 @@ def _call_agent(
 ) -> LLMCallResult:
     """Sync wrapper for _acall_agent."""
     coro = _acall_agent(model, messages, timeout=timeout, **kwargs)
-    return _run_sync(coro)
+    return cast(LLMCallResult, _run_sync(coro))
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +482,7 @@ def _call_agent_structured(
     coro = _acall_agent_structured(
         model, messages, response_model, timeout=timeout, **kwargs,
     )
-    return _run_sync(coro)
+    return cast(tuple[BaseModel, LLMCallResult], _run_sync(coro))
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +755,7 @@ def _patch_codex_buffer_limit() -> None:
     if _codex_patched:
         return
     try:
-        from openai_codex_sdk.exec import CodexExec  # type: ignore[import-untyped]
+        from openai_codex_sdk.exec import CodexExec
         import asyncio as _aio
         import functools
 
@@ -770,14 +770,14 @@ def _patch_codex_buffer_limit() -> None:
                 kw.setdefault("limit", 4 * 1024 * 1024)
                 return await _orig_create(*a, **kw)
 
-            _aio.create_subprocess_exec = _create_with_limit  # type: ignore[assignment]
+            _aio.create_subprocess_exec = cast(Any, _create_with_limit)
             try:
                 async for line in _original_run(self, args):
                     yield line
             finally:
-                _aio.create_subprocess_exec = _orig_create  # type: ignore[assignment]
+                _aio.create_subprocess_exec = cast(Any, _orig_create)
 
-        CodexExec.run = _patched_run  # type: ignore[assignment]
+        setattr(CodexExec, "run", _patched_run)
         _codex_patched = True
         logging.getLogger(__name__).debug("Patched CodexExec buffer limit to 4MB")
     except Exception:
@@ -792,7 +792,7 @@ def _import_codex_sdk() -> tuple[Any, ...]:
          AgentMessageItem, ItemCompletedEvent, TurnCompletedEvent, Usage)
     """
     try:
-        from openai_codex_sdk import (  # type: ignore[import-untyped]
+        from openai_codex_sdk import (
             AgentMessageItem,
             Codex,
             ItemCompletedEvent,
@@ -803,7 +803,7 @@ def _import_codex_sdk() -> tuple[Any, ...]:
             TurnOptions,
             Usage,
         )
-        from openai_codex_sdk.codex import CodexOptions  # type: ignore[import-untyped]
+        from openai_codex_sdk.codex import CodexOptions  # type: ignore[attr-defined]
     except ImportError:
         raise ImportError(
             "openai-codex-sdk is required for codex agent models. "
@@ -979,7 +979,7 @@ def _call_codex(
 ) -> LLMCallResult:
     """Sync wrapper for _acall_codex."""
     coro = _acall_codex(model, messages, timeout=timeout, **kwargs)
-    return _run_sync(coro)
+    return cast(LLMCallResult, _run_sync(coro))
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1056,7 @@ def _call_codex_structured(
     coro = _acall_codex_structured(
         model, messages, response_model, timeout=timeout, **kwargs,
     )
-    return _run_sync(coro)
+    return cast(tuple[BaseModel, LLMCallResult], _run_sync(coro))
 
 
 # ---------------------------------------------------------------------------

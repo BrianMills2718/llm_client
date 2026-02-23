@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from llm_client.scoring import score_output
 
@@ -277,8 +277,12 @@ def load_gate_policy(policy: str | dict[str, Any]) -> dict[str, Any]:
         text = text[1:].strip()
     path = Path(text).expanduser()
     if path.is_file():
-        return json.loads(path.read_text())
-    return json.loads(text)
+        parsed = json.loads(path.read_text())
+    else:
+        parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("gate policy must decode to a JSON object")
+    return cast(dict[str, Any], parsed)
 
 
 def build_gate_signals(

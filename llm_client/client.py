@@ -59,7 +59,7 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Literal, Protocol, TypeVar, runtime_checkable
+from typing import Any, Callable, Literal, NoReturn, Protocol, TypeVar, cast, runtime_checkable
 
 import litellm
 from pydantic import BaseModel
@@ -428,12 +428,12 @@ def _merge_warning_records(
         seen.add((str(rec.get("code", "")), str(rec.get("message", ""))))
 
     for msg in warnings or []:
-        rec = _warning_record_from_message(msg)
-        if rec is None:
+        msg_rec = _warning_record_from_message(msg)
+        if msg_rec is None:
             continue
-        key = (str(rec.get("code", "")), str(rec.get("message", "")))
+        key = (str(msg_rec.get("code", "")), str(msg_rec.get("message", "")))
         if key not in seen:
-            merged.append(rec)
+            merged.append(msg_rec)
             seen.add(key)
 
     model_rec = _model_warning_record(requested_model)
@@ -870,19 +870,29 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
     try:
         import litellm as _lt
 
+        def _litellm_error_types(*names: str) -> tuple[type[BaseException], ...]:
+            out: list[type[BaseException]] = []
+            for name in names:
+                candidate = getattr(_lt, name, None)
+                if isinstance(candidate, type) and issubclass(candidate, BaseException):
+                    out.append(candidate)
+            return tuple(out)
+
         # Permanent failures — never retry
-        if isinstance(error, (
-            _lt.AuthenticationError,      # 401: bad API key
-            _lt.PermissionDeniedError,    # 403: forbidden
-            _lt.BudgetExceededError,      # litellm budget limit
-            _lt.ContentPolicyViolationError,  # content filter
-            _lt.NotFoundError,            # 404: model doesn't exist
-        )):
+        permanent_types = _litellm_error_types(
+            "AuthenticationError",      # 401: bad API key
+            "PermissionDeniedError",    # 403: forbidden
+            "BudgetExceededError",      # litellm budget limit
+            "ContentPolicyViolationError",  # content filter
+            "NotFoundError",            # 404: model doesn't exist
+        )
+        if permanent_types and isinstance(error, permanent_types):
             return False
 
         # RateLimitError (429) is ambiguous — could be transient rate limit
         # or permanent quota exhaustion. Check the message.
-        if isinstance(error, _lt.RateLimitError):
+        rate_limit_types = _litellm_error_types("RateLimitError")
+        if rate_limit_types and isinstance(error, rate_limit_types):
             error_str = str(error).lower()
             # Provider-specified retry windows are considered retryable even
             # when the message includes "quota" phrasing.
@@ -894,12 +904,13 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
             return True  # transient rate limit — retry
 
         # Transient server errors — always retry
-        if isinstance(error, (
-            _lt.InternalServerError,   # 500
-            _lt.ServiceUnavailableError,  # 503
-            _lt.APIConnectionError,    # network issues
-            _lt.BadGatewayError,       # 502
-        )):
+        transient_types = _litellm_error_types(
+            "InternalServerError",   # 500
+            "ServiceUnavailableError",  # 503
+            "APIConnectionError",    # network issues
+            "BadGatewayError",       # 502
+        )
+        if transient_types and isinstance(error, transient_types):
             return True
     except ImportError:
         pass  # litellm not available, fall through to string matching
@@ -934,7 +945,7 @@ def _raise_empty_response(
     classification: str,
     retryable: bool,
     diagnostics: dict[str, Any],
-) -> None:
+) -> NoReturn:
     """Raise typed empty-response error with structured diagnostics."""
     payload = dict(diagnostics)
     payload["provider"] = provider
@@ -987,19 +998,19 @@ def exponential_backoff(attempt: int, base_delay: float = 1.0, max_delay: float 
     """Exponential backoff with jitter, capped at *max_delay*."""
     delay = base_delay * (2 ** attempt)
     jitter = random.uniform(0.5, 1.5)
-    return min(delay * jitter, max_delay)
+    return float(min(delay * jitter, max_delay))
 
 
 def linear_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
     """Linear backoff with jitter, capped at *max_delay*."""
     delay = base_delay * (attempt + 1)
     jitter = random.uniform(0.8, 1.2)
-    return min(delay * jitter, max_delay)
+    return float(min(delay * jitter, max_delay))
 
 
 def fixed_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
     """Fixed delay (no escalation), capped at *max_delay*."""
-    return min(base_delay, max_delay)
+    return float(min(base_delay, max_delay))
 
 
 # Backward-compat alias (used by existing tests)
@@ -1126,8 +1137,9 @@ async def _async_cache_get(cache: Any, key: str) -> LLMCallResult | None:
     """Get from cache, awaiting if the cache is async."""
     result = cache.get(key)
     if inspect.isawaitable(result):
-        return await result
-    return result  # type: ignore[return-value]
+        awaited = await result
+        return awaited if isinstance(awaited, LLMCallResult) else None
+    return result if isinstance(result, LLMCallResult) else None
 
 
 async def _async_cache_set(cache: Any, key: str, value: LLMCallResult) -> None:
@@ -1207,9 +1219,11 @@ class LLMStream:
             if complete:
                 usage = _extract_usage(complete)
                 cost, cost_source = _parse_cost_result(_compute_cost(complete))
-                finish_reason = complete.choices[0].finish_reason or "stop"
-                if complete.choices[0].message.tool_calls:
-                    tool_calls = _extract_tool_calls(complete.choices[0].message)
+                first_choice = complete.choices[0]
+                finish_reason = str(getattr(first_choice, "finish_reason", "") or "stop")
+                message_obj = getattr(first_choice, "message", None)
+                if message_obj is not None and getattr(message_obj, "tool_calls", None):
+                    tool_calls = _extract_tool_calls(message_obj)
             else:
                 cost_source = "unavailable"
         except Exception:
@@ -1311,9 +1325,11 @@ class AsyncLLMStream:
             if complete:
                 usage = _extract_usage(complete)
                 cost, cost_source = _parse_cost_result(_compute_cost(complete))
-                finish_reason = complete.choices[0].finish_reason or "stop"
-                if complete.choices[0].message.tool_calls:
-                    tool_calls = _extract_tool_calls(complete.choices[0].message)
+                first_choice = complete.choices[0]
+                finish_reason = str(getattr(first_choice, "finish_reason", "") or "stop")
+                message_obj = getattr(first_choice, "message", None)
+                if message_obj is not None and getattr(message_obj, "tool_calls", None):
+                    tool_calls = _extract_tool_calls(message_obj)
             else:
                 cost_source = "unavailable"
         except Exception:
@@ -3532,7 +3548,7 @@ def call_llm_structured(
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured", task=task, trace_id=trace_id)
-        return parsed, llm_result
+        return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
@@ -3669,7 +3685,9 @@ def call_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         time.sleep(delay)
-                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                if last_error is None:
+                    raise RuntimeError("call_llm_structured failed without captured exception")
+                raise wrap_error(last_error) from last_error
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.completion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth
@@ -3785,7 +3803,9 @@ def call_llm_structured(
                         )
                         time.sleep(delay)
                 else:
-                    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                    if last_error is None:
+                        raise RuntimeError("call_llm_structured failed without captured exception")
+                    raise wrap_error(last_error) from last_error
 
             if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.completion
@@ -3892,7 +3912,9 @@ def call_llm_structured(
                             e,
                         )
                         time.sleep(delay)
-                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                if last_error is None:
+                    raise RuntimeError("call_llm_structured failed without captured exception")
+                raise wrap_error(last_error) from last_error
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -3910,7 +3932,9 @@ def call_llm_structured(
             _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="call_llm_structured", task=task, trace_id=trace_id)
             raise wrap_error(e) from e
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+    if last_error is None:
+        raise RuntimeError("call_llm_structured failed without captured exception")
+    raise wrap_error(last_error) from last_error
 
 
 def call_llm_with_tools(
@@ -4446,7 +4470,7 @@ async def acall_llm_structured(
         if hooks and hooks.after_call:
             hooks.after_call(llm_result)
         _io_log.log_call(model=model, messages=messages, result=llm_result, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured", task=task, trace_id=trace_id)
-        return parsed, llm_result
+        return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
@@ -4583,7 +4607,9 @@ async def acall_llm_structured(
                             attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
                         )
                         await asyncio.sleep(delay)
-                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                if last_error is None:
+                    raise RuntimeError("acall_llm_structured failed without captured exception")
+                raise wrap_error(last_error) from last_error
             elif litellm.supports_response_schema(model=current_model):
                 # Native JSON schema path: litellm.acompletion + response_format
                 # If the provider rejects the schema (e.g. Gemini nesting depth
@@ -4699,7 +4725,9 @@ async def acall_llm_structured(
                         )
                         await asyncio.sleep(delay)
                 else:
-                    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                    if last_error is None:
+                        raise RuntimeError("acall_llm_structured failed without captured exception")
+                    raise wrap_error(last_error) from last_error
 
             if not litellm.supports_response_schema(model=current_model) or _native_schema_failed:
                 # Fallback path: instructor + litellm.acompletion
@@ -4806,7 +4834,9 @@ async def acall_llm_structured(
                             e,
                         )
                         await asyncio.sleep(delay)
-                raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                if last_error is None:
+                    raise RuntimeError("acall_llm_structured failed without captured exception")
+                raise wrap_error(last_error) from last_error
         except Exception as e:
             last_error = e
             if model_idx < len(models) - 1:
@@ -4824,7 +4854,9 @@ async def acall_llm_structured(
             _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="acall_llm_structured", task=task, trace_id=trace_id)
             raise wrap_error(e) from e
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+    if last_error is None:
+        raise RuntimeError("acall_llm_structured failed without captured exception")
+    raise wrap_error(last_error) from last_error
 
 
 async def acall_llm_with_tools(
@@ -5246,7 +5278,7 @@ def stream_llm(
     _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_stream
-        return _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
+        return cast(LLMStream, _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs))
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = _build_model_chain(model, fallback_models, cfg)
     routing_policy = _routing_policy_label(cfg)
@@ -5372,7 +5404,10 @@ async def astream_llm(
     _check_budget(trace_id, max_budget)
     if _is_agent_model(model):
         from llm_client.agents import _route_astream
-        return await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
+        return cast(
+            AsyncLLMStream,
+            await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs),
+        )
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = _build_model_chain(model, fallback_models, cfg)
     routing_policy = _routing_policy_label(cfg)

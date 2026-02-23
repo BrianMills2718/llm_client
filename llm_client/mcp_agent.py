@@ -2863,6 +2863,7 @@ async def _agent_loop(
     failure_event_codes: list[str] = []
     autofilled_tool_reasoning_calls = 0
     autofilled_tool_reasoning_by_tool: dict[str, int] = {}
+    submit_validation_reason_counts: dict[str, int] = {}
     evidence_signatures: set[str] = set()
     submit_evidence_digest_at_last_failure: str | None = None
     retrieval_no_hits_count = 0
@@ -4181,6 +4182,10 @@ async def _agent_loop(
                     if isinstance(validation_payload, dict):
                         reason_code = str(validation_payload.get("reason_code", "")).strip()
                         detail = str(validation_payload.get("message", "")).strip()
+                    if reason_code:
+                        submit_validation_reason_counts[reason_code] = (
+                            submit_validation_reason_counts.get(reason_code, 0) + 1
+                        )
                     err_parts = [f"submit_answer not accepted (status={status})"]
                     if reason_code:
                         err_parts.append(f"reason_code={reason_code}")
@@ -4554,6 +4559,9 @@ async def _agent_loop(
     agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
     agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
     agent_result.metadata["control_loop_suppressed_calls"] = control_loop_suppressed_calls
+    agent_result.metadata["submit_validation_reason_counts"] = dict(
+        sorted(submit_validation_reason_counts.items())
+    )
     agent_result.metadata["tool_call_turns_total"] = tool_call_turns_total
     agent_result.metadata["tool_call_empty_text_turns"] = tool_call_empty_text_turns
     agent_result.metadata["responses_tool_call_empty_text_turns"] = responses_tool_call_empty_text_turns

@@ -60,8 +60,21 @@ def get_active_experiment_run_id() -> str | None:
     return _io_log.get_active_experiment_run_id()
 
 
-def enforce_agent_spec(*, task: str | None = None) -> dict[str, Any]:
-    return _io_log.enforce_agent_spec(task=task)
+def enforce_agent_spec(
+    *,
+    task: str | None = None,
+    has_agent_spec: bool,
+    allow_missing: bool = False,
+    missing_reason: str | None = None,
+    caller: str = "llm_client.observability.events",
+) -> None:
+    _io_log.enforce_agent_spec(
+        task=task,
+        has_agent_spec=has_agent_spec,
+        allow_missing=allow_missing,
+        missing_reason=missing_reason,
+        caller=caller,
+    )
 
 
 def log_embedding(**kwargs: Any) -> None:

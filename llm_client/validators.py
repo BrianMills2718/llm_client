@@ -90,6 +90,7 @@ def _eval_check(value: Any, check_expr: str) -> bool:
     if not m:
         raise ValueError(f"Invalid check expression: {check_expr!r}. Expected format: '> 0', '>= 5', '== 10', etc.")
     op_str, rhs_str = m.group(1), m.group(2).strip()
+    rhs: Any
     try:
         rhs = int(rhs_str)
     except ValueError:

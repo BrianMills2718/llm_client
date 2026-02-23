@@ -30,6 +30,7 @@ All notable changes to `llm-client` are documented in this file.
   - finalization fallback usage/success/event traces
   - forced-final attempt and circuit-breaker telemetry
   - retrieval stagnation trigger/streak/turn metadata
+  - `submit_validation_reason_counts` for submit-loop diagnostics
 - OpenRouter key-pool rotation for key-limit 403 responses:
   - supports `OPENROUTER_API_KEYS` and numbered `OPENROUTER_API_KEY_<n>` vars
   - rotates `OPENROUTER_API_KEY` to the next key and retries immediately

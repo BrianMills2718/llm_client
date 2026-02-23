@@ -34,7 +34,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,12 @@ class ActiveFeatureProfile:
         self._token = _active_feature_profile.set(self.profile)
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> Literal[False]:
         if self._token is not None:
             _active_feature_profile.reset(self._token)
             self._token = None
@@ -238,7 +243,12 @@ class ActiveFeatureProfile:
     async def __aenter__(self) -> "ActiveFeatureProfile":
         return self.__enter__()
 
-    async def __aexit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> Literal[False]:
         return self.__exit__(exc_type, exc, tb)
 
 
@@ -259,7 +269,12 @@ class ActiveExperimentRun:
             self._token = _active_experiment_run_id.set(self.run_id)
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> Literal[False]:
         if self._token is not None:
             _active_experiment_run_id.reset(self._token)
             self._token = None
@@ -268,7 +283,12 @@ class ActiveExperimentRun:
     async def __aenter__(self) -> "ActiveExperimentRun":
         return self.__enter__()
 
-    async def __aexit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> Literal[False]:
         return self.__exit__(exc_type, exc, tb)
 
 
@@ -645,7 +665,7 @@ def log_embedding(
     input_count: int,
     input_chars: int,
     dimensions: int | None = None,
-    usage: dict | None = None,
+    usage: dict[str, Any] | None = None,
     cost: float | None = None,
     latency_s: float | None = None,
     error: Exception | None = None,
@@ -983,7 +1003,7 @@ def _write_call_to_db(
     model: str,
     messages: list[dict[str, Any]] | None,
     response: str | None,
-    usage: dict | None,
+    usage: dict[str, Any] | None,
     cost: float | None,
     cost_source: str | None,
     billing_mode: str | None,
@@ -1030,7 +1050,7 @@ def _write_embedding_to_db(
     input_count: int,
     input_chars: int,
     dimensions: int | None,
-    usage: dict | None,
+    usage: dict[str, Any] | None,
     cost: float | None,
     latency_s: float | None,
     error: str | None,
@@ -1456,7 +1476,7 @@ def experiment_run(
     feature_profile: str | dict[str, Any] | None = None,
     project: str | None = None,
     status_on_exception: str = "interrupted",
-) -> ExperimentRun:
+) -> Any:
     """Compatibility shim: delegate to observability.experiments.experiment_run."""
     from llm_client.observability.experiments import experiment_run as _experiment_run
 
