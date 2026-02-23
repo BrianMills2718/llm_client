@@ -94,6 +94,10 @@ result = call_llm(
 Notes:
 - Requires `OPENAI_API_KEY`.
 - Background retrieval currently supports OpenAI API bases only (`api.openai.com`).
+- Unsupported endpoint/key failures raise `LLMConfigurationError` with stable
+  `error_code` values:
+  - `LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED`
+  - `LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED`
 - `background_timeout` caps total polling time.
 - `background_poll_interval` controls polling cadence.
 - `result.routing_trace["background_mode"]` indicates background-mode routing.
@@ -457,6 +461,18 @@ python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg
 - policy gates (`--gate-policy`) with optional non-zero exit on failure.
 
 Run-level cohort metadata is also supported through `start_run(..., condition_id=..., seed=..., replicate=..., scenario_id=..., phase=...)`, with cohort-level aggregate comparisons available via `compare_cohorts(...)` and `experiments --compare-cohorts`.
+
+For lightweight long-thinking adoption telemetry from task-graph JSONL:
+
+```python
+from llm_client import get_background_mode_adoption
+
+summary = get_background_mode_adoption(
+    experiments_path="~/projects/data/task_graph/experiments.jsonl",
+    run_id_prefix="nightly_",
+)
+print(summary["background_mode_rate_among_reasoning"])
+```
 
 ## API keys
 

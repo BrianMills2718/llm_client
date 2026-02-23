@@ -38,6 +38,25 @@ def test_io_log_get_cost_delegates(monkeypatch) -> None:
     assert called["project"] == "proj"
 
 
+def test_io_log_get_background_mode_adoption_delegates(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_get_background_mode_adoption(**kwargs):  # type: ignore[no-untyped-def]
+        called.update(kwargs)
+        return {"records_considered": 7}
+
+    monkeypatch.setattr(obs_query, "get_background_mode_adoption", fake_get_background_mode_adoption)
+
+    summary = io_log.get_background_mode_adoption(
+        experiments_path="/tmp/e.jsonl",
+        run_id_prefix="alpha.",
+    )
+
+    assert summary["records_considered"] == 7
+    assert called["experiments_path"] == "/tmp/e.jsonl"
+    assert called["run_id_prefix"] == "alpha."
+
+
 def test_io_log_import_jsonl_still_works(monkeypatch, tmp_path: Path) -> None:
     calls_file = tmp_path / "calls.jsonl"
     calls_file.write_text(

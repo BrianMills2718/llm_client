@@ -7,6 +7,7 @@ import litellm
 
 from llm_client.errors import (
     LLMAuthError,
+    LLMConfigurationError,
     LLMContentFilterError,
     LLMError,
     LLMModelNotFoundError,
@@ -188,6 +189,7 @@ class TestErrorHierarchy:
             LLMContentFilterError,
             LLMTransientError,
             LLMModelNotFoundError,
+            LLMConfigurationError,
         ]:
             assert issubclass(cls, LLMError)
             assert issubclass(cls, Exception)
@@ -206,3 +208,12 @@ class TestErrorHierarchy:
         original = ValueError("raw error")
         err = LLMTransientError("wrapped", original=original)
         assert err.original is original
+
+    def test_configuration_error_fields(self):
+        err = LLMConfigurationError(
+            "bad config",
+            error_code="LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED",
+            details={"api_base": "https://openrouter.ai/api/v1"},
+        )
+        assert err.error_code == "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
+        assert err.details["api_base"] == "https://openrouter.ai/api/v1"

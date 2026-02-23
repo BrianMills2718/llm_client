@@ -77,6 +77,7 @@ _load_api_keys()
 
 from llm_client.errors import (
     LLMAuthError,
+    LLMConfigurationError,
     LLMCapabilityError,
     LLMBudgetExceededError,
     LLMContentFilterError,
@@ -104,6 +105,7 @@ from llm_client.observability import (
     enforce_agent_spec,
     experiment_run,
     finish_run,
+    get_background_mode_adoption,
     get_completed_traces,
     get_cost,
     get_active_experiment_run_id,
@@ -249,6 +251,7 @@ from llm_client.client import (
 
 __all__ = [
     "LLMAuthError",
+    "LLMConfigurationError",
     "LLMCapabilityError",
     "LLMBudgetExceededError",
     "LLMContentFilterError",
@@ -305,6 +308,7 @@ __all__ = [
     "log_embedding",
     "log_foundation_event",
     "lookup_result",
+    "get_background_mode_adoption",
     "get_completed_traces",
     "get_cost",
     # experiment logging

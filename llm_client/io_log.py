@@ -1334,6 +1334,24 @@ def get_trace_tree(
     return _get_trace_tree(trace_prefix, days=days)
 
 
+def get_background_mode_adoption(
+    *,
+    experiments_path: str | Path | None = None,
+    since: str | date | datetime | None = None,
+    run_id_prefix: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility shim: delegate to observability.query.get_background_mode_adoption."""
+    from llm_client.observability.query import (
+        get_background_mode_adoption as _get_background_mode_adoption,
+    )
+
+    return _get_background_mode_adoption(
+        experiments_path=experiments_path,
+        since=since,
+        run_id_prefix=run_id_prefix,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Experiment logging
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ This module contains the concrete query logic that was previously in
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -200,3 +201,143 @@ def compare_cohorts(**kwargs: Any) -> dict[str, Any]:
     from llm_client.observability.experiments import compare_cohorts as _compare_cohorts
 
     return _compare_cohorts(**kwargs)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    """Parse common ISO-8601 timestamp strings into timezone-aware datetimes."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
+def get_background_mode_adoption(
+    *,
+    experiments_path: str | Path | None = None,
+    since: str | date | datetime | None = None,
+    run_id_prefix: str | None = None,
+) -> dict[str, Any]:
+    """Compute lightweight long-thinking adoption metrics from task-graph JSONL logs.
+
+    The log format is the task-graph `ExperimentRecord` JSONL, where
+    `dimensions.reasoning_effort` and `dimensions.background_mode` are recorded.
+    """
+    if experiments_path is None:
+        path = Path.home() / "projects" / "data" / "task_graph" / "experiments.jsonl"
+    else:
+        path = Path(experiments_path)
+
+    if since is None:
+        since_dt: datetime | None = None
+    elif isinstance(since, datetime):
+        since_dt = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
+        since_dt = since_dt.astimezone(timezone.utc)
+    elif isinstance(since, date):
+        since_dt = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
+    else:
+        parsed = _parse_iso_datetime(since)
+        if parsed is None:
+            raise ValueError(f"Invalid since timestamp: {since!r}")
+        since_dt = parsed
+
+    summary: dict[str, Any] = {
+        "experiments_path": str(path),
+        "exists": path.exists(),
+        "total_records": 0,
+        "records_considered": 0,
+        "invalid_lines": 0,
+        "with_reasoning_effort": 0,
+        "background_mode_true": 0,
+        "background_mode_false": 0,
+        "background_mode_unknown": 0,
+        "background_mode_rate_among_reasoning": 0.0,
+        "background_mode_rate_overall": 0.0,
+        "reasoning_effort_counts": {},
+        "run_id_prefix": run_id_prefix,
+        "since": since_dt.isoformat() if since_dt is not None else None,
+    }
+    if not path.exists():
+        return summary
+
+    reasoning_effort_counts: dict[str, int] = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            summary["total_records"] += 1
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                summary["invalid_lines"] += 1
+                continue
+            if not isinstance(record, dict):
+                summary["invalid_lines"] += 1
+                continue
+
+            run_id = str(record.get("run_id", "")).strip()
+            if run_id_prefix and not run_id.startswith(run_id_prefix):
+                continue
+
+            if since_dt is not None:
+                ts = _parse_iso_datetime(record.get("timestamp"))
+                if ts is None or ts < since_dt:
+                    continue
+
+            summary["records_considered"] += 1
+            dims = record.get("dimensions")
+            if not isinstance(dims, dict):
+                summary["background_mode_unknown"] += 1
+                continue
+
+            raw_effort = dims.get("reasoning_effort")
+            if isinstance(raw_effort, str) and raw_effort.strip():
+                effort = raw_effort.strip().lower()
+                summary["with_reasoning_effort"] += 1
+                reasoning_effort_counts[effort] = reasoning_effort_counts.get(effort, 0) + 1
+
+            raw_bg = dims.get("background_mode")
+            bg = _normalize_bool(raw_bg)
+            if bg is True:
+                summary["background_mode_true"] += 1
+            elif bg is False:
+                summary["background_mode_false"] += 1
+            else:
+                summary["background_mode_unknown"] += 1
+
+    summary["reasoning_effort_counts"] = reasoning_effort_counts
+
+    denom_reasoning = int(summary["with_reasoning_effort"])
+    if denom_reasoning > 0:
+        summary["background_mode_rate_among_reasoning"] = (
+            float(summary["background_mode_true"]) / float(denom_reasoning)
+        )
+
+    denom_overall = int(summary["records_considered"])
+    if denom_overall > 0:
+        summary["background_mode_rate_overall"] = (
+            float(summary["background_mode_true"]) / float(denom_overall)
+        )
+
+    return summary

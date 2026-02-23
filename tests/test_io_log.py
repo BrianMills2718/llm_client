@@ -3,7 +3,7 @@
 import json
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -488,6 +488,121 @@ class TestGetTraceTree:
         assert t["call_count"] == 2
         assert abs(t["total_cost_usd"] - 0.8) < 0.001
         assert t["task"] == "extraction"
+
+
+class TestBackgroundModeAdoption:
+    def test_summarizes_task_graph_experiment_dimensions(self, tmp_path):
+        experiments = tmp_path / "experiments.jsonl"
+        experiments.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run",
+                            "timestamp": "2026-02-23T10:00:00Z",
+                            "dimensions": {
+                                "reasoning_effort": "xhigh",
+                                "background_mode": True,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run",
+                            "timestamp": "2026-02-23T10:01:00Z",
+                            "dimensions": {
+                                "reasoning_effort": "high",
+                                "background_mode": False,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "run_id": "beta.run",
+                            "timestamp": "2026-02-23T10:02:00Z",
+                            "dimensions": {},
+                        }
+                    ),
+                    "{invalid json",
+                ]
+            )
+            + "\n"
+        )
+
+        summary = io_log.get_background_mode_adoption(experiments_path=experiments)
+        assert summary["exists"] is True
+        assert summary["total_records"] == 4
+        assert summary["records_considered"] == 3
+        assert summary["invalid_lines"] == 1
+        assert summary["with_reasoning_effort"] == 2
+        assert summary["background_mode_true"] == 1
+        assert summary["background_mode_false"] == 1
+        assert summary["background_mode_unknown"] == 1
+        assert summary["reasoning_effort_counts"]["xhigh"] == 1
+        assert summary["reasoning_effort_counts"]["high"] == 1
+        assert summary["background_mode_rate_among_reasoning"] == 0.5
+        assert summary["background_mode_rate_overall"] == pytest.approx(1 / 3)
+
+    def test_applies_since_and_run_id_prefix_filters(self, tmp_path):
+        experiments = tmp_path / "experiments.jsonl"
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=2)
+        experiments.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run.1",
+                            "timestamp": now.isoformat(),
+                            "dimensions": {
+                                "reasoning_effort": "xhigh",
+                                "background_mode": True,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "run_id": "alpha.run.2",
+                            "timestamp": old.isoformat(),
+                            "dimensions": {
+                                "reasoning_effort": "high",
+                                "background_mode": True,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "run_id": "beta.run.1",
+                            "timestamp": now.isoformat(),
+                            "dimensions": {
+                                "reasoning_effort": "xhigh",
+                                "background_mode": True,
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
+
+        summary = io_log.get_background_mode_adoption(
+            experiments_path=experiments,
+            since=now - timedelta(hours=1),
+            run_id_prefix="alpha.",
+        )
+        assert summary["records_considered"] == 1
+        assert summary["with_reasoning_effort"] == 1
+        assert summary["background_mode_true"] == 1
+        assert summary["background_mode_rate_among_reasoning"] == 1.0
+        assert summary["reasoning_effort_counts"] == {"xhigh": 1}
+
+    def test_returns_empty_summary_for_missing_file(self, tmp_path):
+        summary = io_log.get_background_mode_adoption(
+            experiments_path=tmp_path / "missing.jsonl"
+        )
+        assert summary["exists"] is False
+        assert summary["total_records"] == 0
+        assert summary["records_considered"] == 0
 
 
 class TestConfigure:

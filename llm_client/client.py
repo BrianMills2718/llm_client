@@ -83,6 +83,7 @@ from llm_client.execution_kernel import (
 from llm_client.errors import (
     LLMBudgetExceededError,
     LLMCapabilityError,
+    LLMConfigurationError,
     LLMEmptyResponseError,
     LLMModelNotFoundError,
     wrap_error,
@@ -3082,9 +3083,8 @@ def _build_result_from_responses(
 # ---------------------------------------------------------------------------
 
 
-class _BackgroundRetrievalConfigurationError(RuntimeError):
-    """Raised when background retrieval cannot run with current endpoint/auth config."""
-
+_BACKGROUND_ERR_ENDPOINT_UNSUPPORTED = "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
+_BACKGROUND_ERR_MISSING_OPENAI_KEY = "LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED"
 
 def _validate_background_retrieval_api_base(api_base: str | None) -> None:
     """Fail fast when background retrieval is routed to a non-OpenAI endpoint."""
@@ -3101,10 +3101,12 @@ def _validate_background_retrieval_api_base(api_base: str | None) -> None:
     if "openai.com" in hostname and "openrouter" not in hostname:
         return
 
-    raise _BackgroundRetrievalConfigurationError(
+    raise LLMConfigurationError(
         "Background response retrieval for long-thinking models currently supports "
         f"OpenAI endpoints only. Received api_base={base!r}. "
-        "Use https://api.openai.com/v1 (or default) for background retrieval."
+        "Use https://api.openai.com/v1 (or default) for background retrieval.",
+        error_code=_BACKGROUND_ERR_ENDPOINT_UNSUPPORTED,
+        details={"api_base": base},
     )
 
 
@@ -3167,7 +3169,7 @@ def _poll_background_response(
                 api_base=api_base,
                 request_timeout=request_timeout,
             )
-        except _BackgroundRetrievalConfigurationError:
+        except LLMConfigurationError:
             # Endpoint/auth misconfiguration is deterministic; fail immediately.
             raise
         except Exception as e:
@@ -3224,7 +3226,7 @@ async def _apoll_background_response(
                 api_base=api_base,
                 request_timeout=request_timeout,
             )
-        except _BackgroundRetrievalConfigurationError:
+        except LLMConfigurationError:
             raise
         except Exception as e:
             logger.warning("Background poll attempt %d failed: %s", attempt, e)
@@ -3273,8 +3275,10 @@ def _retrieve_background_response(
     _validate_background_retrieval_api_base(api_base)
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise _BackgroundRetrievalConfigurationError(
-            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
+        raise LLMConfigurationError(
+            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
+            error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
+            details={"api_base": api_base},
         )
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}
@@ -3298,8 +3302,10 @@ async def _aretrieve_background_response(
     _validate_background_retrieval_api_base(api_base)
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise _BackgroundRetrievalConfigurationError(
-            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models"
+        raise LLMConfigurationError(
+            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
+            error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
+            details={"api_base": api_base},
         )
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}

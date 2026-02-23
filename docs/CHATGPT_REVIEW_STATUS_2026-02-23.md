@@ -535,3 +535,42 @@ Validation snapshot after this pass:
    - Result: `Success: no issues found in 39 source files`
 5. `pytest -q`
    - Result: `837 passed, 1 skipped, 1 warning`
+
+## 26) Additional follow-up (all requested next steps completed)
+Executed all previously queued follow-ups:
+1. Machine-readable configuration errors for background retrieval:
+   - Introduced `LLMConfigurationError` in `llm_client/errors.py` with:
+     - `error_code`
+     - `details`
+   - Bound long-thinking background config failures to stable codes:
+     - `LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED`
+     - `LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED`
+2. Added lightweight adoption helper in observability queries:
+   - `get_background_mode_adoption(...)` in
+     `llm_client/observability/query.py`
+   - compatibility shim in `llm_client/io_log.py`
+   - top-level export via `llm_client.__init__`
+   - returns summarized counts/rates from task-graph experiment JSONL for:
+     - `dimensions.reasoning_effort`
+     - `dimensions.background_mode`
+3. Added opt-in long-thinking integration smoke:
+   - `tests/integration_long_thinking_smoke_test.py`
+   - requires:
+     - `LLM_CLIENT_INTEGRATION=1`
+     - `LLM_CLIENT_LONG_THINKING_SMOKE=1`
+     - `OPENAI_API_KEY`
+   - checks `gpt-5.2-pro` with `reasoning_effort="high"` and confirms
+     `routing_trace["background_mode"] == True`.
+4. Added/updated test coverage:
+   - `tests/test_client.py` for machine-readable error codes + fail-fast poll
+     behavior.
+   - `tests/test_errors.py` for `LLMConfigurationError` contract.
+   - `tests/test_io_log.py` for adoption-helper counting/filtering behavior.
+   - `tests/test_io_log_compat.py` shim-delegation check.
+   - `tests/test_model_identity_contract.py` loop-finalization preservation of
+     `background_mode`.
+5. Documentation updates:
+   - `README.md` long-thinking error-code + adoption-helper usage notes.
+   - `docs/adr/0009-long-thinking-background-polling.md` updated with stable
+     error-code contract.
+   - `tests/CLAUDE.md` integration smoke run command.

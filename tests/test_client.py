@@ -38,6 +38,7 @@ from llm_client import (
 )
 from llm_client.errors import (
     LLMAuthError,
+    LLMConfigurationError,
     LLMCapabilityError,
     LLMContentFilterError,
     LLMError,
@@ -1793,26 +1794,29 @@ class TestLongThinkingBackgroundRetrieval:
     """Tests for explicit background response retrieval helpers."""
 
     def test_retrieve_background_response_requires_openai_key(self) -> None:
-        from llm_client.client import _BackgroundRetrievalConfigurationError, _retrieve_background_response
+        from llm_client.client import _retrieve_background_response
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
-            with pytest.raises(_BackgroundRetrievalConfigurationError, match="OPENAI_API_KEY is required"):
+            with pytest.raises(LLMConfigurationError, match="OPENAI_API_KEY is required") as exc_info:
                 _retrieve_background_response(
                     response_id="resp_123",
                     api_base=None,
                     request_timeout=60,
                 )
+        assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED"
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     def test_retrieve_background_response_rejects_non_openai_api_base(self) -> None:
-        from llm_client.client import _BackgroundRetrievalConfigurationError, _retrieve_background_response
+        from llm_client.client import _retrieve_background_response
 
-        with pytest.raises(_BackgroundRetrievalConfigurationError, match="OpenAI endpoints only"):
+        with pytest.raises(LLMConfigurationError, match="OpenAI endpoints only") as exc_info:
             _retrieve_background_response(
                 response_id="resp_123",
                 api_base="https://openrouter.ai/api/v1",
                 request_timeout=60,
             )
+        assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
+        assert exc_info.value.details.get("api_base") == "https://openrouter.ai/api/v1"
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     @patch("openai.OpenAI")
@@ -1870,26 +1874,31 @@ class TestLongThinkingBackgroundRetrieval:
     @pytest.mark.asyncio
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     async def test_aretrieve_background_response_rejects_non_openai_api_base(self) -> None:
-        from llm_client.client import _BackgroundRetrievalConfigurationError, _aretrieve_background_response
+        from llm_client.client import _aretrieve_background_response
 
-        with pytest.raises(_BackgroundRetrievalConfigurationError, match="OpenAI endpoints only"):
+        with pytest.raises(LLMConfigurationError, match="OpenAI endpoints only") as exc_info:
             await _aretrieve_background_response(
                 response_id="resp_async_123",
                 api_base="https://openrouter.ai/api/v1",
                 request_timeout=60,
             )
+        assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
+        assert exc_info.value.details.get("api_base") == "https://openrouter.ai/api/v1"
 
     def test_poll_background_response_fails_fast_on_configuration_error(self) -> None:
-        from llm_client.client import _BackgroundRetrievalConfigurationError, _poll_background_response
+        from llm_client.client import _poll_background_response
 
         with (
             patch(
                 "llm_client.client._retrieve_background_response",
-                side_effect=_BackgroundRetrievalConfigurationError("unsupported api_base"),
+                side_effect=LLMConfigurationError(
+                    "unsupported api_base",
+                    error_code="LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED",
+                ),
             ),
             patch("time.sleep") as mock_sleep,
         ):
-            with pytest.raises(_BackgroundRetrievalConfigurationError, match="unsupported api_base"):
+            with pytest.raises(LLMConfigurationError, match="unsupported api_base"):
                 _poll_background_response(
                     "resp_123",
                     api_base="https://openrouter.ai/api/v1",
@@ -1900,16 +1909,19 @@ class TestLongThinkingBackgroundRetrieval:
 
     @pytest.mark.asyncio
     async def test_apoll_background_response_fails_fast_on_configuration_error(self) -> None:
-        from llm_client.client import _BackgroundRetrievalConfigurationError, _apoll_background_response
+        from llm_client.client import _apoll_background_response
 
         with (
             patch(
                 "llm_client.client._aretrieve_background_response",
-                side_effect=_BackgroundRetrievalConfigurationError("unsupported api_base"),
+                side_effect=LLMConfigurationError(
+                    "unsupported api_base",
+                    error_code="LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED",
+                ),
             ),
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
-            with pytest.raises(_BackgroundRetrievalConfigurationError, match="unsupported api_base"):
+            with pytest.raises(LLMConfigurationError, match="unsupported api_base"):
                 await _apoll_background_response(
                     "resp_async_123",
                     api_base="https://openrouter.ai/api/v1",

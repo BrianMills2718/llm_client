@@ -17,6 +17,9 @@ pytest -m "not integration" -q
 # Run integration tests explicitly
 LLM_CLIENT_INTEGRATION=1 pytest -m integration -q
 
+# Run long-thinking smoke only (extra opt-in)
+LLM_CLIENT_INTEGRATION=1 LLM_CLIENT_LONG_THINKING_SMOKE=1 pytest -m integration tests/integration_long_thinking_smoke_test.py -q
+
 # Single test
 pytest tests/test_client.py::test_call_llm_happy_path -q
 ```

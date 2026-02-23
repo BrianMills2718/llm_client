@@ -77,6 +77,22 @@ class LLMCapabilityError(LLMError):
     """Requested execution mode/capabilities are incompatible with model/kwargs."""
 
 
+class LLMConfigurationError(LLMError):
+    """Invalid client/runtime configuration (machine-readable error_code attached)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
+        original: Exception | None = None,
+    ) -> None:
+        super().__init__(message, original=original)
+        self.error_code = error_code
+        self.details = details or {}
+
+
 # Patterns that indicate permanent quota exhaustion (not transient rate limit).
 _QUOTA_PATTERNS = [
     "quota",

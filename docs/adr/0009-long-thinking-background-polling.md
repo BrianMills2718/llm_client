@@ -27,6 +27,9 @@ progress.
    endpoints (for example OpenRouter), instead of retrying until timeout.
 7. Routing traces expose `background_mode` to support lightweight adoption
    telemetry.
+8. Configuration failures are machine-readable via `LLMConfigurationError`:
+   - `LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED`
+   - `LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED`
 
 ## Consequences
 
