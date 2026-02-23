@@ -5338,110 +5338,26 @@ def stream_llm(
     Returns:
         LLMStream that yields text chunks and exposes ``.result``
     """
-    _check_model_deprecation(model)
-    cfg = config or ClientConfig.from_env()
-    task = kwargs.pop("task", None)
-    trace_id = kwargs.pop("trace_id", None)
-    max_budget: float | None = kwargs.pop("max_budget", None)
-    task, trace_id, max_budget, _entry_warnings = _require_tags(
-        task, trace_id, max_budget, caller="stream_llm",
-    )
-    _check_budget(trace_id, max_budget)
-    if _is_agent_model(model):
-        from llm_client.agents import _route_stream
-        return cast(LLMStream, _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs))
-    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    plan = _resolve_call_plan(
-        model=model,
-        fallback_models=fallback_models,
+    from llm_client.stream_runtime import stream_llm_impl
+
+    return stream_llm_impl(
+        model,
+        messages,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
         api_base=api_base,
-        config=cfg,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        config=config,
+        **kwargs,
     )
-    models = plan.models
-    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
-    _warnings: list[str] = list(_entry_warnings)
-    backoff_fn = r.backoff or exponential_backoff
-
-    def _execute_stream_model(model_idx: int, current_model: str) -> LLMStream:
-        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        call_kwargs = _prepare_call_kwargs(
-            current_model, messages,
-            timeout=timeout,
-            num_retries=0,
-            reasoning_effort=reasoning_effort,
-            api_base=current_api_base,
-            kwargs=kwargs,
-            warning_sink=_warnings,
-        )
-        call_kwargs["stream"] = True
-
-        if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
-
-        def _invoke_attempt(attempt: int) -> LLMStream:
-            with _rate_limit.acquire(current_model):
-                response = litellm.completion(**call_kwargs)
-            if attempt > 0:
-                logger.info("stream_llm succeeded after %d retries", attempt)
-            return LLMStream(
-                response,
-                current_model,
-                hooks=hooks,
-                messages=messages,
-                task=task,
-                trace_id=trace_id,
-                warnings=_warnings,
-                requested_model=model,
-                resolved_model=current_model,
-                routing_trace=_build_routing_trace(
-                    requested_model=model,
-                    attempted_models=models[:model_idx + 1],
-                    selected_model=current_model,
-                    requested_api_base=api_base,
-                    effective_api_base=current_api_base,
-                    routing_policy=routing_policy,
-                ),
-            )
-
-        return run_sync_with_retry(
-            caller="stream_llm",
-            model=current_model,
-            max_retries=r.max_retries,
-            invoke=_invoke_attempt,
-            should_retry=lambda exc: _check_retryable(exc, r),
-            compute_delay=lambda attempt, exc: _compute_retry_delay(
-                attempt=attempt,
-                error=exc,
-                policy=r,
-                backoff_fn=backoff_fn,
-            ),
-            warning_sink=_warnings,
-            logger=logger,
-            on_error=(hooks.on_error if hooks and hooks.on_error else None),
-            on_retry=r.on_retry,
-            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
-                error=exc,
-                attempt=attempt,
-                max_retries=max_retries,
-                current_model=current_model,
-                current_api_base=current_api_base,
-                user_kwargs=kwargs,
-                warning_sink=_warnings,
-                on_retry=r.on_retry,
-                caller="stream_llm",
-            ),
-        )
-
-    try:
-        return run_sync_with_fallback(
-            models=models,
-            execute_model=_execute_stream_model,
-            on_fallback=on_fallback,
-            warning_sink=_warnings,
-            logger=logger,
-        )
-    except Exception as e:
-        raise wrap_error(e) from e
 
 
 async def astream_llm(
@@ -5470,113 +5386,26 @@ async def astream_llm(
     Returns:
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
-    _check_model_deprecation(model)
-    cfg = config or ClientConfig.from_env()
-    task = kwargs.pop("task", None)
-    trace_id = kwargs.pop("trace_id", None)
-    max_budget: float | None = kwargs.pop("max_budget", None)
-    task, trace_id, max_budget, _entry_warnings = _require_tags(
-        task, trace_id, max_budget, caller="astream_llm",
-    )
-    _check_budget(trace_id, max_budget)
-    if _is_agent_model(model):
-        from llm_client.agents import _route_astream
-        return cast(
-            AsyncLLMStream,
-            await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs),
-        )
-    r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    plan = _resolve_call_plan(
-        model=model,
-        fallback_models=fallback_models,
+    from llm_client.stream_runtime import astream_llm_impl
+
+    return await astream_llm_impl(
+        model,
+        messages,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
         api_base=api_base,
-        config=cfg,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        on_retry=on_retry,
+        retry=retry,
+        fallback_models=fallback_models,
+        on_fallback=on_fallback,
+        hooks=hooks,
+        config=config,
+        **kwargs,
     )
-    models = plan.models
-    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
-    _warnings: list[str] = list(_entry_warnings)
-    backoff_fn = r.backoff or exponential_backoff
-
-    async def _execute_stream_model(model_idx: int, current_model: str) -> AsyncLLMStream:
-        current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        call_kwargs = _prepare_call_kwargs(
-            current_model, messages,
-            timeout=timeout,
-            num_retries=0,
-            reasoning_effort=reasoning_effort,
-            api_base=current_api_base,
-            kwargs=kwargs,
-            warning_sink=_warnings,
-        )
-        call_kwargs["stream"] = True
-
-        if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
-
-        async def _invoke_attempt(attempt: int) -> AsyncLLMStream:
-            async with _rate_limit.aacquire(current_model):
-                response = await litellm.acompletion(**call_kwargs)
-            if attempt > 0:
-                logger.info("astream_llm succeeded after %d retries", attempt)
-            return AsyncLLMStream(
-                response,
-                current_model,
-                hooks=hooks,
-                messages=messages,
-                task=task,
-                trace_id=trace_id,
-                warnings=_warnings,
-                requested_model=model,
-                resolved_model=current_model,
-                routing_trace=_build_routing_trace(
-                    requested_model=model,
-                    attempted_models=models[:model_idx + 1],
-                    selected_model=current_model,
-                    requested_api_base=api_base,
-                    effective_api_base=current_api_base,
-                    routing_policy=routing_policy,
-                ),
-            )
-
-        return await run_async_with_retry(
-            caller="astream_llm",
-            model=current_model,
-            max_retries=r.max_retries,
-            invoke=_invoke_attempt,
-            should_retry=lambda exc: _check_retryable(exc, r),
-            compute_delay=lambda attempt, exc: _compute_retry_delay(
-                attempt=attempt,
-                error=exc,
-                policy=r,
-                backoff_fn=backoff_fn,
-            ),
-            warning_sink=_warnings,
-            logger=logger,
-            on_error=(hooks.on_error if hooks and hooks.on_error else None),
-            on_retry=r.on_retry,
-            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
-                error=exc,
-                attempt=attempt,
-                max_retries=max_retries,
-                current_model=current_model,
-                current_api_base=current_api_base,
-                user_kwargs=kwargs,
-                warning_sink=_warnings,
-                on_retry=r.on_retry,
-                caller="astream_llm",
-            ),
-        )
-
-    try:
-        return await run_async_with_fallback(
-            models=models,
-            execute_model=_execute_stream_model,
-            on_fallback=on_fallback,
-            warning_sink=_warnings,
-            logger=logger,
-        )
-    except Exception as e:
-        raise wrap_error(e) from e
 
 
 def stream_llm_with_tools(
