@@ -38,7 +38,9 @@ from llm_client.mcp_agent import (
     MCP_LOOP_KWARGS,
     _effective_contract_requirements,
     _extract_usage,
+    _find_repair_tools_for_missing_requirements,
     _mcp_tool_to_openai,
+    _normalize_tool_contracts,
     _truncate,
 )
 
@@ -190,6 +192,46 @@ class TestDynamicContractRequirements:
         )
         assert requires_all == set()
         assert requires_any == set()
+
+
+class TestRepairToolSuggestions:
+    def test_prefers_bootstrap_search_over_self_dependent_get_text(self) -> None:
+        contracts = _normalize_tool_contracts({
+            "extract_date_mentions": {
+                "requires_all": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            },
+            "chunk_text_search": {
+                "requires_all": ["QUERY_TEXT"],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "id"}],
+            },
+            "chunk_aggregator": {
+                "requires_any": ["ENTITY_SET", "RELATIONSHIP_SET"],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "id"}],
+            },
+            "chunk_get_text_by_chunk_ids": {
+                "artifact_prereqs": "none",
+                "requires_all": [{"kind": "CHUNK_SET", "ref_type": "id"}],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            },
+        })
+
+        suggestions = _find_repair_tools_for_missing_requirements(
+            current_tool_name="extract_date_mentions",
+            missing_requirements=[{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            normalized_tool_contracts=contracts,
+            available_artifacts={"QUERY_TEXT", "ENTITY_SET"},
+            available_capabilities={
+                "QUERY_TEXT": {(None, None, None)},
+                "ENTITY_SET": {("id", None, None)},
+            },
+            available_bindings={},
+            max_repair_tools=2,
+        )
+
+        assert suggestions
+        assert suggestions[0] == "chunk_text_search"
+        assert "chunk_get_text_by_chunk_ids" not in suggestions
 
 
 class TestTruncate:

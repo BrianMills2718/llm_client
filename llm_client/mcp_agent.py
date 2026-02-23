@@ -2070,7 +2070,8 @@ def _find_repair_tools_for_missing_requirements(
     if not required_caps:
         return []
 
-    candidates: list[str] = []
+    required_kinds: set[str] = {req.kind for req in required_caps}
+    candidates: list[tuple[tuple[int, int, int, int, int, int, str], str]] = []
     for tool_name in sorted(normalized_tool_contracts):
         if tool_name == current_tool_name:
             continue
@@ -2105,11 +2106,55 @@ def _find_repair_tools_for_missing_requirements(
             available_bindings=available_bindings,
         )
         if validation.is_valid:
-            candidates.append(tool_name)
-        if len(candidates) >= max_repair_tools:
-            break
+            raw_requires_all = set(contract.get("requires_all_artifacts") or contract.get("requires_all") or set())
+            raw_requires_any = set(contract.get("requires_any_artifacts") or contract.get("requires_any") or set())
 
-    return candidates
+            # Prefer tools that can bootstrap from QUERY_TEXT/search over tools
+            # that depend on the same missing artifact they are trying to repair.
+            exact_capability_match = 1
+            for req in required_caps:
+                if any(
+                    produced.kind == req.kind
+                    and (
+                        req.ref_type is None
+                        or produced.ref_type is None
+                        or produced.ref_type == req.ref_type
+                    )
+                    and (
+                        req.namespace is None
+                        or produced.namespace is None
+                        or produced.namespace == req.namespace
+                    )
+                    and (
+                        req.bindings_hash is None
+                        or produced.bindings_hash is None
+                        or produced.bindings_hash == req.bindings_hash
+                    )
+                    for produced in produced_caps
+                ):
+                    exact_capability_match = 0
+                    break
+
+            self_dependency_penalty = 1 if any(kind in raw_requires_all for kind in required_kinds) else 0
+            query_bootstrap_penalty = 0 if ("QUERY_TEXT" in raw_requires_all or "QUERY_TEXT" in raw_requires_any) else 1
+            search_penalty = 0 if "search" in tool_name else 1
+            aggregator_penalty = 1 if any(tok in tool_name for tok in ("aggregator", "score", "optimize")) else 0
+            prereq_penalty = len(raw_requires_all) + (1 if raw_requires_any else 0)
+            get_text_penalty = 1 if "get_text" in tool_name else 0
+
+            rank_key = (
+                self_dependency_penalty,
+                query_bootstrap_penalty,
+                search_penalty,
+                exact_capability_match,
+                aggregator_penalty,
+                prereq_penalty + get_text_penalty,
+                tool_name,
+            )
+            candidates.append((rank_key, tool_name))
+
+    candidates.sort(key=lambda item: item[0])
+    return [name for _, name in candidates[:max_repair_tools]]
 
 
 def _filter_tools_for_disclosure(
@@ -3060,6 +3105,7 @@ async def _agent_loop(
         disclosed_tools = openai_tools
         hidden_disclosure: list[dict[str, Any]] = []
         hidden_disclosure_total = 0
+        disclosure_repair_hints: list[str] = []
         if progressive_tool_disclosure and normalized_tool_contracts:
             disclosed_tools, hidden_disclosure, hidden_disclosure_total = _filter_tools_for_disclosure(
                 openai_tools=openai_tools,
@@ -3076,6 +3122,16 @@ async def _agent_loop(
                     for entry in hidden_disclosure
                     if isinstance(entry, dict)
                 )
+                seen_repair_hints: set[str] = set()
+                for entry in hidden_disclosure:
+                    if not isinstance(entry, dict):
+                        continue
+                    for candidate in (entry.get("repair_tools") or []):
+                        name = str(candidate or "").strip()
+                        if not name or name in seen_repair_hints:
+                            continue
+                        seen_repair_hints.add(name)
+                        disclosure_repair_hints.append(name)
                 hidden_names = [h["tool"] for h in hidden_disclosure]
                 disclosure_reason = _disclosure_message(hidden_disclosure)
                 disclosure_msg = {
@@ -4461,12 +4517,22 @@ async def _agent_loop(
         for tool_name, count in tool_call_counts.items():
             last_nudged = tool_loop_nudges.get(tool_name, 0)
             if count >= 3 and count % 3 == 0 and count > last_nudged:
+                loop_hint = ""
+                if disclosure_repair_hints:
+                    suggested = [
+                        name
+                        for name in disclosure_repair_hints
+                        if name != tool_name and not _is_budget_exempt_tool(name)
+                    ][:3]
+                    if suggested:
+                        loop_hint = "Try these alternatives now: " + ", ".join(suggested) + ". "
                 loop_msg = {
                     "role": "user",
                     "content": (
                         f"[SYSTEM: You have called '{tool_name}' {count} times. "
                         "STOP repeating the same searches. Read what you already have. "
-                        "Try a DIFFERENT tool or submit your answer now.]"
+                        + loop_hint
+                        + "If still blocked, submit your answer now.]"
                     ),
                 }
                 messages.append(loop_msg)
