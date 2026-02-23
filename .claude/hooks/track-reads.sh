@@ -34,8 +34,7 @@ if [[ "$REL_PATH" == worktrees/* ]]; then
     REL_PATH=$(echo "$REL_PATH" | sed 's|^worktrees/[^/]*/||')
 fi
 
-# Session reads file — per-repo
-REPO_NAME=$(basename "$REPO_ROOT")
+# Session reads file
 READS_FILE="/tmp/.claude_session_reads"
 
 # Append (dedup happens at check time)

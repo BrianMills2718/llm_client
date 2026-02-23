@@ -28,7 +28,7 @@ Track all implementation work here.
 
 Not everything needs a plan. Use `[Trivial]` for:
 - Less than 20 lines changed
-- No changes to `src/` (production code)
+- No changes to `llm_client/` (production code)
 - No new files created
 
 ```bash

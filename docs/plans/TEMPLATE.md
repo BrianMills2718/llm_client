@@ -22,7 +22,7 @@
 
 > **REQUIRED:** Cite specific code/docs reviewed before planning.
 
-- `src/example.py:45-89` - existing implementation
+- `llm_client/client.py:45-89` - existing implementation
 - `docs/architecture/current/example.md` - current design
 - `CLAUDE.md` - project conventions
 
@@ -32,8 +32,8 @@
 
 > **REQUIRED:** Declare upfront what files will be touched.
 
-- src/example.py (modify)
-- src/new_feature.py (create)
+- llm_client/example.py (modify)
+- llm_client/new_feature.py (create)
 - tests/test_feature.py (create)
 
 ---

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Gate edits on required reading.
-# PreToolUse/Edit hook — blocks edits to src/ files if coupled docs not read.
+# PreToolUse/Edit hook — blocks edits to llm_client/ files if coupled docs not read.
 #
 # Uses relationships.yaml couplings to determine what docs must be read
 # and checks the session reads file (populated by track-reads.sh).
@@ -9,7 +9,7 @@
 #   0 - Allow (all required docs read, or file not gated)
 #   2 - Block (required docs not yet read)
 #
-# Bypass: SKIP_READ_GATE=1 in environment, or edit non-src files.
+# Bypass: SKIP_READ_GATE=1 in environment, or edit non-source files.
 
 set -e
 
@@ -26,8 +26,8 @@ if [[ -z "$FILE_PATH" ]]; then
     exit 0
 fi
 
-# Only gate src/ files
-if [[ "$FILE_PATH" != *"/src/"* ]] && [[ "$FILE_PATH" != "src/"* ]]; then
+# Only gate production source files
+if [[ "$FILE_PATH" != *"/llm_client/"* ]] && [[ "$FILE_PATH" != "llm_client/"* ]]; then
     exit 0
 fi
 
@@ -51,6 +51,9 @@ fi
 
 # Find the check script
 CHECK_SCRIPT="$REPO_ROOT/scripts/check_required_reading.py"
+if [[ ! -f "$CHECK_SCRIPT" ]]; then
+    CHECK_SCRIPT="$REPO_ROOT/scripts/meta/check_required_reading.py"
+fi
 if [[ ! -f "$CHECK_SCRIPT" ]]; then
     exit 0  # Script not available, allow
 fi

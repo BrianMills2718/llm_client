@@ -6,24 +6,26 @@ Utility scripts for development and CI. All scripts support `--help` for options
 
 | Script | Purpose |
 |--------|---------|
-| `check_plan_tests.py` | Verify/run plan test requirements |
-| `complete_plan.py` | Mark plan complete |
-| `sync_plan_status.py` | Sync plan status |
-| `merge_pr.py` | Merge PRs via GitHub CLI |
-| `check_doc_coupling.py` | Verify docs updated when source changes |
+| `scripts/meta/check_plan_tests.py` | Verify/run plan test requirements |
+| `scripts/meta/check_plan_blockers.py` | Validate blocked-plan dependencies |
+| `scripts/meta/complete_plan.py` | Mark plan complete |
+| `scripts/meta/sync_plan_status.py` | Sync plan status |
+| `scripts/meta/merge_pr.py` | Merge PRs via GitHub CLI |
+| `scripts/meta/parse_plan.py` | Parse plan metadata |
+| `scripts/meta/generate_quiz.py` | Generate comprehension quiz prompts |
 
 ## Common Commands
 
 ```bash
 # Plan tests
-python scripts/check_plan_tests.py --plan N        # Run tests for plan
-python scripts/check_plan_tests.py --plan N --tdd  # See what tests to write
+python scripts/meta/check_plan_tests.py --plan N        # Run tests for plan
+python scripts/meta/check_plan_tests.py --plan N --tdd  # See what tests to write
 
 # Plan completion
-python scripts/complete_plan.py --plan N           # Mark complete
+python scripts/meta/complete_plan.py --plan N           # Mark complete
 
-# Doc coupling
-python scripts/check_doc_coupling.py --suggest     # What docs to update
+# Blocked-plan checks
+python scripts/meta/check_plan_blockers.py --strict
 ```
 
 ## Worktree Coordination Scripts (opt-in)
@@ -44,4 +46,4 @@ in `scripts/worktree-coordination/`:
 
 Edit config files in repo root to customize behavior:
 - `meta-process.yaml` - Meta-process settings
-- `scripts/relationships.yaml` - Doc-code mappings
+- `docs/plans/CLAUDE.md` - plan index

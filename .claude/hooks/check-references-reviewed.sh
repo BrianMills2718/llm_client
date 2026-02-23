@@ -33,10 +33,10 @@ if [[ -z "$FILE_PATH" ]]; then
     exit 0
 fi
 
-# Only check on source file edits (not docs, config, etc.)
-# Handle both absolute paths (/path/to/src/...) and relative paths (src/...)
-if [[ "$FILE_PATH" != *"/src/"* ]] && [[ "$FILE_PATH" != *"/tests/"* ]] && \
-   [[ "$FILE_PATH" != "src/"* ]] && [[ "$FILE_PATH" != "tests/"* ]]; then
+# Only check on source or test file edits (not docs, config, etc.)
+# Handle both absolute and relative paths.
+if [[ "$FILE_PATH" != *"/llm_client/"* ]] && [[ "$FILE_PATH" != *"/tests/"* ]] && \
+   [[ "$FILE_PATH" != "llm_client/"* ]] && [[ "$FILE_PATH" != "tests/"* ]]; then
     exit 0
 fi
 
@@ -103,7 +103,7 @@ if [[ "$REF_COUNT" -lt "$MIN_REFS" ]]; then
     echo "Add to your plan file (docs/plans/${PLAN_NUM}_*.md):" >&2
     echo "" >&2
     echo "  ## References Reviewed" >&2
-    echo "  - src/relevant/file.py:10-50 - description of what you learned" >&2
+    echo "  - llm_client/relevant/file.py:10-50 - description of what you learned" >&2
     echo "  - docs/architecture/current/relevant.md - relevant design context" >&2
     echo "" >&2
     echo "This ensures you understand the codebase before changing it." >&2
