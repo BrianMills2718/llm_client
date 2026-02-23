@@ -38,5 +38,7 @@ jobs:
           FOUNDATION_SCHEMA_STRICT: "1"
         run: |
           pytest -q \
+            tests/test_foundation.py \
+            tests/test_mcp_agent.py::TestAcallWithMcp::test_foundation_schema_strict_raises_on_invalid_event \
             tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_llm_exception_preserves_tool_history \
             tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_tool_calls_are_disallowed_without_execution

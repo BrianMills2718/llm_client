@@ -271,3 +271,19 @@ Validation snapshot after this pass:
    - Result: `Success: no issues found in 39 source files`
 2. `pytest -q`
    - Result: `798 passed, 1 skipped, 1 warning`
+
+## 15) Additional follow-up (strict CI lane broadening)
+Expanded Foundation strict-mode CI coverage in:
+- `.github/workflows/smoke-observability.yml`
+
+Changes:
+1. The `FOUNDATION_SCHEMA_STRICT=1` lane now runs:
+   - `tests/test_foundation.py`
+   - `tests/test_mcp_agent.py::TestAcallWithMcp::test_foundation_schema_strict_raises_on_invalid_event`
+   - `tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_llm_exception_preserves_tool_history`
+   - `tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_tool_calls_are_disallowed_without_execution`
+2. This broadens strict-mode regression signal beyond the prior two-test subset.
+
+Validation snapshot after this pass:
+1. `FOUNDATION_SCHEMA_STRICT=1 pytest -q tests/test_foundation.py tests/test_mcp_agent.py::TestAcallWithMcp::test_foundation_schema_strict_raises_on_invalid_event tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_llm_exception_preserves_tool_history tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_tool_calls_are_disallowed_without_execution`
+   - Result: `8 passed`
