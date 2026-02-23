@@ -589,6 +589,370 @@ def _normalize_model_chain(raw: Any) -> list[str]:
     return deduped
 
 
+@dataclass(frozen=True)
+class AgentLoopRuntimePolicy:
+    """Typed runtime policy consumed by _agent_loop."""
+
+    forced_final_max_attempts: int
+    forced_final_circuit_breaker_threshold: int
+    forced_final_breaker_effective: bool
+    finalization_fallback_models: list[str]
+    retrieval_stagnation_turns: int
+    run_config_spec: dict[str, Any]
+    run_config_hash: str
+
+
+@dataclass
+class AgentLoopToolState:
+    """Initial tool/contract state used by _agent_loop execution stages."""
+
+    normalized_tool_contracts: dict[str, dict[str, Any]]
+    tool_parameter_index: dict[str, set[str]]
+    available_artifacts: set[str]
+    initial_artifact_snapshot: list[str]
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]]
+    initial_capability_snapshot: list[dict[str, Any]]
+    available_bindings: dict[str, Any]
+    initial_binding_snapshot: dict[str, Any]
+    lane_closure_analysis: dict[str, Any]
+    artifact_timeline: list[dict[str, Any]]
+    requires_submit_answer: bool
+
+
+def _resolve_agent_runtime_policy(
+    *,
+    model: str,
+    max_turns: int,
+    max_tool_calls: int | None,
+    require_tool_reasoning: bool,
+    enforce_tool_contracts: bool,
+    progressive_tool_disclosure: bool,
+    suppress_control_loop_calls: bool,
+    tool_result_max_length: int,
+    max_message_chars: int,
+    kwargs: dict[str, Any],
+    warning_sink: list[str],
+) -> AgentLoopRuntimePolicy:
+    """Extract, normalize, and hash runtime-policy settings from kwargs."""
+    run_config_spec: dict[str, Any] = {
+        "requested_model": model,
+        "max_turns": max_turns,
+        "max_tool_calls": max_tool_calls,
+        "require_tool_reasoning": require_tool_reasoning,
+        "enforce_tool_contracts": enforce_tool_contracts,
+        "progressive_tool_disclosure": progressive_tool_disclosure,
+        "suppress_control_loop_calls": suppress_control_loop_calls,
+        "tool_result_max_length": tool_result_max_length,
+        "max_message_chars": max_message_chars,
+    }
+    runtime_policy_kwargs = {
+        k: kwargs.get(k)
+        for k in (
+            "temperature",
+            "top_p",
+            "timeout",
+            "num_retries",
+            "fallback_models",
+            "fallback_limit",
+            "execution_mode",
+            "api_base",
+            "service_tier",
+            "forced_final_max_attempts",
+            "forced_final_circuit_breaker_threshold",
+            "finalization_fallback_models",
+            "retrieval_stagnation_turns",
+        )
+        if k in kwargs
+    }
+    run_config_spec["runtime_policy"] = runtime_policy_kwargs
+    run_config_hash = sha256_json(run_config_spec).replace("sha256:", "")
+
+    forced_final_max_attempts_raw = kwargs.pop(
+        "forced_final_max_attempts",
+        DEFAULT_FORCED_FINAL_MAX_ATTEMPTS,
+    )
+    try:
+        forced_final_max_attempts = int(forced_final_max_attempts_raw)
+    except Exception:
+        forced_final_max_attempts = DEFAULT_FORCED_FINAL_MAX_ATTEMPTS
+    forced_final_max_attempts = max(1, forced_final_max_attempts)
+
+    forced_final_breaker_threshold_raw = kwargs.pop(
+        "forced_final_circuit_breaker_threshold",
+        DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD,
+    )
+    try:
+        forced_final_circuit_breaker_threshold = int(forced_final_breaker_threshold_raw)
+    except Exception:
+        forced_final_circuit_breaker_threshold = DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD
+    forced_final_circuit_breaker_threshold = max(1, forced_final_circuit_breaker_threshold)
+    forced_final_breaker_effective = (
+        forced_final_circuit_breaker_threshold <= forced_final_max_attempts
+    )
+    if not forced_final_breaker_effective:
+        warning = (
+            "FINALIZATION_BREAKER_INERT: circuit breaker threshold "
+            f"({forced_final_circuit_breaker_threshold}) exceeds forced_final_max_attempts "
+            f"({forced_final_max_attempts}); breaker cannot trigger under current config."
+        )
+        warning_sink.append(warning)
+        logger.warning(warning)
+
+    finalization_fallback_models = _normalize_model_chain(
+        kwargs.pop("finalization_fallback_models", None)
+    )
+
+    retrieval_stagnation_turns_raw = kwargs.pop(
+        "retrieval_stagnation_turns",
+        DEFAULT_RETRIEVAL_STAGNATION_TURNS,
+    )
+    try:
+        retrieval_stagnation_turns = int(retrieval_stagnation_turns_raw)
+    except Exception:
+        retrieval_stagnation_turns = DEFAULT_RETRIEVAL_STAGNATION_TURNS
+    retrieval_stagnation_turns = max(2, retrieval_stagnation_turns)
+
+    return AgentLoopRuntimePolicy(
+        forced_final_max_attempts=forced_final_max_attempts,
+        forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+        forced_final_breaker_effective=forced_final_breaker_effective,
+        finalization_fallback_models=finalization_fallback_models,
+        retrieval_stagnation_turns=retrieval_stagnation_turns,
+        run_config_spec=run_config_spec,
+        run_config_hash=run_config_hash,
+    )
+
+
+def _initialize_agent_tool_state(
+    *,
+    openai_tools: list[dict[str, Any]],
+    tool_contracts: dict[str, dict[str, Any]] | None,
+    initial_artifacts: list[str] | tuple[str, ...] | None,
+    initial_bindings: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+    enforce_tool_contracts: bool,
+    warning_sink: list[str],
+) -> AgentLoopToolState:
+    """Build initial tool/contract capabilities and lane-closure state."""
+    normalized_tool_contracts = _normalize_tool_contracts(tool_contracts)
+    tool_parameter_index = build_tool_parameter_index(openai_tools)
+    if initial_artifacts is None:
+        initial_artifacts = DEFAULT_INITIAL_ARTIFACTS
+    available_artifacts = {
+        k for k in (_normalize_artifact_kind(v) for v in initial_artifacts) if k
+    }
+    if not available_artifacts:
+        available_artifacts = set(DEFAULT_INITIAL_ARTIFACTS)
+    initial_artifact_snapshot = sorted(available_artifacts)
+    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] = {}
+    for artifact in initial_artifact_snapshot:
+        _capability_state_add(available_capabilities, kind=artifact)
+    initial_capabilities_raw = kwargs.pop("initial_capabilities", None)
+    if isinstance(initial_capabilities_raw, list):
+        for item in initial_capabilities_raw:
+            req = _capability_requirement_from_raw(item)
+            if req is None:
+                continue
+            _capability_state_add(
+                available_capabilities,
+                kind=req.kind,
+                ref_type=req.ref_type,
+                namespace=req.namespace,
+                bindings_hash=req.bindings_hash,
+            )
+    initial_capability_snapshot = _capability_state_snapshot(available_capabilities)
+    available_bindings = normalize_bindings(initial_bindings)
+    initial_binding_snapshot = dict(available_bindings)
+    lane_closure_analysis = _analyze_lane_closure(
+        normalized_tool_contracts=normalized_tool_contracts,
+        initial_artifacts=set(available_artifacts),
+        initial_capabilities=available_capabilities,
+        available_bindings=available_bindings,
+    )
+    if (
+        enforce_tool_contracts
+        and normalized_tool_contracts
+        and not bool(lane_closure_analysis.get("lane_closed"))
+    ):
+        unresolved_count = int(lane_closure_analysis.get("unresolved_tool_count") or 0)
+        warning = (
+            "CAPABILITY_CLOSURE_ADVISORY: lane has "
+            f"{unresolved_count} unresolved non-control tool(s) from initial state. "
+            "Ensure conversion operators are available for required capability transitions."
+        )
+        warning_sink.append(warning)
+        logger.warning(warning)
+    artifact_timeline: list[dict[str, Any]] = [
+        {
+            "turn": 0,
+            "phase": "initial",
+            "available_artifacts": list(initial_artifact_snapshot),
+            "available_capabilities": list(initial_capability_snapshot),
+        }
+    ]
+    if enforce_tool_contracts and not normalized_tool_contracts:
+        warning = (
+            "TOOL_CONTRACTS: enforce_tool_contracts=True but no contracts were provided; "
+            "composability validation is skipped."
+        )
+        warning_sink.append(warning)
+        logger.warning(warning)
+    requires_submit_answer = any(
+        t.get("function", {}).get("name") == "submit_answer"
+        for t in openai_tools
+        if isinstance(t, dict)
+    )
+    return AgentLoopToolState(
+        normalized_tool_contracts=normalized_tool_contracts,
+        tool_parameter_index=tool_parameter_index,
+        available_artifacts=available_artifacts,
+        initial_artifact_snapshot=initial_artifact_snapshot,
+        available_capabilities=available_capabilities,
+        initial_capability_snapshot=initial_capability_snapshot,
+        available_bindings=available_bindings,
+        initial_binding_snapshot=initial_binding_snapshot,
+        lane_closure_analysis=lane_closure_analysis,
+        artifact_timeline=artifact_timeline,
+        requires_submit_answer=requires_submit_answer,
+    )
+
+
+@dataclass(frozen=True)
+class FailureSummary:
+    """Aggregated failure counters/classification for agent-loop metadata."""
+
+    primary_failure_class: str
+    secondary_failure_classes: list[str]
+    first_terminal_failure_event_code: str | None
+    failure_event_code_counts: dict[str, int]
+    failure_event_class_counts: dict[str, int]
+    provider_failure_event_code_counts: dict[str, int]
+    provider_failure_event_total: int
+    provider_caused_incompletion: bool
+
+
+def _summarize_failure_events(
+    *,
+    failure_event_codes: list[str],
+    retrieval_no_hits_count: int,
+    control_loop_suppressed_calls: int,
+    force_final_reason: str | None,
+    run_completed: bool,
+) -> FailureSummary:
+    primary_failure_class, secondary_failure_classes = _classify_failure_signals(
+        failure_event_codes=failure_event_codes,
+        retrieval_no_hits_count=retrieval_no_hits_count,
+        control_loop_suppressed_calls=control_loop_suppressed_calls,
+        force_final_reason=force_final_reason,
+        submit_answer_succeeded=run_completed,
+    )
+    first_terminal_failure_event_code = _first_terminal_failure_event_code(failure_event_codes)
+    failure_event_code_counts: dict[str, int] = {}
+    for code in failure_event_codes:
+        failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
+    failure_event_class_counts: dict[str, int] = {}
+    provider_failure_event_code_counts: dict[str, int] = {}
+    for code, count in failure_event_code_counts.items():
+        cls = _failure_class_for_event_code(code)
+        if cls is None:
+            continue
+        failure_event_class_counts[cls] = failure_event_class_counts.get(cls, 0) + count
+        if cls == "provider":
+            provider_failure_event_code_counts[code] = count
+    provider_failure_event_total = sum(provider_failure_event_code_counts.values())
+    provider_caused_incompletion = (not run_completed) and primary_failure_class == "provider"
+    return FailureSummary(
+        primary_failure_class=primary_failure_class,
+        secondary_failure_classes=secondary_failure_classes,
+        first_terminal_failure_event_code=first_terminal_failure_event_code,
+        failure_event_code_counts=failure_event_code_counts,
+        failure_event_class_counts=failure_event_class_counts,
+        provider_failure_event_code_counts=provider_failure_event_code_counts,
+        provider_failure_event_total=provider_failure_event_total,
+        provider_caused_incompletion=provider_caused_incompletion,
+    )
+
+
+@dataclass(frozen=True)
+class FinalizationSummary:
+    """Aggregated finalization counters for agent-loop metadata."""
+
+    finalization_attempt_counts_by_model: dict[str, int]
+    finalization_failure_counts_by_model: dict[str, int]
+    finalization_success_counts_by_model: dict[str, int]
+    finalization_failure_code_counts: dict[str, int]
+    provider_empty_attempt_counts_by_model: dict[str, int]
+    finalization_fallback_attempt_count: int
+    finalization_fallback_usage_rate: float
+    finalization_breaker_open_rate: float
+    finalization_breaker_open_by_model: dict[str, int]
+
+
+def _summarize_finalization_attempts(
+    *,
+    finalization_fallback_attempts: list[dict[str, Any]],
+    finalization_primary_model: str | None,
+    forced_final_attempts: int,
+    forced_final_circuit_breaker_opened: bool,
+) -> FinalizationSummary:
+    finalization_attempt_counts_by_model: dict[str, int] = {}
+    finalization_failure_counts_by_model: dict[str, int] = {}
+    finalization_success_counts_by_model: dict[str, int] = {}
+    finalization_failure_code_counts: dict[str, int] = {}
+    provider_empty_attempt_counts_by_model: dict[str, int] = {}
+    finalization_fallback_attempt_count = 0
+    for attempt in finalization_fallback_attempts:
+        model_name = str(attempt.get("model", "")).strip() or "<unknown>"
+        status = str(attempt.get("status", "")).strip().lower()
+        error_code = attempt.get("error_code")
+        finalization_attempt_counts_by_model[model_name] = (
+            finalization_attempt_counts_by_model.get(model_name, 0) + 1
+        )
+        if (
+            isinstance(finalization_primary_model, str)
+            and finalization_primary_model.strip()
+            and model_name.lower() != finalization_primary_model.lower()
+        ):
+            finalization_fallback_attempt_count += 1
+        if status == "success":
+            finalization_success_counts_by_model[model_name] = (
+                finalization_success_counts_by_model.get(model_name, 0) + 1
+            )
+            continue
+        finalization_failure_counts_by_model[model_name] = (
+            finalization_failure_counts_by_model.get(model_name, 0) + 1
+        )
+        if isinstance(error_code, str) and error_code:
+            finalization_failure_code_counts[error_code] = (
+                finalization_failure_code_counts.get(error_code, 0) + 1
+            )
+            if error_code == EVENT_CODE_PROVIDER_EMPTY:
+                provider_empty_attempt_counts_by_model[model_name] = (
+                    provider_empty_attempt_counts_by_model.get(model_name, 0) + 1
+                )
+    finalization_fallback_usage_rate = (
+        (finalization_fallback_attempt_count / forced_final_attempts)
+        if forced_final_attempts > 0
+        else 0.0
+    )
+    finalization_breaker_open_rate = 1.0 if forced_final_circuit_breaker_opened else 0.0
+    finalization_breaker_open_by_model: dict[str, int] = {}
+    if forced_final_circuit_breaker_opened and finalization_fallback_attempts:
+        breaker_model = str(finalization_fallback_attempts[-1].get("model", "")).strip() or "<unknown>"
+        finalization_breaker_open_by_model[breaker_model] = 1
+    return FinalizationSummary(
+        finalization_attempt_counts_by_model=finalization_attempt_counts_by_model,
+        finalization_failure_counts_by_model=finalization_failure_counts_by_model,
+        finalization_success_counts_by_model=finalization_success_counts_by_model,
+        finalization_failure_code_counts=finalization_failure_code_counts,
+        provider_empty_attempt_counts_by_model=provider_empty_attempt_counts_by_model,
+        finalization_fallback_attempt_count=finalization_fallback_attempt_count,
+        finalization_fallback_usage_rate=finalization_fallback_usage_rate,
+        finalization_breaker_open_rate=finalization_breaker_open_rate,
+        finalization_breaker_open_by_model=finalization_breaker_open_by_model,
+    )
+
+
 def _is_evidence_tool_name(tool_name: str) -> bool:
     """Best-effort classification for evidence-producing non-control tools."""
     name = (tool_name or "").strip().lower()
@@ -2018,72 +2382,26 @@ async def _agent_loop(
     evidence_signatures: set[str] = set()
     submit_evidence_digest_at_last_failure: str | None = None
     retrieval_no_hits_count = 0
-    normalized_tool_contracts = _normalize_tool_contracts(tool_contracts)
-    tool_parameter_index = build_tool_parameter_index(openai_tools)
-    if initial_artifacts is None:
-        initial_artifacts = DEFAULT_INITIAL_ARTIFACTS
-    available_artifacts = {
-        k for k in (_normalize_artifact_kind(v) for v in initial_artifacts) if k
-    }
-    if not available_artifacts:
-        available_artifacts = set(DEFAULT_INITIAL_ARTIFACTS)
-    initial_artifact_snapshot = sorted(available_artifacts)
-    available_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] = {}
-    for artifact in initial_artifact_snapshot:
-        _capability_state_add(available_capabilities, kind=artifact)
-    initial_capabilities_raw = kwargs.pop("initial_capabilities", None)
-    if isinstance(initial_capabilities_raw, list):
-        for item in initial_capabilities_raw:
-            req = _capability_requirement_from_raw(item)
-            if req is None:
-                continue
-            _capability_state_add(
-                available_capabilities,
-                kind=req.kind,
-                ref_type=req.ref_type,
-                namespace=req.namespace,
-                bindings_hash=req.bindings_hash,
-            )
-    initial_capability_snapshot = _capability_state_snapshot(available_capabilities)
-    available_bindings = normalize_bindings(initial_bindings)
-    initial_binding_snapshot = dict(available_bindings)
-    lane_closure_analysis = _analyze_lane_closure(
-        normalized_tool_contracts=normalized_tool_contracts,
-        initial_artifacts=set(available_artifacts),
-        initial_capabilities=available_capabilities,
-        available_bindings=available_bindings,
+    tool_state = _initialize_agent_tool_state(
+        openai_tools=openai_tools,
+        tool_contracts=tool_contracts,
+        initial_artifacts=initial_artifacts,
+        initial_bindings=initial_bindings,
+        kwargs=kwargs,
+        enforce_tool_contracts=enforce_tool_contracts,
+        warning_sink=agent_result.warnings,
     )
-    if (
-        enforce_tool_contracts
-        and normalized_tool_contracts
-        and not bool(lane_closure_analysis.get("lane_closed"))
-    ):
-        unresolved_count = int(lane_closure_analysis.get("unresolved_tool_count") or 0)
-        warning = (
-            "CAPABILITY_CLOSURE_ADVISORY: lane has "
-            f"{unresolved_count} unresolved non-control tool(s) from initial state. "
-            "Ensure conversion operators are available for required capability transitions."
-        )
-        agent_result.warnings.append(warning)
-        logger.warning(warning)
-    artifact_timeline: list[dict[str, Any]] = [{
-        "turn": 0,
-        "phase": "initial",
-        "available_artifacts": list(initial_artifact_snapshot),
-        "available_capabilities": list(initial_capability_snapshot),
-    }]
-    if enforce_tool_contracts and not normalized_tool_contracts:
-        warning = (
-            "TOOL_CONTRACTS: enforce_tool_contracts=True but no contracts were provided; "
-            "composability validation is skipped."
-        )
-        agent_result.warnings.append(warning)
-        logger.warning(warning)
-    requires_submit_answer = any(
-        t.get("function", {}).get("name") == "submit_answer"
-        for t in openai_tools
-        if isinstance(t, dict)
-    )
+    normalized_tool_contracts = tool_state.normalized_tool_contracts
+    tool_parameter_index = tool_state.tool_parameter_index
+    available_artifacts = tool_state.available_artifacts
+    initial_artifact_snapshot = tool_state.initial_artifact_snapshot
+    available_capabilities = tool_state.available_capabilities
+    initial_capability_snapshot = tool_state.initial_capability_snapshot
+    available_bindings = tool_state.available_bindings
+    initial_binding_snapshot = tool_state.initial_binding_snapshot
+    lane_closure_analysis = tool_state.lane_closure_analysis
+    artifact_timeline = tool_state.artifact_timeline
+    requires_submit_answer = tool_state.requires_submit_answer
     submit_answer_succeeded = False
     force_final_reason: str | None = None
     pending_submit_todo_ids: list[str] = []
@@ -2106,83 +2424,26 @@ async def _agent_loop(
         active_run_id if isinstance(active_run_id, str) else None,
         trace_id,
     )
-    run_config_spec: dict[str, Any] = {
-        "requested_model": model,
-        "max_turns": max_turns,
-        "max_tool_calls": max_tool_calls,
-        "require_tool_reasoning": require_tool_reasoning,
-        "enforce_tool_contracts": enforce_tool_contracts,
-        "progressive_tool_disclosure": progressive_tool_disclosure,
-        "suppress_control_loop_calls": suppress_control_loop_calls,
-        "tool_result_max_length": tool_result_max_length,
-        "max_message_chars": max_message_chars,
-    }
-    runtime_policy_kwargs = {
-        k: kwargs.get(k)
-        for k in (
-            "temperature",
-            "top_p",
-            "timeout",
-            "num_retries",
-            "fallback_models",
-            "fallback_limit",
-            "execution_mode",
-            "api_base",
-            "service_tier",
-            "forced_final_max_attempts",
-            "forced_final_circuit_breaker_threshold",
-            "finalization_fallback_models",
-            "retrieval_stagnation_turns",
-        )
-        if k in kwargs
-    }
-    run_config_spec["runtime_policy"] = runtime_policy_kwargs
-    run_config_hash = sha256_json(run_config_spec).replace("sha256:", "")
-
-    forced_final_max_attempts_raw = kwargs.pop(
-        "forced_final_max_attempts",
-        DEFAULT_FORCED_FINAL_MAX_ATTEMPTS,
+    runtime_policy = _resolve_agent_runtime_policy(
+        model=model,
+        max_turns=max_turns,
+        max_tool_calls=max_tool_calls,
+        require_tool_reasoning=require_tool_reasoning,
+        enforce_tool_contracts=enforce_tool_contracts,
+        progressive_tool_disclosure=progressive_tool_disclosure,
+        suppress_control_loop_calls=suppress_control_loop_calls,
+        tool_result_max_length=tool_result_max_length,
+        max_message_chars=max_message_chars,
+        kwargs=kwargs,
+        warning_sink=agent_result.warnings,
     )
-    try:
-        forced_final_max_attempts = int(forced_final_max_attempts_raw)
-    except Exception:
-        forced_final_max_attempts = DEFAULT_FORCED_FINAL_MAX_ATTEMPTS
-    forced_final_max_attempts = max(1, forced_final_max_attempts)
-
-    forced_final_breaker_threshold_raw = kwargs.pop(
-        "forced_final_circuit_breaker_threshold",
-        DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD,
-    )
-    try:
-        forced_final_circuit_breaker_threshold = int(forced_final_breaker_threshold_raw)
-    except Exception:
-        forced_final_circuit_breaker_threshold = DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD
-    forced_final_circuit_breaker_threshold = max(1, forced_final_circuit_breaker_threshold)
-    forced_final_breaker_effective = (
-        forced_final_circuit_breaker_threshold <= forced_final_max_attempts
-    )
-    if not forced_final_breaker_effective:
-        warning = (
-            "FINALIZATION_BREAKER_INERT: circuit breaker threshold "
-            f"({forced_final_circuit_breaker_threshold}) exceeds forced_final_max_attempts "
-            f"({forced_final_max_attempts}); breaker cannot trigger under current config."
-        )
-        agent_result.warnings.append(warning)
-        logger.warning(warning)
-
-    finalization_fallback_models = _normalize_model_chain(
-        kwargs.pop("finalization_fallback_models", None)
-    )
-
-    retrieval_stagnation_turns_raw = kwargs.pop(
-        "retrieval_stagnation_turns",
-        DEFAULT_RETRIEVAL_STAGNATION_TURNS,
-    )
-    try:
-        retrieval_stagnation_turns = int(retrieval_stagnation_turns_raw)
-    except Exception:
-        retrieval_stagnation_turns = DEFAULT_RETRIEVAL_STAGNATION_TURNS
-    retrieval_stagnation_turns = max(2, retrieval_stagnation_turns)
+    run_config_spec = runtime_policy.run_config_spec
+    run_config_hash = runtime_policy.run_config_hash
+    forced_final_max_attempts = runtime_policy.forced_final_max_attempts
+    forced_final_circuit_breaker_threshold = runtime_policy.forced_final_circuit_breaker_threshold
+    forced_final_breaker_effective = runtime_policy.forced_final_breaker_effective
+    finalization_fallback_models = runtime_policy.finalization_fallback_models
+    retrieval_stagnation_turns = runtime_policy.retrieval_stagnation_turns
 
     forced_final_attempts = 0
     forced_final_circuit_breaker_opened = False
@@ -4049,73 +4310,19 @@ async def _agent_loop(
             final_finish_reason = "error"
 
     run_completed = submit_answer_succeeded or final_finish_reason != "error"
-    primary_failure_class, secondary_failure_classes = _classify_failure_signals(
+    failure_summary = _summarize_failure_events(
         failure_event_codes=failure_event_codes,
         retrieval_no_hits_count=retrieval_no_hits_count,
         control_loop_suppressed_calls=control_loop_suppressed_calls,
         force_final_reason=force_final_reason,
-        submit_answer_succeeded=run_completed,
+        run_completed=run_completed,
     )
-    first_terminal_failure_event_code = _first_terminal_failure_event_code(failure_event_codes)
-    failure_event_code_counts: dict[str, int] = {}
-    for code in failure_event_codes:
-        failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
-    failure_event_class_counts: dict[str, int] = {}
-    provider_failure_event_code_counts: dict[str, int] = {}
-    for code, count in failure_event_code_counts.items():
-        cls = _failure_class_for_event_code(code)
-        if cls is None:
-            continue
-        failure_event_class_counts[cls] = failure_event_class_counts.get(cls, 0) + count
-        if cls == "provider":
-            provider_failure_event_code_counts[code] = count
-    provider_failure_event_total = sum(provider_failure_event_code_counts.values())
-    provider_caused_incompletion = (not run_completed) and primary_failure_class == "provider"
-
-    finalization_attempt_counts_by_model: dict[str, int] = {}
-    finalization_failure_counts_by_model: dict[str, int] = {}
-    finalization_success_counts_by_model: dict[str, int] = {}
-    finalization_failure_code_counts: dict[str, int] = {}
-    provider_empty_attempt_counts_by_model: dict[str, int] = {}
-    finalization_fallback_attempt_count = 0
-    for attempt in finalization_fallback_attempts:
-        model_name = str(attempt.get("model", "")).strip() or "<unknown>"
-        status = str(attempt.get("status", "")).strip().lower()
-        error_code = attempt.get("error_code")
-        finalization_attempt_counts_by_model[model_name] = (
-            finalization_attempt_counts_by_model.get(model_name, 0) + 1
-        )
-        if (
-            isinstance(finalization_primary_model, str)
-            and finalization_primary_model.strip()
-            and model_name.lower() != finalization_primary_model.lower()
-        ):
-            finalization_fallback_attempt_count += 1
-        if status == "success":
-            finalization_success_counts_by_model[model_name] = (
-                finalization_success_counts_by_model.get(model_name, 0) + 1
-            )
-            continue
-        finalization_failure_counts_by_model[model_name] = (
-            finalization_failure_counts_by_model.get(model_name, 0) + 1
-        )
-        if isinstance(error_code, str) and error_code:
-            finalization_failure_code_counts[error_code] = (
-                finalization_failure_code_counts.get(error_code, 0) + 1
-            )
-            if error_code == EVENT_CODE_PROVIDER_EMPTY:
-                provider_empty_attempt_counts_by_model[model_name] = (
-                    provider_empty_attempt_counts_by_model.get(model_name, 0) + 1
-                )
-    finalization_fallback_usage_rate = (
-        (finalization_fallback_attempt_count / forced_final_attempts)
-        if forced_final_attempts > 0 else 0.0
+    finalization_summary = _summarize_finalization_attempts(
+        finalization_fallback_attempts=finalization_fallback_attempts,
+        finalization_primary_model=finalization_primary_model,
+        forced_final_attempts=forced_final_attempts,
+        forced_final_circuit_breaker_opened=forced_final_circuit_breaker_opened,
     )
-    finalization_breaker_open_rate = 1.0 if forced_final_circuit_breaker_opened else 0.0
-    finalization_breaker_open_by_model: dict[str, int] = {}
-    if forced_final_circuit_breaker_opened and finalization_fallback_attempts:
-        breaker_model = str(finalization_fallback_attempts[-1].get("model", "")).strip() or "<unknown>"
-        finalization_breaker_open_by_model[breaker_model] = 1
 
     hard_bindings_spec = _hard_bindings_spec(available_bindings)
     full_bindings_spec = _full_bindings_spec(available_bindings)
@@ -4142,17 +4349,17 @@ async def _agent_loop(
     agent_result.metadata["finalization_primary_model"] = finalization_primary_model
     agent_result.metadata["finalization_fallback_models"] = list(finalization_fallback_models)
     agent_result.metadata["finalization_fallback_used"] = finalization_fallback_used
-    agent_result.metadata["finalization_fallback_attempt_count"] = finalization_fallback_attempt_count
-    agent_result.metadata["finalization_fallback_usage_rate"] = finalization_fallback_usage_rate
+    agent_result.metadata["finalization_fallback_attempt_count"] = finalization_summary.finalization_fallback_attempt_count
+    agent_result.metadata["finalization_fallback_usage_rate"] = finalization_summary.finalization_fallback_usage_rate
     agent_result.metadata["finalization_fallback_succeeded"] = finalization_fallback_succeeded
     agent_result.metadata["finalization_fallback_attempts"] = list(finalization_fallback_attempts)
-    agent_result.metadata["finalization_attempt_counts_by_model"] = finalization_attempt_counts_by_model
-    agent_result.metadata["finalization_failure_counts_by_model"] = finalization_failure_counts_by_model
-    agent_result.metadata["finalization_success_counts_by_model"] = finalization_success_counts_by_model
-    agent_result.metadata["finalization_failure_code_counts"] = finalization_failure_code_counts
-    agent_result.metadata["provider_empty_attempt_counts_by_model"] = provider_empty_attempt_counts_by_model
-    agent_result.metadata["finalization_breaker_open_rate"] = finalization_breaker_open_rate
-    agent_result.metadata["finalization_breaker_open_by_model"] = finalization_breaker_open_by_model
+    agent_result.metadata["finalization_attempt_counts_by_model"] = finalization_summary.finalization_attempt_counts_by_model
+    agent_result.metadata["finalization_failure_counts_by_model"] = finalization_summary.finalization_failure_counts_by_model
+    agent_result.metadata["finalization_success_counts_by_model"] = finalization_summary.finalization_success_counts_by_model
+    agent_result.metadata["finalization_failure_code_counts"] = finalization_summary.finalization_failure_code_counts
+    agent_result.metadata["provider_empty_attempt_counts_by_model"] = finalization_summary.provider_empty_attempt_counts_by_model
+    agent_result.metadata["finalization_breaker_open_rate"] = finalization_summary.finalization_breaker_open_rate
+    agent_result.metadata["finalization_breaker_open_by_model"] = finalization_summary.finalization_breaker_open_by_model
     agent_result.metadata["finalization_events"] = list(finalization_events)
     agent_result.metadata["tool_calls_used"] = len(agent_result.tool_calls)
     agent_result.metadata["budgeted_tool_calls_used"] = _count_budgeted_records(agent_result.tool_calls)
@@ -4213,14 +4420,14 @@ async def _agent_loop(
     agent_result.metadata["retrieval_stagnation_triggered"] = retrieval_stagnation_triggered
     agent_result.metadata["retrieval_stagnation_turn"] = retrieval_stagnation_turn
     agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
-    agent_result.metadata["failure_event_code_counts"] = failure_event_code_counts
-    agent_result.metadata["failure_event_class_counts"] = failure_event_class_counts
-    agent_result.metadata["provider_failure_event_code_counts"] = provider_failure_event_code_counts
-    agent_result.metadata["provider_failure_event_total"] = provider_failure_event_total
-    agent_result.metadata["provider_caused_incompletion"] = provider_caused_incompletion
-    agent_result.metadata["primary_failure_class"] = primary_failure_class
-    agent_result.metadata["secondary_failure_classes"] = secondary_failure_classes
-    agent_result.metadata["first_terminal_failure_event_code"] = first_terminal_failure_event_code
+    agent_result.metadata["failure_event_code_counts"] = failure_summary.failure_event_code_counts
+    agent_result.metadata["failure_event_class_counts"] = failure_summary.failure_event_class_counts
+    agent_result.metadata["provider_failure_event_code_counts"] = failure_summary.provider_failure_event_code_counts
+    agent_result.metadata["provider_failure_event_total"] = failure_summary.provider_failure_event_total
+    agent_result.metadata["provider_caused_incompletion"] = failure_summary.provider_caused_incompletion
+    agent_result.metadata["primary_failure_class"] = failure_summary.primary_failure_class
+    agent_result.metadata["secondary_failure_classes"] = failure_summary.secondary_failure_classes
+    agent_result.metadata["first_terminal_failure_event_code"] = failure_summary.first_terminal_failure_event_code
     agent_result.metadata["failure_priority_order"] = list(_PRIMARY_FAILURE_PRIORITY)
     agent_result.metadata["terminal_failure_event_codes"] = sorted(_TERMINAL_FAILURE_EVENT_CODES)
     agent_result.metadata["autofilled_tool_reasoning_calls"] = autofilled_tool_reasoning_calls

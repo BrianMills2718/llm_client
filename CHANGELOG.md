@@ -6,6 +6,13 @@ All notable changes to `llm-client` are documented in this file.
 
 ### Added
 
+- Shared execution-kernel primitives in `llm_client.execution_kernel`:
+  - `run_sync_with_retry` / `run_async_with_retry`
+  - `run_sync_with_fallback` / `run_async_with_fallback`
+- Observability boundary modules in `llm_client.observability`:
+  - `events.py`, `experiments.py`, `query.py`
+- Modular CLI command package in `llm_client.cli`:
+  - `cost.py`, `traces.py`, `scores.py`, `experiments.py`, `backfill.py`
 - MCP agent runtime controls for finalization reliability:
   - `finalization_fallback_models`
   - `forced_final_max_attempts`
@@ -30,6 +37,14 @@ All notable changes to `llm-client` are documented in this file.
 
 ### Changed
 
+- `call_llm` / `acall_llm` now use shared retry+fallback kernel paths instead
+  of duplicated in-function retry/fallback loops.
+- `_agent_loop` now stages tool/contract initialization through typed
+  `AgentLoopToolState` construction (`_initialize_agent_tool_state`).
+- `python -m llm_client` is now a thin command router; command logic moved out
+  of `llm_client.__main__` into per-command modules.
+- Top-level `llm_client` exports observability APIs via
+  `llm_client.observability` boundaries.
 - Provider-empty taxonomy is canonicalized as `PROVIDER_EMPTY_CANDIDATES`
   (legacy aliases retained for compatibility).
 - Forced-final path now attempts bounded model chains and keeps run-level

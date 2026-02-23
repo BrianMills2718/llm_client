@@ -89,9 +89,8 @@ from llm_client.errors import (
     wrap_error,
 )
 
-from llm_client.io_log import configure as configure_logging
 from llm_client.rate_limit import configure as configure_rate_limit
-from llm_client.io_log import (
+from llm_client.observability import (
     ActiveFeatureProfile,
     ActiveExperimentRun,
     ExperimentRun,

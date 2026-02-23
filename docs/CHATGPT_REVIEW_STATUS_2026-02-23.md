@@ -111,3 +111,21 @@ Engineering status is baseline-ready for this slice:
 
 Recommended release caveat:
 - keep strict Foundation validation in CI (at least targeted lane) until broader strict lane adoption is complete.
+
+## 8) Architecture follow-up pass (same day)
+Completed additional debt-reduction refactor steps without changing public contracts:
+1. Extracted shared retry/fallback helpers to `llm_client/execution_kernel.py` and wired `call_llm`/`acall_llm` plus stream paths to use them.
+2. Split `_agent_loop` initialization into a typed stage:
+   - `AgentLoopToolState`
+   - `_initialize_agent_tool_state(...)`
+3. Introduced observability boundary modules:
+   - `llm_client/observability/events.py`
+   - `llm_client/observability/experiments.py`
+   - `llm_client/observability/query.py`
+4. Split CLI command monolith into per-command modules under `llm_client/cli/` and reduced `llm_client/__main__.py` to parser/dispatch only.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_client.py tests/test_mcp_agent.py tests/test_model_identity_contract.py tests/test_experiment_log.py tests/test_io_log.py`
+   - Result: `381 passed`
+2. `pytest -q`
+   - Result: `771 passed, 1 skipped, 1 warning`

@@ -68,6 +68,12 @@ from llm_client.config import ClientConfig
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
 from llm_client.routing import CallRequest, resolve_api_base_for_model, resolve_call
+from llm_client.execution_kernel import (
+    run_async_with_fallback,
+    run_async_with_retry,
+    run_sync_with_fallback,
+    run_sync_with_retry,
+)
 
 from llm_client.errors import (
     LLMBudgetExceededError,
@@ -3245,11 +3251,13 @@ def call_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
-    last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
     agent_retry_safe_enabled = _agent_retry_safe_enabled(agent_retry_safe)
+    last_model_attempted = model
 
-    for model_idx, current_model in enumerate(models):
+    def _execute_model(model_idx: int, current_model: str) -> LLMCallResult:
+        nonlocal last_model_attempted
+        last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
@@ -3287,6 +3295,7 @@ def call_llm(
                 warning_sink=_warnings,
             )
 
+        key: str | None = None
         if cache is not None:
             key = _cache_key(current_model, messages, **kwargs)
             cached = cache.get(key)
@@ -3333,117 +3342,111 @@ def call_llm(
                     logger.warning(msg)
         else:
             effective_retries = r.max_retries
-        try:
-            for attempt in range(effective_retries + 1):
-                try:
-                    if is_agent:
-                        from llm_client.agents import _route_call
-                        result = _route_call(
-                            current_model, messages,
-                            timeout=timeout, **kwargs,
-                        )
-                    elif use_responses:
-                        with _rate_limit.acquire(current_model):
-                            response = litellm.responses(**call_kwargs)
-                        result = _build_result_from_responses(response, current_model, warnings=_warnings)
-                    elif use_gemini_native:
-                        with _rate_limit.acquire(current_model):
-                            response = _call_gemini_native(
-                                current_model,
-                                messages,
-                                timeout=timeout,
-                                kwargs=kwargs,
-                            )
-                        result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
-                    else:
-                        with _rate_limit.acquire(current_model):
-                            response = litellm.completion(**call_kwargs)
-                        result = _build_result_from_response(response, current_model, warnings=_warnings)
-                    if attempt > 0:
-                        logger.info("call_llm succeeded after %d retries", attempt)
-                    if is_agent:
-                        resolved_model = result.resolved_model
-                    else:
-                        resolved_model = current_model
-                    result = _annotate_result_identity(
-                        result,
-                        requested_model=model,
-                        resolved_model=resolved_model,
-                        routing_trace=_build_routing_trace(
-                            requested_model=model,
-                            attempted_models=models[:model_idx + 1],
-                            selected_model=resolved_model,
-                            requested_api_base=api_base,
-                            effective_api_base=current_api_base,
-                            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                            routing_policy=routing_policy,
-                        ),
-                    )
-                    if hooks and hooks.after_call:
-                        hooks.after_call(result)
-                    if cache is not None:
-                        cache.set(key, result)
-                    _io_log.log_call(model=current_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
-                    return result
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if _maybe_retry_with_openrouter_key_rotation(
-                        error=e,
-                        attempt=attempt,
-                        max_retries=effective_retries,
-                        current_model=current_model,
-                        current_api_base=current_api_base,
-                        user_kwargs=kwargs,
-                        warning_sink=_warnings,
-                        on_retry=r.on_retry,
-                        caller="call_llm",
-                    ):
-                        continue
-                    if not _check_retryable(e, r) or attempt >= effective_retries:
-                        raise
-                    delay, retry_delay_source = _compute_retry_delay(
-                        attempt=attempt,
-                        error=e,
-                        policy=r,
-                        backoff_fn=backoff_fn,
-                    )
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    _warnings.append(
-                        f"RETRY {attempt + 1}/{effective_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e}) "
-                        f"[retry_delay_source={retry_delay_source}]"
-                    )
-                    logger.warning(
-                        "call_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                        attempt + 1,
-                        effective_retries + 1,
-                        delay,
-                        retry_delay_source,
-                        e,
-                    )
-                    time.sleep(delay)
-            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
-        except Exception as e:
-            last_error = e
-            if model_idx < len(models) - 1:
-                next_model = models[model_idx + 1]
-                if on_fallback is not None:
-                    on_fallback(current_model, e, next_model)
-                _warnings.append(
-                    f"FALLBACK: {current_model} -> {next_model} "
-                    f"({type(e).__name__}: {e})"
-                )
-                logger.warning(
-                    "Falling back from %s to %s: %s", current_model, next_model, e,
-                )
-                continue
-            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="call_llm", task=task, trace_id=trace_id)
-            raise wrap_error(e) from e
+        def _invoke_attempt(attempt: int) -> LLMCallResult:
+            if is_agent:
+                from llm_client.agents import _route_call
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                result = _route_call(
+                    current_model, messages,
+                    timeout=timeout, **kwargs,
+                )
+            elif use_responses:
+                with _rate_limit.acquire(current_model):
+                    response = litellm.responses(**call_kwargs)
+                result = _build_result_from_responses(response, current_model, warnings=_warnings)
+            elif use_gemini_native:
+                with _rate_limit.acquire(current_model):
+                    response = _call_gemini_native(
+                        current_model,
+                        messages,
+                        timeout=timeout,
+                        kwargs=kwargs,
+                    )
+                result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
+            else:
+                with _rate_limit.acquire(current_model):
+                    response = litellm.completion(**call_kwargs)
+                result = _build_result_from_response(response, current_model, warnings=_warnings)
+            if attempt > 0:
+                logger.info("call_llm succeeded after %d retries", attempt)
+            resolved_model = result.resolved_model if is_agent else current_model
+            result = _annotate_result_identity(
+                result,
+                requested_model=model,
+                resolved_model=resolved_model,
+                routing_trace=_build_routing_trace(
+                    requested_model=model,
+                    attempted_models=models[:model_idx + 1],
+                    selected_model=resolved_model,
+                    requested_api_base=api_base,
+                    effective_api_base=current_api_base,
+                    sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                    routing_policy=routing_policy,
+                ),
+            )
+            if hooks and hooks.after_call:
+                hooks.after_call(result)
+            if cache is not None and key is not None:
+                cache.set(key, result)
+            _io_log.log_call(
+                model=current_model,
+                messages=messages,
+                result=result,
+                latency_s=time.monotonic() - _log_t0,
+                caller="call_llm",
+                task=task,
+                trace_id=trace_id,
+            )
+            return result
+
+        return run_sync_with_retry(
+            caller="call_llm",
+            model=current_model,
+            max_retries=effective_retries,
+            invoke=_invoke_attempt,
+            should_retry=lambda exc: _check_retryable(exc, r),
+            compute_delay=lambda attempt, exc: _compute_retry_delay(
+                attempt=attempt,
+                error=exc,
+                policy=r,
+                backoff_fn=backoff_fn,
+            ),
+            warning_sink=_warnings,
+            logger=logger,
+            on_error=(hooks.on_error if hooks and hooks.on_error else None),
+            on_retry=r.on_retry,
+            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                error=exc,
+                attempt=attempt,
+                max_retries=max_retries,
+                current_model=current_model,
+                current_api_base=current_api_base,
+                user_kwargs=kwargs,
+                warning_sink=_warnings,
+                on_retry=r.on_retry,
+                caller="call_llm",
+            ),
+        )
+
+    try:
+        return run_sync_with_fallback(
+            models=models,
+            execute_model=_execute_model,
+            on_fallback=on_fallback,
+            warning_sink=_warnings,
+            logger=logger,
+        )
+    except Exception as e:
+        _io_log.log_call(
+            model=last_model_attempted,
+            messages=messages,
+            error=e,
+            latency_s=time.monotonic() - _log_t0,
+            caller="call_llm",
+            task=task,
+            trace_id=trace_id,
+        )
+        raise wrap_error(e) from e
 
 
 def call_llm_structured(
@@ -4162,11 +4165,13 @@ async def acall_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
         raise ValueError("Caching not supported for agent models — they have side effects.")
-    last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
     agent_retry_safe_enabled = _agent_retry_safe_enabled(agent_retry_safe)
+    last_model_attempted = model
 
-    for model_idx, current_model in enumerate(models):
+    async def _execute_model(model_idx: int, current_model: str) -> LLMCallResult:
+        nonlocal last_model_attempted
+        last_model_attempted = current_model
         is_agent = _is_agent_model(current_model)
         use_responses = not is_agent and _is_responses_api_model(current_model)
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
@@ -4204,6 +4209,7 @@ async def acall_llm(
                 warning_sink=_warnings,
             )
 
+        key: str | None = None
         if cache is not None:
             key = _cache_key(current_model, messages, **kwargs)
             cached = await _async_cache_get(cache, key)
@@ -4250,117 +4256,111 @@ async def acall_llm(
                     logger.warning(msg)
         else:
             effective_retries = r.max_retries
-        try:
-            for attempt in range(effective_retries + 1):
-                try:
-                    if is_agent:
-                        from llm_client.agents import _route_acall
-                        result = await _route_acall(
-                            current_model, messages,
-                            timeout=timeout, **kwargs,
-                        )
-                    elif use_responses:
-                        async with _rate_limit.aacquire(current_model):
-                            response = await litellm.aresponses(**call_kwargs)
-                        result = _build_result_from_responses(response, current_model, warnings=_warnings)
-                    elif use_gemini_native:
-                        async with _rate_limit.aacquire(current_model):
-                            response = await _acall_gemini_native(
-                                current_model,
-                                messages,
-                                timeout=timeout,
-                                kwargs=kwargs,
-                            )
-                        result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
-                    else:
-                        async with _rate_limit.aacquire(current_model):
-                            response = await litellm.acompletion(**call_kwargs)
-                        result = _build_result_from_response(response, current_model, warnings=_warnings)
-                    if attempt > 0:
-                        logger.info("acall_llm succeeded after %d retries", attempt)
-                    if is_agent:
-                        resolved_model = result.resolved_model
-                    else:
-                        resolved_model = current_model
-                    result = _annotate_result_identity(
-                        result,
-                        requested_model=model,
-                        resolved_model=resolved_model,
-                        routing_trace=_build_routing_trace(
-                            requested_model=model,
-                            attempted_models=models[:model_idx + 1],
-                            selected_model=resolved_model,
-                            requested_api_base=api_base,
-                            effective_api_base=current_api_base,
-                            sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
-                            routing_policy=routing_policy,
-                        ),
-                    )
-                    if hooks and hooks.after_call:
-                        hooks.after_call(result)
-                    if cache is not None:
-                        await _async_cache_set(cache, key, result)
-                    _io_log.log_call(model=current_model, messages=messages, result=result, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
-                    return result
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if _maybe_retry_with_openrouter_key_rotation(
-                        error=e,
-                        attempt=attempt,
-                        max_retries=effective_retries,
-                        current_model=current_model,
-                        current_api_base=current_api_base,
-                        user_kwargs=kwargs,
-                        warning_sink=_warnings,
-                        on_retry=r.on_retry,
-                        caller="acall_llm",
-                    ):
-                        continue
-                    if not _check_retryable(e, r) or attempt >= effective_retries:
-                        raise
-                    delay, retry_delay_source = _compute_retry_delay(
-                        attempt=attempt,
-                        error=e,
-                        policy=r,
-                        backoff_fn=backoff_fn,
-                    )
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    _warnings.append(
-                        f"RETRY {attempt + 1}/{effective_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e}) "
-                        f"[retry_delay_source={retry_delay_source}]"
-                    )
-                    logger.warning(
-                        "acall_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                        attempt + 1,
-                        effective_retries + 1,
-                        delay,
-                        retry_delay_source,
-                        e,
-                    )
-                    await asyncio.sleep(delay)
-            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
-        except Exception as e:
-            last_error = e
-            if model_idx < len(models) - 1:
-                next_model = models[model_idx + 1]
-                if on_fallback is not None:
-                    on_fallback(current_model, e, next_model)
-                _warnings.append(
-                    f"FALLBACK: {current_model} -> {next_model} "
-                    f"({type(e).__name__}: {e})"
-                )
-                logger.warning(
-                    "Falling back from %s to %s: %s", current_model, next_model, e,
-                )
-                continue
-            _io_log.log_call(model=current_model, messages=messages, error=e, latency_s=time.monotonic() - _log_t0, caller="acall_llm", task=task, trace_id=trace_id)
-            raise wrap_error(e) from e
+        async def _invoke_attempt(attempt: int) -> LLMCallResult:
+            if is_agent:
+                from llm_client.agents import _route_acall
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+                result = await _route_acall(
+                    current_model, messages,
+                    timeout=timeout, **kwargs,
+                )
+            elif use_responses:
+                async with _rate_limit.aacquire(current_model):
+                    response = await litellm.aresponses(**call_kwargs)
+                result = _build_result_from_responses(response, current_model, warnings=_warnings)
+            elif use_gemini_native:
+                async with _rate_limit.aacquire(current_model):
+                    response = await _acall_gemini_native(
+                        current_model,
+                        messages,
+                        timeout=timeout,
+                        kwargs=kwargs,
+                    )
+                result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
+            else:
+                async with _rate_limit.aacquire(current_model):
+                    response = await litellm.acompletion(**call_kwargs)
+                result = _build_result_from_response(response, current_model, warnings=_warnings)
+            if attempt > 0:
+                logger.info("acall_llm succeeded after %d retries", attempt)
+            resolved_model = result.resolved_model if is_agent else current_model
+            result = _annotate_result_identity(
+                result,
+                requested_model=model,
+                resolved_model=resolved_model,
+                routing_trace=_build_routing_trace(
+                    requested_model=model,
+                    attempted_models=models[:model_idx + 1],
+                    selected_model=resolved_model,
+                    requested_api_base=api_base,
+                    effective_api_base=current_api_base,
+                    sticky_fallback=any("STICKY_FALLBACK" in w for w in (result.warnings or [])),
+                    routing_policy=routing_policy,
+                ),
+            )
+            if hooks and hooks.after_call:
+                hooks.after_call(result)
+            if cache is not None and key is not None:
+                await _async_cache_set(cache, key, result)
+            _io_log.log_call(
+                model=current_model,
+                messages=messages,
+                result=result,
+                latency_s=time.monotonic() - _log_t0,
+                caller="acall_llm",
+                task=task,
+                trace_id=trace_id,
+            )
+            return result
+
+        return await run_async_with_retry(
+            caller="acall_llm",
+            model=current_model,
+            max_retries=effective_retries,
+            invoke=_invoke_attempt,
+            should_retry=lambda exc: _check_retryable(exc, r),
+            compute_delay=lambda attempt, exc: _compute_retry_delay(
+                attempt=attempt,
+                error=exc,
+                policy=r,
+                backoff_fn=backoff_fn,
+            ),
+            warning_sink=_warnings,
+            logger=logger,
+            on_error=(hooks.on_error if hooks and hooks.on_error else None),
+            on_retry=r.on_retry,
+            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                error=exc,
+                attempt=attempt,
+                max_retries=max_retries,
+                current_model=current_model,
+                current_api_base=current_api_base,
+                user_kwargs=kwargs,
+                warning_sink=_warnings,
+                on_retry=r.on_retry,
+                caller="acall_llm",
+            ),
+        )
+
+    try:
+        return await run_async_with_fallback(
+            models=models,
+            execute_model=_execute_model,
+            on_fallback=on_fallback,
+            warning_sink=_warnings,
+            logger=logger,
+        )
+    except Exception as e:
+        _io_log.log_call(
+            model=last_model_attempted,
+            messages=messages,
+            error=e,
+            latency_s=time.monotonic() - _log_t0,
+            caller="acall_llm",
+            task=task,
+            trace_id=trace_id,
+        )
+        raise wrap_error(e) from e
 
 
 async def acall_llm_structured(
@@ -5250,11 +5250,10 @@ def stream_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = _build_model_chain(model, fallback_models, cfg)
     routing_policy = _routing_policy_label(cfg)
-    last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 
-    for model_idx, current_model in enumerate(models):
+    def _execute_stream_model(model_idx: int, current_model: str) -> LLMStream:
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
@@ -5270,86 +5269,70 @@ def stream_llm(
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
 
-        try:
-            for attempt in range(r.max_retries + 1):
-                try:
-                    with _rate_limit.acquire(current_model):
-                        response = litellm.completion(**call_kwargs)
-                    if attempt > 0:
-                        logger.info("stream_llm succeeded after %d retries", attempt)
-                    return LLMStream(
-                        response,
-                        current_model,
-                        hooks=hooks,
-                        messages=messages,
-                        task=task,
-                        trace_id=trace_id,
-                        warnings=_warnings,
-                        requested_model=model,
-                        resolved_model=current_model,
-                        routing_trace=_build_routing_trace(
-                            requested_model=model,
-                            attempted_models=models[:model_idx + 1],
-                            selected_model=current_model,
-                            requested_api_base=api_base,
-                            effective_api_base=current_api_base,
-                            routing_policy=routing_policy,
-                        ),
-                    )
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if _maybe_retry_with_openrouter_key_rotation(
-                        error=e,
-                        attempt=attempt,
-                        max_retries=r.max_retries,
-                        current_model=current_model,
-                        current_api_base=current_api_base,
-                        user_kwargs=kwargs,
-                        warning_sink=_warnings,
-                        on_retry=r.on_retry,
-                        caller="stream_llm",
-                    ):
-                        continue
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
-                        raise
-                    delay, retry_delay_source = _compute_retry_delay(
-                        attempt=attempt,
-                        error=e,
-                        policy=r,
-                        backoff_fn=backoff_fn,
-                    )
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    _warnings.append(
-                        f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e}) "
-                        f"[retry_delay_source={retry_delay_source}]"
-                    )
-                    logger.warning(
-                        "stream_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                        attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
-                    )
-                    time.sleep(delay)
-            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
-        except Exception as e:
-            last_error = e
-            if model_idx < len(models) - 1:
-                next_model = models[model_idx + 1]
-                if on_fallback is not None:
-                    on_fallback(current_model, e, next_model)
-                _warnings.append(
-                    f"FALLBACK: {current_model} -> {next_model} "
-                    f"({type(e).__name__}: {e})"
-                )
-                logger.warning(
-                    "Falling back from %s to %s: %s", current_model, next_model, e,
-                )
-                continue
-            raise wrap_error(e) from e
+        def _invoke_attempt(attempt: int) -> LLMStream:
+            with _rate_limit.acquire(current_model):
+                response = litellm.completion(**call_kwargs)
+            if attempt > 0:
+                logger.info("stream_llm succeeded after %d retries", attempt)
+            return LLMStream(
+                response,
+                current_model,
+                hooks=hooks,
+                messages=messages,
+                task=task,
+                trace_id=trace_id,
+                warnings=_warnings,
+                requested_model=model,
+                resolved_model=current_model,
+                routing_trace=_build_routing_trace(
+                    requested_model=model,
+                    attempted_models=models[:model_idx + 1],
+                    selected_model=current_model,
+                    requested_api_base=api_base,
+                    effective_api_base=current_api_base,
+                    routing_policy=routing_policy,
+                ),
+            )
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+        return run_sync_with_retry(
+            caller="stream_llm",
+            model=current_model,
+            max_retries=r.max_retries,
+            invoke=_invoke_attempt,
+            should_retry=lambda exc: _check_retryable(exc, r),
+            compute_delay=lambda attempt, exc: _compute_retry_delay(
+                attempt=attempt,
+                error=exc,
+                policy=r,
+                backoff_fn=backoff_fn,
+            ),
+            warning_sink=_warnings,
+            logger=logger,
+            on_error=(hooks.on_error if hooks and hooks.on_error else None),
+            on_retry=r.on_retry,
+            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                error=exc,
+                attempt=attempt,
+                max_retries=max_retries,
+                current_model=current_model,
+                current_api_base=current_api_base,
+                user_kwargs=kwargs,
+                warning_sink=_warnings,
+                on_retry=r.on_retry,
+                caller="stream_llm",
+            ),
+        )
+
+    try:
+        return run_sync_with_fallback(
+            models=models,
+            execute_model=_execute_stream_model,
+            on_fallback=on_fallback,
+            warning_sink=_warnings,
+            logger=logger,
+        )
+    except Exception as e:
+        raise wrap_error(e) from e
 
 
 async def astream_llm(
@@ -5393,11 +5376,10 @@ async def astream_llm(
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     models = _build_model_chain(model, fallback_models, cfg)
     routing_policy = _routing_policy_label(cfg)
-    last_error: Exception | None = None
     _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 
-    for model_idx, current_model in enumerate(models):
+    async def _execute_stream_model(model_idx: int, current_model: str) -> AsyncLLMStream:
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
         call_kwargs = _prepare_call_kwargs(
             current_model, messages,
@@ -5413,86 +5395,70 @@ async def astream_llm(
         if hooks and hooks.before_call:
             hooks.before_call(current_model, messages, kwargs)
 
-        try:
-            for attempt in range(r.max_retries + 1):
-                try:
-                    async with _rate_limit.aacquire(current_model):
-                        response = await litellm.acompletion(**call_kwargs)
-                    if attempt > 0:
-                        logger.info("astream_llm succeeded after %d retries", attempt)
-                    return AsyncLLMStream(
-                        response,
-                        current_model,
-                        hooks=hooks,
-                        messages=messages,
-                        task=task,
-                        trace_id=trace_id,
-                        warnings=_warnings,
-                        requested_model=model,
-                        resolved_model=current_model,
-                        routing_trace=_build_routing_trace(
-                            requested_model=model,
-                            attempted_models=models[:model_idx + 1],
-                            selected_model=current_model,
-                            requested_api_base=api_base,
-                            effective_api_base=current_api_base,
-                            routing_policy=routing_policy,
-                        ),
-                    )
-                except Exception as e:
-                    last_error = e
-                    if hooks and hooks.on_error:
-                        hooks.on_error(e, attempt)
-                    if _maybe_retry_with_openrouter_key_rotation(
-                        error=e,
-                        attempt=attempt,
-                        max_retries=r.max_retries,
-                        current_model=current_model,
-                        current_api_base=current_api_base,
-                        user_kwargs=kwargs,
-                        warning_sink=_warnings,
-                        on_retry=r.on_retry,
-                        caller="astream_llm",
-                    ):
-                        continue
-                    if not _check_retryable(e, r) or attempt >= r.max_retries:
-                        raise
-                    delay, retry_delay_source = _compute_retry_delay(
-                        attempt=attempt,
-                        error=e,
-                        policy=r,
-                        backoff_fn=backoff_fn,
-                    )
-                    if r.on_retry is not None:
-                        r.on_retry(attempt, e, delay)
-                    _warnings.append(
-                        f"RETRY {attempt + 1}/{r.max_retries + 1}: "
-                        f"{current_model} ({type(e).__name__}: {e}) "
-                        f"[retry_delay_source={retry_delay_source}]"
-                    )
-                    logger.warning(
-                        "astream_llm attempt %d/%d failed (retrying in %.1fs, source=%s): %s",
-                        attempt + 1, r.max_retries + 1, delay, retry_delay_source, e,
-                    )
-                    await asyncio.sleep(delay)
-            raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
-        except Exception as e:
-            last_error = e
-            if model_idx < len(models) - 1:
-                next_model = models[model_idx + 1]
-                if on_fallback is not None:
-                    on_fallback(current_model, e, next_model)
-                _warnings.append(
-                    f"FALLBACK: {current_model} -> {next_model} "
-                    f"({type(e).__name__}: {e})"
-                )
-                logger.warning(
-                    "Falling back from %s to %s: %s", current_model, next_model, e,
-                )
-                continue
-            raise wrap_error(e) from e
+        async def _invoke_attempt(attempt: int) -> AsyncLLMStream:
+            async with _rate_limit.aacquire(current_model):
+                response = await litellm.acompletion(**call_kwargs)
+            if attempt > 0:
+                logger.info("astream_llm succeeded after %d retries", attempt)
+            return AsyncLLMStream(
+                response,
+                current_model,
+                hooks=hooks,
+                messages=messages,
+                task=task,
+                trace_id=trace_id,
+                warnings=_warnings,
+                requested_model=model,
+                resolved_model=current_model,
+                routing_trace=_build_routing_trace(
+                    requested_model=model,
+                    attempted_models=models[:model_idx + 1],
+                    selected_model=current_model,
+                    requested_api_base=api_base,
+                    effective_api_base=current_api_base,
+                    routing_policy=routing_policy,
+                ),
+            )
 
-    raise wrap_error(last_error) from last_error  # type: ignore[misc]  # unreachable
+        return await run_async_with_retry(
+            caller="astream_llm",
+            model=current_model,
+            max_retries=r.max_retries,
+            invoke=_invoke_attempt,
+            should_retry=lambda exc: _check_retryable(exc, r),
+            compute_delay=lambda attempt, exc: _compute_retry_delay(
+                attempt=attempt,
+                error=exc,
+                policy=r,
+                backoff_fn=backoff_fn,
+            ),
+            warning_sink=_warnings,
+            logger=logger,
+            on_error=(hooks.on_error if hooks and hooks.on_error else None),
+            on_retry=r.on_retry,
+            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                error=exc,
+                attempt=attempt,
+                max_retries=max_retries,
+                current_model=current_model,
+                current_api_base=current_api_base,
+                user_kwargs=kwargs,
+                warning_sink=_warnings,
+                on_retry=r.on_retry,
+                caller="astream_llm",
+            ),
+        )
+
+    try:
+        return await run_async_with_fallback(
+            models=models,
+            execute_model=_execute_stream_model,
+            on_fallback=on_fallback,
+            warning_sink=_warnings,
+            logger=logger,
+        )
+    except Exception as e:
+        raise wrap_error(e) from e
 
 
 def stream_llm_with_tools(
