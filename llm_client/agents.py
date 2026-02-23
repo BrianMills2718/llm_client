@@ -63,7 +63,12 @@ def _parse_agent_model(model: str) -> tuple[str, str | None]:
     if "/" in model:
         sdk, _, underlying = model.partition("/")
         return (sdk.lower(), underlying)
-    return (model.lower(), None)
+    lower = model.lower()
+    # Support Codex aliases like "codex-mini-latest" as shorthand for
+    # sdk=codex, underlying_model=codex-mini-latest.
+    if lower.startswith("codex-"):
+        return ("codex", model)
+    return (lower, None)
 
 
 # kwargs consumed by agent SDKs (not passed through)
