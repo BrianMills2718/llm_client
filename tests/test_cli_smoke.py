@@ -10,6 +10,7 @@ CLI_CMDS = [
     ["traces", "--help"],
     ["scores", "--help"],
     ["experiments", "--help"],
+    ["adoption", "--help"],
     ["backfill", "--help"],
 ]
 

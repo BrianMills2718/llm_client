@@ -449,6 +449,7 @@ python -m llm_client experiments --compare RUN_BASE RUN_CANDIDATE
 python -m llm_client experiments --compare-cohorts baseline forced_reduced forced_off --baseline-condition-id baseline --scenario-id phase1_falsification --phase phase1
 python -m llm_client experiments --compare-diff RUN_BASE RUN_CANDIDATE
 python -m llm_client experiments --detail RUN_ID
+python -m llm_client adoption --run-id-prefix nightly_ --format table
 python -m llm_client experiments --detail RUN_ID --det-checks default
 python -m llm_client experiments --detail RUN_ID --review-rubric extraction_quality
 python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg_llm_em_gte":80}}' --gate-fail-exit-code

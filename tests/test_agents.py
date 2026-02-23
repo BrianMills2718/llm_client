@@ -82,6 +82,9 @@ class TestIsAgentModel:
     def test_codex_with_model(self) -> None:
         assert _is_agent_model("codex/gpt-5") is True
 
+    def test_codex_alias(self) -> None:
+        assert _is_agent_model("codex-mini-latest") is True
+
     def test_codex_case_insensitive(self) -> None:
         assert _is_agent_model("Codex") is True
         assert _is_agent_model("CODEX/o3") is True
@@ -123,6 +126,9 @@ class TestParseAgentModel:
 
     def test_codex_with_o3(self) -> None:
         assert _parse_agent_model("codex/o3") == ("codex", "o3")
+
+    def test_codex_alias(self) -> None:
+        assert _parse_agent_model("codex-mini-latest") == ("codex", "codex-mini-latest")
 
 
 # ---------------------------------------------------------------------------

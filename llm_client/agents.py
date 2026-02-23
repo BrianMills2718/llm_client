@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from llm_client.client import Hooks, LLMCallResult
 
 logger = logging.getLogger(__name__)
+_CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 
 
 def _agent_billing_mode() -> str:
@@ -66,7 +67,7 @@ def _parse_agent_model(model: str) -> tuple[str, str | None]:
     lower = model.lower()
     # Support Codex aliases like "codex-mini-latest" as shorthand for
     # sdk=codex, underlying_model=codex-mini-latest.
-    if lower.startswith("codex-"):
+    if lower in _CODEX_AGENT_ALIASES:
         return ("codex", model)
     return (lower, None)
 

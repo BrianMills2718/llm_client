@@ -117,6 +117,7 @@ OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_API_KEYS_ENV = "OPENROUTER_API_KEYS"
 REQUIRE_TAGS_ENV = "LLM_CLIENT_REQUIRE_TAGS"
 AGENT_RETRY_SAFE_ENV = "LLM_CLIENT_AGENT_RETRY_SAFE"
+_CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 
 _OPENROUTER_KEY_ROTATION_LOCK = threading.Lock()
 _OPENROUTER_KEY_RING: tuple[str, ...] = ()
@@ -2430,8 +2431,8 @@ def _is_agent_model(model: str) -> bool:
     for prefix in ("claude-code", "codex", "openai-agents"):
         if lower == prefix or lower.startswith(prefix + "/"):
             return True
-    # Support common Codex aliases such as codex-mini-latest.
-    if lower.startswith("codex-"):
+    # Support selected Codex aliases that map to Codex agent SDK models.
+    if lower in _CODEX_AGENT_ALIASES:
         return True
     return False
 
@@ -3887,7 +3888,7 @@ def call_llm(
             ))
             if model_idx > 0:
                 logger.info("call_llm fallback leg %d used MCP loop on %s", model_idx + 1, current_model)
-            return result
+            return cast(LLMCallResult, result)
 
         if not is_agent and "python_tools" in model_kwargs:
             from llm_client.mcp_agent import TOOL_LOOP_KWARGS, _acall_with_tools
@@ -3923,7 +3924,7 @@ def call_llm(
                 ))
             if model_idx > 0:
                 logger.info("call_llm fallback leg %d used Python tool loop on %s", model_idx + 1, current_model)
-            return result
+            return cast(LLMCallResult, result)
 
         use_responses = not is_agent and _is_responses_api_model(current_model)
         background_mode = _background_mode_for_model(
