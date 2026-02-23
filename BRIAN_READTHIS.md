@@ -19,13 +19,14 @@ That script checks if long-thinking/background behavior stays above your thresho
 Run this once:
 
 ```bash
-(crontab -l 2>/dev/null; echo '15 6 * * * cd /home/brian/projects/llm_client && PYTHON_BIN=/home/brian/projects/llm_client/.venv/bin/python ./scripts/adoption_gate.sh >> /home/brian/projects/llm_client/adoption_gate.log 2>&1') | crontab -
+(crontab -l 2>/dev/null; echo '15 6 * * * cd /home/brian/projects/llm_client && PYTHON_BIN=/home/brian/projects/llm_client/.venv/bin/python LLM_CLIENT_ADOPTION_WARN_ONLY=1 ./scripts/adoption_gate.sh >> /home/brian/projects/llm_client/adoption_gate.log 2>&1') | crontab -
 ```
 
 This means:
 - run every day at `06:15`
 - use your local repo path
 - use your local virtualenv Python
+- run in warn-only mode first (no non-zero exit)
 - append output to `adoption_gate.log`
 
 ### Step 2: verify it is installed
@@ -66,3 +67,21 @@ LLM_CLIENT_ADOPTION_MIN_SAMPLES=5 LLM_CLIENT_ADOPTION_MIN_RATE=0.80 ./scripts/ad
 ```
 
 Then tighten back later.
+
+## Current concern (documented)
+- Right now your `nightly_` sample count is low (`insufficient_samples`).
+- If we run strict mode immediately, you get daily noisy failures that are not actionable.
+- That is why cron is currently in warn-only mode.
+
+## When to switch to strict mode
+Once logs show enough data (at least 20 matching reasoning samples), switch cron to strict:
+
+```bash
+(crontab -l 2>/dev/null | sed 's/ LLM_CLIENT_ADOPTION_WARN_ONLY=1//') | crontab -
+```
+
+Then verify:
+
+```bash
+crontab -l | grep adoption_gate.sh
+```
