@@ -1,6 +1,6 @@
 # LLM Client Advisory Context (Paste Into ChatGPT)
 
-Date: 2026-02-22  
+Date: 2026-02-23  
 Project path: `/home/brian/projects/llm_client`  
 Audience: external advisor (ChatGPT) with zero prior context
 
@@ -19,9 +19,9 @@ Removed surfaces:
 3. `LLM_CLIENT_SEMANTICS_TELEMETRY`
 4. CLI commands `semantics` and `semantics-snapshot`.
 
-## Status Update (2026-02-22, post-implementation)
+## Status Update (2026-02-23, post-implementation)
 
-The staged refactor has proceeded beyond week-1 stabilization:
+Current architecture highlights:
 1. Pure router extracted: `llm_client/routing.py` with:
    - `CallRequest`
    - `ResolvedCallPlan`
@@ -29,38 +29,27 @@ The staged refactor has proceeded beyond week-1 stabilization:
    - `resolve_api_base_for_model(model, requested_api_base, config)`
 2. Typed config introduced: `llm_client/config.py` with:
    - `ClientConfig.routing_policy` (`openrouter` or `direct`)
-   - `ClientConfig.result_model_semantics` (`legacy`, `requested`, `resolved`)
-   - `ClientConfig.from_env()` compatibility parsing.
+   - `ClientConfig.from_env()` env parsing for routing only.
 3. Core call paths now accept explicit `config: ClientConfig | None` and route
    via typed resolver, including tool wrappers, batch wrappers, and stream APIs.
 4. Stable warning metadata added on results via
    `LLMCallResult.warning_records` with `LLMC_WARN_*` codes.
-5. Model identity migration controls implemented:
-   - additive `requested_model`, `resolved_model`, `routing_trace`
-   - additive alias `execution_model`
-   - opt-in `result.model` semantics override via typed config/env.
-6. Follow-up ADR added: `docs/adr/0004-result-model-semantics-migration.md`.
-7. Release follow-up completed:
-   - `CHANGELOG.md` added with `0.6.1` entry.
-   - `pyproject.toml` version advanced to `0.6.1`.
-8. `result.model` migration timeline is now explicit:
-   - `0.6.1`: default `legacy`
-   - `0.7.x`: migration guidance + adoption monitoring
-   - `0.8.0` target: default `requested` with `legacy` compatibility mode
-   - `1.0.0` target: remove `legacy` default behavior
-9. Semantics adoption telemetry is implemented:
-   - metadata-only foundation event (`ConfigChanged`)
-   - operation `result_model_semantics_adoption`
-   - params: caller, config_source, result_model_semantics, observed_count
-   - opt-out: `LLM_CLIENT_SEMANTICS_TELEMETRY=off`
-10. Foundation event hardening completed:
+5. Fixed identity semantics shipped in `0.7.0`:
+   - `result.model` always means terminal executed model
+   - `requested_model` always means caller input
+   - `resolved_model` / `execution_model` always mean terminal executed model
+   - `routing_trace` explains normalization/fallback
+6. Foundation event hardening completed:
    - strict mode env gate: `FOUNDATION_SCHEMA_STRICT=1`
    - invalid foundation event payloads now raise in strict mode
    - failure-path payloads moved to schema-safe fields (no extra forbidden keys)
-11. Forced-final policy hardening completed:
+7. Forced-final policy hardening completed:
    - explicit `FINALIZATION_TOOL_CALL_DISALLOWED` classification
    - no tool execution in forced-final even if model returns tool-call-shaped output
-12. Current test status: `pytest -q` => `776 passed, 1 skipped`.
+8. Current test status: `pytest -q` => `771 passed, 1 skipped`.
+9. Foundation negative schema tests added:
+   - custom `event_type` rejection
+   - forbidden extra `ToolFailed.failure` field rejection
 
 ## 1. Why We Need Advice
 
@@ -74,7 +63,7 @@ We want advice on:
 
 ## 2. What This Project Is
 
-This is a Python package (`llm-client`, version `0.6.1`) that wraps `litellm` and agent SDKs behind a unified interface.
+This is a Python package (`llm-client`, version `0.7.0`) that wraps `litellm` and agent SDKs behind a unified interface.
 
 Core capabilities:
 1. Sync + async LLM calls.
@@ -93,8 +82,8 @@ Core capabilities:
 ## 3. Current Repository Shape
 
 Top modules by size:
-1. `llm_client/client.py`: 4606 LOC
-2. `llm_client/mcp_agent.py`: 2376 LOC
+1. `llm_client/client.py`: 5740 LOC
+2. `llm_client/mcp_agent.py`: 4365 LOC
 3. `llm_client/io_log.py`: 2234 LOC
 4. `llm_client/agents.py`: 1386 LOC
 5. `llm_client/__main__.py`: 972 LOC

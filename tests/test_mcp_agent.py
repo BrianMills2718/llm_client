@@ -244,6 +244,7 @@ class TestFailureTaxonomy:
         "TOOL_EXECUTION_RUNTIME_ERROR",
         "PROVIDER_EMPTY_CANDIDATES",
         "FINALIZATION_CIRCUIT_BREAKER_OPEN",
+        "FINALIZATION_TOOL_CALL_DISALLOWED",
         "RETRIEVAL_NO_HITS",
         "RETRIEVAL_STAGNATION",
     }
@@ -273,6 +274,7 @@ class TestFailureTaxonomy:
             ("TOOL_EXECUTION_RUNTIME_ERROR", "none"),
             ("PROVIDER_EMPTY_CANDIDATES", "provider"),
             ("FINALIZATION_CIRCUIT_BREAKER_OPEN", "provider"),
+            ("FINALIZATION_TOOL_CALL_DISALLOWED", "policy"),
             ("RETRIEVAL_NO_HITS", "retrieval"),
             ("RETRIEVAL_STAGNATION", "retrieval"),
         ],
@@ -685,6 +687,11 @@ class TestAcallWithMcp:
             assert result.finish_reason == "error"
             assert "Empty content from LLM" in result.content
             assert len(result.raw_response.tool_calls) == 1
+            metadata = result.raw_response.metadata
+            assert metadata["forced_final_breaker_effective"] is False
+            assert metadata["foundation_event_validation_errors"] == 0
+            assert "PROVIDER_EMPTY_RESPONSE" not in metadata.get("failure_event_codes", [])
+            assert "PROVIDER_EMPTY_RESPONSE_FIRST_TURN" not in metadata.get("failure_event_codes", [])
             assert any(
                 "AGENT_LLM_CALL_FAILED" in w for w in result.raw_response.warnings
             )
@@ -743,6 +750,15 @@ class TestAcallWithMcp:
             assert metadata["forced_final_attempts"] == 2
             assert metadata["finalization_fallback_used"] is True
             assert metadata["finalization_fallback_succeeded"] is True
+            assert metadata["finalization_fallback_usage_rate"] == 0.5
+            assert metadata["finalization_attempt_counts_by_model"] == {
+                "test-model": 1,
+                "fallback-model": 1,
+            }
+            assert metadata["finalization_failure_counts_by_model"] == {"test-model": 1}
+            assert metadata["finalization_success_counts_by_model"] == {"fallback-model": 1}
+            assert metadata["provider_failure_event_total"] == 0
+            assert metadata["provider_caused_incompletion"] is False
             assert "FINALIZATION_PRIMARY_FAILED" in metadata.get("finalization_events", [])
             assert "FINALIZATION_FALLBACK_SUCCEEDED" in metadata.get("finalization_events", [])
             # Recovered finalization should not count as terminal run failure.
@@ -852,12 +868,182 @@ class TestAcallWithMcp:
             metadata = result.raw_response.metadata
             assert metadata["forced_final_attempts"] == 2
             assert metadata["forced_final_circuit_breaker_opened"] is True
+            assert metadata["finalization_breaker_open_rate"] == 1.0
+            assert metadata["provider_caused_incompletion"] is True
+            assert metadata["provider_failure_event_total"] >= 2
+            assert metadata["provider_failure_event_code_counts"].get("PROVIDER_EMPTY_CANDIDATES", 0) >= 2
             assert "FINALIZATION_CIRCUIT_BREAKER_OPEN" in metadata.get("failure_event_codes", [])
             assert any(
                 "FINALIZATION_CIRCUIT_BREAKER_OPEN" in warning
                 for warning in result.raw_response.warnings
             )
             assert mock_acall.call_count == 3  # 1 loop turn + 2 forced-final attempts
+
+    async def test_forced_final_mixed_failure_classes_do_not_open_breaker(self) -> None:
+        """Mixed forced-final failure classes should not open same-class breaker."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            tool_call_result = _make_llm_result(tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }])
+            provider_empty_exc = Exception(
+                "Empty content from LLM [litellm_completion:provider_empty_candidates retryable=True]"
+            )
+            parse_exc = Exception("JSON parse error in finalization payload")
+            mock_acall.side_effect = [tool_call_result, provider_empty_exc, parse_exc]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+                forced_final_max_attempts=2,
+                forced_final_circuit_breaker_threshold=2,
+            )
+
+            assert result.finish_reason == "error"
+            metadata = result.raw_response.metadata
+            assert metadata["forced_final_attempts"] == 2
+            assert metadata["forced_final_circuit_breaker_opened"] is False
+            assert metadata["finalization_breaker_open_rate"] == 0.0
+            assert metadata["finalization_failure_code_counts"].get("PROVIDER_EMPTY_CANDIDATES", 0) == 1
+            assert metadata["finalization_failure_code_counts"].get("TOOL_EXECUTION_RUNTIME_ERROR", 0) == 1
+            assert "FINALIZATION_CIRCUIT_BREAKER_OPEN" not in metadata.get("failure_event_codes", [])
+
+    async def test_forced_final_tool_calls_are_disallowed_without_execution(self) -> None:
+        """Forced-final tool-call-shaped outputs must not execute tools and should classify deterministically."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            tool_call_result = _make_llm_result(tool_calls=[{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": "{}"},
+            }])
+            forced_final_tool_call = _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "forced_call",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }],
+                finish_reason="tool_calls",
+            )
+            mock_acall.side_effect = [
+                tool_call_result,
+                forced_final_tool_call,
+                _make_llm_result(content="final answer via fallback", model="fallback-model"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+                forced_final_max_attempts=2,
+                finalization_fallback_models=["fallback-model"],
+            )
+
+            assert result.content == "final answer via fallback"
+            metadata = result.raw_response.metadata
+            assert any(
+                attempt.get("error_code") == "FINALIZATION_TOOL_CALL_DISALLOWED"
+                for attempt in metadata.get("finalization_fallback_attempts", [])
+            )
+            assert metadata["finalization_failure_code_counts"].get("FINALIZATION_TOOL_CALL_DISALLOWED", 0) == 1
+            assert metadata["finalization_fallback_usage_rate"] == 0.5
+            # Forced-final tool-calls are never executed; only the original loop call runs.
+            assert mock_session.call_tool.call_count == 1
+
+    async def test_foundation_schema_strict_raises_on_invalid_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FOUNDATION_SCHEMA_STRICT=1 should raise when event validation fails."""
+        monkeypatch.setenv("FOUNDATION_SCHEMA_STRICT", "1")
+
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.mcp_agent.validate_foundation_event", side_effect=ValueError("schema mismatch")),
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }]),
+                _make_llm_result(content="answer"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            with pytest.raises(RuntimeError, match="FOUNDATION_EVENT_INVALID"):
+                await _acall_with_mcp(
+                    "test-model",
+                    [{"role": "user", "content": "Q"}],
+                    mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                    max_turns=10,
+                )
 
     async def test_require_tool_reasoning_rejects_mcp_call(self) -> None:
         """Strict mode rejects tool calls that omit tool_reasoning."""

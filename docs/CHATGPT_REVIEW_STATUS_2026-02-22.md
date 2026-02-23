@@ -4,104 +4,107 @@ Date: 2026-02-22
 Project: `/home/brian/projects/llm_client`
 Audience: external reviewer with no local context
 
-## 1) Scope of this implementation pass
-This pass focused on the Week-1 hardening items for provider-driven failures and forced-final robustness in the MCP/tool agent loop.
+Superseded by: `docs/CHATGPT_REVIEW_STATUS_2026-02-23.md`
 
-Primary goals implemented:
-1. Finalization-only fallback lane behavior (without enabling tools in fallback).
-2. Forced-final circuit breaker semantics (stop repeated same-class failures).
-3. Unified provider-empty failure taxonomy.
+## 1) Scope completed in this pass
+This pass completed the requested hardening and documentation follow-through for provider/finalization reliability and Foundation contract safety.
+
+Implemented scope:
+1. Forced-final fallback + breaker behavior hardening.
+2. Explicit finalization policy rejection path for tool-call-shaped outputs.
+3. Provider-empty taxonomy normalization.
 4. Retry-delay source attribution (`structured | parsed | none`) across retry loops.
-5. Tests for the above and regression validation.
+5. Foundation schema strict mode (`FOUNDATION_SCHEMA_STRICT`) and strict-lane tests.
+6. Documentation updates (status dossier + README + CI smoke strict lane).
 
 ## 2) What is now implemented
 
-### 2.1 Forced-final fallback and breaker controls
-Implemented in `llm_client/mcp_agent.py`:
-1. Added runtime knobs:
+### 2.1 Forced-final controls (`llm_client/mcp_agent.py`)
+1. Runtime controls:
    - `forced_final_max_attempts` (default `1`)
    - `forced_final_circuit_breaker_threshold` (default `2`)
-   - `finalization_fallback_models` (finalization-only chain)
-2. Forced-final attempt scheduling now supports repeated attempts even without fallback models.
-3. Circuit breaker now opens on repeated **same-class** forced-final failures (instead of any mixed failures).
-4. Breaker emits terminal failure code: `FINALIZATION_CIRCUIT_BREAKER_OPEN`.
-5. Forced-final metadata is recorded in run metadata:
-   - attempts, thresholds, breaker-open flag
-   - fallback used/succeeded
-   - per-attempt finalization records
-   - finalization event sequence
+   - `finalization_fallback_models`
+2. Same-class breaker semantics are active:
+   - breaker opens only on repeated same-class forced-final failures.
+3. Added explicit policy rejection code for forced-final tool-call outputs:
+   - `FINALIZATION_TOOL_CALL_DISALLOWED`
+   - no tool execution occurs in forced-final even if model returns tool calls.
+4. Added config coherence observability:
+   - `forced_final_breaker_effective` metadata
+   - warning when threshold is greater than attempts (inert breaker config).
+5. Forced-final metadata now captures attempts, fallback usage, breaker status, and per-attempt records.
 
-### 2.2 Provider-empty taxonomy unification
-1. Canonical code is now `PROVIDER_EMPTY_CANDIDATES`.
-2. Legacy aliases remain for compatibility:
-   - `EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN`
-   - `EVENT_CODE_PROVIDER_EMPTY_RESPONSE`
-   both alias to canonical code.
-3. Failure classification now maps `FINALIZATION_*` codes into provider failure class.
+### 2.2 Foundation schema hardening (`llm_client/mcp_agent.py`)
+1. Removed non-schema fields from `ToolFailed.failure` payloads.
+2. Provider diagnostics previously in forbidden `failure.*` fields are now carried in schema-safe `inputs.params` keys.
+3. Added strict mode:
+   - env flag: `FOUNDATION_SCHEMA_STRICT=1`
+   - invalid foundation event validation now raises immediately (instead of warning-only).
 
-### 2.3 Retry-delay source instrumentation
-Implemented in `llm_client/client.py`:
-1. Added structured retry-delay extraction helper.
-2. Retry delay computation now returns `(delay, source)` where source is:
-   - `structured` (typed fields/headers)
-   - `parsed` (message parsing)
-   - `none` (backoff only)
-3. Applied consistently to sync/async/structured/stream retry loops.
-4. Retry warnings now include source marker:
-   - `retry_delay_source=structured|parsed|none`
+### 2.3 Retry-delay source instrumentation (`llm_client/client.py`)
+1. Added structured hint extraction and normalization helpers.
+2. `_compute_retry_delay` now returns `(delay, source)`.
+3. Retry warnings/logs now include `retry_delay_source=structured|parsed|none` across sync/async/structured/stream paths.
+4. Structured hints are preferred over parsed text when both are available.
+
+### 2.4 Provider-empty canonicalization
+1. Canonical failure code remains `PROVIDER_EMPTY_CANDIDATES`.
+2. Legacy alias constants remain for import compatibility, but emissions/metrics use canonicalized behavior.
 
 ## 3) Tests added/updated
 
 ### 3.1 MCP/agent tests (`tests/test_mcp_agent.py`)
-1. Failure taxonomy expectation updated for canonical provider code + new terminal codes.
-2. Added forced-final fallback recovery test.
-3. Added forced-final same-class breaker-open test.
-4. Existing retrieval-stagnation and fallback diagnostics tests remain passing.
+1. Taxonomy tests updated for:
+   - `FINALIZATION_CIRCUIT_BREAKER_OPEN`
+   - `FINALIZATION_TOOL_CALL_DISALLOWED`
+2. Added forced-final tests for:
+   - fallback recovery path
+   - same-class breaker-open behavior
+   - mixed-class failures not opening breaker
+   - tool-call disallowed behavior in forced-final (no tool execution)
+3. Added strict-mode validation test:
+   - `FOUNDATION_SCHEMA_STRICT=1` causes invalid foundation event to raise.
+4. Added assertion that known forced-final failure path has:
+   - `foundation_event_validation_errors == 0`.
 
 ### 3.2 Client retry tests (`tests/test_client.py`)
-1. Added assertion for parsed retry-delay source in quota-with-retryDelay scenario.
-2. Added test for structured `retry_after` hints.
-3. Added assertion for `retry_delay_source=none` on normal transient retry.
+1. Added assertions for `retry_delay_source=parsed` and `retry_delay_source=none`.
+2. Added structured retry hint test (`retry_after` field) asserting `retry_delay_source=structured`.
 
-## 4) Validation results
-Executed locally in repo root:
+## 4) CI/workflow update
+Updated `.github/workflows/smoke-observability.yml` with a Foundation strict-lane step:
+1. sets `FOUNDATION_SCHEMA_STRICT=1`
+2. runs targeted MCP forced-final tests to prevent schema-drift regressions.
+
+## 5) Validation results
+Executed locally in repo root (`/home/brian/projects/llm_client`):
 1. `pytest -q tests/test_mcp_agent.py tests/test_client.py`
-   - Result: `284 passed`
+   - Result: `291 passed`
 2. `pytest -q`
-   - Result: `767 passed, 1 skipped`
+   - Result: `776 passed, 1 skipped`
 
-## 5) Behavioral contract summary (post-change)
+## 6) Current contract posture
 
-### 5.1 Forced-final behavior
-1. Forced-final runs with no tools passed.
-2. Primary forced-final may fail and optionally recover via finalization-only fallback models.
-3. Repeated same-class forced-final failures open a circuit breaker and terminate early.
-4. Recovered finalization does not count as a terminal run failure class.
+### 6.1 Forced-final contract
+1. Forced-final does not execute tools.
+2. Tool-call-shaped forced-final outputs are explicitly rejected and recorded (`FINALIZATION_TOOL_CALL_DISALLOWED`).
+3. Recovered forced-final runs remain classed as completed (`primary_failure_class="none"`).
 
-### 5.2 Retry behavior
-1. Provider retry hints still influence wait duration.
-2. Each retry now records whether delay came from structured hint, parsed text, or none.
+### 6.2 Foundation contract
+1. Failure-path event payloads are schema-safe in tested paths.
+2. Strict mode is available for fail-fast enforcement.
+3. Strict-lane test coverage now exists in CI workflow.
 
-## 6) Known caveats / follow-up work
-1. Foundation event validation still logs warnings in some failure paths where extra diagnostic fields are included in `ToolFailed.failure` payload.
-   - This does **not** fail test suite currently.
-   - Suggested follow-up: move extra diagnostics to schema-safe fields or metadata envelope.
-2. Existing dirty file in worktree:
-   - `llm_client/__main__.py`
-   - It was pre-existing and not modified by this pass.
-
-## 7) Recommended external review asks (for ChatGPT)
-Please review and critique:
-1. Whether forced-final breaker semantics are scoped correctly for provider instability lanes.
-2. Whether finalization-only fallback policy is tight enough to avoid silent masking.
-3. Whether retry-delay source instrumentation is sufficient for benchmark lane attribution.
-4. Whether Foundation event payload strategy should be tightened now (schema-strict) or deferred.
-5. Any missing acceptance criteria before cutting a tagged baseline.
-
-## 8) Suggested next implementation slice
-1. Add explicit negative tests to ensure non-schema fields never leak into strict Foundation event schemas.
-2. Add metrics rollups for:
+## 7) Remaining recommended follow-ups
+1. Add aggregate metrics rollups to run summaries:
    - provider-caused incompletions
-   - forced-final fallback usage rate
-   - breaker-open rate by provider/model
-3. Add a strict mode flag to fail fast on any Foundation event validation warning in CI.
+   - finalization fallback usage rate
+   - breaker-open rates by model/provider
+2. Consider full CI lane with `FOUNDATION_SCHEMA_STRICT=1` over broader MCP test subsets.
+3. Lock policy docs for `reason_code` registry + `actor_id` issuance as separate governance artifacts.
+
+## 8) Reviewer asks for ChatGPT
+Please review:
+1. whether finalization policy (`FINALIZATION_TOOL_CALL_DISALLOWED`) is the right boundary contract,
+2. whether breaker class mapping should be further formalized as a stable code→class table,
+3. whether strict mode should be on-by-default in benchmark lanes now.

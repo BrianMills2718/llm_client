@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from llm_client.foundation import (
     check_binding_conflicts,
     merge_binding_state,
@@ -64,3 +67,43 @@ def test_validate_foundation_event_tool_failed_shape() -> None:
     assert validated["event_type"] == "ToolFailed"
     assert validated["failure"]["error_code"] == "binding_conflict"
 
+
+def test_validate_foundation_event_rejects_custom_event_type() -> None:
+    payload = {
+        "event_id": "evt_test_custom",
+        "event_type": "BeliefStatusChanged",
+        "timestamp": "2026-02-23T00:00:00Z",
+        "run_id": "run_test",
+        "session_id": "sess_test",
+        "actor_id": "agent:test",
+        "operation": {"name": "quarantine", "version": "1.0.0"},
+        "inputs": {"artifact_ids": [], "params": {}, "bindings": {}},
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+    }
+    with pytest.raises(ValidationError):
+        validate_foundation_event(payload)
+
+
+def test_validate_foundation_event_rejects_tool_failed_extra_fields() -> None:
+    payload = {
+        "event_id": "evt_test2",
+        "event_type": "ToolFailed",
+        "timestamp": "2026-02-23T00:00:00Z",
+        "run_id": "run_test",
+        "session_id": "sess_test",
+        "actor_id": "agent:test",
+        "operation": {"name": "entity_onehop", "version": "1.0.0"},
+        "inputs": {"artifact_ids": [], "params": {}, "bindings": {}},
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "failure": {
+            "error_code": "PROVIDER_EMPTY_CANDIDATES",
+            "category": "provider",
+            "phase": "execution",
+            "retryable": True,
+            "tool_name": "entity_onehop",
+            "user_message": "provider empty response",
+            "provider_classification": "empty_candidates",
+        },
+    }
+    with pytest.raises(ValidationError):
+        validate_foundation_event(payload)
