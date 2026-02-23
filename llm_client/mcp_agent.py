@@ -3987,9 +3987,14 @@ async def _agent_loop(
                         todo_id and status == "done"
                         and todo_done_error_streak.get(todo_id, 0) >= 2
                     ):
+                        blocked_example = (
+                            f"todo_update(todo_id='{todo_id}', status='blocked', "
+                            "note='blocked: missing evidence/dependency')"
+                        )
                         err = (
                             "todo_update(done) suppressed: repeated completion failures for this TODO. "
-                            "Change strategy first (status='blocked' or upstream bridge repair) before retrying done."
+                            f"TODO={todo_id}. Change strategy first (set status='blocked' with a concise note, "
+                            f"or repair upstream bridge/evidence) before retrying done. Example: {blocked_example}."
                         )
                         suppressed_records.append(
                             MCPToolCallRecord(
@@ -4006,6 +4011,13 @@ async def _agent_loop(
                                 {
                                     "error": err,
                                     "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
+                                    "recovery_policy": {
+                                        "change_todo_status_before_retry": True,
+                                        "suggested_next_actions": [
+                                            blocked_example,
+                                            "todo_list()",
+                                        ],
+                                    },
                                 }
                             ),
                         })
