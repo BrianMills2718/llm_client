@@ -35,10 +35,9 @@ couplings:
       - llm_client/observability/*.py
     docs:
       - docs/adr/0003-warning-taxonomy.md
-      - docs/CHATGPT_REVIEW_STATUS_2026-02-23.md
+      - docs/adr/0007-observability-contract-boundary.md
     description: Observability sink/query compatibility and warning emission surface.
     required_reading: true
-    uncertainty: No dedicated observability ADR yet; status dossier is interim source.
 
   - sources:
       - llm_client/task_graph.py
