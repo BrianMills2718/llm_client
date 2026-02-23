@@ -478,6 +478,18 @@ print(summary["background_mode_rate_among_reasoning"])
 
 `adoption` can enforce a local gate without GitHub Actions: when `--min-rate` is set, the command exits non-zero on failure (unless `--warn-only`). This is scheduler-friendly for cron/Jenkins/Buildkite.
 
+You can also use the wrapper script (env-configurable defaults):
+
+```bash
+./scripts/adoption_gate.sh
+```
+
+Cron example (daily at 06:15 UTC, log to file, no GitHub Actions):
+
+```cron
+15 6 * * * cd /home/brian/projects/llm_client && ./scripts/adoption_gate.sh >> /home/brian/projects/llm_client/adoption_gate.log 2>&1
+```
+
 ## API keys
 
 Set via environment variables (litellm convention):

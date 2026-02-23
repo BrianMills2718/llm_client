@@ -13,7 +13,7 @@ status:  ## Show git status
 	@git status --short --branch
 
 # --- During Implementation ---
-.PHONY: test test-quick check read-gate-check read-gate-check-warn
+.PHONY: test test-quick check adoption-gate read-gate-check read-gate-check-warn
 
 test:  ## Run pytest
 	pytest tests/ -v
@@ -29,6 +29,9 @@ check:  ## Run all checks (test, mypy)
 	@mypy llm_client --ignore-missing-imports
 	@echo ""
 	@echo "All checks passed!"
+
+adoption-gate:  ## Run local long-thinking adoption gate (cron/CI friendly)
+	./scripts/adoption_gate.sh
 
 read-gate-check:  ## Check required-reading gate (FILE=llm_client/client.py)
 ifndef FILE
