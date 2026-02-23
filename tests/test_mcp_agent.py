@@ -37,6 +37,7 @@ from llm_client import (
 from llm_client.mcp_agent import (
     MCP_LOOP_KWARGS,
     _effective_contract_requirements,
+    _extract_unfinished_todo_ids,
     _extract_usage,
     _find_repair_tools_for_missing_requirements,
     _mcp_tool_to_openai,
@@ -136,6 +137,23 @@ class TestExtractUsage:
         assert out == 100
         assert cached == 400
         assert cache_create == 50
+
+
+class TestExtractUnfinishedTodoIds:
+    def test_extracts_only_canonical_todo_ids(self) -> None:
+        text = (
+            "submit_answer suppressed: TODO state has not changed. "
+            "Unfinished TODOs currently blocking submit: todo_2, todo_3. "
+            "Call todo_update(todo_id=<id>, status='done') or todo_list()."
+        )
+        assert _extract_unfinished_todo_ids(text) == ["todo_2", "todo_3"]
+
+    def test_does_not_treat_tool_names_as_todo_ids(self) -> None:
+        text = (
+            "Call todo_update(...) or todo_list() to unblock first. "
+            "Use todo_id=<id> in args."
+        )
+        assert _extract_unfinished_todo_ids(text) == []
 
 
 class TestDynamicContractRequirements:

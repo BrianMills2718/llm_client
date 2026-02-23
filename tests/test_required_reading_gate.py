@@ -55,10 +55,10 @@ def test_required_reading_gate_modes(mode: str, expected_rc: int, expected_fragm
         assert expected_fragment in proc.stdout
 
 
-def test_uncoupled_file_defaults_to_warn_mode() -> None:
+def test_uncoupled_file_defaults_to_strict_mode() -> None:
     proc = _run_gate(target_file="llm_client/errors.py", reads=[])
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "warning for" in proc.stdout
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "blocked edit" in proc.stdout
 
 
 def test_coupled_file_passes_when_required_docs_are_read() -> None:

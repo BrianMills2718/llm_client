@@ -1489,10 +1489,18 @@ def _extract_unfinished_todo_ids(error_text: str) -> list[str]:
     text = (error_text or "").strip()
     if not text:
         return []
-    # Common shape: "Unfinished TODOs: todo_2, todo_3."
-    match = re.search(r"unfinished\s+todos?\s*:\s*([^\n]+)", text, flags=re.IGNORECASE)
+    # Prefer explicit unfinished-blocking segment when present.
+    # Examples:
+    # - "Unfinished TODOs: todo_2, todo_3."
+    # - "Unfinished TODOs currently blocking submit: todo_2, todo_3."
+    match = re.search(
+        r"unfinished\s+todos?(?:\s+[a-z ]+)?\s*:\s*([^\n]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
     segment = match.group(1) if match else text
-    found = re.findall(r"\btodo_[A-Za-z0-9_-]+\b", segment)
+    # Only treat canonical task IDs as unfinished TODO blockers.
+    found = re.findall(r"\btodo_\d+\b", segment)
     # Preserve order while de-duplicating.
     deduped: list[str] = []
     seen: set[str] = set()

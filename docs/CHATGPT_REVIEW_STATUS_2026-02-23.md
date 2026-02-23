@@ -339,7 +339,7 @@ Applied the next tuning pass for adoption ergonomics while keeping strict
 contract protection where it matters:
 1. `meta-process.yaml` now sets:
    - `required_reading.mode: strict`
-   - `required_reading.uncoupled_mode: warn`
+   - `required_reading.uncoupled_mode: strict`
 2. `scripts/relationships.yaml` was tightened to use focused strict couplings:
    - core call path + runtime/routing/execution modules -> ADR 0001/0002/0003/0004
    - MCP/Foundation/agent loop governance modules -> ADR 0005/0006
@@ -348,7 +348,7 @@ contract protection where it matters:
 
 Validation snapshot after this pass:
 1. Coupled file with missing reads: strict block (exit 1)
-2. Uncoupled file with missing reads: warning only (exit 0)
+2. Uncoupled file with missing reads: strict block (exit 1)
 3. Coupled file with required docs read: pass (exit 0)
 
 ## 19) Additional follow-up (Makefile normalization + gate helpers)
@@ -369,16 +369,20 @@ Expanded required-reading coverage and added CI smoke checks for mode behavior:
 1. `scripts/relationships.yaml` now includes additional high-risk module groups:
    - `llm_client/io_log.py`, `llm_client/observability/*.py`
    - `llm_client/task_graph.py`, `llm_client/experiment_eval.py`
-2. Added smoke test file:
+2. Added smoke/integration test files:
    - `tests/test_required_reading_gate.py`
-   - verifies strict/warn/off behavior and uncoupled default warning mode.
+   - `tests/test_gate_edit_hook_integration.py`
+   - `tests/test_relationships_validation.py`
+   - verifies strict/warn/off behavior and uncoupled strict default behavior,
+     gate-edit hook block/warn semantics, and relationships config validity.
 3. Expanded `.github/workflows/smoke-observability.yml` with:
    - `Required-reading gate mode smoke`
-   - runs `pytest -q tests/test_required_reading_gate.py`
+   - `Validate relationships config`
+   - runs `pytest -q tests/test_required_reading_gate.py tests/test_gate_edit_hook_integration.py`
 
 Documented uncertainties (current best-judgment choices):
-1. Observability coupling currently references `docs/CHATGPT_REVIEW_STATUS_2026-02-23.md`
-   because there is no dedicated observability ADR yet.
+1. Observability coupling now references ADR 0007 (`docs/adr/0007-observability-contract-boundary.md`),
+   reducing previous ambiguity around observability contract boundaries.
 2. Task-graph coupling references `docs/TASK_GRAPH_DESIGN.md`; this is the best
    available design source but may lag implementation details over time.
 3. Both uncertainties are explicitly recorded in `scripts/relationships.yaml`

@@ -14,6 +14,7 @@ Utility scripts for development and CI. All scripts support `--help` for options
 | `scripts/meta/parse_plan.py` | Parse plan metadata |
 | `scripts/meta/generate_quiz.py` | Generate comprehension quiz prompts |
 | `scripts/meta/check_required_reading.py` | Enforce required docs read before editing coupled source files |
+| `scripts/meta/validate_relationships.py` | Validate relationships/read-gate config integrity |
 
 ## Common Commands
 
@@ -36,6 +37,9 @@ LLM_CLIENT_READ_GATE_MODE=warn python scripts/meta/check_required_reading.py llm
 
 # Read-gate smoke tests (strict/warn/off behavior)
 pytest -q tests/test_required_reading_gate.py
+
+# Validate relationships config before CI
+python scripts/meta/validate_relationships.py --strict
 ```
 
 ## Worktree Coordination Scripts (opt-in)
@@ -67,4 +71,4 @@ Required-reading gate controls:
 
 Current project default:
 - Coupled source files: `strict`
-- Uncoupled source files: `warn`
+- Uncoupled source files: `strict`

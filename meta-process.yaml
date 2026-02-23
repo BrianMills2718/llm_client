@@ -25,7 +25,7 @@ meta_process:
     required_reading:
       enabled: true
       mode: strict
-      uncoupled_mode: warn
+      uncoupled_mode: strict
       config_file: scripts/relationships.yaml
       show_success: false
     mock_policy:

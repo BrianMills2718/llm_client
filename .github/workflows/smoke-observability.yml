@@ -27,6 +27,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Validate relationships config
+        run: |
+          python scripts/meta/validate_relationships.py --strict
+
       - name: Smoke tests with logging disabled
         run: |
           pytest -q \
@@ -35,7 +39,7 @@ jobs:
 
       - name: Required-reading gate mode smoke
         run: |
-          pytest -q tests/test_required_reading_gate.py
+          pytest -q tests/test_required_reading_gate.py tests/test_gate_edit_hook_integration.py
 
       - name: Foundation schema strict lane
         env:
