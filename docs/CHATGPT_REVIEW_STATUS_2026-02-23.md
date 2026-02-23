@@ -85,16 +85,15 @@ Commands run from `/home/brian/projects/llm_client`:
 2. Retry-delay source attribution is consistently emitted and test-covered.
 3. Run metadata now separates reliability outcomes from reasoning outcomes via rollup counters.
 
-## 5) Remaining policy decisions (non-code)
-These are still recommended to lock formally in docs:
-1. `reason_code` registry governance:
-   - additive-only,
-   - non-reassigning semantics,
-   - version-stamped source of truth.
-2. `actor_id` issuance model:
-   - server-issued namespace policy (`user:` / `agent:` / `service:`),
-   - server as trust boundary,
-   - required on decision and transition records.
+## 5) Policy decisions now locked
+Previously open governance items are now accepted via ADRs:
+1. `reason_code` registry governance is formalized in:
+   - `docs/adr/0005-reason-code-registry-governance.md`
+   - additive-only, non-reassigning semantics, versioned registry.
+2. Foundation `actor_id` issuance policy is formalized in:
+   - `docs/adr/0006-actor-id-issuance-policy.md`
+   - canonical namespaces (`user:` / `agent:` / `service:`),
+   - server/runtime trust boundary for authoritative issuance.
 
 ## 6) Reviewer prompts for ChatGPT
 Please critique:
@@ -193,3 +192,24 @@ Validation snapshot after this pass:
    - Result: `798 passed, 1 skipped, 1 warning`
 3. `mypy llm_client`
    - Result: `Success: no issues found in 36 source files`
+
+## 11) Additional follow-up (stream runtime extraction)
+Completed the next architecture split for stream paths:
+1. Extracted stream internals out of `llm_client/client.py` into:
+   - `llm_client/stream_runtime.py`
+   - `stream_llm_impl(...)`
+   - `astream_llm_impl(...)`
+2. Converted `stream_llm(...)` and `astream_llm(...)` in `client.py` into thin
+   facade delegates with lazy imports to avoid circular initialization.
+3. Preserved existing retry/fallback behavior and identity trace shaping for:
+   - `requested_model`
+   - `resolved_model`
+   - `routing_trace`
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_client.py tests/test_model_identity_contract.py -k "stream or identity"`
+   - Result: `29 passed, 196 deselected, 1 warning`
+2. `pytest -q`
+   - Result: `798 passed, 1 skipped, 1 warning`
+3. `mypy llm_client`
+   - Result: `Success: no issues found in 37 source files`
