@@ -3029,3 +3029,150 @@ class TestAgentDiagnostics:
         assert isinstance(agent_result.metadata.get("evidence_digest"), str)
         # Successful evidence call should clear pending digest gate.
         assert agent_result.metadata.get("submit_evidence_digest_at_last_failure") is None
+
+    async def test_answer_not_grounded_with_todo_span_requires_todo_progress(self) -> None:
+        """answer_not_grounded + todo answer_span should engage TODO-progress suppression."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            tool_name = tool_calls[0]["function"]["name"]
+            if tool_name == "submit_answer" and executor_call_count == 1:
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="submit_answer",
+                            arguments={"reasoning": "r1", "answer": "candidate"},
+                            result='{"status":"needs_revision","validation_error":{"reason_code":"answer_not_grounded","message":"Missing TODO answer_span for todo_2"}}',
+                        ),
+                    ],
+                    [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "tc_submit_1",
+                            "content": '{"status":"needs_revision","validation_error":{"reason_code":"answer_not_grounded","message":"Missing TODO answer_span for todo_2"}}',
+                        }
+                    ],
+                )
+            if tool_name == "todo_update":
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="todo_update",
+                            arguments={"todo_id": "todo_2", "status": "done"},
+                            result='{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
+                        ),
+                    ],
+                    [
+                        {
+                            "role": "tool",
+                            "tool_call_id": "tc_todo_2_done",
+                            "content": '{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
+                        }
+                    ],
+                )
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="submit_answer",
+                        arguments={"reasoning": "r3", "answer": "final answer"},
+                        result='{"status":"submitted","answer":"final answer"}',
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_submit_3",
+                        "content": '{"status":"submitted","answer":"final answer"}',
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_1",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r1","answer":"candidate","tool_reasoning":"initial submit"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_2",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r2","answer":"candidate","tool_reasoning":"resubmit too early"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_todo_2_done",
+                    "function": {
+                        "name": "todo_update",
+                        "arguments": '{"todo_id":"todo_2","status":"done","tool_reasoning":"mark todo done"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_3",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"r3","answer":"final answer","tool_reasoning":"submit after todo progress"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [
+                    {"type": "function", "function": {"name": "submit_answer"}},
+                    {"type": "function", "function": {"name": "todo_update"}},
+                ],
+                agent_result,
+                mock_executor,
+                8,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                suppress_control_loop_calls=True,
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "final answer"
+        assert finish == "submitted"
+        # First submit + todo update + final submit execute; middle submit is suppressed.
+        assert executor_call_count == 3
+        assert agent_result.metadata["control_loop_suppressed_calls"] >= 1
+        assert any(
+            record.tool == "submit_answer"
+            and "TODO state has not changed" in (record.error or "")
+            for record in agent_result.tool_calls
+        )
+        assert any(
+            msg.get("role") == "user" and "Create/update TODOs first" in msg.get("content", "")
+            for msg in agent_result.conversation_trace
+        )
