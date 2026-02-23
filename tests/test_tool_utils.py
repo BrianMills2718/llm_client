@@ -125,6 +125,20 @@ class TestCallableToOpenaiTool:
         finally:
             delattr(no_doc, "__tool_description__")
 
+    def test_input_examples_attribute_appended_to_description(self) -> None:
+        async_search.__tool_input_examples__ = [  # type: ignore[attr-defined]
+            {"query": "Diego Maradona signed Barcelona date", "limit": 5},
+            {"query": "Lady Godiva countess Mercia", "limit": 3},
+        ]
+        try:
+            schema = callable_to_openai_tool(async_search)
+            desc = schema["function"]["description"]
+            assert "Search for entities." in desc
+            assert "Input examples:" in desc
+            assert "Diego Maradona signed Barcelona date" in desc
+        finally:
+            delattr(async_search, "__tool_input_examples__")
+
     def test_missing_type_hint_raises(self) -> None:
         def bad_fn(x):  # type: ignore[no-untyped-def]
             return x

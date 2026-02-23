@@ -24,7 +24,13 @@ import logging
 import time
 from typing import Any, Callable, Optional, Union, get_args, get_origin, get_type_hints
 
-from llm_client.mcp_agent import MCPToolCallRecord, TOOL_REASONING_FIELD, _truncate
+from llm_client.mcp_agent import (
+    MCPToolCallRecord,
+    TOOL_REASONING_FIELD,
+    _append_input_examples_to_description,
+    _normalize_tool_input_examples,
+    _truncate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +255,13 @@ def callable_to_openai_tool(fn: Callable[..., Any]) -> dict[str, Any]:
         first_line = fn.__doc__.strip().split("\n")[0].strip()
         if first_line:
             description = first_line
+    raw_input_examples = getattr(fn, "__tool_input_examples__", None)
+    if raw_input_examples is None:
+        raw_input_examples = getattr(fn, "__tool_examples__", None)
+    description = _append_input_examples_to_description(
+        description,
+        _normalize_tool_input_examples(raw_input_examples),
+    )
 
     parameters: dict[str, Any] = {
         "type": "object",

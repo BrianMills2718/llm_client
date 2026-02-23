@@ -36,6 +36,7 @@ from llm_client import (
 )
 from llm_client.mcp_agent import (
     MCP_LOOP_KWARGS,
+    _clear_old_tool_results_for_context,
     _effective_contract_requirements,
     _extract_unfinished_todo_ids,
     _extract_usage,
@@ -90,6 +91,21 @@ class TestMcpToolToOpenai:
         assert params["type"] == "object"
         assert "tool_reasoning" in params["properties"]
 
+    def test_appends_input_examples_to_description(self) -> None:
+        tool = MagicMock()
+        tool.name = "search"
+        tool.description = "Search for entities"
+        tool.inputSchema = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "examples": [{"query": "Messi Copa del Rey goals comparison"}],
+        }
+        result = _mcp_tool_to_openai(tool)
+        desc = result["function"]["description"]
+        assert "Search for entities" in desc
+        assert "Input examples:" in desc
+        assert "Messi Copa del Rey goals comparison" in desc
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,6 +153,42 @@ class TestExtractUsage:
         assert out == 100
         assert cached == 400
         assert cache_create == 50
+
+
+class TestClearOldToolResultsForContext:
+    def test_clears_older_tool_messages_and_keeps_recent(self) -> None:
+        messages = [
+            {"role": "user", "content": "q"},
+            {"role": "tool", "tool_call_id": "tc1", "content": "alpha " * 60},
+            {"role": "tool", "tool_call_id": "tc2", "content": "beta " * 60},
+            {"role": "tool", "tool_call_id": "tc3", "content": "gamma " * 60},
+        ]
+        cleared, saved = _clear_old_tool_results_for_context(
+            messages,
+            keep_recent=1,
+            preview_chars=80,
+        )
+        assert cleared == 2
+        assert saved > 0
+        # Most recent tool result stays verbatim.
+        assert messages[3]["content"].startswith("gamma ")
+        # Older results are replaced with stubs that keep trace handles.
+        assert "Tool result cleared from active context" in messages[1]["content"]
+        assert '"tool_call_id": "tc1"' in messages[1]["content"]
+        assert '"content_sha256":' in messages[1]["content"]
+
+    def test_keep_recent_zero_clears_all_tool_payloads(self) -> None:
+        messages = [
+            {"role": "tool", "tool_call_id": "tc1", "content": "x" * 200},
+            {"role": "tool", "tool_call_id": "tc2", "content": "y" * 200},
+        ]
+        cleared, _ = _clear_old_tool_results_for_context(
+            messages,
+            keep_recent=0,
+            preview_chars=60,
+        )
+        assert cleared == 2
+        assert all("Tool result cleared from active context" in m["content"] for m in messages)
 
 
 class TestExtractUnfinishedTodoIds:
@@ -2194,6 +2246,65 @@ class TestAgentDiagnostics:
         )
         closure = agent_result.metadata.get("lane_closure_analysis") or {}
         assert closure.get("lane_closed") is True
+
+    async def test_context_tool_result_clearing_emits_metadata(self) -> None:
+        """Older tool results are proactively cleared and surfaced in metadata counters."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc1",
+                    "function": {"name": "chunk_text_search", "arguments": '{"query":"q1"}'},
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc2",
+                    "function": {"name": "chunk_text_search", "arguments": '{"query":"q2"}'},
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="done", finish_reason="stop"),
+        ]
+
+        async def mock_executor(tool_calls, max_len):
+            tc_id = tool_calls[0]["id"]
+            payload = ("tool-result " + tc_id + " ") * 120
+            return (
+                [MCPToolCallRecord(server="srv", tool="chunk_text_search", arguments={}, result=payload)],
+                [{"role": "tool", "tool_call_id": tc_id, "content": payload}],
+            )
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [{"type": "function", "function": {"name": "chunk_text_search"}}],
+                agent_result,
+                mock_executor,
+                5,
+                None,
+                False,
+                50000,
+                max_message_chars=500000,
+                timeout=60,
+                kwargs={
+                    "tool_result_keep_recent": 1,
+                    "tool_result_context_preview_chars": 80,
+                },
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert agent_result.metadata["tool_result_keep_recent"] == 1
+        assert agent_result.metadata["context_tool_results_cleared"] >= 1
+        assert agent_result.metadata["context_tool_result_clearings"] >= 1
+        assert agent_result.metadata["context_tool_result_cleared_chars"] > 0
 
     async def test_submit_answer_enforced_when_tool_available(self) -> None:
         """When submit_answer exists, plain-text response is nudged into explicit submission."""

@@ -108,6 +108,18 @@ DEFAULT_TOOL_RESULT_MAX_LENGTH: int = 50_000
 DEFAULT_MAX_MESSAGE_CHARS: int = 260_000
 """Soft cap for serialized message-history size; old tool outputs are compacted above this."""
 
+DEFAULT_TOOL_RESULT_KEEP_RECENT: int = 12
+"""Keep this many most-recent tool result payloads fully in-context; older payloads are cleared."""
+
+DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS: int = 200
+"""Chars of preview retained when older tool payloads are cleared from active prompt context."""
+
+DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS: int = 2
+"""Maximum tool input examples appended to tool descriptions."""
+
+DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS: int = 240
+"""Max chars retained per input example snippet in tool descriptions."""
+
 DEFAULT_ENFORCE_TOOL_CONTRACTS: bool = False
 """When enabled, reject tool calls that violate declared composability contracts."""
 
@@ -195,6 +207,8 @@ MCP_LOOP_KWARGS = frozenset({
     "mcp_init_timeout",
     "tool_result_max_length",
     "max_message_chars",
+    "tool_result_keep_recent",
+    "tool_result_context_preview_chars",
     "enforce_tool_contracts",
     "progressive_tool_disclosure",
     "suppress_control_loop_calls",
@@ -216,6 +230,8 @@ TOOL_LOOP_KWARGS = frozenset({
     "require_tool_reasoning",
     "tool_result_max_length",
     "max_message_chars",
+    "tool_result_keep_recent",
+    "tool_result_context_preview_chars",
     "enforce_tool_contracts",
     "progressive_tool_disclosure",
     "suppress_control_loop_calls",
@@ -366,6 +382,47 @@ class MCPSessionPool:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_tool_input_examples(raw: Any) -> list[str]:
+    """Normalize raw input examples into compact display strings."""
+    if raw is None:
+        return []
+    items: list[Any]
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = [raw]
+
+    normalized: list[str] = []
+    for item in items:
+        if len(normalized) >= DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS:
+            break
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, (dict, list)):
+            try:
+                text = _json.dumps(item, ensure_ascii=False)
+            except Exception:
+                text = str(item).strip()
+        else:
+            text = str(item).strip()
+        if not text:
+            continue
+        normalized.append(text[:DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS])
+    return normalized
+
+
+def _append_input_examples_to_description(description: str, examples: list[str]) -> str:
+    """Append bounded input examples to tool description text."""
+    base = str(description or "").strip()
+    if not examples:
+        return base
+    bullet_lines = "\n".join(f"- {ex}" for ex in examples)
+    examples_block = "Input examples:\n" + bullet_lines
+    if base:
+        return f"{base}\n\n{examples_block}"
+    return examples_block
+
+
 def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
     """Convert an MCP Tool object to OpenAI function-calling format.
 
@@ -394,11 +451,25 @@ def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
         required.append(TOOL_REASONING_FIELD)
     parameters["required"] = required
 
+    raw_examples = None
+    input_examples_attr = getattr(tool, "inputExamples", None)
+    if isinstance(input_examples_attr, (str, list, tuple, dict)):
+        raw_examples = input_examples_attr
+    elif isinstance(parameters.get("examples"), list):
+        raw_examples = parameters.get("examples")
+    elif isinstance(getattr(tool, "metadata", None), dict):
+        raw_examples = tool.metadata.get("input_examples")
+
+    description = _append_input_examples_to_description(
+        str(tool.description or ""),
+        _normalize_tool_input_examples(raw_examples),
+    )
+
     return {
         "type": "function",
         "function": {
             "name": tool.name,
-            "description": tool.description or "",
+            "description": description,
             "parameters": parameters,
         },
     }
@@ -498,6 +569,68 @@ def _compact_tool_history_for_context(
         compacted += 1
 
     return compacted, saved, total_chars
+
+
+def _clear_old_tool_results_for_context(
+    messages: list[dict[str, Any]],
+    keep_recent: int,
+    preview_chars: int,
+) -> tuple[int, int]:
+    """Replace older tool payloads with compact stubs while keeping recent results verbatim.
+
+    This proactively limits prompt growth on long tool traces without losing
+    traceability: each cleared payload retains tool_call_id, preview, and hash.
+
+    Returns (cleared_message_count, chars_saved).
+    """
+    if keep_recent < 0:
+        return 0, 0
+
+    tool_indices: list[int] = []
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        if not isinstance(msg.get("content"), str):
+            continue
+        tool_indices.append(idx)
+
+    if len(tool_indices) <= keep_recent:
+        return 0, 0
+
+    keep_set = set(tool_indices[-keep_recent:]) if keep_recent > 0 else set()
+    preview_limit = max(40, int(preview_chars))
+    cleared = 0
+    saved = 0
+
+    for idx in tool_indices:
+        if idx in keep_set:
+            continue
+        msg = messages[idx]
+        content = msg.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        # Idempotent clearing: do not keep rewriting previously-cleared stubs.
+        if '"notice":"Tool result cleared from active context' in content:
+            continue
+
+        content_one_line = " ".join(content.strip().split())
+        stub = _json.dumps(
+            {
+                "notice": "Tool result cleared from active context to reduce prompt size.",
+                "tool_call_id": str(msg.get("tool_call_id", "")).strip(),
+                "content_sha256": sha256_text(content).replace("sha256:", ""),
+                "preview": content_one_line[:preview_limit],
+            },
+            ensure_ascii=False,
+        )
+        old_len = len(content)
+        new_len = len(stub)
+        msg["content"] = stub
+        if old_len > new_len:
+            saved += old_len - new_len
+        cleared += 1
+
+    return cleared, saved
 
 
 def _is_budget_exempt_tool(tool_name: str) -> bool:
@@ -643,6 +776,8 @@ class AgentLoopRuntimePolicy:
     finalization_fallback_models: list[str]
     retrieval_stagnation_turns: int
     retrieval_stagnation_action: str
+    tool_result_keep_recent: int
+    tool_result_context_preview_chars: int
     run_config_spec: dict[str, Any]
     run_config_hash: str
 
@@ -707,6 +842,8 @@ def _resolve_agent_runtime_policy(
             "finalization_fallback_models",
             "retrieval_stagnation_turns",
             "retrieval_stagnation_action",
+            "tool_result_keep_recent",
+            "tool_result_context_preview_chars",
         )
         if k in kwargs
     }
@@ -773,6 +910,29 @@ def _resolve_agent_runtime_policy(
         logger.warning(warning)
         retrieval_stagnation_action = DEFAULT_RETRIEVAL_STAGNATION_ACTION
 
+    tool_result_keep_recent_raw = kwargs.pop(
+        "tool_result_keep_recent",
+        DEFAULT_TOOL_RESULT_KEEP_RECENT,
+    )
+    try:
+        tool_result_keep_recent = int(tool_result_keep_recent_raw)
+    except Exception:
+        tool_result_keep_recent = DEFAULT_TOOL_RESULT_KEEP_RECENT
+    tool_result_keep_recent = max(0, tool_result_keep_recent)
+
+    tool_result_context_preview_chars_raw = kwargs.pop(
+        "tool_result_context_preview_chars",
+        DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS,
+    )
+    try:
+        tool_result_context_preview_chars = int(tool_result_context_preview_chars_raw)
+    except Exception:
+        tool_result_context_preview_chars = DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS
+    tool_result_context_preview_chars = max(40, tool_result_context_preview_chars)
+    run_config_spec["tool_result_keep_recent"] = tool_result_keep_recent
+    run_config_spec["tool_result_context_preview_chars"] = tool_result_context_preview_chars
+    run_config_hash = sha256_json(run_config_spec).replace("sha256:", "")
+
     return AgentLoopRuntimePolicy(
         forced_final_max_attempts=forced_final_max_attempts,
         forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
@@ -780,6 +940,8 @@ def _resolve_agent_runtime_policy(
         finalization_fallback_models=finalization_fallback_models,
         retrieval_stagnation_turns=retrieval_stagnation_turns,
         retrieval_stagnation_action=retrieval_stagnation_action,
+        tool_result_keep_recent=tool_result_keep_recent,
+        tool_result_context_preview_chars=tool_result_context_preview_chars,
         run_config_spec=run_config_spec,
         run_config_hash=run_config_hash,
     )
@@ -1029,6 +1191,9 @@ class ForcedFinalizationResult:
     finalization_events: list[str]
     finalization_fallback_attempts: list[dict[str, Any]]
     failure_event_codes: list[str]
+    context_tool_result_clearings_delta: int
+    context_tool_results_cleared_delta: int
+    context_tool_result_cleared_chars_delta: int
     context_compactions_delta: int
     context_compacted_messages_delta: int
     context_compacted_chars_delta: int
@@ -1045,6 +1210,8 @@ async def _execute_forced_finalization(
     force_final_reason: str,
     max_turns: int,
     max_message_chars: int,
+    tool_result_keep_recent: int,
+    tool_result_context_preview_chars: int,
     messages: list[dict[str, Any]],
     kwargs: dict[str, Any],
     timeout: int,
@@ -1103,9 +1270,29 @@ async def _execute_forced_finalization(
     messages.append(force_msg)
     agent_result.conversation_trace.append(force_msg)
 
+    context_tool_result_clearings_delta = 0
+    context_tool_results_cleared_delta = 0
+    context_tool_result_cleared_chars_delta = 0
     context_compactions_delta = 0
     context_compacted_messages_delta = 0
     context_compacted_chars_delta = 0
+    cleared_count, cleared_chars = _clear_old_tool_results_for_context(
+        messages,
+        keep_recent=tool_result_keep_recent,
+        preview_chars=tool_result_context_preview_chars,
+    )
+    if cleared_count:
+        context_tool_result_clearings_delta = 1
+        context_tool_results_cleared_delta = cleared_count
+        context_tool_result_cleared_chars_delta = cleared_chars
+        warning = (
+            "CONTEXT_TOOL_RESULT_CLEARING: replaced "
+            f"{cleared_count} older tool payload(s) with compact stubs "
+            f"(saved ~{cleared_chars} chars; keep_recent={tool_result_keep_recent}) before forced-final call"
+        )
+        agent_result.warnings.append(warning)
+        logger.warning(warning)
+
     compacted_count, compacted_chars, current_chars = _compact_tool_history_for_context(
         messages, max_message_chars,
     )
@@ -1466,6 +1653,9 @@ async def _execute_forced_finalization(
         finalization_events=finalization_events,
         finalization_fallback_attempts=finalization_fallback_attempts,
         failure_event_codes=failure_event_codes,
+        context_tool_result_clearings_delta=context_tool_result_clearings_delta,
+        context_tool_results_cleared_delta=context_tool_results_cleared_delta,
+        context_tool_result_cleared_chars_delta=context_tool_result_cleared_chars_delta,
         context_compactions_delta=context_compactions_delta,
         context_compacted_messages_delta=context_compacted_messages_delta,
         context_compacted_chars_delta=context_compacted_chars_delta,
@@ -2979,6 +3169,9 @@ async def _agent_loop(
     context_compactions = 0
     context_compacted_messages = 0
     context_compacted_chars = 0
+    context_tool_result_clearings = 0
+    context_tool_results_cleared = 0
+    context_tool_result_cleared_chars = 0
     gate_rejected_calls = 0
     gate_violation_events: list[dict[str, Any]] = []
     contract_rejected_calls = 0
@@ -2989,6 +3182,10 @@ async def _agent_loop(
     submit_validation_reason_counts: dict[str, int] = {}
     evidence_signatures: set[str] = set()
     submit_evidence_digest_at_last_failure: str | None = None
+    evidence_digest_change_count = 0
+    evidence_turns_total = 0
+    evidence_turns_with_new_evidence = 0
+    evidence_turns_without_new_evidence = 0
     retrieval_no_hits_count = 0
     tool_state = _initialize_agent_tool_state(
         openai_tools=openai_tools,
@@ -3055,10 +3252,13 @@ async def _agent_loop(
     finalization_fallback_models = runtime_policy.finalization_fallback_models
     retrieval_stagnation_turns = runtime_policy.retrieval_stagnation_turns
     retrieval_stagnation_action = runtime_policy.retrieval_stagnation_action
+    tool_result_keep_recent = runtime_policy.tool_result_keep_recent
+    tool_result_context_preview_chars = runtime_policy.tool_result_context_preview_chars
 
     forced_final_attempts = 0
     forced_final_circuit_breaker_opened = False
     retrieval_stagnation_streak = 0
+    retrieval_stagnation_streak_max = 0
     retrieval_stagnation_alerted_for_current_streak = False
     retrieval_stagnation_triggered = False
     retrieval_stagnation_turn: int | None = None
@@ -3139,6 +3339,23 @@ async def _agent_loop(
                 last_budget_remaining = remaining_tool_calls
 
         agent_result.turns = turn + 1
+
+        cleared_count, cleared_chars = _clear_old_tool_results_for_context(
+            messages,
+            keep_recent=tool_result_keep_recent,
+            preview_chars=tool_result_context_preview_chars,
+        )
+        if cleared_count:
+            context_tool_result_clearings += 1
+            context_tool_results_cleared += cleared_count
+            context_tool_result_cleared_chars += cleared_chars
+            warning = (
+                "CONTEXT_TOOL_RESULT_CLEARING: replaced "
+                f"{cleared_count} older tool payload(s) with compact stubs "
+                f"(saved ~{cleared_chars} chars; keep_recent={tool_result_keep_recent})."
+            )
+            agent_result.warnings.append(warning)
+            logger.warning(warning)
 
         compacted_count, compacted_chars, current_chars = _compact_tool_history_for_context(
             messages, max_message_chars,
@@ -4282,6 +4499,8 @@ async def _agent_loop(
                 evidence_signatures.add(signature)
         evidence_digest_after_turn = _evidence_digest(evidence_signatures)
         new_evidence_this_turn = evidence_digest_after_turn != evidence_digest_before_turn
+        if new_evidence_this_turn:
+            evidence_digest_change_count += 1
         if (
             new_evidence_this_turn
             and submit_requires_new_evidence
@@ -4297,14 +4516,19 @@ async def _agent_loop(
             if _is_evidence_tool_name(rec.tool) and not rec.error
         ]
         if evidence_tools_executed:
+            evidence_turns_total += 1
             if new_evidence_this_turn:
+                evidence_turns_with_new_evidence += 1
                 retrieval_stagnation_streak = 0
                 retrieval_stagnation_alerted_for_current_streak = False
             else:
+                evidence_turns_without_new_evidence += 1
                 retrieval_stagnation_streak += 1
         else:
             retrieval_stagnation_streak = 0
             retrieval_stagnation_alerted_for_current_streak = False
+        if retrieval_stagnation_streak > retrieval_stagnation_streak_max:
+            retrieval_stagnation_streak_max = retrieval_stagnation_streak
 
         # Persist deficit snapshot for next-turn deficit-progress evaluation.
         prev_turn_had_evidence_tools = bool(evidence_tools_executed)
@@ -4725,6 +4949,8 @@ async def _agent_loop(
             force_final_reason=force_final_reason,
             max_turns=max_turns,
             max_message_chars=max_message_chars,
+            tool_result_keep_recent=tool_result_keep_recent,
+            tool_result_context_preview_chars=tool_result_context_preview_chars,
             messages=messages,
             kwargs=kwargs,
             timeout=timeout,
@@ -4751,6 +4977,11 @@ async def _agent_loop(
         finalization_events = list(forced_final_result.finalization_events)
         finalization_fallback_attempts = list(forced_final_result.finalization_fallback_attempts)
         failure_event_codes.extend(forced_final_result.failure_event_codes)
+        context_tool_result_clearings += forced_final_result.context_tool_result_clearings_delta
+        context_tool_results_cleared += forced_final_result.context_tool_results_cleared_delta
+        context_tool_result_cleared_chars += (
+            forced_final_result.context_tool_result_cleared_chars_delta
+        )
         context_compactions += forced_final_result.context_compactions_delta
         context_compacted_messages += forced_final_result.context_compacted_messages_delta
         context_compacted_chars += forced_final_result.context_compacted_chars_delta
@@ -4889,6 +5120,11 @@ async def _agent_loop(
     agent_result.metadata["tool_arg_coercions"] = tool_arg_coercions
     agent_result.metadata["tool_arg_coercion_calls"] = tool_arg_coercion_calls
     agent_result.metadata["tool_arg_validation_rejections"] = tool_arg_validation_rejections
+    agent_result.metadata["tool_result_keep_recent"] = tool_result_keep_recent
+    agent_result.metadata["tool_result_context_preview_chars"] = tool_result_context_preview_chars
+    agent_result.metadata["context_tool_result_clearings"] = context_tool_result_clearings
+    agent_result.metadata["context_tool_results_cleared"] = context_tool_results_cleared
+    agent_result.metadata["context_tool_result_cleared_chars"] = context_tool_result_cleared_chars
     agent_result.metadata["context_compactions"] = context_compactions
     agent_result.metadata["context_compacted_messages"] = context_compacted_messages
     agent_result.metadata["context_compacted_chars"] = context_compacted_chars
@@ -4932,8 +5168,13 @@ async def _agent_loop(
     agent_result.metadata["retrieval_stagnation_turns"] = retrieval_stagnation_turns
     agent_result.metadata["retrieval_stagnation_action"] = retrieval_stagnation_action
     agent_result.metadata["retrieval_stagnation_streak"] = retrieval_stagnation_streak
+    agent_result.metadata["retrieval_stagnation_streak_max"] = retrieval_stagnation_streak_max
     agent_result.metadata["retrieval_stagnation_triggered"] = retrieval_stagnation_triggered
     agent_result.metadata["retrieval_stagnation_turn"] = retrieval_stagnation_turn
+    agent_result.metadata["evidence_digest_change_count"] = evidence_digest_change_count
+    agent_result.metadata["evidence_turns_total"] = evidence_turns_total
+    agent_result.metadata["evidence_turns_with_new_evidence"] = evidence_turns_with_new_evidence
+    agent_result.metadata["evidence_turns_without_new_evidence"] = evidence_turns_without_new_evidence
     agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
     agent_result.metadata["failure_event_code_counts"] = failure_summary.failure_event_code_counts
     agent_result.metadata["failure_event_class_counts"] = failure_summary.failure_event_class_counts
@@ -4965,6 +5206,13 @@ async def _agent_loop(
             "METRIC: tool_arg_coercions="
             f"{tool_arg_coercions} across {tool_arg_coercion_calls} calls, "
             f"tool_arg_validation_rejections={tool_arg_validation_rejections}"
+        )
+    if evidence_turns_total > 0:
+        agent_result.warnings.append(
+            "METRIC: evidence_turns="
+            f"{evidence_turns_total}, new_evidence_turns={evidence_turns_with_new_evidence}, "
+            f"stagnant_evidence_turns={evidence_turns_without_new_evidence}, "
+            f"retrieval_stagnation_streak_max={retrieval_stagnation_streak_max}"
         )
     logger.info(
         "Agent loop metrics: tool_call_turns=%d empty_text_tool_call_turns=%d responses_empty_text_tool_call_turns=%d "
