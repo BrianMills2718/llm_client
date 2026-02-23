@@ -46,8 +46,8 @@ if [[ -n "$DOC_COUPLING" ]]; then
     fi
 fi
 
-# 3. Mypy on changed production files (if mypy is installed)
-STAGED_SRC=$(echo "$STAGED_PY" | grep '^llm_client/' || true)
+# 3. Mypy on changed src/ files (if mypy is installed)
+STAGED_SRC=$(echo "$STAGED_PY" | grep '^src/' || true)
 if [[ -n "$STAGED_SRC" ]] && command -v mypy >/dev/null 2>&1; then
     echo "Running mypy on changed files..."
     if ! python -m mypy --strict --ignore-missing-imports --follow-imports=silent $STAGED_SRC 2>/dev/null; then

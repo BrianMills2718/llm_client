@@ -1,5 +1,5 @@
 #!/bin/bash
-# Post-edit quiz — surfaces understanding questions after editing llm_client/ files.
+# Post-edit quiz — surfaces understanding questions after editing src/ files.
 # PostToolUse/Edit hook — shows constraint quiz after successful edits.
 #
 # This is advisory (exit 0) — it doesn't block, just prompts engagement.
@@ -21,8 +21,8 @@ if [[ -z "$FILE_PATH" ]]; then
     exit 0
 fi
 
-# Only for production source files
-if [[ "$FILE_PATH" != *"/llm_client/"* ]] && [[ "$FILE_PATH" != "llm_client/"* ]]; then
+# Only for src/ files
+if [[ "$FILE_PATH" != *"/src/"* ]] && [[ "$FILE_PATH" != "src/"* ]]; then
     exit 0
 fi
 
@@ -46,9 +46,6 @@ fi
 
 # Find quiz script
 QUIZ_SCRIPT="$REPO_ROOT/scripts/generate_quiz.py"
-if [[ ! -f "$QUIZ_SCRIPT" ]]; then
-    QUIZ_SCRIPT="$REPO_ROOT/scripts/meta/generate_quiz.py"
-fi
 if [[ ! -f "$QUIZ_SCRIPT" ]]; then
     exit 0
 fi

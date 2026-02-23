@@ -503,6 +503,21 @@ def _is_budget_exempt_tool(tool_name: str) -> bool:
     return tool_name in BUDGET_EXEMPT_TOOL_NAMES
 
 
+def _normalized_tool_name(raw_name: Any) -> str:
+    """Normalize tool names for stable matching (budgeting, validation, execution)."""
+    return str(raw_name or "").strip()
+
+
+def _normalize_tool_call_name_inplace(tool_call: dict[str, Any]) -> str:
+    """Normalize one tool call name in-place and return the normalized value."""
+    fn = tool_call.get("function")
+    if not isinstance(fn, dict):
+        return ""
+    normalized = _normalized_tool_name(fn.get("name"))
+    fn["name"] = normalized
+    return normalized
+
+
 def _count_budgeted_records(records: list[MCPToolCallRecord]) -> int:
     """Count tool calls that consume max_tool_calls budget."""
     return sum(1 for r in records if not _is_budget_exempt_tool(r.tool))
@@ -512,7 +527,7 @@ def _count_budgeted_tool_calls(tool_calls: list[dict[str, Any]]) -> int:
     """Count proposed LLM tool calls that consume max_tool_calls budget."""
     used = 0
     for tc in tool_calls:
-        tool_name = tc.get("function", {}).get("name", "")
+        tool_name = _normalized_tool_name(tc.get("function", {}).get("name", ""))
         if tool_name and not _is_budget_exempt_tool(tool_name):
             used += 1
     return used
@@ -527,7 +542,7 @@ def _trim_tool_calls_to_budget(
     kept_budgeted = 0
     dropped_budgeted = 0
     for tc in tool_calls:
-        tool_name = tc.get("function", {}).get("name", "")
+        tool_name = _normalized_tool_name(tc.get("function", {}).get("name", ""))
         if _is_budget_exempt_tool(tool_name):
             kept.append(tc)
             continue
@@ -3545,8 +3560,9 @@ async def _agent_loop(
         patched_calls: list[dict[str, Any]] = []
         for tc in tool_calls_this_turn:
             patched, changed = _autofill_tool_reasoning(tc)
+            normalized_name = _normalize_tool_call_name_inplace(patched)
             if changed:
-                name = patched.get("function", {}).get("name", "")
+                name = normalized_name
                 if name:
                     autofilled_reasoning_tools.append(name)
                     autofilled_tool_reasoning_by_tool[name] = (
