@@ -287,3 +287,25 @@ Changes:
 Validation snapshot after this pass:
 1. `FOUNDATION_SCHEMA_STRICT=1 pytest -q tests/test_foundation.py tests/test_mcp_agent.py::TestAcallWithMcp::test_foundation_schema_strict_raises_on_invalid_event tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_llm_exception_preserves_tool_history tests/test_mcp_agent.py::TestAcallWithMcp::test_forced_final_tool_calls_are_disallowed_without_execution`
    - Result: `8 passed`
+
+## 16) Additional follow-up (required-reading gate enabled)
+Enabled concrete read-gate enforcement for source edits:
+1. Added `scripts/meta/check_required_reading.py` and wired it to consume:
+   - target file path,
+   - session reads file (`/tmp/.claude_session_reads`),
+   - `scripts/relationships.yaml` couplings/defaults.
+2. Added `scripts/relationships.yaml` with baseline required-reading defaults
+   and strict coupling docs for:
+   - core call path modules (`client.py` + runtime split files),
+   - MCP/Foundation governance modules,
+   - routing/config policy modules.
+3. Updated `scripts/CLAUDE.md` so operator docs include the new gate script
+   and relationships config.
+
+Validation snapshot after this pass:
+1. `python -m py_compile scripts/meta/check_required_reading.py`
+   - Result: pass
+2. `python scripts/meta/check_required_reading.py llm_client/client.py --reads-file <empty-file>`
+   - Result: blocked with explicit missing-doc list
+3. `python scripts/meta/check_required_reading.py llm_client/client.py --reads-file <file containing required docs>`
+   - Result: pass with required-doc summary
