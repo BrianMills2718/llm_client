@@ -203,6 +203,8 @@ EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS = "NO_LEGAL_NONCONTROL_TOOLS"
 EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED = "REQUIRED_SUBMIT_NOT_ATTEMPTED"
 EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED = "REQUIRED_SUBMIT_NOT_ACCEPTED"
 EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION = "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"
+EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION = "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION"
+EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL = "SUBMIT_FORCED_ACCEPT_FORCED_FINAL"
 
 # Kwargs consumed by the MCP agent loop (popped before passing to inner acall_llm)
 MCP_LOOP_KWARGS = frozenset({
@@ -2755,9 +2757,13 @@ def _classify_failure_signals(
 
 def _failure_class_for_event_code(code: str) -> str | None:
     """Map event code to one stable failure class for rollups/classification."""
-    if code == EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION:
+    if code in {
+        EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION,
+        EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION,
+        EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL,
+    }:
         # This event records a degraded success path (forced-answer acceptance
-        # after tool budget exhaustion), not an incompletion/failure class.
+        # after runtime exhaustion), not an incompletion/failure class.
         return None
     if code == EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED:
         return "policy"
@@ -5052,18 +5058,36 @@ async def _agent_loop(
     required_submit_missing = requires_submit_answer and not submit_answer_succeeded
     submit_forced_retry_on_budget_exhaustion = False
     submit_forced_accept_on_budget_exhaustion = False
+    forced_exhaustion_reason: str | None = None
+    if force_final_reason == "max_tool_calls":
+        forced_exhaustion_reason = "budget"
+    elif force_final_reason == "max_turns":
+        forced_exhaustion_reason = "turns"
+    elif force_final_reason is not None:
+        forced_exhaustion_reason = force_final_reason
     if (
-        force_final_reason == "max_tool_calls"
+        forced_exhaustion_reason is not None
         and requires_submit_answer
         and not submit_answer_succeeded
     ):
         if force_submit_retry_on_max_tool_calls:
             submit_forced_retry_on_budget_exhaustion = True
             submit_answer_call_count += 1
-            warning = (
-                "SUBMIT_FORCED_RETRY_BUDGET_EXHAUSTION: counted one forced submit retry "
-                "attempt after tool budget exhaustion."
-            )
+            if forced_exhaustion_reason == "budget":
+                warning = (
+                    "SUBMIT_FORCED_RETRY_BUDGET_EXHAUSTION: counted one forced submit retry "
+                    "attempt after tool budget exhaustion."
+                )
+            elif forced_exhaustion_reason == "turns":
+                warning = (
+                    "SUBMIT_FORCED_RETRY_TURN_EXHAUSTION: counted one forced submit retry "
+                    "attempt after max-turn exhaustion."
+                )
+            else:
+                warning = (
+                    "SUBMIT_FORCED_RETRY_FORCED_FINAL: counted one forced submit retry "
+                    f"attempt after forced-final reason '{forced_exhaustion_reason}'."
+                )
             agent_result.warnings.append(warning)
             logger.warning(warning)
         if accept_forced_answer_on_max_tool_calls and final_content.strip():
@@ -5071,13 +5095,27 @@ async def _agent_loop(
             submit_answer_succeeded = True
             submitted_answer_value = submitted_answer_value or final_content.strip()
             required_submit_missing = False
-            warning = (
-                "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION: accepted forced-final answer "
-                "without grounding validation because tool budget was exhausted."
-            )
+            if forced_exhaustion_reason == "budget":
+                warning = (
+                    "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION: accepted forced-final answer "
+                    "without grounding validation because tool budget was exhausted."
+                )
+                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION)
+            elif forced_exhaustion_reason == "turns":
+                warning = (
+                    "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION: accepted forced-final answer "
+                    "without grounding validation because max turns were exhausted."
+                )
+                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION)
+            else:
+                warning = (
+                    "SUBMIT_FORCED_ACCEPT_FORCED_FINAL: accepted forced-final answer "
+                    "without grounding validation after forced-final termination "
+                    f"('{forced_exhaustion_reason}')."
+                )
+                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL)
             agent_result.warnings.append(warning)
             logger.warning(warning)
-            failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION)
 
     if required_submit_missing:
         submit_failure_code = (

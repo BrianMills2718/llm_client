@@ -86,6 +86,24 @@ _AGENT_KWARGS = frozenset({
 })
 
 
+def _normalize_codex_reasoning_effort(value: Any) -> str:
+    """Normalize Codex reasoning effort to SDK-accepted values.
+
+    Some Codex-backed models reject ``xhigh``; normalize aliases to
+    minimal/low/medium/high and default to ``high`` when omitted.
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "high"
+    if raw in {"minimal", "low", "medium", "high"}:
+        return raw
+    if raw in {"xhigh", "very_high", "highest", "max"}:
+        return "high"
+    if raw in {"none", "off", "disabled"}:
+        return "minimal"
+    return "high"
+
+
 def _messages_to_agent_prompt(
     messages: list[dict[str, Any]],
 ) -> tuple[str, str | None]:
@@ -876,6 +894,9 @@ def _build_codex_options(
     ):
         if key in agent_kw:
             thread_kw[key] = agent_kw[key]
+    thread_kw["model_reasoning_effort"] = _normalize_codex_reasoning_effort(
+        thread_kw.get("model_reasoning_effort")
+    )
     # Defaults for safety
     thread_kw.setdefault("sandbox_mode", "workspace-write")
     thread_kw.setdefault("approval_policy", "never")
