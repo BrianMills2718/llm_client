@@ -22,12 +22,12 @@ import json
 import logging
 import re
 import time
+from importlib import import_module
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from llm_client.client import acall_llm as _acall_llm
@@ -35,6 +35,7 @@ from llm_client.difficulty import get_effective_tier, get_model_for_difficulty
 from llm_client.validators import ValidationResult, run_validators, spec_hash
 
 logger = logging.getLogger(__name__)
+_yaml = import_module("yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +170,7 @@ def load_graph(path: str | Path) -> TaskGraph:
         ValueError: Invalid graph structure (cycles, missing deps, etc.).
     """
     path = Path(path).expanduser().resolve()
-    raw = yaml.safe_load(path.read_text())
+    raw = _yaml.safe_load(path.read_text())
 
     meta = GraphMeta(**raw["graph"])
     tasks: dict[str, TaskDef] = {}

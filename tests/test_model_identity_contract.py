@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
-from llm_client import acall_llm, call_llm
+from llm_client import (
+    acall_llm,
+    acall_llm_structured,
+    astream_llm,
+    call_llm,
+    call_llm_structured,
+    stream_llm,
+)
 from llm_client.config import ClientConfig
 from llm_client.mcp_agent import _acall_with_tools
 
@@ -25,6 +34,33 @@ def _mock_response(
     mock.usage.completion_tokens = 5
     mock.usage.total_tokens = 15
     return mock
+
+
+def _mock_responses_api_output(raw_json: str) -> MagicMock:
+    response = MagicMock()
+    response.output_text = raw_json
+    response.output = []
+    response.status = "completed"
+    response.usage.input_tokens = 10
+    response.usage.output_tokens = 5
+    response.usage.total_tokens = 15
+    response.usage.input_tokens_details.cached_tokens = 0
+    response.usage.cost = None
+    return response
+
+
+def _mock_stream_chunks(texts: list[str]) -> list[MagicMock]:
+    chunks = []
+    for text in texts:
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = text
+        chunks.append(chunk)
+    return chunks
+
+
+class _StructuredPayload(BaseModel):
+    message: str
 
 
 class TestModelIdentityContract:
@@ -108,17 +144,169 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-4"]
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.responses")
+    def test_structured_identity_fields_with_explicit_routing_off(
+        self,
+        mock_responses: MagicMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        mock_responses.return_value = _mock_responses_api_output('{"message":"Hi"}')
+
+        parsed, result = call_llm_structured(
+            "gpt-5",
+            [{"role": "user", "content": "Hi"}],
+            _StructuredPayload,
+            task="test",
+            trace_id="identity.structured.sync.off",
+            max_budget=0,
+        )
+
+        assert parsed.message == "Hi"
+        assert result.model == "gpt-5"
+        assert result.requested_model == "gpt-5"
+        assert result.resolved_model == "gpt-5"
+        assert result.routing_trace is not None
+        assert result.routing_trace["routing_policy"] == "openrouter_off"
+        assert result.routing_trace["attempted_models"] == ["gpt-5"]
+
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_identity_fields_with_explicit_routing_on(
+        self,
+        mock_completion: MagicMock,
+        _mock_supports_schema: MagicMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "on")
+        mock_completion.return_value = _mock_response(content='{"message":"Hi"}')
+
+        parsed, result = call_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            _StructuredPayload,
+            task="test",
+            trace_id="identity.structured.sync.on",
+            max_budget=0,
+        )
+
+        assert parsed.message == "Hi"
+        assert result.model == "openrouter/openai/gpt-4"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "openrouter/openai/gpt-4"
+        assert result.routing_trace is not None
+        assert result.routing_trace["routing_policy"] == "openrouter_on"
+        assert result.routing_trace["normalized_from"] == "gpt-4"
+        assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.aresponses", new_callable=AsyncMock)
+    async def test_async_structured_identity_fields_with_explicit_routing_off(
+        self,
+        mock_aresponses: AsyncMock,
+        _mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        mock_aresponses.return_value = _mock_responses_api_output('{"message":"Hi"}')
+
+        parsed, result = await acall_llm_structured(
+            "gpt-5",
+            [{"role": "user", "content": "Hi"}],
+            _StructuredPayload,
+            task="test",
+            trace_id="identity.structured.async.off",
+            max_budget=0,
+        )
+
+        assert parsed.message == "Hi"
+        assert result.model == "gpt-5"
+        assert result.requested_model == "gpt-5"
+        assert result.resolved_model == "gpt-5"
+        assert result.routing_trace is not None
+        assert result.routing_trace["routing_policy"] == "openrouter_off"
+        assert result.routing_trace["attempted_models"] == ["gpt-5"]
+
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_stream_identity_fields_with_explicit_routing_off(
+        self,
+        mock_completion: MagicMock,
+        _mock_stream_builder: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+        mock_completion.return_value = iter(_mock_stream_chunks(["Hello", "!"]))
+
+        stream = stream_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="identity.stream.sync.off",
+            max_budget=0,
+        )
+        list(stream)
+        result = stream.result
+
+        assert result.model == "gpt-4"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "gpt-4"
+        assert result.routing_trace is not None
+        assert result.routing_trace["routing_policy"] == "openrouter_off"
+        assert result.routing_trace["attempted_models"] == ["gpt-4"]
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_async_stream_identity_fields_with_explicit_routing_on(
+        self,
+        mock_acompletion: AsyncMock,
+        _mock_stream_builder: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "on")
+
+        async def _async_iter() -> AsyncGenerator[MagicMock, None]:
+            for chunk in _mock_stream_chunks(["Hello", "!"]):
+                yield chunk
+
+        mock_acompletion.return_value = _async_iter()
+
+        stream = await astream_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="identity.stream.async.on",
+            max_budget=0,
+        )
+        async for _ in stream:
+            pass
+        result = stream.result
+
+        assert result.model == "openrouter/openai/gpt-4"
+        assert result.requested_model == "gpt-4"
+        assert result.resolved_model == "openrouter/openai/gpt-4"
+        assert result.routing_trace is not None
+        assert result.routing_trace["routing_policy"] == "openrouter_on"
+        assert result.routing_trace["normalized_from"] == "gpt-4"
+        assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
+
     @pytest.mark.asyncio
     async def test_mcp_tool_loop_sets_executed_model_and_identity_fields(self) -> None:
         async def fake_agent_loop(
-            model,
-            messages,
-            openai_tools,
-            agent_result,
-            executor,
-            *args,
-            **kwargs,
-        ):
+            model: str,
+            messages: list[dict[str, Any]],
+            openai_tools: list[dict[str, Any]],
+            agent_result: Any,
+            executor: Any,
+            *args: Any,
+            **kwargs: Any,
+        ) -> tuple[str, str]:
             agent_result.metadata["total_cost"] = 0.5
             agent_result.metadata["resolved_model"] = "fallback-model"
             agent_result.metadata["attempted_models"] = [model, "fallback-model"]

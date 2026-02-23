@@ -141,3 +141,25 @@ Additional follow-up in same branch:
    - `tests/test_io_log_compat.py`
 4. Full-suite validation after this follow-up:
    - `783 passed, 1 skipped, 1 warning`
+
+## 9) Additional follow-up (routing + identity coverage)
+Completed another incremental architecture pass focused on routing seam consistency
+and identity contracts:
+1. Added shared `_resolve_call_plan(...)` in `llm_client/client.py` and routed
+   text/structured/stream entrypoints through it for consistent normalization-event logging.
+2. Expanded `tests/test_model_identity_contract.py` to cover:
+   - `call_llm_structured` / `acall_llm_structured`
+   - `stream_llm` / `astream_llm`
+   with explicit routing policy assertions for `requested_model`, `resolved_model`,
+   and `routing_trace`.
+3. Switched YAML loads in `models.py` and `task_graph.py` to dynamic
+   `import_module("yaml")` usage to keep typecheck deterministic without external
+   stub dependency drift.
+
+Validation snapshot after this pass:
+1. `pytest -q tests/test_model_identity_contract.py`
+   - Result: `11 passed, 1 warning`
+2. `pytest -q`
+   - Result: `793 passed, 1 skipped, 1 warning`
+3. `mypy llm_client`
+   - Result: `Success: no issues found in 36 source files`

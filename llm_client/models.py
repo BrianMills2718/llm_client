@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from importlib import import_module
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -252,7 +253,7 @@ def _load_config() -> dict[str, Any]:
 
 def _load_yaml_file(path: Path) -> dict[str, Any]:
     """Load a YAML config file. Merges with defaults for missing keys."""
-    import yaml  # type: ignore[import-untyped]  # lazy import — only needed if user has a config file
+    yaml = import_module("yaml")  # lazy import — only needed if user has a config file
 
     raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):

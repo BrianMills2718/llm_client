@@ -67,7 +67,12 @@ from pydantic import BaseModel
 from llm_client.config import ClientConfig
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
-from llm_client.routing import CallRequest, resolve_api_base_for_model, resolve_call
+from llm_client.routing import (
+    CallRequest,
+    ResolvedCallPlan,
+    resolve_api_base_for_model,
+    resolve_call,
+)
 from llm_client.execution_kernel import (
     run_async_with_fallback,
     run_async_with_retry,
@@ -2070,9 +2075,26 @@ def _build_model_chain(
     config: ClientConfig | None = None,
 ) -> list[str]:
     """Build primary+fallback model chain with stable de-duplication."""
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=None,
+        config=config,
+    )
+    return plan.models
+
+
+def _resolve_call_plan(
+    *,
+    model: str,
+    fallback_models: list[str] | None,
+    api_base: str | None,
+    config: ClientConfig | None = None,
+) -> ResolvedCallPlan:
+    """Resolve and log routing plan once per entrypoint."""
     cfg = config or ClientConfig.from_env()
     plan = resolve_call(
-        CallRequest(model=model, fallback_models=fallback_models),
+        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
     )
     normalization_events = plan.routing_trace.get("normalization_events")
@@ -2084,7 +2106,7 @@ def _build_model_chain(
             normalized = str(event.get("to", "")).strip()
             if raw and normalized and raw != normalized:
                 logger.info("ROUTE_MODEL: %s -> %s", raw, normalized)
-    return plan.models
+    return plan
 
 
 def _truthy_env(value: Any) -> bool:
@@ -3172,9 +3194,11 @@ def call_llm(
         _inner_named["execution_mode"] = execution_mode
     _inner_named["config"] = cfg
 
-    plan = resolve_call(
-        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
-        cfg,
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
     )
     models = plan.models
     primary_model = plan.primary_model
@@ -3518,9 +3542,11 @@ def call_llm_structured(
         task, trace_id, max_budget, caller="call_llm_structured",
     )
     _check_budget(trace_id, max_budget)
-    plan = resolve_call(
-        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
-        cfg,
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
     )
     models = plan.models
     routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
@@ -4096,9 +4122,11 @@ async def acall_llm(
         _inner_named["execution_mode"] = execution_mode
     _inner_named["config"] = cfg
 
-    plan = resolve_call(
-        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
-        cfg,
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
     )
     models = plan.models
     primary_model = plan.primary_model
@@ -4440,9 +4468,11 @@ async def acall_llm_structured(
         task, trace_id, max_budget, caller="acall_llm_structured",
     )
     _check_budget(trace_id, max_budget)
-    plan = resolve_call(
-        CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
-        cfg,
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
     )
     models = plan.models
     routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
@@ -5280,8 +5310,14 @@ def stream_llm(
         from llm_client.agents import _route_stream
         return cast(LLMStream, _route_stream(model, messages, hooks=hooks, timeout=timeout, **kwargs))
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models, cfg)
-    routing_policy = _routing_policy_label(cfg)
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
+    )
+    models = plan.models
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
     _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 
@@ -5409,8 +5445,14 @@ async def astream_llm(
             await _route_astream(model, messages, hooks=hooks, timeout=timeout, **kwargs),
         )
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
-    models = _build_model_chain(model, fallback_models, cfg)
-    routing_policy = _routing_policy_label(cfg)
+    plan = _resolve_call_plan(
+        model=model,
+        fallback_models=fallback_models,
+        api_base=api_base,
+        config=cfg,
+    )
+    models = plan.models
+    routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
     _warnings: list[str] = list(_entry_warnings)
     backoff_fn = r.backoff or exponential_backoff
 

@@ -9,6 +9,9 @@ All notable changes to `llm-client` are documented in this file.
 - Shared execution-kernel primitives in `llm_client.execution_kernel`:
   - `run_sync_with_retry` / `run_async_with_retry`
   - `run_sync_with_fallback` / `run_async_with_fallback`
+- Expanded identity characterization coverage:
+  - `tests/test_model_identity_contract.py` now covers structured and
+    streaming entrypoints (sync/async) in addition to text + MCP flows
 - Observability boundary modules in `llm_client.observability`:
   - `events.py`, `experiments.py`, `query.py`
 - Modular CLI command package in `llm_client.cli`:
@@ -46,6 +49,9 @@ All notable changes to `llm-client` are documented in this file.
 
 - `call_llm` / `acall_llm` now use shared retry+fallback kernel paths instead
   of duplicated in-function retry/fallback loops.
+- Routing resolution now goes through a shared `_resolve_call_plan(...)` path
+  for text/structured/stream entrypoints, so normalization events are logged
+  consistently from one resolver seam.
 - `_agent_loop` now stages tool/contract initialization through typed
   `AgentLoopToolState` construction (`_initialize_agent_tool_state`).
 - `_agent_loop` final metadata writeout is extracted into
