@@ -43,7 +43,6 @@ couplings:
       - llm_client/task_graph.py
       - llm_client/experiment_eval.py
     docs:
-      - docs/TASK_GRAPH_DESIGN.md
+      - docs/adr/0008-task-graph-evaluation-contract-boundary.md
     description: Task-graph orchestration and evaluation lifecycle constraints.
     required_reading: true
-    uncertainty: Task graph design doc may lag implementation details.

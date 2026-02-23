@@ -4254,6 +4254,7 @@ async def _agent_loop(
         submitted_answer_value: str | None = None
         submit_error_this_turn = False
         submit_errors: list[str] = []
+        submit_reason_codes_this_turn: list[str] = []
         submit_needs_new_evidence_signal = False
         evidence_digest_before_turn = _evidence_digest(evidence_signatures)
         for record in executed_records:
@@ -4394,6 +4395,7 @@ async def _agent_loop(
                         submit_validation_reason_counts[reason_code] = (
                             submit_validation_reason_counts.get(reason_code, 0) + 1
                         )
+                        submit_reason_codes_this_turn.append(reason_code)
                     err_parts = [f"submit_answer not accepted (status={status})"]
                     if reason_code:
                         err_parts.append(f"reason_code={reason_code}")
@@ -4433,10 +4435,32 @@ async def _agent_loop(
             submit_requires_todo_progress = False
 
         if submit_error_this_turn:
+            todo_blocking_reason_codes = {
+                "todos_required",
+                "unfinished_todos",
+                "blocked_missing_note",
+                "todo_missing_evidence_or_span",
+            }
             todo_blocked = any(
-                ("todo" in err.lower()) or ("unfinished" in err.lower())
-                for err in submit_errors
+                code in todo_blocking_reason_codes
+                for code in submit_reason_codes_this_turn
             )
+            if (
+                not todo_blocked
+                and "answer_not_grounded" in submit_reason_codes_this_turn
+                and any("todo answer_span" in err.lower() for err in submit_errors)
+            ):
+                todo_blocked = True
+            if not todo_blocked:
+                todo_blocked = any(
+                    (
+                        "unfinished todo" in err.lower()
+                        or "must use todos" in err.lower()
+                        or "blocked todos" in err.lower()
+                        or "missing evidence/span" in err.lower()
+                    )
+                    for err in submit_errors
+                )
             pending_submit_todo_ids = []
             for err in submit_errors:
                 pending_submit_todo_ids.extend(_extract_unfinished_todo_ids(err))

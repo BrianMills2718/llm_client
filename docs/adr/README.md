@@ -10,5 +10,6 @@ compatibility contracts in `llm_client`.
 - `0005-reason-code-registry-governance.md`
 - `0006-actor-id-issuance-policy.md`
 - `0007-observability-contract-boundary.md`
+- `0008-task-graph-evaluation-contract-boundary.md`
 
 Status: active.

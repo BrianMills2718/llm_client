@@ -379,14 +379,9 @@ Expanded required-reading coverage and added CI smoke checks for mode behavior:
    - `Required-reading gate mode smoke`
    - `Validate relationships config`
    - runs `pytest -q tests/test_required_reading_gate.py tests/test_gate_edit_hook_integration.py`
-
-Documented uncertainties (current best-judgment choices):
-1. Observability coupling now references ADR 0007 (`docs/adr/0007-observability-contract-boundary.md`),
-   reducing previous ambiguity around observability contract boundaries.
-2. Task-graph coupling references `docs/TASK_GRAPH_DESIGN.md`; this is the best
-   available design source but may lag implementation details over time.
-3. Both uncertainties are explicitly recorded in `scripts/relationships.yaml`
-   and should be revisited if dedicated ADRs are added.
+4. Stabilized remaining architecture couplings with ADR-backed sources:
+   - observability coupling -> ADR 0007
+   - task-graph/evaluation coupling -> ADR 0008
 
 Validation snapshot after this pass:
 1. `pytest -q tests/test_required_reading_gate.py`
