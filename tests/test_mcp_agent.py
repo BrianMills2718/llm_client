@@ -243,6 +243,7 @@ class TestFailureTaxonomy:
         "CONTROL_CHURN_THRESHOLD_EXCEEDED",
         "TOOL_EXECUTION_RUNTIME_ERROR",
         "PROVIDER_EMPTY_CANDIDATES",
+        "PROVIDER_CREDITS_EXHAUSTED",
         "FINALIZATION_CIRCUIT_BREAKER_OPEN",
         "FINALIZATION_TOOL_CALL_DISALLOWED",
         "RETRIEVAL_NO_HITS",
@@ -274,6 +275,7 @@ class TestFailureTaxonomy:
             ("CONTROL_CHURN_THRESHOLD_EXCEEDED", "control_churn"),
             ("TOOL_EXECUTION_RUNTIME_ERROR", "none"),
             ("PROVIDER_EMPTY_CANDIDATES", "provider"),
+            ("PROVIDER_CREDITS_EXHAUSTED", "provider"),
             ("FINALIZATION_CIRCUIT_BREAKER_OPEN", "provider"),
             ("FINALIZATION_TOOL_CALL_DISALLOWED", "policy"),
             ("RETRIEVAL_NO_HITS", "retrieval"),
@@ -308,6 +310,23 @@ class TestFailureTaxonomy:
             ]
         )
         assert first_terminal == "CONTROL_CHURN_THRESHOLD_EXCEEDED"
+
+    def test_provider_credits_exhausted_classification(self) -> None:
+        import llm_client.mcp_agent as mcp_agent
+
+        is_provider, event_code, classification, retryable = (
+            mcp_agent._provider_failure_classification(
+                Exception(
+                    'OpenrouterException - {"error":{"message":"Insufficient credits","code":402}}',
+                ),
+                'OpenrouterException - {"error":{"message":"Insufficient credits","code":402}}',
+            )
+        )
+
+        assert is_provider is True
+        assert event_code == "PROVIDER_CREDITS_EXHAUSTED"
+        assert classification == "provider_credits_exhausted"
+        assert retryable is False
 
 
 class TestLaneClosureAnalysis:
@@ -2168,7 +2187,11 @@ class TestAgentDiagnostics:
         assert content == "June 1982"
         assert finish == "submitted"
         assert any(
-            msg.get("role") == "user" and "MUST call submit_answer" in msg.get("content", "")
+            msg.get("role") == "user"
+            and (
+                "MUST call submit_answer" in msg.get("content", "")
+                or "Do NOT finalize yet" in msg.get("content", "")
+            )
             for msg in agent_result.conversation_trace
         )
 

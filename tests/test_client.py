@@ -849,6 +849,50 @@ class TestOpenRouterKeyRotation:
         assert os.environ.get("OPENROUTER_API_KEY") == "or-key-bbb2"
         assert any("OPENROUTER_KEY_ROTATED" in warning for warning in result.warnings)
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_rotates_key_on_insufficient_credits_402(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-aaa1")
+        monkeypatch.setenv("OPENROUTER_API_KEY_2", "or-key-bbb2")
+        monkeypatch.delenv("OPENROUTER_API_KEYS", raising=False)
+        client_mod._reset_openrouter_key_rotation_state()
+
+        class OpenRouterInsufficientCreditsError(Exception):
+            status_code = 402
+            llm_provider = "openrouter"
+            model = "openrouter/deepseek/deepseek-chat"
+
+        seen_keys: list[str | None] = []
+
+        def _side_effect(**kwargs: object) -> MagicMock:
+            seen_keys.append(os.environ.get("OPENROUTER_API_KEY"))
+            if len(seen_keys) == 1:
+                raise OpenRouterInsufficientCreditsError(
+                    'OpenrouterException - {"error":{"message":"Insufficient credits","code":402}}',
+                )
+            return _mock_response()
+
+        mock_comp.side_effect = _side_effect
+
+        result = call_llm(
+            "openrouter/deepseek/deepseek-chat",
+            [{"role": "user", "content": "Hi"}],
+            num_retries=2,
+            task="test",
+            trace_id="test_openrouter_rotate_credits_402",
+            max_budget=0,
+        )
+        assert result.content == "Hello!"
+        assert mock_comp.call_count == 2
+        assert seen_keys == ["or-key-aaa1", "or-key-bbb2"]
+        assert os.environ.get("OPENROUTER_API_KEY") == "or-key-bbb2"
+        assert any("OPENROUTER_KEY_ROTATED" in warning for warning in result.warnings)
+
     @patch("llm_client.client.litellm.completion")
     def test_key_limit_without_backup_key_fails_without_retry(
         self,

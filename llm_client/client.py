@@ -648,20 +648,29 @@ def _error_status_code(error: Exception) -> int | None:
 
 
 def _is_openrouter_key_limit_error(error: Exception) -> bool:
-    """Whether an error is OpenRouter's key-level 403 quota exhaustion."""
+    """Whether an error is OpenRouter key/quota exhaustion suitable for key rotation."""
     text = str(error or "").lower()
-    if "key limit exceeded" not in text and "key limit reached" not in text:
+    status = _error_status_code(error)
+
+    key_limit = ("key limit exceeded" in text) or ("key limit reached" in text)
+    insufficient_credits = (
+        ("insufficient credits" in text)
+        or ("insufficient quota" in text)
+        or (status == 402)
+    )
+    if not (key_limit or insufficient_credits):
         return False
 
-    status = _error_status_code(error)
-    if status not in {None, 403}:
+    if status not in {None, 402, 403}:
         return False
 
     provider = str(getattr(error, "llm_provider", "") or "").lower()
     model = str(getattr(error, "model", "") or "").lower()
     if "openrouter" in provider or model.startswith("openrouter/") or "openrouter" in text:
         return True
-    return status == 403 and "key limit" in text
+    if key_limit:
+        return status in {None, 403}
+    return status == 402
 
 
 def _reset_openrouter_key_rotation_state() -> None:
@@ -721,7 +730,7 @@ def _maybe_retry_with_openrouter_key_rotation(
     on_retry: Callable[[int, Exception, float], None] | None,
     caller: str,
 ) -> bool:
-    """Rotate OpenRouter key on key-limit 403 and trigger immediate retry."""
+    """Rotate OpenRouter key on key/quota exhaustion and trigger immediate retry."""
     explicit_api_key = bool(_normalize_api_key_value(user_kwargs.get("api_key")))
     if explicit_api_key:
         return False
@@ -733,8 +742,8 @@ def _maybe_retry_with_openrouter_key_rotation(
     rotated = _rotate_openrouter_api_key()
     if rotated is None:
         msg = (
-            "OPENROUTER_KEY_ROTATION_UNAVAILABLE: received key-limit 403 but no "
-            "backup OpenRouter keys are configured."
+            "OPENROUTER_KEY_ROTATION_UNAVAILABLE: received OpenRouter key/quota "
+            "exhaustion but no backup keys are configured."
         )
         if warning_sink is not None:
             warning_sink.append(msg)

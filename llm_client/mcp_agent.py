@@ -173,6 +173,7 @@ EVENT_CODE_CONTROL_LOOP_SUPPRESSED = "CONTROL_CHURN_SUPPRESSED"
 EVENT_CODE_CONTROL_CHURN_THRESHOLD = "CONTROL_CHURN_THRESHOLD_EXCEEDED"
 EVENT_CODE_TOOL_RUNTIME_ERROR = "TOOL_EXECUTION_RUNTIME_ERROR"
 EVENT_CODE_PROVIDER_EMPTY = "PROVIDER_EMPTY_CANDIDATES"
+EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED = "PROVIDER_CREDITS_EXHAUSTED"
 # Compatibility aliases retained for external imports; taxonomy now uses one canonical code.
 EVENT_CODE_PROVIDER_EMPTY_FIRST_TURN = EVENT_CODE_PROVIDER_EMPTY
 EVENT_CODE_PROVIDER_EMPTY_RESPONSE = EVENT_CODE_PROVIDER_EMPTY
@@ -550,18 +551,35 @@ def _tool_error_signature(error: str) -> str:
     return text[:160]
 
 
-def _provider_empty_classification(exc: Exception, error_text: str) -> tuple[bool, str]:
-    """Best-effort classification of provider-empty failures."""
+def _provider_failure_classification(exc: Exception, error_text: str) -> tuple[bool, str, str, bool]:
+    """Best-effort provider failure classification for taxonomy + retry semantics."""
     classification = getattr(exc, "classification", None)
     if isinstance(classification, str):
         normalized = classification.strip().lower()
         if normalized.startswith("provider_empty"):
-            return True, normalized
+            return True, EVENT_CODE_PROVIDER_EMPTY, normalized, True
+        if normalized in {
+            "provider_credits_exhausted",
+            "provider_insufficient_credits",
+            "provider_insufficient_quota",
+        }:
+            return True, EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED, normalized, False
 
     lower = (error_text or "").strip().lower()
     if "provider_empty_candidates" in lower or "empty content from llm" in lower:
-        return True, "provider_empty_candidates"
-    return False, ""
+        return True, EVENT_CODE_PROVIDER_EMPTY, "provider_empty_candidates", True
+    if (
+        "insufficient credits" in lower
+        or "insufficient quota" in lower
+        or "\"code\":402" in lower
+    ):
+        return (
+            True,
+            EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED,
+            "provider_credits_exhausted",
+            False,
+        )
+    return False, "", "", False
 
 
 def _foundation_schema_strict_enabled() -> bool:
@@ -1130,7 +1148,7 @@ async def _execute_forced_finalization(
         event_code: str,
         error_text: str,
         error_class: str,
-        is_provider_empty: bool,
+        is_provider_failure: bool,
     ) -> bool:
         nonlocal forced_final_error_streak, last_forced_final_error_class
         nonlocal terminal_error_text, forced_final_circuit_breaker_opened
@@ -1181,7 +1199,7 @@ async def _execute_forced_finalization(
                 "outputs": {"artifact_ids": [], "payload_hashes": []},
                 "failure": {
                     "error_code": EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
-                    "category": "provider" if is_provider_empty else "execution",
+                    "category": "provider" if is_provider_failure else "execution",
                     "phase": "execution",
                     "retryable": False,
                     "tool_name": "__finalization__",
@@ -1213,11 +1231,17 @@ async def _execute_forced_finalization(
             )
         except Exception as exc:
             error_text = str(exc).strip() or f"{type(exc).__name__}"
-            is_provider_empty, provider_classification = _provider_empty_classification(
+            (
+                is_provider_failure,
+                event_code,
+                provider_classification,
+                retryable_provider,
+            ) = _provider_failure_classification(
                 exc,
                 error_text,
             )
-            event_code = EVENT_CODE_PROVIDER_EMPTY if is_provider_empty else EVENT_CODE_TOOL_RUNTIME_ERROR
+            if not event_code:
+                event_code = EVENT_CODE_TOOL_RUNTIME_ERROR
             error_class = provider_classification or type(exc).__name__
             warning = (
                 "AGENT_LLM_CALL_FAILED: forced_final attempt="
@@ -1243,16 +1267,16 @@ async def _execute_forced_finalization(
                             "model": final_model,
                             "error": error_text,
                             "provider_classification": provider_classification or "",
-                            "provider_subevent": "finalization" if is_provider_empty else "",
+                            "provider_subevent": "finalization" if is_provider_failure else "",
                         },
                         "bindings": dict(available_bindings),
                     },
                     "outputs": {"artifact_ids": [], "payload_hashes": []},
                     "failure": {
                         "error_code": event_code,
-                        "category": "provider" if is_provider_empty else "execution",
+                        "category": "provider" if is_provider_failure else "execution",
                         "phase": "execution",
-                        "retryable": bool(is_provider_empty),
+                        "retryable": bool(retryable_provider),
                         "tool_name": "_inner_acall_llm",
                         "user_message": error_text,
                         "debug_ref": None,
@@ -1265,7 +1289,7 @@ async def _execute_forced_finalization(
                 event_code=event_code,
                 error_text=error_text,
                 error_class=error_class,
-                is_provider_empty=is_provider_empty,
+                is_provider_failure=is_provider_failure,
             )
             continue
 
@@ -1318,7 +1342,7 @@ async def _execute_forced_finalization(
                 event_code=EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
                 error_text=disallowed_msg,
                 error_class="finalization_tool_call_disallowed",
-                is_provider_empty=False,
+                is_provider_failure=False,
             )
             continue
 
@@ -1363,7 +1387,7 @@ async def _execute_forced_finalization(
                 event_code=EVENT_CODE_PROVIDER_EMPTY,
                 error_text=empty_msg,
                 error_class="provider_empty_candidates",
-                is_provider_empty=True,
+                is_provider_failure=True,
             )
             continue
 
@@ -2357,6 +2381,7 @@ _PRIMARY_FAILURE_PRIORITY: tuple[str, ...] = (
 
 _TERMINAL_FAILURE_EVENT_CODES: frozenset[str] = frozenset({
     EVENT_CODE_PROVIDER_EMPTY,
+    EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED,
     EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
     EVENT_CODE_RETRIEVAL_STAGNATION,
     EVENT_CODE_CONTROL_CHURN_THRESHOLD,
@@ -2853,6 +2878,7 @@ async def _agent_loop(
     no_legal_noncontrol_turns = 0
     zero_exec_tool_turn_streak = 0
     max_zero_exec_tool_turn_streak = 0
+    plain_text_no_tool_turn_streak = 0
     context_compactions = 0
     context_compacted_messages = 0
     context_compacted_chars = 0
@@ -3134,11 +3160,17 @@ async def _agent_loop(
             )
         except Exception as exc:
             error_text = str(exc).strip() or f"{type(exc).__name__}"
-            is_provider_empty, provider_classification = _provider_empty_classification(
+            (
+                is_provider_failure,
+                event_code,
+                provider_classification,
+                retryable_provider,
+            ) = _provider_failure_classification(
                 exc,
                 error_text,
             )
-            event_code = EVENT_CODE_PROVIDER_EMPTY if is_provider_empty else EVENT_CODE_TOOL_RUNTIME_ERROR
+            if not event_code:
+                event_code = EVENT_CODE_TOOL_RUNTIME_ERROR
             provider_subevent = "first_turn" if turn == 0 else "turn"
             failure_event_codes.append(event_code)
             warning = (
@@ -3162,16 +3194,16 @@ async def _agent_loop(
                             "turn": turn + 1,
                             "error": error_text,
                             "provider_classification": provider_classification or "",
-                            "provider_subevent": provider_subevent if is_provider_empty else "",
+                            "provider_subevent": provider_subevent if is_provider_failure else "",
                         },
                         "bindings": dict(available_bindings),
                     },
                     "outputs": {"artifact_ids": [], "payload_hashes": []},
                     "failure": {
                         "error_code": event_code,
-                        "category": "provider" if is_provider_empty else "execution",
+                        "category": "provider" if is_provider_failure else "execution",
                         "phase": "execution",
-                        "retryable": bool(is_provider_empty),
+                        "retryable": bool(retryable_provider),
                         "tool_name": "_inner_acall_llm",
                         "user_message": error_text,
                         "debug_ref": None,
@@ -3255,6 +3287,27 @@ async def _agent_loop(
                     messages.append(draft_msg)
                     agent_result.conversation_trace.append(draft_msg)
 
+                # Two-stage recovery for plain-text replies:
+                # 1) first no-tool turn -> continue tool-based solving (avoid premature submit loops)
+                # 2) repeated no-tool turn (or near end) -> require explicit submit_answer
+                near_end = remaining_turns <= TURN_WARNING_THRESHOLD
+                if plain_text_no_tool_turn_streak == 0 and not near_end:
+                    continue_nudge = {
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM: Do NOT finalize yet. Continue with tools to resolve remaining TODO atoms. "
+                            "Call todo_list() to inspect unresolved steps, gather missing evidence, then submit.]"
+                        ),
+                    }
+                    messages.append(continue_nudge)
+                    agent_result.conversation_trace.append(continue_nudge)
+                    plain_text_no_tool_turn_streak += 1
+                    logger.warning(
+                        "Agent loop: model returned plain text without tool calls on turn %d/%d; nudging continued tool use before submission.",
+                        turn + 1, max_turns,
+                    )
+                    continue
+
                 submit_nudge = {
                     "role": "user",
                     "content": (
@@ -3265,6 +3318,7 @@ async def _agent_loop(
                 }
                 messages.append(submit_nudge)
                 agent_result.conversation_trace.append(submit_nudge)
+                plain_text_no_tool_turn_streak += 1
                 logger.warning(
                     "Agent loop: model returned plain text without submit_answer on turn %d/%d; nudging explicit submission.",
                     turn + 1, max_turns,
@@ -3358,6 +3412,9 @@ async def _agent_loop(
                     "content": result.content,
                 })
             break
+
+        # Reset plain-text streak once the model returns at least one tool call.
+        plain_text_no_tool_turn_streak = 0
 
         # Append assistant message with tool calls
         tool_calls_this_turn = list(result.tool_calls)

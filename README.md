@@ -51,8 +51,9 @@ print(agent_result.billing_mode) # "subscription_included"
 export LLM_CLIENT_OPENROUTER_ROUTING=off
 ```
 
-OpenRouter key rotation on key-limit 403:
-- If OpenRouter returns `Key limit exceeded`, retry loops can auto-rotate to a
+OpenRouter key rotation on key/quota exhaustion:
+- If OpenRouter returns key-level exhaustion (for example `Key limit exceeded`
+  or `Insufficient credits` with `402`), retry loops can auto-rotate to a
   backup key and retry immediately.
 - Configure a key pool with either:
   - `OPENROUTER_API_KEYS` (comma/semicolon/newline-delimited), or
