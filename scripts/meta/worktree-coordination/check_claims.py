@@ -119,10 +119,20 @@ SESSIONS_DIR = _MAIN_ROOT / ".claude" / SESSION_DIR_NAME
 
 
 def get_session_file_name() -> str:
-    """Generate session file name based on hostname and PID."""
+    """Generate a stable session file name for this Claude/runtime session.
+
+    Priority:
+    1. ``CLAUDE_CODE_SSE_PORT`` (stable per Claude Code session)
+    2. Parent process PID (stable across repeated CLI invocations from one shell)
+    """
     hostname = socket.gethostname()
-    pid = os.getpid()
-    return f"{hostname}-{pid}.session"
+    sse_port = os.environ.get("CLAUDE_CODE_SSE_PORT")
+    if sse_port:
+        safe_port = re.sub(r"[^a-zA-Z0-9_.-]", "_", sse_port)
+        return f"{hostname}-sse-{safe_port}.session"
+
+    parent_pid = os.getppid()
+    return f"{hostname}-ppid-{parent_pid}.session"
 
 
 def get_session_file_path() -> Path:
