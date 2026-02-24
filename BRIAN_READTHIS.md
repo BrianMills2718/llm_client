@@ -14,6 +14,14 @@ By default it now checks all runs (no run-id prefix filter).
 - It runs on your machine/server with cron.
 - No GitHub Actions, no GitHub Actions cost.
 
+## New safety lock (worktree enforcement)
+- Direct pushes to `main` are now blocked by local git `pre-push`.
+- Main-directory edits are blocked in Claude hooks (use a claimed worktree).
+
+Emergency bypasses (use sparingly):
+- `ALLOW_MAIN_PUSH=1 git push ...` (bypass main push block)
+- `SKIP_CLAIM_VERIFY=1 git push ...` (bypass claim verification)
+
 ## One-time setup (copy/paste)
 
 ### Step 1: install the cron job

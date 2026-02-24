@@ -1,0 +1,96 @@
+#!/bin/bash
+# Pre-push guard:
+# 1) Block direct pushes to main (enforce PR/worktree workflow).
+# 2) Optionally verify non-main branches have an active claim.
+#
+# Escape hatches:
+# - ALLOW_MAIN_PUSH=1          Allow direct pushes to main for emergency use.
+# - SKIP_CLAIM_VERIFY=1        Skip branch-claim verification.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$REPO_ROOT" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+REMOTE_NAME="${1:-origin}"
+REMOTE_URL="${2:-}"
+
+if [[ "${ALLOW_MAIN_PUSH:-0}" == "1" ]]; then
+    exit 0
+fi
+
+find_claim_script() {
+    local candidates=(
+        "$REPO_ROOT/scripts/meta/worktree-coordination/check_claims.py"
+        "$REPO_ROOT/scripts/worktree-coordination/check_claims.py"
+        "$REPO_ROOT/scripts/meta/check_claims.py"
+        "$REPO_ROOT/scripts/check_claims.py"
+    )
+    local script
+    for script in "${candidates[@]}"; do
+        if [[ -f "$script" ]]; then
+            echo "$script"
+            return 0
+        fi
+    done
+    return 1
+}
+
+CLAIM_SCRIPT=""
+if [[ "${SKIP_CLAIM_VERIFY:-0}" != "1" ]]; then
+    CLAIM_SCRIPT="$(find_claim_script || true)"
+fi
+
+declare -A CHECKED_BRANCHES=()
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ -z "${local_ref:-}" ]] && continue
+
+    # Ignore tag pushes and other non-branch refs.
+    if [[ "$remote_ref" != refs/heads/* && "$local_ref" != refs/heads/* ]]; then
+        continue
+    fi
+
+    remote_branch=""
+    if [[ "$remote_ref" == refs/heads/* ]]; then
+        remote_branch="${remote_ref#refs/heads/}"
+    elif [[ "$local_ref" == refs/heads/* ]]; then
+        remote_branch="${local_ref#refs/heads/}"
+    fi
+
+    [[ -z "$remote_branch" ]] && continue
+
+    if [[ "$remote_branch" == "main" ]]; then
+        echo "ERROR: direct push to main is blocked by pre-push guard." >&2
+        echo "" >&2
+        echo "Use worktree/branch + PR merge flow instead." >&2
+        echo "Emergency override (use sparingly):" >&2
+        echo "  ALLOW_MAIN_PUSH=1 git push $REMOTE_NAME ${local_ref#refs/heads/}:main" >&2
+        echo "" >&2
+        echo "Remote: $REMOTE_NAME $REMOTE_URL" >&2
+        exit 1
+    fi
+
+    # Skip claim verification for deleted refs.
+    if [[ "$local_sha" =~ ^0+$ ]]; then
+        continue
+    fi
+
+    if [[ -n "$CLAIM_SCRIPT" && -z "${CHECKED_BRANCHES[$remote_branch]:-}" ]]; then
+        CHECKED_BRANCHES["$remote_branch"]="1"
+        if ! python "$CLAIM_SCRIPT" --verify-branch "$remote_branch" >/dev/null 2>&1; then
+            echo "ERROR: push blocked. Branch '$remote_branch' has no active claim." >&2
+            echo "" >&2
+            echo "Create claim before pushing:" >&2
+            echo "  python scripts/meta/worktree-coordination/check_claims.py --claim --task \"<task>\" --id $remote_branch" >&2
+            echo "" >&2
+            echo "Bypass claim check (not recommended):" >&2
+            echo "  SKIP_CLAIM_VERIFY=1 git push $REMOTE_NAME" >&2
+            exit 1
+        fi
+    fi
+done
+
+exit 0

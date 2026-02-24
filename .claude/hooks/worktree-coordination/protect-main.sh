@@ -16,6 +16,16 @@
 
 set -e
 
+# Optional toggle via meta-process hook config.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/../check-hook-enabled.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/../check-hook-enabled.sh"
+    if ! is_hook_enabled "protect_main"; then
+        exit 0
+    fi
+fi
+
 # Detect main directory dynamically (works on any machine)
 MAIN_DIR=$(git rev-parse --show-toplevel 2>/dev/null)
 if [[ -z "$MAIN_DIR" ]]; then
@@ -28,6 +38,17 @@ FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 if [[ -z "$FILE_PATH" ]]; then
     exit 0  # No file_path, allow
+fi
+
+# Normalize path for reliable main/worktree checks.
+if [[ "$FILE_PATH" == "~/"* ]]; then
+    FILE_PATH="$HOME/${FILE_PATH#~/}"
+fi
+if [[ "$FILE_PATH" != /* ]]; then
+    FILE_PATH="$PWD/$FILE_PATH"
+fi
+if command -v realpath >/dev/null 2>&1; then
+    FILE_PATH="$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")"
 fi
 
 # Allow coordination files everywhere

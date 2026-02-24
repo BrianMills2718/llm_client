@@ -28,6 +28,11 @@
                 "hooks": [
                     {
                         "type": "command",
+                        "command": "bash .claude/hooks/worktree-coordination/protect-main.sh",
+                        "timeout": 5000
+                    },
+                    {
+                        "type": "command",
                         "command": "bash .claude/hooks/gate-edit.sh",
                         "timeout": 5000
                     }
