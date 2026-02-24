@@ -11,7 +11,7 @@ PERSONAL_NAME="Brian"
 PERSONAL_EMAIL="brianmills2718@gmail.com"
 LABEL="com.brian.openclaw.personal"
 REPO_ROOT="$HOME/projects"
-OPENCLAW_CMD='openclaw run --continuous --root "$HOME/projects"'
+OPENCLAW_CMD='openclaw gateway run'
 NO_LOAD=0
 PURGE_WORK=0
 
@@ -33,7 +33,7 @@ Options:
 
 Examples:
   ./scripts/macos/setup_personal_openclaw_mac.sh \
-    --openclaw-cmd 'openclaw run --continuous --root "$HOME/projects"'
+    --openclaw-cmd 'openclaw gateway run'
 
   ./scripts/macos/setup_personal_openclaw_mac.sh \
     --openclaw-cmd 'openclaw daemon --config "$HOME/projects/openclaw.yml"' \
