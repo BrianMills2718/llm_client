@@ -22,6 +22,26 @@ Emergency bypasses (use sparingly):
 - `ALLOW_MAIN_PUSH=1 git push ...` (bypass main push block)
 - `SKIP_CLAIM_VERIFY=1 git push ...` (bypass claim verification)
 
+## Mac mini personal-only setup (no work account access)
+If you want OpenClaw running continuously on Mac mini and only personal GitHub access:
+
+```bash
+cd ~/projects/llm_client
+chmod +x scripts/macos/setup_personal_openclaw_mac.sh
+./scripts/macos/setup_personal_openclaw_mac.sh \
+  --openclaw-cmd 'openclaw run --continuous --root "$HOME/projects"' \
+  --purge-work
+```
+
+What this does:
+- forces `gh` to personal context (`~/.config/gh-personal`)
+- strips token env overrides (`GITHUB_TOKEN`, `GH_TOKEN`)
+- sets global git identity to personal email
+- installs a global `pre-push` hook that blocks pushes to `aisteno/*` and `brian-steno/*`
+- writes and loads a `launchd` service:
+  - `~/Library/LaunchAgents/com.brian.openclaw.personal.plist`
+  - logs in `~/Library/Logs/openclaw-personal.*.log`
+
 ## One-time setup (copy/paste)
 
 ### Step 1: install the cron job
