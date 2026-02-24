@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Run a single live long-thinking probe and append one task-graph experiment row.
 # This is local-only (cron/Jenkins/manual), no GitHub Actions required.
+#
+# Auth policy:
+# - Default: OpenRouter for non-Gemini models (OPENROUTER_API_KEY).
+# - Exception: direct Gemini models use GEMINI_API_KEY.
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_DIR/.venv/bin/python}"
@@ -13,12 +17,19 @@ PROMPT="${LLM_CLIENT_ADOPTION_PROBE_PROMPT:-In 3 short bullets, explain why dete
 RUN_ID_PREFIX="${LLM_CLIENT_ADOPTION_PROBE_RUN_ID_PREFIX:-adoption_probe}"
 TIMEOUT_MINUTES="${LLM_CLIENT_ADOPTION_PROBE_TIMEOUT_MINUTES:-20}"
 
-# Background-mode probes work best on direct OpenAI routing by default.
-export LLM_CLIENT_OPENROUTER_ROUTING="${LLM_CLIENT_OPENROUTER_ROUTING:-off}"
+# OpenRouter-first by default.
+export LLM_CLIENT_OPENROUTER_ROUTING="${LLM_CLIENT_OPENROUTER_ROUTING:-on}"
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "OPENAI_API_KEY is not set. Export it before running adoption_probe.sh." >&2
-  exit 1
+if [[ "$MODEL" == gemini/* ]]; then
+  if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+    echo "GEMINI_API_KEY is not set for model '$MODEL'." >&2
+    exit 1
+  fi
+else
+  if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+    echo "OPENROUTER_API_KEY is not set. Export it before running adoption_probe.sh." >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -28,6 +39,11 @@ fi
 
 echo "Running adoption probe..."
 echo "  model=$MODEL effort=$EFFORT routing=$LLM_CLIENT_OPENROUTER_ROUTING"
+if [[ "$MODEL" == gemini/* ]]; then
+  echo "  auth=GEMINI_API_KEY"
+else
+  echo "  auth=OPENROUTER_API_KEY"
+fi
 echo "  experiments_path=$EXPERIMENTS_PATH"
 
 "$PYTHON_BIN" - <<'PY'

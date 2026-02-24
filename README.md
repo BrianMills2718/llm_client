@@ -523,8 +523,9 @@ live probe to append a fresh long-thinking record:
 ./scripts/adoption_probe.sh
 ```
 
-That probe uses `gpt-5.2-pro` + `reasoning_effort=high` by default and writes one
-task-graph experiment row with routing/effort/background fields.
+That probe uses `gpt-5.2-pro` + `reasoning_effort=high` by default, routes via
+OpenRouter, and writes one task-graph experiment row with
+routing/effort/background fields.
 
 Cron example (daily at 06:15 UTC, log to file, no GitHub Actions):
 
@@ -537,10 +538,14 @@ Cron example (daily at 06:15 UTC, log to file, no GitHub Actions):
 Set via environment variables (litellm convention):
 
 ```bash
-export OPENAI_API_KEY=sk-...
+export OPENROUTER_API_KEY=sk-or-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export GEMINI_API_KEY=...
 ```
+
+Use `OPENROUTER_API_KEY` by default for non-Gemini traffic. Use `GEMINI_API_KEY`
+for direct Gemini models. `OPENAI_API_KEY` is only needed if you intentionally
+run direct OpenAI routing (`LLM_CLIENT_OPENROUTER_ROUTING=off`).
 
 ## Using from another project
 

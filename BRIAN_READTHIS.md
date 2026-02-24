@@ -90,7 +90,8 @@ What it does:
 - gives the adoption gate real data to evaluate
 
 Requirements:
-- `OPENAI_API_KEY` must be set
+- `OPENROUTER_API_KEY` must be set (default path)
+- for direct Gemini models (`gemini/...`), use `GEMINI_API_KEY` instead
 - this incurs real API cost (small, but non-zero)
 
 ## When to switch to strict mode
