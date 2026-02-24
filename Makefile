@@ -7,12 +7,81 @@ PLANS_DIR := docs/plans
 READS_FILE ?= /tmp/.claude_session_reads
 GITHUB_ACCOUNT ?= BrianMills2718
 PR_AUTO_EXPECTED_REPO ?= llm_client
+CLAIMS_SCRIPT ?= scripts/meta/worktree-coordination/check_claims.py
+META_STATUS_SCRIPT ?= scripts/meta/worktree-coordination/meta_status.py
+SAFE_WORKTREE_REMOVE_SCRIPT ?= scripts/meta/worktree-coordination/safe_worktree_remove.py
 
 # --- Session Start ---
-.PHONY: status
+.PHONY: status worktree worktree-remove claim release claims meta-status
 
 status:  ## Show git status
 	@git status --short --branch
+
+worktree:  ## Create worktree from origin/main (BRANCH=... TASK="..." optional)
+ifndef BRANCH
+	$(error BRANCH is required. Usage: make worktree BRANCH=plan-NN-description TASK="...optional...")
+endif
+	@git fetch origin main
+	@mkdir -p worktrees
+	@if git show-ref --verify --quiet "refs/heads/$(BRANCH)"; then \
+		echo "ERROR: branch '$(BRANCH)' already exists locally."; \
+		exit 1; \
+	fi
+	@git worktree add "worktrees/$(BRANCH)" -b "$(BRANCH)" origin/main
+	@echo "Worktree created: worktrees/$(BRANCH)"
+	@echo "Next: cd worktrees/$(BRANCH)"
+	@if [ -n "$(TASK)" ] && [ -f "$(CLAIMS_SCRIPT)" ]; then \
+		python "$(CLAIMS_SCRIPT)" --claim --id "$(BRANCH)" --task "$(TASK)"; \
+	fi
+	@if [ -z "$(TASK)" ]; then \
+		echo "Optional claim: python $(CLAIMS_SCRIPT) --claim --id \"$(BRANCH)\" --task \"...\""; \
+	fi
+
+worktree-remove:  ## Safely remove worktree (BRANCH=...)
+ifndef BRANCH
+	$(error BRANCH is required. Usage: make worktree-remove BRANCH=plan-NN-description)
+endif
+	@if [ -f "$(SAFE_WORKTREE_REMOVE_SCRIPT)" ]; then \
+		python "$(SAFE_WORKTREE_REMOVE_SCRIPT)" "worktrees/$(BRANCH)"; \
+	else \
+		git worktree remove "worktrees/$(BRANCH)"; \
+	fi
+
+claim:  ## Create/update active claim for current branch (TASK="...")
+ifndef TASK
+	$(error TASK is required. Usage: make claim TASK="description" [ID=branch-name])
+endif
+	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
+		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
+		exit 1; \
+	fi
+	@CLAIM_ID="$${ID:-$$(git rev-parse --abbrev-ref HEAD)}"; \
+	python "$(CLAIMS_SCRIPT)" --claim --id "$$CLAIM_ID" --task "$(TASK)"
+
+release:  ## Release active claim for current branch
+	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
+		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
+		exit 1; \
+	fi
+	@CLAIM_ID="$${ID:-$$(git rev-parse --abbrev-ref HEAD)}"; \
+	python "$(CLAIMS_SCRIPT)" --release --id "$$CLAIM_ID"
+
+claims:  ## List active claims/worktrees
+	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
+		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
+		exit 1; \
+	fi
+	@python "$(CLAIMS_SCRIPT)" --list
+
+meta-status:  ## Coordination dashboard (claims/PRs/worktrees)
+	@if [ -f "$(META_STATUS_SCRIPT)" ]; then \
+		python "$(META_STATUS_SCRIPT)"; \
+	elif [ -f "$(CLAIMS_SCRIPT)" ]; then \
+		python "$(CLAIMS_SCRIPT)" --list; \
+	else \
+		echo "ERROR: no coordination status script found."; \
+		exit 1; \
+	fi
 
 # --- During Implementation ---
 .PHONY: test test-quick check adoption-gate read-gate-check read-gate-check-warn
@@ -105,6 +174,12 @@ help-meta:  ## Show meta-process targets
 	@echo ""
 	@echo "  Session:"
 	@echo "    status               Show git status"
+	@echo "    worktree             Create worktree from main (BRANCH=... TASK=...)"
+	@echo "    worktree-remove      Safely remove worktree (BRANCH=...)"
+	@echo "    claim                Claim current branch (TASK=...)"
+	@echo "    release              Release current claim"
+	@echo "    claims               List active claims/worktrees"
+	@echo "    meta-status          Coordination dashboard"
 	@echo ""
 	@echo "  Development:"
 	@echo "    test                 Run tests"

@@ -12,7 +12,7 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-from llm_client import ClientConfig, call_llm
+from llm_client import call_llm
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -31,8 +31,8 @@ def _long_thinking_smoke_enabled() -> tuple[bool, str]:
         return False, "Set LLM_CLIENT_INTEGRATION=1 to enable integration tests."
     if os.environ.get("LLM_CLIENT_LONG_THINKING_SMOKE", "").strip() != "1":
         return False, "Set LLM_CLIENT_LONG_THINKING_SMOKE=1 to enable long-thinking smoke."
-    if not os.environ.get("OPENAI_API_KEY", "").strip():
-        return False, "OPENAI_API_KEY is required for long-thinking smoke test."
+    if not os.environ.get("OPENROUTER_API_KEY", "").strip():
+        return False, "OPENROUTER_API_KEY is required for long-thinking smoke test."
     return True, ""
 
 
@@ -62,7 +62,6 @@ def test_gpt52_pro_long_thinking_background_smoke() -> None:
         task="integration.long_thinking_smoke",
         trace_id="integration.long_thinking_smoke.gpt52",
         max_budget=0,
-        config=ClientConfig(routing_policy="direct"),
     )
 
     assert isinstance(result.content, str)

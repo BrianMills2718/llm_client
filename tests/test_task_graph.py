@@ -550,6 +550,41 @@ tasks:
 
 
 @pytest.mark.asyncio
+async def test_max_tokens_passthrough_to_call_kwargs(tmp_path: Path):
+    """Task-level max_tokens should map to max_completion_tokens in call kwargs."""
+    content = """
+graph:
+  id: max_tokens_passthrough
+  description: "max_tokens passthrough"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 2
+    model: gpt-5.2-pro
+    prompt: "Deep review"
+    max_tokens: 512
+"""
+    f = tmp_path / "max_tokens_passthrough.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("max_completion_tokens") == 512
+
+
+@pytest.mark.asyncio
 async def test_task_result_captures_background_mode_from_routing_trace(tmp_path: Path):
     """Task result telemetry should capture background_mode from call routing trace."""
     content = """

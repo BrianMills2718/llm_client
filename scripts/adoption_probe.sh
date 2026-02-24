@@ -16,6 +16,7 @@ EFFORT="${LLM_CLIENT_ADOPTION_PROBE_EFFORT:-high}"
 PROMPT="${LLM_CLIENT_ADOPTION_PROBE_PROMPT:-In 3 short bullets, explain why deterministic tests reduce production risk. Keep total response under 70 words.}"
 RUN_ID_PREFIX="${LLM_CLIENT_ADOPTION_PROBE_RUN_ID_PREFIX:-adoption_probe}"
 TIMEOUT_MINUTES="${LLM_CLIENT_ADOPTION_PROBE_TIMEOUT_MINUTES:-20}"
+MAX_TOKENS="${LLM_CLIENT_ADOPTION_PROBE_MAX_TOKENS:-1024}"
 
 # OpenRouter-first by default.
 export LLM_CLIENT_OPENROUTER_ROUTING="${LLM_CLIENT_OPENROUTER_ROUTING:-on}"
@@ -44,6 +45,7 @@ if [[ "$MODEL" == gemini/* ]]; then
 else
   echo "  auth=OPENROUTER_API_KEY"
 fi
+echo "  max_tokens=$MAX_TOKENS"
 echo "  experiments_path=$EXPERIMENTS_PATH"
 
 "$PYTHON_BIN" - <<'PY'
@@ -78,6 +80,7 @@ prompt = os.environ.get(
     "In 3 short bullets, explain why deterministic tests reduce production risk. Keep total response under 70 words.",
 ).strip()
 timeout_minutes = _env_int("LLM_CLIENT_ADOPTION_PROBE_TIMEOUT_MINUTES", 20)
+max_tokens = _env_int("LLM_CLIENT_ADOPTION_PROBE_MAX_TOKENS", 1024)
 experiments_path = Path(
     os.environ.get(
         "LLM_CLIENT_EXPERIMENTS_PATH",
@@ -99,6 +102,7 @@ graph = TaskGraph(
             model=model,
             prompt=prompt,
             reasoning_effort=effort,
+            max_tokens=max_tokens,
             timeout=max(60, timeout_minutes * 60 - 5),
         )
     },

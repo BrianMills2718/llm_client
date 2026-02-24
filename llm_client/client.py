@@ -3142,26 +3142,29 @@ def _build_result_from_responses(
 
 _BACKGROUND_ERR_ENDPOINT_UNSUPPORTED = "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
 _BACKGROUND_ERR_MISSING_OPENAI_KEY = "LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED"
+_BACKGROUND_ERR_MISSING_OPENROUTER_KEY = "LLMC_ERR_BACKGROUND_OPENROUTER_KEY_REQUIRED"
 
-def _validate_background_retrieval_api_base(api_base: str | None) -> None:
-    """Fail fast when background retrieval is routed to a non-OpenAI endpoint."""
+def _validate_background_retrieval_api_base(api_base: str | None) -> str:
+    """Return endpoint kind for background retrieval ("openai" or "openrouter")."""
     if api_base is None:
-        return
+        return "openai"
     base = str(api_base).strip()
     if not base:
-        return
+        return "openai"
 
     parsed = urllib.parse.urlparse(base)
     hostname = (parsed.hostname or "").strip().lower()
     if hostname == "api.openai.com" or hostname.endswith(".api.openai.com"):
-        return
+        return "openai"
     if "openai.com" in hostname and "openrouter" not in hostname:
-        return
+        return "openai"
+    if hostname == "openrouter.ai" or hostname.endswith(".openrouter.ai"):
+        return "openrouter"
 
     raise LLMConfigurationError(
         "Background response retrieval for long-thinking models currently supports "
-        f"OpenAI endpoints only. Received api_base={base!r}. "
-        "Use https://api.openai.com/v1 (or default) for background retrieval.",
+        f"OpenAI/OpenRouter endpoints only. Received api_base={base!r}. "
+        "Use https://api.openai.com/v1, https://openrouter.ai/api/v1, or default.",
         error_code=_BACKGROUND_ERR_ENDPOINT_UNSUPPORTED,
         details={"api_base": base},
     )
@@ -3406,14 +3409,27 @@ def _retrieve_background_response(
     """
     from openai import OpenAI
 
-    _validate_background_retrieval_api_base(api_base)
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise LLMConfigurationError(
-            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
-            error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
-            details={"api_base": api_base},
-        )
+    endpoint_kind = _validate_background_retrieval_api_base(api_base)
+    if endpoint_kind == "openrouter":
+        api_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
+        if not api_key:
+            ring = _openrouter_key_candidates_from_env()
+            api_key = ring[0] if ring else ""
+        if not api_key:
+            raise LLMConfigurationError(
+                "OPENROUTER_API_KEY is required to retrieve background responses "
+                "for long-thinking models via OpenRouter",
+                error_code=_BACKGROUND_ERR_MISSING_OPENROUTER_KEY,
+                details={"api_base": api_base},
+            )
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise LLMConfigurationError(
+                "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
+                error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
+                details={"api_base": api_base},
+            )
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}
     if api_base:
@@ -3433,14 +3449,27 @@ async def _aretrieve_background_response(
     """Async retrieve for background responses by ID."""
     from openai import AsyncOpenAI
 
-    _validate_background_retrieval_api_base(api_base)
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise LLMConfigurationError(
-            "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
-            error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
-            details={"api_base": api_base},
-        )
+    endpoint_kind = _validate_background_retrieval_api_base(api_base)
+    if endpoint_kind == "openrouter":
+        api_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
+        if not api_key:
+            ring = _openrouter_key_candidates_from_env()
+            api_key = ring[0] if ring else ""
+        if not api_key:
+            raise LLMConfigurationError(
+                "OPENROUTER_API_KEY is required to retrieve background responses "
+                "for long-thinking models via OpenRouter",
+                error_code=_BACKGROUND_ERR_MISSING_OPENROUTER_KEY,
+                details={"api_base": api_base},
+            )
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise LLMConfigurationError(
+                "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
+                error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
+                details={"api_base": api_base},
+            )
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}
     if api_base:
