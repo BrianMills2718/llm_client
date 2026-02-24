@@ -1174,6 +1174,45 @@ def _estimate_codex_cost(model: str, usage: Any) -> float:
         return 0.0
 
 
+def _extract_codex_tool_calls(raw_turn: Any) -> list[dict[str, Any]]:
+    """Extract MCP tool-call records from Codex Turn.items into OpenAI-like shape."""
+    items = getattr(raw_turn, "items", None)
+    if not isinstance(items, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        item_type = str(getattr(item, "type", "") or "").strip().lower()
+        if item_type != "mcp_tool_call":
+            continue
+        tool_name = str(getattr(item, "tool", "") or "")
+        if not tool_name:
+            continue
+        arguments = getattr(item, "arguments", None)
+        if not isinstance(arguments, dict):
+            arguments = {}
+        status = str(getattr(item, "status", "") or "")
+        error = getattr(item, "error", None)
+        result_obj = getattr(item, "result", None)
+        result_preview = _safe_line_preview(result_obj, max_chars=500) if result_obj is not None else ""
+        out.append(
+            {
+                "id": str(getattr(item, "id", "") or ""),
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                },
+                "server": str(getattr(item, "server", "") or ""),
+                "status": status,
+                "result_preview": result_preview,
+                "is_error": bool(error) or status.lower() in {"failed", "error"},
+                "error": _safe_line_preview(error, max_chars=300) if error else "",
+            }
+        )
+    return out
+
+
 def _result_from_codex(
     model: str,
     final_response: str,
@@ -1200,12 +1239,14 @@ def _result_from_codex(
         cost = 0.0
         cost_source = "subscription_included"
         effective_billing_mode = "subscription_included"
+    tool_calls = _extract_codex_tool_calls(raw_turn)
 
     return LLMCallResult(
         content=final_response,
         usage=usage_dict,
         cost=cost,
         model=model,
+        tool_calls=tool_calls,
         finish_reason="error" if is_error else "stop",
         raw_response=raw_turn,
         cost_source=cost_source,

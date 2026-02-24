@@ -44,6 +44,7 @@ from llm_client.agents import (
     _messages_to_agent_prompt,
     _normalize_codex_reasoning_effort,
     _parse_agent_model,
+    _result_from_codex,
 )
 from llm_client.errors import LLMError, LLMTransientError
 from llm_client.client import _is_agent_model
@@ -806,6 +807,18 @@ class _FakeAgentMessageItem:
 
 
 @dataclass
+class _FakeMcpToolCallItem:
+    id: str = "item_1"
+    type: str = "mcp_tool_call"
+    server: str = "digimon-kgrag"
+    tool: str = "list_available_resources"
+    arguments: dict = field(default_factory=dict)
+    result: dict | None = field(default_factory=lambda: {"content": [{"type": "text", "text": "{}"}]})
+    error: object | None = None
+    status: str = "completed"
+
+
+@dataclass
 class _FakeTurn:
     items: list = None  # type: ignore[assignment]
     final_response: str = "The answer is 4."
@@ -966,6 +979,39 @@ class TestCodexCall:
         assert isinstance(result, LLMCallResult)
         assert "4" in result.content
         assert result.finish_reason == "stop"
+
+    def test_result_from_codex_extracts_mcp_tool_calls(self) -> None:
+        turn = _FakeTurn(
+            items=[
+                _FakeAgentMessageItem(id="msg-1", text="Working"),
+                _FakeMcpToolCallItem(
+                    id="item_a",
+                    tool="list_available_resources",
+                    arguments={"dataset_name": "MuSiQue"},
+                    result={"content": [{"type": "text", "text": "{\"ok\": true}"}]},
+                    status="completed",
+                ),
+                _FakeMcpToolCallItem(
+                    id="item_b",
+                    tool="entity_link",
+                    arguments={"entity_name": "Lady Godiva"},
+                    result=None,
+                    error="entity not found",
+                    status="failed",
+                ),
+            ],
+            final_response="DONE",
+        )
+        result = _result_from_codex("codex/gpt-5", "DONE", _FakeUsage(), turn)
+        assert len(result.tool_calls) == 2
+        first = result.tool_calls[0]
+        assert first["function"]["name"] == "list_available_resources"
+        assert first["function"]["arguments"] == {"dataset_name": "MuSiQue"}
+        assert first["is_error"] is False
+        assert isinstance(first.get("result_preview"), str) and first["result_preview"]
+        second = result.tool_calls[1]
+        assert second["function"]["name"] == "entity_link"
+        assert second["is_error"] is True
 
     @pytest.mark.usefixtures("_mock_codex_sdk")
     def test_hooks_fire(self) -> None:
