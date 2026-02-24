@@ -51,6 +51,7 @@ from llm_client.errors import (
 def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Week-1 invariant: routing policy must be explicit in tests."""
     monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
 
 
 class TestRequiredTags:
@@ -187,6 +188,28 @@ class TestCallLLM:
         kwargs = mock_comp.call_args.kwargs
         assert "api_base" not in kwargs
 
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_timeout_policy_ban_omits_timeout(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_comp.return_value = _mock_response()
+        monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+        result = call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            timeout=120,
+            task="test",
+            trace_id="test_timeout_policy_ban_sync",
+            max_budget=0,
+        )
+        kwargs = mock_comp.call_args.kwargs
+        assert "timeout" not in kwargs
+        assert any("TIMEOUT_DISABLED[call_llm]" in w for w in result.warnings)
+
 
 class TestCallLLMWithTools:
     """Tests for call_llm_with_tools."""
@@ -256,6 +279,29 @@ class TestAcallLLM:
         kwargs = mock_acomp.call_args.kwargs
         assert "num_retries" not in kwargs
         assert kwargs["timeout"] == 120
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_timeout_policy_ban_omits_timeout(
+        self,
+        mock_acomp: MagicMock,
+        mock_cost: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_acomp.return_value = _mock_response()
+        monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+        result = await acall_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            timeout=120,
+            task="test",
+            trace_id="test_timeout_policy_ban_async",
+            max_budget=0,
+        )
+        kwargs = mock_acomp.call_args.kwargs
+        assert "timeout" not in kwargs
+        assert any("TIMEOUT_DISABLED[acall_llm]" in w for w in result.warnings)
 
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)

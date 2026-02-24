@@ -35,6 +35,7 @@ def stream_llm_impl(
     """Implementation for stream_llm extracted out of client facade."""
     _client._check_model_deprecation(model)
     cfg = config or _client.ClientConfig.from_env()
+    timeout = _client._normalize_timeout(timeout, caller="stream_llm")
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
@@ -174,6 +175,7 @@ async def astream_llm_impl(
     """Implementation for astream_llm extracted out of client facade."""
     _client._check_model_deprecation(model)
     cfg = config or _client.ClientConfig.from_env()
+    timeout = _client._normalize_timeout(timeout, caller="astream_llm")
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)

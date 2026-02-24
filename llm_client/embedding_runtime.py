@@ -71,11 +71,14 @@ def embed_impl(
     """Implementation for embed extracted out of client facade."""
     texts = [input] if isinstance(input, str) else list(input)
     _log_t0 = time.monotonic()
+    timeout = _client._normalize_timeout(timeout, caller="embed")
     resolved_model, resolved_api_base = _resolve_embedding_route(model=model, api_base=api_base)
     retry_policy = _resolve_embedding_retry_policy(kwargs)
     retry_warnings: list[str] = []
 
-    call_kwargs: dict[str, Any] = {"model": resolved_model, "input": texts, "timeout": timeout}
+    call_kwargs: dict[str, Any] = {"model": resolved_model, "input": texts}
+    if timeout > 0:
+        call_kwargs["timeout"] = timeout
     if dimensions is not None:
         call_kwargs["dimensions"] = dimensions
     if resolved_api_base is not None:
@@ -177,11 +180,14 @@ async def aembed_impl(
     """Implementation for aembed extracted out of client facade."""
     texts = [input] if isinstance(input, str) else list(input)
     _log_t0 = time.monotonic()
+    timeout = _client._normalize_timeout(timeout, caller="aembed")
     resolved_model, resolved_api_base = _resolve_embedding_route(model=model, api_base=api_base)
     retry_policy = _resolve_embedding_retry_policy(kwargs)
     retry_warnings: list[str] = []
 
-    call_kwargs: dict[str, Any] = {"model": resolved_model, "input": texts, "timeout": timeout}
+    call_kwargs: dict[str, Any] = {"model": resolved_model, "input": texts}
+    if timeout > 0:
+        call_kwargs["timeout"] = timeout
     if dimensions is not None:
         call_kwargs["dimensions"] = dimensions
     if resolved_api_base is not None:

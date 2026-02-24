@@ -96,6 +96,7 @@ _CODEX_PROCESS_ISOLATION_ENV = "LLM_CLIENT_CODEX_PROCESS_ISOLATION"
 _CODEX_PROCESS_START_METHOD_ENV = "LLM_CLIENT_CODEX_PROCESS_START_METHOD"
 _CODEX_PROCESS_GRACE_ENV = "LLM_CLIENT_CODEX_PROCESS_GRACE_S"
 _CODEX_ALLOW_MINIMAL_EFFORT_ENV = "LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT"
+_TIMEOUT_POLICY_ENV = "LLM_CLIENT_TIMEOUT_POLICY"
 
 
 def _normalize_codex_reasoning_effort(value: Any) -> str:
@@ -190,6 +191,35 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     if raw in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _timeouts_disabled() -> bool:
+    raw = str(os.environ.get(_TIMEOUT_POLICY_ENV, "") or "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"allow", "allowed", "enable", "enabled", "on", "true", "yes", "1"}:
+        return False
+    if raw in {"ban", "disable", "disabled", "off", "none", "false", "no", "0"}:
+        return True
+    return False
+
+
+def _normalize_timeout(timeout: Any, *, caller: str) -> int:
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed < 0:
+        parsed = 0
+    if parsed > 0 and _timeouts_disabled():
+        logger.warning(
+            "TIMEOUT_DISABLED[%s]: timeout=%ss ignored (set %s=allow to re-enable).",
+            caller,
+            parsed,
+            _TIMEOUT_POLICY_ENV,
+        )
+        return 0
+    return parsed
 
 
 def _codex_process_isolation_enabled(kwargs: dict[str, Any]) -> bool:
@@ -423,6 +453,7 @@ async def _acall_agent(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Claude Agent SDK and return an LLMCallResult."""
+    timeout = _normalize_timeout(timeout, caller="_acall_agent")
     prompt, options, sdk = _build_agent_options(model, messages, **kwargs)
     AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
     from claude_agent_sdk import ToolResultBlock
@@ -517,6 +548,7 @@ async def _acall_agent_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Claude Agent SDK with structured output (JSON schema)."""
+    timeout = _normalize_timeout(timeout, caller="_acall_agent_structured")
     schema = response_model.model_json_schema()
     output_format = {"type": "json_schema", "schema": schema}
 
@@ -1419,6 +1451,7 @@ async def _acall_codex_inproc(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Codex SDK and return an LLMCallResult."""
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_inproc")
     kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
     try:
         prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
@@ -1638,6 +1671,7 @@ async def _acall_codex(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Codex SDK and return an LLMCallResult."""
+    timeout = _normalize_timeout(timeout, caller="_acall_codex")
     if _codex_process_isolation_enabled(kwargs):
         return await asyncio.to_thread(
             _call_codex_in_isolated_process,
@@ -1683,6 +1717,7 @@ async def _acall_codex_structured_inproc(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Codex SDK with structured output (JSON schema)."""
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured_inproc")
     kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
     try:
         schema = response_model.model_json_schema()
@@ -1948,6 +1983,7 @@ async def _acall_codex_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Codex SDK with structured output (JSON schema)."""
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured")
     if _codex_process_isolation_enabled(kwargs):
         return await asyncio.to_thread(
             _call_codex_structured_in_isolated_process,
@@ -2186,6 +2222,7 @@ def _route_call(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Route a sync agent call to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_call")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _call_codex(model, messages, timeout=timeout, **kwargs)
@@ -2207,6 +2244,7 @@ async def _route_acall(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Route an async agent call to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_acall")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _acall_codex(model, messages, timeout=timeout, **kwargs)
@@ -2229,6 +2267,7 @@ def _route_call_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Route a sync structured agent call to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_call_structured")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _call_codex_structured(model, messages, response_model, timeout=timeout, **kwargs)
@@ -2251,6 +2290,7 @@ async def _route_acall_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Route an async structured agent call to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_acall_structured")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _acall_codex_structured(model, messages, response_model, timeout=timeout, **kwargs)
@@ -2273,6 +2313,7 @@ def _route_stream(
     **kwargs: Any,
 ) -> AgentStream | CodexStream:
     """Route a sync agent stream to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_stream")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _stream_codex(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -2295,6 +2336,7 @@ async def _route_astream(
     **kwargs: Any,
 ) -> AsyncAgentStream | AsyncCodexStream:
     """Route an async agent stream to the appropriate SDK."""
+    timeout = _normalize_timeout(timeout, caller="_route_astream")
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _astream_codex(model, messages, hooks=hooks, timeout=timeout, **kwargs)

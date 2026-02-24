@@ -16,6 +16,7 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -182,7 +183,8 @@ def classify_error(error: Exception) -> type[LLMError]:
         return LLMAuthError
     if "403" in error_str or "forbidden" in error_str or "permission" in error_str:
         return LLMAuthError
-    if "404" in error_str or "not found" in error_str or "does not exist" in error_str:
+    has_404_status = bool(re.search(r"(?:^|\\D)404(?:\\D|$)", error_str))
+    if has_404_status or "not found" in error_str or "does not exist" in error_str:
         return LLMModelNotFoundError
     if "content" in error_str and ("policy" in error_str or "filter" in error_str):
         return LLMContentFilterError

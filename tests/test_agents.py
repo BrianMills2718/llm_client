@@ -55,6 +55,7 @@ def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Week-1 invariant: routing policy must be explicit in tests."""
     monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
     monkeypatch.setenv("LLM_CLIENT_CODEX_PROCESS_ISOLATION", "0")
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
 
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +1125,38 @@ class TestCodexCall:
         )
         assert result.content == "env-isolated"
         assert calls["used"] is True
+
+    def test_timeout_policy_ban_zeroes_agent_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: dict[str, object] = {}
+
+        def _fake_call_codex(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            calls["timeout"] = timeout
+            return LLMCallResult(
+                content="ok",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+            )
+
+        monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+        monkeypatch.setattr(agents_mod, "_call_codex", _fake_call_codex)
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            timeout=99,
+            task="test",
+            trace_id="test_agent_timeout_policy_ban",
+            max_budget=0,
+        )
+        assert result.content == "ok"
+        assert calls["timeout"] == 0
 
 
 # ---------------------------------------------------------------------------

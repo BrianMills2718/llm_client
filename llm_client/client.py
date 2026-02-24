@@ -117,6 +117,7 @@ OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_API_KEYS_ENV = "OPENROUTER_API_KEYS"
 REQUIRE_TAGS_ENV = "LLM_CLIENT_REQUIRE_TAGS"
 AGENT_RETRY_SAFE_ENV = "LLM_CLIENT_AGENT_RETRY_SAFE"
+TIMEOUT_POLICY_ENV = "LLM_CLIENT_TIMEOUT_POLICY"
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 
 _OPENROUTER_KEY_ROTATION_LOCK = threading.Lock()
@@ -2101,7 +2102,11 @@ def _call_gemini_native(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if timeout > 0:
+            resp_ctx = urllib.request.urlopen(req, timeout=timeout)
+        else:
+            resp_ctx = urllib.request.urlopen(req)
+        with resp_ctx as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
@@ -2331,6 +2336,43 @@ def _truthy_env(value: Any) -> bool:
         return value
     raw = str(value or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _timeouts_disabled() -> bool:
+    """Whether timeout arguments should be ignored globally."""
+    raw = str(os.environ.get(TIMEOUT_POLICY_ENV, "") or "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"allow", "allowed", "enable", "enabled", "on", "true", "yes", "1"}:
+        return False
+    if raw in {"ban", "disable", "disabled", "off", "none", "false", "no", "0"}:
+        return True
+    return False
+
+
+def _normalize_timeout(
+    timeout: Any,
+    *,
+    caller: str,
+    warning_sink: list[str] | None = None,
+) -> int:
+    """Normalize timeout value and enforce optional global disable policy."""
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        parsed = 0
+    if parsed < 0:
+        parsed = 0
+    if parsed > 0 and _timeouts_disabled():
+        msg = (
+            f"TIMEOUT_DISABLED[{caller}]: timeout={parsed}s ignored "
+            f"(set {TIMEOUT_POLICY_ENV}=allow to re-enable)."
+        )
+        logger.warning(msg)
+        if warning_sink is not None and msg not in warning_sink:
+            warning_sink.append(msg)
+        return 0
+    return parsed
 
 
 def _tags_strict_mode(task: str | None) -> bool:
@@ -2903,8 +2945,9 @@ def _prepare_responses_kwargs(
     resp_kwargs: dict[str, Any] = {
         "model": model,
         "input": input_text,
-        "timeout": timeout,
     }
+    if timeout > 0:
+        resp_kwargs["timeout"] = timeout
 
     if api_base is not None:
         resp_kwargs["api_base"] = api_base
@@ -3539,13 +3582,14 @@ def _prepare_call_kwargs(
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "timeout": timeout,
         # Don't pass num_retries to litellm — our own retry loop handles
         # all retries with jittered backoff. Passing it to litellm causes
         # double retry (litellm retries HTTP errors internally, then our
         # loop retries the same errors again).
         **raw_kwargs,
     }
+    if timeout > 0:
+        call_kwargs["timeout"] = timeout
 
     if api_base is not None:
         call_kwargs["api_base"] = api_base
@@ -3784,6 +3828,7 @@ def call_llm(
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="call_llm",
     )
+    timeout = _normalize_timeout(timeout, caller="call_llm", warning_sink=_entry_warnings)
     _check_budget(trace_id, max_budget)
 
     _inner_named = _build_inner_named_call_kwargs(
@@ -4071,7 +4116,7 @@ def call_llm(
                 response = _maybe_poll_background_response(
                     response,
                     api_base=current_api_base,
-                    request_timeout=timeout,
+                    request_timeout=(timeout if timeout > 0 else None),
                     model_kwargs=model_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
@@ -4223,6 +4268,7 @@ def call_llm_structured(
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="call_llm_structured",
     )
+    timeout = _normalize_timeout(timeout, caller="call_llm_structured", warning_sink=_entry_warnings)
     _check_budget(trace_id, max_budget)
     plan = _resolve_call_plan(
         model=model,
@@ -4778,6 +4824,7 @@ async def acall_llm(
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="acall_llm",
     )
+    timeout = _normalize_timeout(timeout, caller="acall_llm", warning_sink=_entry_warnings)
     _check_budget(trace_id, max_budget)
 
     # Named params that must flow through to per-turn _inner_acall_llm calls
@@ -5063,7 +5110,7 @@ async def acall_llm(
                 response = await _maybe_apoll_background_response(
                     response,
                     api_base=current_api_base,
-                    request_timeout=timeout,
+                    request_timeout=(timeout if timeout > 0 else None),
                     model_kwargs=model_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
@@ -5215,6 +5262,7 @@ async def acall_llm_structured(
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="acall_llm_structured",
     )
+    timeout = _normalize_timeout(timeout, caller="acall_llm_structured", warning_sink=_entry_warnings)
     _check_budget(trace_id, max_budget)
     plan = _resolve_call_plan(
         model=model,

@@ -478,6 +478,10 @@ Fourteen functions (7 sync + 7 async):
 
 `*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions`, `on_item_complete`, `on_item_error`.
 
+Timeout policy:
+- Set `LLM_CLIENT_TIMEOUT_POLICY=ban` to disable all per-call request timeouts globally (timeouts are normalized to disabled and omitted from provider calls).
+- Set `LLM_CLIENT_TIMEOUT_POLICY=allow` (default) to permit explicit `timeout` values.
+
 ## Experiment Observability
 
 Use the built-in CLI to inspect and compare benchmark/eval runs recorded via
