@@ -123,6 +123,7 @@ _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 _OPENROUTER_KEY_ROTATION_LOCK = threading.Lock()
 _OPENROUTER_KEY_RING: tuple[str, ...] = ()
 _OPENROUTER_KEY_RING_INDEX: int = 0
+_TIMEOUT_POLICY_LOGGED = False
 
 
 # ---------------------------------------------------------------------------
@@ -2350,6 +2351,24 @@ def _timeouts_disabled() -> bool:
     return False
 
 
+def _timeout_policy_label() -> str:
+    return "ban" if _timeouts_disabled() else "allow"
+
+
+def _log_timeout_policy_once(*, caller: str) -> None:
+    """Emit a one-time process-level timeout policy log."""
+    global _TIMEOUT_POLICY_LOGGED  # noqa: PLW0603
+    if _TIMEOUT_POLICY_LOGGED:
+        return
+    label = _timeout_policy_label()
+    logger.warning(
+        "LLM_CLIENT_TIMEOUT_POLICY=%s (first observed in %s)",
+        label,
+        caller,
+    )
+    _TIMEOUT_POLICY_LOGGED = True
+
+
 def _normalize_timeout(
     timeout: Any,
     *,
@@ -2357,6 +2376,7 @@ def _normalize_timeout(
     warning_sink: list[str] | None = None,
 ) -> int:
     """Normalize timeout value and enforce optional global disable policy."""
+    _log_timeout_policy_once(caller=caller)
     try:
         parsed = int(timeout)
     except (TypeError, ValueError):
