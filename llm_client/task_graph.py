@@ -72,6 +72,7 @@ class TaskDef(BaseModel):
     timeout: int = 300  # Per-task timeout in seconds
     skip_git_repo_check: bool = False  # Codex-only: bypass trusted-repo guard
     reasoning_effort: str | None = None  # "low", "medium", "high", "xhigh"
+    max_tokens: int | None = None  # Optional cap for completion output tokens
 
 
 class GraphMeta(BaseModel):
@@ -503,6 +504,8 @@ async def _execute_task(
     # Reasoning effort (for long-thinking models like gpt-5.2-pro)
     if task.reasoning_effort:
         kwargs["reasoning_effort"] = task.reasoning_effort
+    if task.max_tokens is not None and task.max_tokens > 0:
+        kwargs["max_completion_tokens"] = int(task.max_tokens)
 
     # MCP servers
     if task.mcp_servers:

@@ -1823,18 +1823,40 @@ class TestLongThinkingBackgroundRetrieval:
                 )
         assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED"
 
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
-    def test_retrieve_background_response_rejects_non_openai_api_base(self) -> None:
+    def test_retrieve_background_response_requires_openrouter_key_for_openrouter_api_base(self) -> None:
         from llm_client.client import _retrieve_background_response
 
-        with pytest.raises(LLMConfigurationError, match="OpenAI endpoints only") as exc_info:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "test-key",
+                "OPENROUTER_API_KEY": "",
+                "OPENROUTER_API_KEYS": "",
+                "OPENROUTER_API_KEY_2": "",
+                "OPENROUTER_API_KEY_3": "",
+            },
+            clear=True,
+        ):
+            with pytest.raises(LLMConfigurationError, match="OPENROUTER_API_KEY is required") as exc_info:
+                _retrieve_background_response(
+                    response_id="resp_123",
+                    api_base="https://openrouter.ai/api/v1",
+                    request_timeout=60,
+                )
+        assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_OPENROUTER_KEY_REQUIRED"
+
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
+    def test_retrieve_background_response_rejects_unsupported_api_base(self) -> None:
+        from llm_client.client import _retrieve_background_response
+
+        with pytest.raises(LLMConfigurationError, match="OpenAI/OpenRouter endpoints only") as exc_info:
             _retrieve_background_response(
                 response_id="resp_123",
-                api_base="https://openrouter.ai/api/v1",
+                api_base="https://example.com/v1",
                 request_timeout=60,
             )
         assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
-        assert exc_info.value.details.get("api_base") == "https://openrouter.ai/api/v1"
+        assert exc_info.value.details.get("api_base") == "https://example.com/v1"
 
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     @patch("openai.OpenAI")
@@ -1861,6 +1883,32 @@ class TestLongThinkingBackgroundRetrieval:
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_openai.call_args.kwargs["timeout"] == 77
         client.responses.retrieve.assert_called_once_with("resp_123")
+
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False)
+    @patch("openai.OpenAI")
+    def test_retrieve_background_response_uses_openrouter_key_for_openrouter_base(
+        self,
+        mock_openai: MagicMock,
+    ) -> None:
+        from llm_client.client import _retrieve_background_response
+
+        fake_response = MagicMock()
+        client = MagicMock()
+        client.responses.retrieve.return_value = fake_response
+        mock_openai.return_value = client
+
+        result = _retrieve_background_response(
+            response_id="resp_or_123",
+            api_base="https://openrouter.ai/api/v1",
+            request_timeout=99,
+        )
+
+        assert result is fake_response
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "or-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert mock_openai.call_args.kwargs["timeout"] == 99
+        client.responses.retrieve.assert_called_once_with("resp_or_123")
 
     @pytest.mark.asyncio
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
@@ -1890,18 +1938,45 @@ class TestLongThinkingBackgroundRetrieval:
         client.responses.retrieve.assert_awaited_once_with("resp_async_123")
 
     @pytest.mark.asyncio
+    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-key"}, clear=False)
+    @patch("openai.AsyncOpenAI")
+    async def test_aretrieve_background_response_uses_openrouter_key_for_openrouter_base(
+        self,
+        mock_async_openai: MagicMock,
+    ) -> None:
+        from llm_client.client import _aretrieve_background_response
+
+        fake_response = MagicMock()
+        client = MagicMock()
+        client.responses.retrieve = AsyncMock(return_value=fake_response)
+        mock_async_openai.return_value = client
+
+        result = await _aretrieve_background_response(
+            response_id="resp_or_async_123",
+            api_base="https://openrouter.ai/api/v1",
+            request_timeout=66,
+        )
+
+        assert result is fake_response
+        mock_async_openai.assert_called_once()
+        assert mock_async_openai.call_args.kwargs["api_key"] == "or-key"
+        assert mock_async_openai.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert mock_async_openai.call_args.kwargs["timeout"] == 66
+        client.responses.retrieve.assert_awaited_once_with("resp_or_async_123")
+
+    @pytest.mark.asyncio
     @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False)
     async def test_aretrieve_background_response_rejects_non_openai_api_base(self) -> None:
         from llm_client.client import _aretrieve_background_response
 
-        with pytest.raises(LLMConfigurationError, match="OpenAI endpoints only") as exc_info:
+        with pytest.raises(LLMConfigurationError, match="OpenAI/OpenRouter endpoints only") as exc_info:
             await _aretrieve_background_response(
                 response_id="resp_async_123",
-                api_base="https://openrouter.ai/api/v1",
+                api_base="https://example.com/v1",
                 request_timeout=60,
             )
         assert exc_info.value.error_code == "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
-        assert exc_info.value.details.get("api_base") == "https://openrouter.ai/api/v1"
+        assert exc_info.value.details.get("api_base") == "https://example.com/v1"
 
     def test_poll_background_response_fails_fast_on_configuration_error(self) -> None:
         from llm_client.client import _poll_background_response

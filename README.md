@@ -92,12 +92,15 @@ result = call_llm(
 ```
 
 Notes:
-- Requires `OPENAI_API_KEY`.
-- Background retrieval currently supports OpenAI API bases only (`api.openai.com`).
+- Requires provider key for the active endpoint:
+  - OpenRouter endpoint (`https://openrouter.ai/api/v1`): `OPENROUTER_API_KEY`
+  - OpenAI endpoint (`https://api.openai.com/v1`): `OPENAI_API_KEY`
+- Background retrieval supports OpenAI and OpenRouter API bases.
 - Unsupported endpoint/key failures raise `LLMConfigurationError` with stable
   `error_code` values:
   - `LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED`
   - `LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED`
+  - `LLMC_ERR_BACKGROUND_OPENROUTER_KEY_REQUIRED`
 - `background_timeout` caps total polling time.
 - `background_poll_interval` controls polling cadence.
 - `result.routing_trace["background_mode"]` indicates background-mode routing.

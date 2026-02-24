@@ -10,6 +10,22 @@ echo "Running pre-commit checks..."
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ "$BRANCH" == "main" && "${ALLOW_MAIN_COMMIT:-0}" != "1" ]]; then
+    echo ""
+    echo "ERROR: direct commits on 'main' are blocked."
+    echo ""
+    echo "Use worktree/branch + PR workflow:"
+    echo "  make worktree BRANCH=plan-NN-description TASK=\"<task>\""
+    echo "  cd worktrees/plan-NN-description"
+    echo "  git commit ..."
+    echo ""
+    echo "Emergency override (use sparingly):"
+    echo "  ALLOW_MAIN_COMMIT=1 git commit ..."
+    echo ""
+    exit 1
+fi
+
 STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
 
 # Helper: find a script at either scripts/meta/ or scripts/
@@ -78,7 +94,6 @@ fi
 echo "Checking branch freshness..."
 git fetch origin 2>/dev/null || true
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
 REMOTE="origin/$BRANCH"
 
 if git rev-parse --verify "$REMOTE" >/dev/null 2>&1; then
