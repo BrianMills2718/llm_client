@@ -839,6 +839,21 @@ def _safe_error_text(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _safe_line_preview(value: Any, *, max_chars: int = 240) -> str:
+    """Best-effort compact single-line preview for Codex exec stream items."""
+    try:
+        if isinstance(value, str):
+            text = value
+        else:
+            text = _json.dumps(value, ensure_ascii=True, default=str)
+    except Exception:
+        text = repr(value)
+    text = text.replace("\n", "\\n").replace("\r", "\\r")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...(truncated)"
+
+
 def _compact_json(payload: dict[str, Any], *, max_chars: int = 1800) -> str:
     try:
         rendered = _json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
@@ -992,6 +1007,7 @@ def _patch_codex_buffer_limit() -> None:
                 "lines_seen": 0,
                 "first_line_s": None,
                 "last_line_s": None,
+                "line_tail": [],
                 "proc_pid": None,
                 "proc_argv": None,
                 "proc_started_s": None,
@@ -1019,6 +1035,10 @@ def _patch_codex_buffer_limit() -> None:
                     if run_diag["first_line_s"] is None:
                         run_diag["first_line_s"] = now_s
                     run_diag["last_line_s"] = now_s
+                    line_tail = cast(list[str], run_diag.setdefault("line_tail", []))
+                    line_tail.append(_safe_line_preview(line, max_chars=220))
+                    if len(line_tail) > 8:
+                        del line_tail[:-8]
                     yield line
             except BaseException as exc:
                 run_diag["exception_type"] = type(exc).__name__
