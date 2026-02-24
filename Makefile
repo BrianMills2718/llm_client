@@ -5,6 +5,8 @@
 SCRIPTS_META := scripts/meta
 PLANS_DIR := docs/plans
 READS_FILE ?= /tmp/.claude_session_reads
+GITHUB_ACCOUNT ?= BrianMills2718
+PR_AUTO_EXPECTED_REPO ?= llm_client
 
 # --- Session Start ---
 .PHONY: status
@@ -47,7 +49,7 @@ endif
 		python $(SCRIPTS_META)/check_required_reading.py "$(FILE)" --reads-file "$(READS_FILE)"
 
 # --- PR Workflow ---
-.PHONY: pr-ready pr merge finish
+.PHONY: pr-ready pr merge finish pr-auto-check pr-auto
 
 pr-ready:  ## Rebase on main and push
 	@git fetch origin main
@@ -56,6 +58,12 @@ pr-ready:  ## Rebase on main and push
 
 pr:  ## Create PR (opens browser)
 	@gh pr create --fill --web
+
+pr-auto-check:  ## Autonomous PR preflight (branch/clean tree/origin/account)
+	@python $(SCRIPTS_META)/pr_auto.py --preflight-only --expected-origin-repo $(PR_AUTO_EXPECTED_REPO) --account $(GITHUB_ACCOUNT)
+
+pr-auto:  ## Autonomous PR create + auto-merge request (non-interactive)
+	@python $(SCRIPTS_META)/pr_auto.py --expected-origin-repo $(PR_AUTO_EXPECTED_REPO) --account $(GITHUB_ACCOUNT) --fill --auto-merge
 
 merge:  ## Merge PR (PR=number required)
 ifndef PR
@@ -107,6 +115,8 @@ help-meta:  ## Show meta-process targets
 	@echo "  PR Workflow:"
 	@echo "    pr-ready             Rebase + push"
 	@echo "    pr                   Create PR"
+	@echo "    pr-auto-check        Preflight autonomous PR flow"
+	@echo "    pr-auto              Non-interactive PR + auto-merge request"
 	@echo "    merge                Merge PR (PR=number)"
 	@echo "    finish               Merge + cleanup (BRANCH=name PR=number)"
 	@echo ""
