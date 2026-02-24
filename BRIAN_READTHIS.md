@@ -42,6 +42,14 @@ What this does:
   - `~/Library/LaunchAgents/com.brian.openclaw.personal.plist`
   - logs in `~/Library/Logs/openclaw-personal.*.log`
 
+Verify everything in one command:
+
+```bash
+cd ~/projects/llm_client
+chmod +x scripts/macos/verify_personal_only.sh
+./scripts/macos/verify_personal_only.sh
+```
+
 ## One-time setup (copy/paste)
 
 ### Step 1: install the cron job
