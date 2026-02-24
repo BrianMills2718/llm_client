@@ -29,7 +29,7 @@ If you want OpenClaw running continuously on Mac mini and only personal GitHub a
 cd ~/projects/llm_client
 chmod +x scripts/macos/setup_personal_openclaw_mac.sh
 ./scripts/macos/setup_personal_openclaw_mac.sh \
-  --openclaw-cmd 'openclaw run --continuous --root "$HOME/projects"' \
+  --openclaw-cmd 'openclaw gateway run' \
   --purge-work
 ```
 
