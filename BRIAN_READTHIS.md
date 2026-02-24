@@ -50,6 +50,13 @@ chmod +x scripts/macos/verify_personal_only.sh
 ./scripts/macos/verify_personal_only.sh
 ```
 
+Desktop-only migration prep runbook (before touching Mac mini):
+
+```bash
+cd /home/brian/projects/llm_client
+sed -n '1,220p' docs/MAC_MINI_MIGRATION_PREP.md
+```
+
 ## One-time setup (copy/paste)
 
 ### Step 1: install the cron job
