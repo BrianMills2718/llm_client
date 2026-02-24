@@ -1,0 +1,32 @@
+
+Long-Thinking Adoption:
+────────────────────────────────────────────────────────────────────────
+Experiments file:   /home/brian/projects/data/task_graph/experiments.jsonl
+File exists:        True
+Run prefix filter:  -
+Since filter:       2026-02-17T00:00:00+00:00
+Total lines:        19
+Invalid lines:      0
+Records considered: 19
+Records w/ effort key: 2
+Records w/ bg key:     2
+Records w/ routing:    1
+With effort set:    1
+background=true:    0
+background=false:   0
+background=unknown: 19
+Model switches:     1
+Fallback records:   0
+Background rate (among reasoning): 0.0%
+Background rate (overall): 0.0%
+
+Reasoning Effort Counts:
+  high: 1
+
+Gate:
+  Verdict:          FAIL
+  Metric:           among_reasoning
+  Actual rate:      0.0%
+  Required rate:    95.0%
+  Samples:          1 (min 20)
+  Reason:           insufficient_samples

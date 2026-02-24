@@ -1,0 +1,32 @@
+# Active Work Lock File
+# Machine-readable tracking for multi-CC coordination.
+# Use: python scripts/check_claims.py --help
+
+claims:
+- cc_id: plan-73-openrouter-bg-retrieval-workflow
+  task: OpenRouter background retrieval auth, adoption probe token cap, and workflow
+    guardrails
+  claimed_at: '2026-02-24T01:10:52Z'
+  session_id: 65c52840-9b02-4509-a7bd-cec242d4a7c9
+- cc_id: plan-74-mac-mini-personal-only-openclaw
+  task: Add macOS personal-only OpenClaw bootstrap and launchd template
+  claimed_at: '2026-02-24T02:13:56Z'
+  session_id: 10a7126b-b690-45c2-b8d8-dab9d3480ee0
+- cc_id: plan-75-fix-openclaw-command-default
+  task: Fix Mac bootstrap OpenClaw command default to gateway run
+  claimed_at: '2026-02-24T02:17:43Z'
+  session_id: 9cd2e568-3c08-4eb7-932d-a8f7a86e72a9
+- cc_id: plan-76-add-personal-only-verifier
+  task: Add one-command Mac personal-only verification script
+  claimed_at: '2026-02-24T05:27:38Z'
+  session_id: 46430974-d1cd-49ba-b205-9c28c60e0d7a
+- cc_id: plan-77-mac-migration-prep-runbook
+  task: Add desktop-to-Mac mini migration prep runbook and personal transfer bundle
+    tooling
+  claimed_at: '2026-02-24T05:50:21Z'
+  session_id: d8fdc8cc-326e-4d1c-9cce-44ed6bea51e7
+- cc_id: plan-78-add-make-mac-migration-prep
+  task: Add one-command make target for Mac migration prep bundle
+  claimed_at: '2026-02-24T12:52:57Z'
+  session_id: d8fdc8cc-326e-4d1c-9cce-44ed6bea51e7
+completed: []
