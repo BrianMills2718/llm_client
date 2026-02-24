@@ -95,6 +95,7 @@ _AGENT_KWARGS = frozenset({
 _CODEX_PROCESS_ISOLATION_ENV = "LLM_CLIENT_CODEX_PROCESS_ISOLATION"
 _CODEX_PROCESS_START_METHOD_ENV = "LLM_CLIENT_CODEX_PROCESS_START_METHOD"
 _CODEX_PROCESS_GRACE_ENV = "LLM_CLIENT_CODEX_PROCESS_GRACE_S"
+_CODEX_ALLOW_MINIMAL_EFFORT_ENV = "LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT"
 
 
 def _normalize_codex_reasoning_effort(value: Any) -> str:
@@ -106,8 +107,20 @@ def _normalize_codex_reasoning_effort(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
         return "high"
-    if raw in {"minimal", "low", "medium", "high"}:
+    if raw in {"low", "medium", "high"}:
         return raw
+    if raw == "minimal":
+        # Codex ChatGPT-account lanes can reject minimal effort because the
+        # platform auto-enables web_search tooling. Keep a controlled override
+        # for environments where minimal has been validated.
+        if _as_bool(os.environ.get(_CODEX_ALLOW_MINIMAL_EFFORT_ENV), default=False):
+            return "minimal"
+        logger.warning(
+            "Codex model_reasoning_effort=minimal is often rejected by the platform; "
+            "coercing to low (set %s=1 to force minimal).",
+            _CODEX_ALLOW_MINIMAL_EFFORT_ENV,
+        )
+        return "low"
     if raw in {"xhigh", "very_high", "highest", "max"}:
         return "high"
     if raw in {"none", "off", "disabled"}:

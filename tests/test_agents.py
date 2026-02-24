@@ -39,7 +39,12 @@ from llm_client import (
     stream_llm,
     stream_llm_with_tools,
 )
-from llm_client.agents import _build_agent_options, _messages_to_agent_prompt, _parse_agent_model
+from llm_client.agents import (
+    _build_agent_options,
+    _messages_to_agent_prompt,
+    _normalize_codex_reasoning_effort,
+    _parse_agent_model,
+)
 from llm_client.errors import LLMError, LLMTransientError
 from llm_client.client import _is_agent_model
 
@@ -120,6 +125,16 @@ class TestParseAgentModel:
         sdk, model = _parse_agent_model("Claude-Code/Opus")
         assert sdk == "claude-code"
         assert model == "Opus"  # underlying model preserves case
+
+
+class TestCodexReasoningEffortNormalization:
+    def test_minimal_coerces_to_low_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT", raising=False)
+        assert _normalize_codex_reasoning_effort("minimal") == "low"
+
+    def test_minimal_can_be_forced_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT", "1")
+        assert _normalize_codex_reasoning_effort("minimal") == "minimal"
 
     def test_bare_codex(self) -> None:
         assert _parse_agent_model("codex") == ("codex", None)

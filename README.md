@@ -207,6 +207,12 @@ When enabled, `llm_client` can hard-terminate the worker process if the SDK
 turn does not honor cancellation within the timeout window. Timeout/error
 diagnostics remain surfaced in `CODEX_TIMEOUT[...]` messages.
 
+Codex reasoning effort note:
+- `model_reasoning_effort=minimal` is often rejected on ChatGPT-account Codex
+  lanes due platform tool constraints. `llm_client` coerces `minimal -> low`
+  by default to avoid deterministic failures.
+- Set `LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT=1` to force minimal unchanged.
+
 ### Observability tags
 
 - `task`, `trace_id`, and `max_budget` are optional in normal local usage.

@@ -105,6 +105,9 @@ All notable changes to `llm-client` are documented in this file.
 - Codex text/structured call paths can now run in a dedicated child process and
   enforce hard worker termination when SDK cancellation does not complete,
   preventing parent-loop stalls from cancellation-unresponsive turns.
+- Codex reasoning effort normalization now coerces `minimal -> low` by default
+  (override with `LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT=1`) to avoid known
+  platform-side rejections when web search tooling is implicitly enabled.
 
 ## 0.7.0 - 2026-02-23
 
