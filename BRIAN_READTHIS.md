@@ -54,6 +54,7 @@ Desktop-only migration prep runbook (before touching Mac mini):
 
 ```bash
 cd /home/brian/projects/llm_client
+make mac-migration-prep
 sed -n '1,220p' docs/MAC_MINI_MIGRATION_PREP.md
 ```
 

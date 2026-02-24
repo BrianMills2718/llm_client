@@ -10,6 +10,8 @@ PR_AUTO_EXPECTED_REPO ?= llm_client
 CLAIMS_SCRIPT ?= scripts/meta/worktree-coordination/check_claims.py
 META_STATUS_SCRIPT ?= scripts/meta/worktree-coordination/meta_status.py
 SAFE_WORKTREE_REMOVE_SCRIPT ?= scripts/meta/worktree-coordination/safe_worktree_remove.py
+MAC_MIGRATION_OUT_DIR ?= $(HOME)/Desktop
+MAC_MIGRATION_BUNDLE ?=
 
 # --- Session Start ---
 .PHONY: status worktree worktree-remove claim release claims meta-status
@@ -84,7 +86,7 @@ meta-status:  ## Coordination dashboard (claims/PRs/worktrees)
 	fi
 
 # --- During Implementation ---
-.PHONY: test test-quick check adoption-gate read-gate-check read-gate-check-warn
+.PHONY: test test-quick check adoption-gate read-gate-check read-gate-check-warn mac-migration-prep
 
 test:  ## Run pytest
 	pytest tests/ -v
@@ -103,6 +105,17 @@ check:  ## Run all checks (test, mypy)
 
 adoption-gate:  ## Run local long-thinking adoption gate (cron/CI friendly)
 	./scripts/adoption_gate.sh
+
+mac-migration-prep:  ## Build personal Mac migration bundle (OUT_DIR/BUNDLE optional)
+	@chmod +x scripts/macos/create_personal_transfer_bundle.sh
+	@if [ -n "$(MAC_MIGRATION_BUNDLE)" ]; then \
+		./scripts/macos/create_personal_transfer_bundle.sh --out-dir "$(MAC_MIGRATION_OUT_DIR)" --name "$(MAC_MIGRATION_BUNDLE)"; \
+	else \
+		./scripts/macos/create_personal_transfer_bundle.sh --out-dir "$(MAC_MIGRATION_OUT_DIR)"; \
+	fi
+	@echo ""
+	@echo "Runbook: docs/MAC_MINI_MIGRATION_PREP.md"
+	@echo "Read it with: sed -n '1,220p' docs/MAC_MINI_MIGRATION_PREP.md"
 
 read-gate-check:  ## Check required-reading gate (FILE=llm_client/client.py)
 ifndef FILE
@@ -184,6 +197,7 @@ help-meta:  ## Show meta-process targets
 	@echo "  Development:"
 	@echo "    test                 Run tests"
 	@echo "    check                Run tests + mypy"
+	@echo "    mac-migration-prep   Build personal Mac migration bundle"
 	@echo "    read-gate-check      Check required reading (FILE=...)"
 	@echo "    read-gate-check-warn Check gate in warn mode (FILE=...)"
 	@echo ""
