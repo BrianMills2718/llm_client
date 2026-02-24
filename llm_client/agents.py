@@ -1020,7 +1020,10 @@ def _patch_codex_buffer_limit() -> None:
             _orig_create = _aio.create_subprocess_exec
 
             async def _create_with_limit(*a: Any, **kw: Any) -> Any:
-                kw.setdefault("limit", 4 * 1024 * 1024)
+                desired_limit = 4 * 1024 * 1024
+                current_limit = kw.get("limit")
+                if not isinstance(current_limit, int) or current_limit < desired_limit:
+                    kw["limit"] = desired_limit
                 proc = await _orig_create(*a, **kw)
                 run_diag["proc_pid"] = int(getattr(proc, "pid", 0) or 0) or None
                 run_diag["proc_argv"] = [str(x) for x in a[:8]]
