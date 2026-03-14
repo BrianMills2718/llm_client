@@ -176,10 +176,8 @@ FOUNDATION_SCHEMA_STRICT_ENV: str = "FOUNDATION_SCHEMA_STRICT"
 
 ARG_SELF_CONTAINED_TOOL_NAMES: frozenset[str] = frozenset({
     "chunk_get_text",
-    "chunk_get_text_by_chunk_ids",
-    "chunk_get_text_by_entity_ids",
 })
-"""Compatibility fallback for legacy self-contained tools (prefer contract metadata)."""
+"""Compatibility fallback for legacy multi-mode tools; prefer declarative contract metadata."""
 
 
 EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE = "TOOL_VALIDATION_REJECTED_MISSING_PREREQUISITE"
@@ -1855,19 +1853,94 @@ def _set_tool_call_args(tc: dict[str, Any], args: dict[str, Any]) -> dict[str, A
     return out
 
 
-def _tool_evidence_signature(record: MCPToolCallRecord) -> str | None:
-    """Stable signature for successful non-control evidence-producing tool outputs."""
+def _normalize_evidence_pointer_label(raw: Any) -> str | None:
+    """Canonicalize one evidence reference into a stable pointer label."""
+    if not isinstance(raw, str):
+        return None
+    ref = raw.strip()
+    if not ref:
+        return None
+    if ref.startswith("chunk_"):
+        return f"chunk:{ref}"
+    if ":" in ref:
+        kind, locator = ref.split(":", 1)
+        kind_norm = kind.strip().lower()
+        locator_norm = locator.strip()
+        if kind_norm and locator_norm:
+            return f"{kind_norm}:{locator_norm}"
+        return None
+    return f"raw:{ref}"
+
+
+def _result_dict_has_chunk_evidence(payload: dict[str, Any]) -> bool:
+    """Return True when a dict clearly carries chunk-backed evidence content."""
+    return any(
+        key in payload
+        for key in (
+            "text",
+            "text_content",
+            "content",
+            "context_snippet",
+            "mention_text",
+            "normalized_date",
+        )
+    )
+
+
+def _collect_evidence_pointer_labels(payload: Any, out: set[str]) -> None:
+    """Recursively extract stable evidence pointers from JSON tool payloads."""
+    if isinstance(payload, dict):
+        explicit_ref_added = False
+
+        raw_ref = payload.get("evidence_ref")
+        normalized = _normalize_evidence_pointer_label(raw_ref)
+        if normalized:
+            out.add(normalized)
+            explicit_ref_added = True
+
+        raw_refs = payload.get("evidence_refs")
+        if isinstance(raw_refs, list):
+            for item in raw_refs:
+                normalized = _normalize_evidence_pointer_label(item)
+                if normalized:
+                    out.add(normalized)
+                    explicit_ref_added = True
+
+        chunk_id = payload.get("chunk_id")
+        if (
+            not explicit_ref_added
+            and isinstance(chunk_id, str)
+            and chunk_id.strip().startswith("chunk_")
+            and _result_dict_has_chunk_evidence(payload)
+        ):
+            out.add(f"chunk:{chunk_id.strip()}")
+
+        for value in payload.values():
+            if isinstance(value, (dict, list)):
+                _collect_evidence_pointer_labels(value, out)
+        return
+
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, (dict, list)):
+                _collect_evidence_pointer_labels(item, out)
+
+
+def _tool_evidence_pointer_labels(record: MCPToolCallRecord) -> set[str]:
+    """Extract canonical evidence pointers from one successful evidence tool call."""
     if record.error or _is_budget_exempt_tool(record.tool):
-        return None
-    if record.result is None:
-        return None
-    result_hash = sha256_text(record.result)
-    return f"{record.tool}:{result_hash}"
+        return set()
+    parsed = _parse_record_result_json(record)
+    if parsed is None:
+        return set()
+    labels: set[str] = set()
+    _collect_evidence_pointer_labels(parsed, labels)
+    return labels
 
 
-def _evidence_digest(evidence_signatures: set[str]) -> str:
-    """Deterministic digest of accumulated evidence signatures."""
-    return sha256_json(sorted(evidence_signatures)).replace("sha256:", "")
+def _evidence_digest(evidence_labels: set[str]) -> str:
+    """Deterministic digest of accumulated canonical evidence pointers."""
+    return sha256_json(sorted(evidence_labels)).replace("sha256:", "")
 
 
 def _autofill_tool_reasoning(
@@ -2161,7 +2234,11 @@ def _has_explicit_chunk_or_entity_refs(args: dict[str, Any] | None) -> bool:
 
 
 def _is_arg_self_contained_tool(tool_name: str) -> bool:
-    """Compatibility fallback for self-contained tools without explicit contract metadata."""
+    """Legacy fallback for tools whose explicit IDs can satisfy artifact prereqs.
+
+    Newer tool surfaces should declare this via contract metadata instead of
+    relying on hardcoded tool names here.
+    """
     return tool_name in ARG_SELF_CONTAINED_TOOL_NAMES
 
 
@@ -2180,7 +2257,7 @@ def _tool_declares_no_artifact_prereqs(
     tool_name: str,
     contract: dict[str, Any] | None,
 ) -> bool:
-    """Prefer declarative contract metadata; retain legacy fallback list for compatibility."""
+    """Prefer declarative contract metadata; keep a narrow legacy fallback only."""
     if _contract_declares_no_artifact_prereqs(contract):
         return True
     return _is_arg_self_contained_tool(tool_name)
@@ -3299,12 +3376,13 @@ async def _agent_loop(
     autofilled_tool_reasoning_calls = 0
     autofilled_tool_reasoning_by_tool: dict[str, int] = {}
     submit_validation_reason_counts: dict[str, int] = {}
-    evidence_signatures: set[str] = set()
+    evidence_pointer_labels: set[str] = set()
     submit_evidence_digest_at_last_failure: str | None = None
     evidence_digest_change_count = 0
     evidence_turns_total = 0
     evidence_turns_with_new_evidence = 0
     evidence_turns_without_new_evidence = 0
+    evidence_pointer_count = 0
     retrieval_no_hits_count = 0
     tool_state = _initialize_agent_tool_state(
         openai_tools=openai_tools,
@@ -4247,7 +4325,7 @@ async def _agent_loop(
         # 1) block repeated submit_answer attempts until TODO state changes;
         # 2) block repeated todo_update(done) retries on the same TODO after
         #    repeated validation failures.
-        current_evidence_digest = _evidence_digest(evidence_signatures)
+        current_evidence_digest = _evidence_digest(evidence_pointer_labels)
         suppressed_records: list[MCPToolCallRecord] = []
         suppressed_tool_messages: list[dict[str, Any]] = []
         filtered_tool_calls: list[dict[str, Any]] = []
@@ -4621,12 +4699,11 @@ async def _agent_loop(
         submit_errors: list[str] = []
         submit_reason_codes_this_turn: list[str] = []
         submit_needs_new_evidence_signal = False
-        evidence_digest_before_turn = _evidence_digest(evidence_signatures)
+        evidence_digest_before_turn = _evidence_digest(evidence_pointer_labels)
         for record in executed_records:
-            signature = _tool_evidence_signature(record)
-            if signature:
-                evidence_signatures.add(signature)
-        evidence_digest_after_turn = _evidence_digest(evidence_signatures)
+            evidence_pointer_labels.update(_tool_evidence_pointer_labels(record))
+        evidence_pointer_count = len(evidence_pointer_labels)
+        evidence_digest_after_turn = _evidence_digest(evidence_pointer_labels)
         new_evidence_this_turn = evidence_digest_after_turn != evidence_digest_before_turn
         if new_evidence_this_turn:
             evidence_digest_change_count += 1
@@ -4678,7 +4755,7 @@ async def _agent_loop(
             failure_event_codes.append(stagnation_event_code)
             warning = (
                 "RETRIEVAL_STAGNATION: "
-                f"{retrieval_stagnation_streak} consecutive evidence turns produced no new evidence."
+                f"{retrieval_stagnation_streak} consecutive evidence turns produced no new evidence refs."
             )
             agent_result.warnings.append(warning)
             logger.warning(warning)
@@ -4867,9 +4944,9 @@ async def _agent_loop(
                     "or mark done with evidence refs before submit."
                 )
             evidence_fix_hint = (
-                " Validator requires NEW evidence before retry. "
-                "Run at least one non-control evidence tool call "
-                "(entity_*/chunk_*/relationship_*/subgraph_*) before submit."
+                " Validator requires NEW evidence refs before retry. "
+                "Run at least one non-control evidence tool call that yields new "
+                "chunk/entity-backed evidence before submit."
                 if submit_requires_new_evidence else
                 ""
             )
@@ -5237,6 +5314,21 @@ async def _agent_loop(
             }
         )
 
+    submit_validator_accepted = bool(
+        submit_answer_succeeded and not submit_forced_accept_on_budget_exhaustion
+    )
+    submit_completion_mode = (
+        "grounded_submit"
+        if submit_validator_accepted else
+        "forced_terminal_accept"
+        if submit_forced_accept_on_budget_exhaustion else
+        "missing_required_submit"
+        if required_submit_missing else
+        "no_submit_required"
+        if not requires_submit_answer else
+        "unknown"
+    )
+
     run_completed = (not required_submit_missing) and (
         submit_answer_succeeded or final_finish_reason != "error"
     )
@@ -5262,7 +5354,7 @@ async def _agent_loop(
     initial_full_bindings_spec = _full_bindings_spec(initial_binding_snapshot)
     initial_hard_bindings_hash = _hard_bindings_state_hash(initial_binding_snapshot)
     initial_full_bindings_hash = _full_bindings_state_hash(initial_binding_snapshot)
-    final_evidence_digest = _evidence_digest(evidence_signatures)
+    final_evidence_digest = _evidence_digest(evidence_pointer_labels)
 
     agent_result.metadata["total_cost"] = total_cost
     agent_result.metadata["requested_model"] = model
@@ -5300,9 +5392,11 @@ async def _agent_loop(
     agent_result.metadata["submit_answer_call_count"] = submit_answer_call_count
     agent_result.metadata["submit_answer_attempted"] = submit_answer_call_count > 0
     agent_result.metadata["submit_answer_succeeded"] = submit_answer_succeeded
+    agent_result.metadata["submit_validator_accepted"] = submit_validator_accepted
     agent_result.metadata["required_submit_missing"] = required_submit_missing
     agent_result.metadata["submit_forced_retry_on_budget_exhaustion"] = submit_forced_retry_on_budget_exhaustion
     agent_result.metadata["submit_forced_accept_on_budget_exhaustion"] = submit_forced_accept_on_budget_exhaustion
+    agent_result.metadata["submit_completion_mode"] = submit_completion_mode
     agent_result.metadata["require_tool_reasoning"] = require_tool_reasoning
     agent_result.metadata["rejected_missing_reasoning_calls"] = rejected_missing_reasoning_calls
     agent_result.metadata["control_loop_suppressed_calls"] = control_loop_suppressed_calls
@@ -5374,6 +5468,8 @@ async def _agent_loop(
     agent_result.metadata["evidence_turns_total"] = evidence_turns_total
     agent_result.metadata["evidence_turns_with_new_evidence"] = evidence_turns_with_new_evidence
     agent_result.metadata["evidence_turns_without_new_evidence"] = evidence_turns_without_new_evidence
+    agent_result.metadata["evidence_pointer_count"] = evidence_pointer_count
+    agent_result.metadata["evidence_digest_basis"] = "canonical_evidence_pointers"
     agent_result.metadata["failure_event_codes"] = list(failure_event_codes)
     agent_result.metadata["failure_event_code_counts"] = failure_summary.failure_event_code_counts
     agent_result.metadata["failure_event_class_counts"] = failure_summary.failure_event_class_counts
@@ -5411,7 +5507,8 @@ async def _agent_loop(
             "METRIC: evidence_turns="
             f"{evidence_turns_total}, new_evidence_turns={evidence_turns_with_new_evidence}, "
             f"stagnant_evidence_turns={evidence_turns_without_new_evidence}, "
-            f"retrieval_stagnation_streak_max={retrieval_stagnation_streak_max}"
+            f"retrieval_stagnation_streak_max={retrieval_stagnation_streak_max}, "
+            f"evidence_pointer_count={evidence_pointer_count}"
         )
     logger.info(
         "Agent loop metrics: tool_call_turns=%d empty_text_tool_call_turns=%d responses_empty_text_tool_call_turns=%d "
