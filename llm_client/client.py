@@ -1728,6 +1728,67 @@ def _safe_json_object(value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
+def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
+    """Clean a JSON schema for Gemini compatibility.
+
+    Gemini's function declaration API doesn't support several OpenAI/JSON Schema
+    features: additionalProperties, strict, $defs/$ref, anyOf with null (use
+    nullable instead), and title fields. This recursively strips unsupported
+    fields and converts anyOf-with-null to nullable.
+    """
+    import copy
+    schema = copy.deepcopy(schema)
+
+    def _clean(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        # Remove unsupported top-level fields
+        for key in ("additionalProperties", "strict", "title", "$schema"):
+            node.pop(key, None)
+        # Resolve $defs/$ref inline (simple single-level)
+        defs = node.pop("$defs", None) or node.pop("definitions", None)
+        if isinstance(defs, dict):
+            _inline_refs(node, defs)
+        # Convert anyOf-with-null to nullable
+        any_of = node.get("anyOf")
+        if isinstance(any_of, list) and len(any_of) == 2:
+            non_null = [s for s in any_of if s != {"type": "null"}]
+            null_present = len(non_null) < len(any_of)
+            if null_present and len(non_null) == 1:
+                merged = dict(non_null[0])
+                merged["nullable"] = True
+                node.pop("anyOf")
+                node.update(merged)
+        # Recurse into properties
+        props = node.get("properties")
+        if isinstance(props, dict):
+            for k, v in props.items():
+                props[k] = _clean(v)
+        # Recurse into items
+        items = node.get("items")
+        if isinstance(items, dict):
+            node["items"] = _clean(items)
+        # Ensure object type has properties
+        if node.get("type") == "object" and "properties" not in node:
+            node["properties"] = {}
+        return node
+
+    def _inline_refs(node: Any, defs: dict[str, Any]) -> None:
+        if isinstance(node, dict):
+            ref = node.pop("$ref", None)
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                ref_name = ref.split("/")[-1]
+                resolved = defs.get(ref_name, {})
+                node.update(resolved)
+            for v in node.values():
+                _inline_refs(v, defs)
+        elif isinstance(node, list):
+            for item in node:
+                _inline_refs(item, defs)
+
+    return _clean(schema)
+
+
 def _convert_tools_for_gemini_native(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert OpenAI tool schema to Gemini functionDeclarations format."""
     declarations: list[dict[str, Any]] = []
@@ -1744,8 +1805,7 @@ def _convert_tools_for_gemini_native(tools: list[dict[str, Any]]) -> list[dict[s
             decl["description"] = description
         parameters = fn.get("parameters")
         if isinstance(parameters, dict):
-            # Gemini REST accepts JSON schema under "parameters".
-            decl["parameters"] = parameters
+            decl["parameters"] = _clean_schema_for_gemini(parameters)
         declarations.append(decl)
     if not declarations:
         return []
@@ -3624,11 +3684,25 @@ def _prepare_call_kwargs(
             model,
         )
 
-    # Thinking model detection: set budget_tokens=0 to disable reasoning tokens.
-    # For Gemini 2.5+, thinkingBudget=0 disables thinking. An empty
-    # thinkingConfig {} means "use default" which enables thinking.
+    # Thinking model detection: suppress thinking tokens for Gemini 2.5+
+    # so all output budget goes to the actual response.
+    # - Native Gemini path handles this internally via thinkingConfig.
+    # - litellm path: only inject `thinking` when litellm says the specific
+    #   model supports it (litellm's model-level param list is authoritative).
+    # - OpenRouter: skip — doesn't support the `thinking` parameter.
     if _is_thinking_model(model) and "thinking" not in raw_kwargs:
-        call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
+        _is_openrouter = model.lower().startswith("openrouter/")
+        if not _is_openrouter:
+            try:
+                from litellm import get_supported_openai_params
+                _provider = model.split("/")[0] if "/" in model else ""
+                _supported = get_supported_openai_params(
+                    model=model, custom_llm_provider=_provider,
+                ) or []
+                if "thinking" in _supported:
+                    call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
+            except Exception:
+                pass  # If we can't check, don't inject — fail-safe
 
     # Guard against GPT-5-family sampling param incompatibilities across
     # providers (e.g., provider-prefixed GPT-5 models on completion path).

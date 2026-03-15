@@ -87,7 +87,7 @@ _DEFAULT_MODELS: list[dict[str, Any]] = [
     },
     {
         "name": "gemini-3-flash",
-        "litellm_id": "gemini/gemini-3-flash",
+        "litellm_id": "gemini/gemini-3-flash-preview",
         "provider": "google",
         "api_key_env": "GEMINI_API_KEY",
         "intelligence": 46,

@@ -476,6 +476,11 @@ def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
         _normalize_tool_input_examples(raw_examples),
     )
 
+    # Clean schema for Gemini compatibility (safe for all providers).
+    # Strips additionalProperties, strict, title; converts anyOf+null to nullable.
+    from llm_client.client import _clean_schema_for_gemini
+    parameters = _clean_schema_for_gemini(parameters)
+
     return {
         "type": "function",
         "function": {
@@ -1820,12 +1825,18 @@ def _extract_tool_call_args(tc: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
-        try:
-            parsed = _json.loads(raw)
-        except Exception:
-            return None
-        if isinstance(parsed, dict):
-            return parsed
+        candidate = raw
+        for _ in range(2):
+            try:
+                parsed = _json.loads(candidate)
+            except Exception:
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, str):
+                candidate = parsed
+                continue
+            break
     return None
 
 
@@ -3028,31 +3039,24 @@ async def _execute_tool_calls(
         arguments_str = fn.get("arguments", "{}")
         tc_id = tc.get("id", "")
 
-        try:
-            arguments = (
-                _json.loads(arguments_str)
-                if isinstance(arguments_str, str)
-                else arguments_str
-            )
-        except _json.JSONDecodeError as exc:
+        arguments = _extract_tool_call_args(tc)
+        if arguments is None:
             logger.error("Failed to parse tool call arguments for %s: %s", tool_name, str(arguments_str)[:200])
             record = MCPToolCallRecord(
                 server=tool_to_server.get(tool_name) or "unknown",
                 tool=tool_name,
                 arguments={},
-                error=f"JSON parse error: {exc}",
+                error="JSON parse error: arguments must decode to a JSON object",
             )
             tool_messages.append({
                 "role": "tool",
                 "tool_call_id": tc_id,
-                "content": f"ERROR: Invalid JSON arguments: {exc}",
+                "content": "ERROR: Invalid JSON arguments: arguments must decode to a JSON object",
             })
             records.append(record)
             continue
 
         server_name = tool_to_server.get(tool_name)
-        if not isinstance(arguments, dict):
-            arguments = {}
 
         tool_reasoning_raw = arguments.pop(TOOL_REASONING_FIELD, None)
         tool_reasoning = None
@@ -4695,6 +4699,7 @@ async def _agent_loop(
             logger.warning(warning)
 
         submitted_answer_value: str | None = None
+        fallback_submit_guess_value: str | None = None
         submit_error_this_turn = False
         submit_errors: list[str] = []
         submit_reason_codes_this_turn: list[str] = []
@@ -4820,6 +4825,13 @@ async def _agent_loop(
             if record.tool != "submit_answer":
                 continue
             submit_answer_call_count += 1
+            arg_answer = record.arguments.get("answer") if isinstance(record.arguments, dict) else None
+            if (
+                isinstance(arg_answer, str)
+                and arg_answer.strip()
+                and not _FORCED_REFUSAL_RE.match(arg_answer.strip())
+            ):
+                fallback_submit_guess_value = arg_answer.strip()
             if record.error:
                 submit_error_this_turn = True
                 submit_errors.append(str(record.error))
@@ -4855,7 +4867,6 @@ async def _agent_loop(
                     continue
 
             submit_answer_succeeded = True
-            arg_answer = record.arguments.get("answer") if isinstance(record.arguments, dict) else None
             if isinstance(arg_answer, str) and arg_answer.strip():
                 submitted_answer_value = arg_answer.strip()
                 continue
@@ -5238,7 +5249,17 @@ async def _agent_loop(
         if accept_forced_answer_on_max_tool_calls and final_content.strip():
             submit_forced_accept_on_budget_exhaustion = True
             submit_answer_succeeded = True
-            normalized_forced_answer = _normalize_forced_final_answer(final_content)
+            # Prefer the agent's last explicit submit_answer guess (non-refusal)
+            # over free-text extraction from the final turn.  The agent's deliberate
+            # answer submission is a far stronger signal than incidental text
+            # (entity names, system budget messages, etc.) in the last turn.
+            if (
+                isinstance(fallback_submit_guess_value, str)
+                and fallback_submit_guess_value.strip()
+            ):
+                normalized_forced_answer = fallback_submit_guess_value.strip()
+            else:
+                normalized_forced_answer = _normalize_forced_final_answer(final_content)
             submitted_answer_value = (
                 submitted_answer_value
                 or normalized_forced_answer
