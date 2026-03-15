@@ -204,6 +204,10 @@ def _type_to_json_schema(tp: type) -> dict[str, Any]:
     if tp in _TYPE_MAP:
         return {"type": _TYPE_MAP[tp]}
 
+    # Any → no type constraint (accept anything)
+    if tp is Any:
+        return {}
+
     raise ValueError(
         f"Unsupported type annotation: {tp!r}. "
         f"Supported: str, int, float, bool, list[X], dict, Optional[X]."
