@@ -177,11 +177,17 @@ def _type_to_json_schema(tp: type) -> dict[str, Any]:
     origin = get_origin(tp)
     args = get_args(tp)
 
-    # Optional[X] → unwrap to X (nullable not needed for OpenAI function calling)
-    if origin is Union:
-        non_none = [a for a in args if a is not type(None)]
+    # Union types: Optional[X] unwraps to X; multi-type unions use anyOf.
+    # Handles both typing.Union and Python 3.10+ X | Y syntax (types.UnionType).
+    import types as _types
+    _is_union = origin is Union or isinstance(tp, _types.UnionType)
+    if _is_union:
+        _union_args = args or get_args(tp)
+        non_none = [a for a in _union_args if a is not type(None)]
         if len(non_none) == 1:
             return _type_to_json_schema(non_none[0])
+        if len(non_none) > 1:
+            return {"anyOf": [_type_to_json_schema(a) for a in non_none]}
 
     # list[X]
     if origin is list:
