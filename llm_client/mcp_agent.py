@@ -1335,12 +1335,17 @@ async def _execute_forced_finalization(
     emit_foundation_event: Any,
 ) -> ForcedFinalizationResult:
     """Run the forced-final no-tools lane and return aggregate deltas/outcomes."""
+    _no_tools_suffix = (
+        " Tools are now DISABLED — do NOT call any functions. "
+        "Respond with ONLY a short text answer (name, date, number, or yes/no)."
+    )
     if force_final_reason == "max_tool_calls":
         force_msg = {
             "role": "user",
             "content": (
                 "[SYSTEM: Tool-call budget exhausted. You MUST give your best answer now "
-                "using evidence already retrieved. Extract the best name/date/number and answer.]"
+                "using evidence already retrieved. Extract the best name/date/number."
+                + _no_tools_suffix + "]"
             ),
         }
     elif force_final_reason == "control_churn":
@@ -1348,7 +1353,8 @@ async def _execute_forced_finalization(
             "role": "user",
             "content": (
                 "[SYSTEM: Tool-call loop stalled with repeated non-executable calls. "
-                "You MUST submit your best factual answer now from current evidence.]"
+                "You MUST submit your best factual answer now from current evidence."
+                + _no_tools_suffix + "]"
             ),
         }
     elif force_final_reason == "retrieval_stagnation":
@@ -1356,7 +1362,8 @@ async def _execute_forced_finalization(
             "role": "user",
             "content": (
                 "[SYSTEM: Retrieval stagnated with no new evidence. "
-                "Submit your best factual answer now based only on retrieved evidence.]"
+                "Submit your best factual answer now based only on retrieved evidence."
+                + _no_tools_suffix + "]"
             ),
         }
     else:
@@ -1369,7 +1376,8 @@ async def _execute_forced_finalization(
             "content": (
                 "[SYSTEM: All turns exhausted. You MUST give your best answer now "
                 "based on the evidence you found. Extract any name, date, or number "
-                "from the tool results. 'I don't know' is NOT acceptable — guess.]"
+                "from the tool results. 'I don't know' is NOT acceptable — guess."
+                + _no_tools_suffix + "]"
             ),
         }
 
@@ -1619,50 +1627,62 @@ async def _execute_forced_finalization(
             agent_result.warnings.extend(candidate_result.warnings)
 
         if candidate_result.tool_calls:
-            disallowed_msg = (
-                "Forced-final returned tool calls while tools are disallowed."
-            )
-            emit_foundation_event(
-                {
-                    "event_id": new_event_id(),
-                    "event_type": "ToolFailed",
-                    "timestamp": now_iso(),
-                    "run_id": foundation_run_id,
-                    "session_id": foundation_session_id,
-                    "actor_id": foundation_actor_id,
-                    "operation": {"name": "_inner_acall_llm", "version": None},
-                    "inputs": {
-                        "artifact_ids": sorted(available_artifacts),
-                        "params": {
-                            "turn": agent_result.turns + 1,
-                            "forced_final": True,
-                            "attempt": attempt_idx + 1,
-                            "model": final_model,
-                            "tool_calls_count": len(candidate_result.tool_calls),
-                        },
-                        "bindings": dict(available_bindings),
-                    },
-                    "outputs": {"artifact_ids": [], "payload_hashes": []},
-                    "failure": {
-                        "error_code": EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
-                        "category": "policy",
-                        "phase": "post_validation",
-                        "retryable": False,
-                        "tool_name": "_inner_acall_llm",
-                        "user_message": disallowed_msg,
-                        "debug_ref": None,
-                    },
-                }
-            )
-            _record_forced_final_error(
-                attempt_idx=attempt_idx,
-                final_model=final_model,
-                event_code=EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
-                error_text=disallowed_msg,
-                error_class="finalization_tool_call_disallowed",
-                is_provider_failure=False,
-            )
-            continue
+            # Model returned tool calls from conversation history even though
+            # tools weren't passed.  Instead of rejecting the response, salvage
+            # the answer: check text content first, then look for submit_answer
+            # in the tool calls themselves.
+            salvaged_content = (candidate_result.content or "").strip()
+            if not salvaged_content:
+                for tc in candidate_result.tool_calls:
+                    fn = getattr(tc, "function", tc) if not isinstance(tc, dict) else tc
+                    tc_name = (
+                        getattr(fn, "name", None)
+                        or (fn.get("function", {}).get("name") if isinstance(fn, dict) else None)
+                        or ""
+                    )
+                    if "submit_answer" in tc_name.lower():
+                        tc_args = getattr(fn, "arguments", None)
+                        if isinstance(tc_args, str):
+                            try:
+                                tc_args = _json.loads(tc_args)
+                            except Exception:
+                                pass
+                        if isinstance(tc_args, dict):
+                            salvaged_content = str(tc_args.get("answer", "")).strip()
+                            if salvaged_content:
+                                break
+            if salvaged_content:
+                # Use the salvaged content as if the model returned text.
+                candidate_result = type(candidate_result)(
+                    content=salvaged_content,
+                    usage=candidate_result.usage,
+                    cost=candidate_result.cost,
+                    model=candidate_result.model,
+                    tool_calls=[],
+                    finish_reason="stop",
+                    raw_response=candidate_result.raw_response,
+                    warnings=list(candidate_result.warnings or []) + [
+                        "FINALIZATION_TOOL_CALLS_SALVAGED: extracted answer from "
+                        "tool_calls returned in no-tools forced-final lane."
+                    ],
+                )
+                agent_result.warnings.append(
+                    "FINALIZATION_TOOL_CALLS_SALVAGED: model returned tool_calls in "
+                    "forced-final lane; salvaged answer from tool call arguments."
+                )
+            else:
+                disallowed_msg = (
+                    "Forced-final returned tool calls while tools are disallowed."
+                )
+                _record_forced_final_error(
+                    attempt_idx=attempt_idx,
+                    final_model=final_model,
+                    event_code=EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED,
+                    error_text=disallowed_msg,
+                    error_class="finalization_tool_call_disallowed",
+                    is_provider_failure=False,
+                )
+                continue
 
         if not candidate_result.content:
             empty_msg = "Provider returned empty content on forced-final call."
