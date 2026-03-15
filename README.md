@@ -61,7 +61,40 @@ OpenRouter key rotation on key/quota exhaustion:
 - If an explicit `api_key=...` is passed at call time, automatic rotation is
   disabled for that call.
 
-### Typed routing/config (preferred)
+### Task-based model selection (preferred)
+
+For most projects, do not hardcode a raw model ID in source or default config.
+Resolve from the shared task registry instead:
+
+```python
+from llm_client import (
+    call_llm_structured,
+    resolve_model_selection,
+    strict_model_policy,
+)
+
+selection = resolve_model_selection("graph_building", strict_models=True)
+
+with strict_model_policy(selection.strict_models):
+    payload, meta = call_llm_structured(
+        selection.model,
+        messages,
+        response_model=MySchema,
+    )
+```
+
+This gives you:
+- shared task-based defaults from `get_model(task)`
+- one explicit escape hatch for benchmark overrides
+- deprecated-model blocking in strict lanes
+
+To audit a repo for raw model literals and direct-call bypasses:
+
+```bash
+python /path/to/llm_client/scripts/check_model_policy.py /path/to/repo --strict
+```
+
+### Typed routing/config
 
 For deterministic behavior across environments, pass explicit `ClientConfig`:
 
@@ -210,6 +243,34 @@ When enabled, `llm_client` can hard-terminate the worker process if the SDK
 turn does not honor cancellation within the timeout window. Timeout/error
 diagnostics remain surfaced in `CODEX_TIMEOUT[...]` messages.
 
+### Codex transport fallback
+
+Codex calls support three transport modes:
+
+- `codex_transport="sdk"`: use the SDK only.
+- `codex_transport="cli"`: use `codex exec` directly.
+- `codex_transport="auto"`: prefer SDK, but fall back to CLI on SDK failure.
+
+If provider request timeouts are globally disabled with
+`LLM_CLIENT_TIMEOUT_POLICY=ban`, pair auto transport with
+`agent_hard_timeout`:
+
+```python
+result = call_llm(
+    "codex",
+    messages,
+    execution_mode="workspace_agent",
+    codex_transport="auto",
+    agent_hard_timeout=300,
+    model_reasoning_effort="medium",
+)
+```
+
+That lets `llm_client` choose the CLI lane immediately instead of waiting on an
+SDK timeout that cannot fire in the current policy mode. When the CLI lane is
+used, `model_reasoning_effort` is forwarded to `codex exec` via config
+overrides so code-generation tasks can trade speed for depth explicitly.
+
 Codex reasoning effort note:
 - `model_reasoning_effort=minimal` is often rejected on ChatGPT-account Codex
   lanes due platform tool constraints. `llm_client` coerces `minimal -> low`
@@ -268,6 +329,7 @@ result = await acall_llm(
             "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         },
         "chunk_get_text_by_entity_ids": {
+            "artifact_prereqs": "none",
             "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
             "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
         },
@@ -275,7 +337,7 @@ result = await acall_llm(
             "artifact_prereqs": "none",
             "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
         },
-        "todo_list": {"is_control": True},
+        "todo_write": {"is_control": True},
     },
     # Optional reliability controls:
     forced_final_max_attempts=3,
@@ -296,6 +358,73 @@ print(raw.metadata["tool_disclosure_repair_suggestions"])
 
 Notes:
 - `artifact_prereqs: "none"` declares a self-contained tool for artifact-state checks only.
+- There is no hidden tool-name fallback for artifact prereq bypass; if a tool should
+  be callable from explicit IDs alone, declare that behavior in its contract.
+- For multi-mode tools, use declarative `call_modes` instead of runtime special cases.
+  Example:
+
+```python
+"chunk_get_text": {
+    "requires_all": ["CHUNK_SET"],
+    "call_modes": [
+        {
+            "name": "by_chunk_id",
+            "when_arg_equals": {"mode": "by_chunk_id"},
+            "artifact_prereqs": "none",
+            "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        },
+        {
+            "name": "by_entity_ids",
+            "when_args_present_any": ["entity_ids", "entity_id"],
+            "artifact_prereqs": "none",
+            "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        },
+    ],
+}
+```
+
+- `call_modes` are resolved per call from arguments. For best disclosure/closure behavior,
+  prefer explicit split tools at the LLM boundary and reserve `call_modes` for internal or
+  discriminated-union style contracts.
+- Tools can also consume previously emitted typed artifact handles declaratively with
+  `handle_inputs`. Example:
+
+```python
+"extract_date_mentions_from_artifacts": {
+    "artifact_prereqs": "none",
+    "handle_inputs": [
+        {
+            "arg": "chunk_artifact_ids",
+            "inject_arg": "chunk_artifacts",
+            "representation": "payload",
+            "accepts": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        }
+    ],
+    "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+}
+```
+
+- With this contract shape, the model only passes stable `artifact_id` values in
+  `chunk_artifact_ids`. The runtime resolves those handles from the active artifact
+  registry and injects the matching typed artifact payloads into `chunk_artifacts`
+  before executor dispatch.
+- Shared experiment helpers can normalize these outcome fields across runs/items:
+
+```python
+from llm_client import build_gate_signals, extract_agent_outcome, summarize_agent_outcomes
+
+outcome = extract_agent_outcome(item_result)
+summary = summarize_agent_outcomes(run_items)
+signals = build_gate_signals(run_info=run_info, items=run_items)
+
+print(outcome["submit_completion_mode"])
+print(summary["grounded_completed_rate"])
+print(signals["forced_terminal_accepted_rate"])
+```
+
+Experiment run finalization also auto-merges these outcome counts/rates into stored
+`summary_metrics`, so compare/cohort/reporting surfaces can use them without project-specific glue.
+
 - Binding checks and schema checks still run pre-execution.
 - Metadata includes both enforcement and attribution binding fingerprints:
   - `hard_bindings_hash` (authoritative binding scope)
@@ -307,10 +436,57 @@ Notes:
   `forced_final_circuit_breaker_threshold`.
 - Retrieval stagnation fuse (`retrieval_stagnation_turns`) terminates long
   evidence loops that produce no new evidence digest.
+- Rolling artifact-context summaries are enabled by default for agent loops:
+  - `active_artifact_context_enabled`
+  - `active_artifact_context_max_handles`
+  - `active_artifact_context_max_chars`
+  These inject a bounded compact summary of recent typed artifact handles and
+  current artifact/capability state into active context. When typed artifact
+  handles exist, the runtime also exposes an explicit built-in tool,
+  `runtime_artifact_read`, so the model can reopen prior typed artifacts by
+  `artifact_id` after older tool payloads were cleared from active context.
 - MCP loop default completion cap is `8192` tokens; override with
   `LLM_CLIENT_MCP_MAX_COMPLETION_TOKENS` (minimum applied: `1024`).
 - Forced-final accepted submit answers are normalized to a short factual span
   (e.g., explicit answer/date/year) before final metadata output.
+
+### Direct tool registry lint
+
+For direct Python tools, `llm_client` can lint registry quality before runtime:
+
+```python
+from llm_client import lint_tool_callable, lint_tool_registry
+
+report = lint_tool_registry(
+    [search_entities, chunk_get_text_by_chunk_ids],
+    tool_contracts={
+        "chunk_get_text_by_chunk_ids": {
+            "artifact_prereqs": "none",
+            "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+        }
+    },
+)
+print(report["n_errors"], report["n_warnings"])
+
+findings = lint_tool_callable(search_entities, contract={"produces": ["ENTITY_SET"]})
+for finding in findings:
+    print(finding["severity"], finding["code"], finding["message"])
+```
+
+Lint is designed for adoption gates:
+- warn on missing one-line descriptions
+- warn when nontrivial tools lack input examples
+- warn when nontrivial tools lack declarative contracts
+- error when declared `call_modes` are structurally invalid
+- error when declared `handle_inputs` reference missing args/injected args on direct tools
+
+In strict adoption profiles, agent loops also surface these tool-quality issues as
+structured adoption-profile violations during setup.
+
+When old tool payloads are cleared from active context, the compact stub now preserves
+typed artifact handles (`artifact_id`, `artifact_type`, and leading capability metadata) when available.
+The runtime-provided `runtime_artifact_read` tool can consume those preserved
+`artifact_id` handles directly and return the stored typed artifact envelopes.
 
 ### Batch/parallel calls
 

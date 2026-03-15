@@ -36,13 +36,14 @@ from llm_client import (
 )
 from llm_client.mcp_agent import (
     MCP_LOOP_KWARGS,
+    _build_active_artifact_context_content,
     _clear_old_tool_results_for_context,
     _effective_contract_requirements,
-    _extract_unfinished_todo_ids,
     _extract_usage,
     _find_repair_tools_for_missing_requirements,
     _mcp_tool_to_openai,
     _normalize_tool_contracts,
+    _tool_evidence_pointer_labels,
     _truncate,
 )
 
@@ -190,22 +191,80 @@ class TestClearOldToolResultsForContext:
         assert cleared == 2
         assert all("Tool result cleared from active context" in m["content"] for m in messages)
 
-
-class TestExtractUnfinishedTodoIds:
-    def test_extracts_only_canonical_todo_ids(self) -> None:
-        text = (
-            "submit_answer suppressed: TODO state has not changed. "
-            "Unfinished TODOs currently blocking submit: todo_2, todo_3. "
-            "Call todo_update(todo_id=<id>, status='done') or todo_list()."
+    def test_stub_preserves_artifact_handle_metadata_when_available(self) -> None:
+        messages = [
+            {"role": "tool", "tool_call_id": "tc1", "content": "x" * 200},
+            {"role": "tool", "tool_call_id": "tc2", "content": "y" * 200},
+        ]
+        cleared, _ = _clear_old_tool_results_for_context(
+            messages,
+            keep_recent=1,
+            preview_chars=60,
+            tool_result_metadata_by_id={
+                "tc1": {
+                    "artifact_ids": ["art_123"],
+                    "artifact_handles": [{"artifact_id": "art_123", "artifact_type": "CHUNK_SET"}],
+                }
+            },
         )
-        assert _extract_unfinished_todo_ids(text) == ["todo_2", "todo_3"]
+        assert cleared == 1
+        assert '"artifact_ids": ["art_123"]' in messages[0]["content"]
+        assert '"artifact_type": "CHUNK_SET"' in messages[0]["content"]
 
-    def test_does_not_treat_tool_names_as_todo_ids(self) -> None:
-        text = (
-            "Call todo_update(...) or todo_list() to unblock first. "
-            "Use todo_id=<id> in args."
+
+class TestActiveArtifactContext:
+    def test_builds_bounded_summary_from_recent_handles_and_capabilities(self) -> None:
+        content = _build_active_artifact_context_content(
+            available_artifacts={"QUERY_TEXT", "CHUNK_SET", "ENTITY_SET"},
+            available_capabilities={
+                "CHUNK_SET": {("fulltext", None, None)},
+                "ENTITY_SET": {("id", "wiki", None)},
+            },
+            tool_result_metadata_by_id={
+                "tc1": {
+                    "artifact_handles": [
+                        {"artifact_id": "art_chunk_1", "artifact_type": "CHUNK_SET", "kind": "CHUNK_SET", "ref_type": "fulltext"},
+                        {"artifact_id": "art_entity_1", "artifact_type": "ENTITY_SET", "kind": "ENTITY_SET", "ref_type": "id", "namespace": "wiki"},
+                    ]
+                }
+            },
+            max_handles=4,
+            max_chars=400,
         )
-        assert _extract_unfinished_todo_ids(text) == []
+        assert content is not None
+        assert "Active artifact context" in content
+        assert "art_chunk_1 CHUNK_SET ref_type=fulltext" in content
+        assert "ENTITY_SET[ref_type=id, namespace=wiki]" in content
+        assert len(content) <= 400
+
+
+class TestEvidencePointerExtraction:
+    def test_extracts_typed_evidence_refs_from_artifact_envelope(self) -> None:
+        record = MCPToolCallRecord(
+            server="srv",
+            tool="chunk_text_search",
+            arguments={"tool_reasoning": "find evidence"},
+            result=json.dumps(
+                {
+                    "artifact_id": "art_chunk_1",
+                    "artifact_type": "CHUNK_SET",
+                    "schema_version": "1.0.0",
+                    "provenance": {
+                        "evidence_refs": [
+                            {
+                                "chunk_id": "chunk_42",
+                                "char_start": 3,
+                                "char_end": 9,
+                            }
+                        ]
+                    },
+                    "payload": {"items": [{"chunk_id": "chunk_42"}]},
+                }
+            ),
+        )
+
+        labels = _tool_evidence_pointer_labels(record)
+        assert labels == {"chunk:chunk_42#char:3-9"}
 
 
 class TestDynamicContractRequirements:
@@ -221,7 +280,11 @@ class TestDynamicContractRequirements:
     def test_chunk_get_text_explicit_chunk_id_is_self_contained(self) -> None:
         requires_all, requires_any = _effective_contract_requirements(
             "chunk_get_text",
-            {"requires_all": ["CHUNK_SET"], "requires_any": ["ENTITY_SET"]},
+            {
+                "artifact_prereqs_none": True,
+                "requires_all": ["CHUNK_SET"],
+                "requires_any": ["ENTITY_SET"],
+            },
             {"chunk_id": "chunk_84"},
         )
         assert requires_all == set()
@@ -230,7 +293,7 @@ class TestDynamicContractRequirements:
     def test_chunk_get_text_explicit_entity_id_alias_is_self_contained(self) -> None:
         requires_all, requires_any = _effective_contract_requirements(
             "chunk_get_text",
-            {"requires_all": ["ENTITY_SET"]},
+            {"artifact_prereqs_none": True, "requires_all": ["ENTITY_SET"]},
             {"entity_id": "godiva"},
         )
         assert requires_all == set()
@@ -248,7 +311,7 @@ class TestDynamicContractRequirements:
     def test_chunk_get_text_by_chunk_ids_explicit_ref_is_self_contained(self) -> None:
         requires_all, requires_any = _effective_contract_requirements(
             "chunk_get_text_by_chunk_ids",
-            {"requires_all": ["CHUNK_SET"]},
+            {"artifact_prereqs_none": True, "requires_all": ["CHUNK_SET"]},
             {"chunk_ids": ["chunk_84"]},
         )
         assert requires_all == set()
@@ -257,8 +320,62 @@ class TestDynamicContractRequirements:
     def test_chunk_get_text_by_entity_ids_explicit_ref_is_self_contained(self) -> None:
         requires_all, requires_any = _effective_contract_requirements(
             "chunk_get_text_by_entity_ids",
-            {"requires_all": ["ENTITY_SET"]},
+            {"artifact_prereqs_none": True, "requires_all": ["ENTITY_SET"]},
             {"entity_ids": ["godiva"]},
+        )
+        assert requires_all == set()
+        assert requires_any == set()
+
+    def test_explicit_refs_do_not_bypass_prereqs_without_declarative_metadata(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text_by_chunk_ids",
+            {"requires_all": ["CHUNK_SET"]},
+            {"chunk_ids": ["chunk_84"]},
+        )
+        assert requires_all == {"CHUNK_SET"}
+        assert requires_any == set()
+
+    def test_call_modes_allow_arg_conditional_prereq_bypass(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text",
+            _normalize_tool_contracts(
+                {
+                    "chunk_get_text": {
+                        "requires_all": ["CHUNK_SET"],
+                        "call_modes": [
+                            {
+                                "name": "by_chunk_ids",
+                                "when_args_present_any": ["chunk_id", "chunk_ids"],
+                                "artifact_prereqs": "none",
+                                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                            }
+                        ],
+                    }
+                }
+            )["chunk_get_text"],
+            {"chunk_ids": ["chunk_84"]},
+        )
+        assert requires_all == set()
+        assert requires_any == set()
+
+    def test_call_modes_support_discriminated_union_style_mode_field(self) -> None:
+        requires_all, requires_any = _effective_contract_requirements(
+            "chunk_get_text",
+            _normalize_tool_contracts(
+                {
+                    "chunk_get_text": {
+                        "requires_all": ["CHUNK_SET"],
+                        "call_modes": [
+                            {
+                                "name": "by_chunk_mode",
+                                "when_arg_equals": {"mode": "by_chunk_id"},
+                                "artifact_prereqs": "none",
+                            }
+                        ],
+                    }
+                }
+            )["chunk_get_text"],
+            {"mode": "by_chunk_id", "chunk_ids": ["chunk_84"]},
         )
         assert requires_all == set()
         assert requires_any == set()
@@ -544,6 +661,10 @@ def _make_tool_result(text: str, is_error: bool = False) -> MagicMock:
     return result
 
 
+def _nontrivial_direct_tool(query: str, limit: int = 5) -> str:
+    return f"{query}:{limit}"
+
+
 def _make_llm_result(
     content: str = "",
     tool_calls: list[dict[str, Any]] | None = None,
@@ -619,6 +740,7 @@ class TestAcallWithMcp:
             non_budget_trace = [
                 msg for msg in trace
                 if "budget:" not in str(msg.get("content", "")).lower()
+                and msg.get("synthetic") != "active_artifact_context"
             ]
             assert len(non_budget_trace) == 1
             assert non_budget_trace[0]["role"] == "assistant"
@@ -628,6 +750,104 @@ class TestAcallWithMcp:
             assert isinstance(metadata.get("full_bindings_hash"), str)
             assert isinstance(metadata.get("run_config_hash"), str)
             assert metadata.get("first_terminal_failure_event_code") is None
+            assert metadata["answer_present"] is True
+            assert metadata["grounded_completed"] is False
+            assert metadata["forced_terminal_accepted"] is False
+            assert metadata["reliability_completed"] is True
+            assert metadata["run_completed"] is True
+
+    async def test_strict_adoption_profile_warns_when_runtime_guards_are_missing(self) -> None:
+        """Strict adoption profile should surface structured violations even when not enforced."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+            mock_acall.return_value = _make_llm_result(content="Paris", finish_reason="stop")
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "What is the capital of France?"}],
+                mcp_servers={"server": {"command": "python", "args": ["s.py"]}},
+                adoption_profile="strict",
+            )
+
+            metadata = result.raw_response.metadata
+            assert metadata["adoption_profile_effective"] == "strict"
+            assert metadata["adoption_profile_satisfied"] is False
+            assert "require_tool_reasoning must be enabled" in metadata["adoption_profile_violations"]
+            assert any("ADOPTION_PROFILE_VIOLATION[strict]" in warning for warning in result.warnings)
+
+    async def test_strict_adoption_profile_can_fail_fast(self) -> None:
+        """Strict adoption profile can raise immediately when enforcement is requested."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+
+        with patch("llm_client.mcp_agent._import_mcp") as mock_import:
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            with pytest.raises(ValueError, match="ADOPTION_PROFILE_VIOLATION\\[strict\\]"):
+                await _acall_with_mcp(
+                    "test-model",
+                    [{"role": "user", "content": "What is the capital of France?"}],
+                    mcp_servers={"server": {"command": "python", "args": ["s.py"]}},
+                    adoption_profile="strict",
+                    adoption_profile_enforce=True,
+                )
+
+    async def test_strict_adoption_profile_warns_for_nontrivial_direct_tool_quality(self) -> None:
+        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+            mock_acall.return_value = _make_llm_result(content="done", finish_reason="stop")
+
+            from llm_client.mcp_agent import _acall_with_tools
+
+            result = await _acall_with_tools(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                python_tools=[_nontrivial_direct_tool],
+                require_tool_reasoning=True,
+                enforce_tool_contracts=True,
+                progressive_tool_disclosure=True,
+                adoption_profile="strict",
+                task="test",
+                trace_id="test_strict_adoption_profile_warns_for_nontrivial_direct_tool_quality",
+            )
+
+            metadata = result.raw_response.metadata
+            violations = metadata["adoption_profile_violations"]
+            assert metadata["adoption_profile_effective"] == "strict"
+            assert metadata["adoption_profile_satisfied"] is False
+            assert any("must include input examples" in violation for violation in violations)
+            assert any("must declare tool_contracts" in violation for violation in violations)
 
     async def test_multi_turn_with_tool_calls(self) -> None:
         """LLM calls a tool, gets result, then answers."""
@@ -692,6 +912,7 @@ class TestAcallWithMcp:
                 msg for msg in trace
                 if ("budget:" not in str(msg.get("content", "")).lower())
                 and ("Observability requirement" not in str(msg.get("content", "")))
+                and msg.get("synthetic") != "active_artifact_context"
             ]
             assert len(non_budget_trace) == 3  # assistant(tool_call) + tool_result + assistant(answer)
             assert non_budget_trace[0]["role"] == "assistant"
@@ -929,11 +1150,11 @@ class TestAcallWithMcp:
             assert metadata.get("primary_failure_class") == "none"
 
     async def test_max_tool_calls_ignores_todo_tools(self) -> None:
-        """todo_* calls do not consume max_tool_calls budget."""
+        """todo_write calls do not consume max_tool_calls budget."""
         mock_session = AsyncMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=MagicMock(
-            tools=[_make_tool("todo_update"), _make_tool("search")],
+            tools=[_make_tool("todo_write"), _make_tool("search")],
         ))
         mock_session.call_tool = AsyncMock(
             side_effect=[_make_tool_result("todo-ok"), _make_tool_result("search-ok")],
@@ -958,7 +1179,7 @@ class TestAcallWithMcp:
                 _make_llm_result(tool_calls=[{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "todo_update", "arguments": "{}"},
+                    "function": {"name": "todo_write", "arguments": "{}"},
                 }]),
                 _make_llm_result(tool_calls=[{
                     "id": "call_2",
@@ -1541,6 +1762,205 @@ class TestAcallWithMcp:
             assert mock_session.call_tool.call_count == 2
             assert result.raw_response.metadata["tool_contract_rejections"] == 0
             assert "ENTITY_SET" in result.raw_response.metadata["available_artifacts_final"]
+
+    async def test_artifact_envelope_output_unlocks_next_tool_without_contract_produces(self) -> None:
+        """Typed artifact envelopes should drive downstream legality even when contract produces metadata is absent."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("entity_tfidf"), _make_tool("relationship_onehop")],
+        ))
+        mock_session.call_tool = AsyncMock(
+            side_effect=[
+                _make_tool_result(
+                    json.dumps(
+                        {
+                            "artifact_id": "art_entities_1",
+                            "artifact_type": "ENTITY_SET",
+                            "schema_version": "1.0.0",
+                            "bindings": {"graph_id": "graph_a"},
+                            "capabilities": [
+                                {
+                                    "kind": "ENTITY_SET",
+                                    "ref_type": "id",
+                                    "namespace": "graph_a",
+                                }
+                            ],
+                            "provenance": {
+                                "evidence_refs": [{"chunk_id": "chunk_1"}],
+                            },
+                            "payload": {"items": [{"entity_id": "e1"}]},
+                        }
+                    )
+                ),
+                _make_tool_result("onehop hit"),
+            ],
+        )
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "entity_tfidf",
+                        "arguments": '{"tool_reasoning":"seed from query"}',
+                    },
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "relationship_onehop",
+                        "arguments": '{"tool_reasoning":"expand seeded entity"}',
+                    },
+                }]),
+                _make_llm_result(content="answer"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                enforce_tool_contracts=True,
+                tool_contracts={
+                    "entity_tfidf": {
+                        "requires_all": ["QUERY_TEXT"],
+                    },
+                    "relationship_onehop": {
+                        "requires_all": [
+                            {"kind": "ENTITY_SET", "ref_type": "id"},
+                        ],
+                        "produces": ["RELATIONSHIP_SET"],
+                    },
+                },
+                initial_artifacts=("QUERY_TEXT",),
+                initial_bindings={"graph_id": "graph_a"},
+            )
+
+            assert result.content == "answer"
+            assert mock_session.call_tool.call_count == 2
+            assert result.raw_response.metadata["tool_contract_rejections"] == 0
+            assert "ENTITY_SET" in result.raw_response.metadata["available_artifacts_final"]
+            assert {
+                "kind": "ENTITY_SET",
+                "ref_type": "id",
+                "namespace": "graph_a",
+                "bindings_hash": result.raw_response.metadata["hard_bindings_hash"],
+            } in result.raw_response.metadata["available_capabilities_final"]
+            artifact_events = [
+                event
+                for event in result.raw_response.metadata["foundation_events"]
+                if event.get("event_type") == "ArtifactCreated"
+            ]
+            assert artifact_events
+            assert artifact_events[0]["artifacts"][0]["artifact_id"] == "art_entities_1"
+            assert result.raw_response.metadata["active_artifact_context_updates"] >= 1
+            assert result.raw_response.metadata["tool_result_metadata_tracked"] >= 1
+            trace_texts = [
+                str(entry.get("content") or "")
+                for entry in result.raw_response.conversation_trace
+                if isinstance(entry, dict)
+            ]
+            assert any("Active artifact context" in text for text in trace_texts)
+
+    async def test_call_mode_outputs_unlock_next_tool_from_discriminated_union_contract(self) -> None:
+        """Arg-conditional call_modes should drive actual call legality and produced capabilities."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("chunk_get_text"), _make_tool("extract_date_mentions")],
+        ))
+        mock_session.call_tool = AsyncMock(
+            side_effect=[
+                _make_tool_result('{"results":[{"chunk_id":"chunk_1","text":"Reached on August 3, 1769."}]}'),
+                _make_tool_result('{"dates":[{"normalized_date":"August 3, 1769","chunk_id":"chunk_1"}]}'),
+            ],
+        )
+
+        with (
+            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "chunk_get_text",
+                        "arguments": '{"mode":"by_chunk_id","chunk_ids":["chunk_1"],"tool_reasoning":"read the exact chunk"}',
+                    },
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "extract_date_mentions",
+                        "arguments": '{"tool_reasoning":"extract date from the retrieved text"}',
+                    },
+                }]),
+                _make_llm_result(content="answer"),
+            ]
+
+            from llm_client.mcp_agent import _acall_with_mcp
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                enforce_tool_contracts=True,
+                tool_contracts={
+                    "chunk_get_text": {
+                        "requires_all": ["CHUNK_SET"],
+                        "call_modes": [
+                            {
+                                "name": "by_chunk_id",
+                                "when_arg_equals": {"mode": "by_chunk_id"},
+                                "artifact_prereqs": "none",
+                                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                            }
+                        ],
+                    },
+                    "extract_date_mentions": {
+                        "requires_all": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                        "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                    },
+                },
+                initial_artifacts=("QUERY_TEXT",),
+            )
+
+            assert result.content == "answer"
+            assert mock_session.call_tool.call_count == 2
+            assert result.raw_response.metadata["tool_contract_rejections"] == 0
+            assert any(
+                cap.get("kind") == "CHUNK_SET" and cap.get("ref_type") == "fulltext"
+                for cap in result.raw_response.metadata["available_capabilities_final"]
+            )
 
     async def test_enforce_tool_contracts_rejects_missing_capability_shape(self) -> None:
         """Capability requirements reject calls when kind exists but ref_type is incompatible."""
@@ -2139,6 +2559,346 @@ class TestAgentDiagnostics:
         assert agent_result.metadata["tool_disclosure_turns"] == 1
         assert agent_result.metadata["tool_disclosure_hidden_total"] == 1
 
+    async def test_runtime_artifact_read_reopens_typed_artifact_handles(self) -> None:
+        """Typed artifacts can be reopened explicitly by artifact_id without another external tool call."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        observed_tool_surfaces: list[list[str]] = []
+        executor_call_count = 0
+
+        async def mock_inner_acall(model, messages, **kwargs):
+            tools = kwargs.get("tools") or []
+            observed_tool_surfaces.append([
+                str(t.get("function", {}).get("name", ""))
+                for t in tools
+                if isinstance(t, dict)
+            ])
+            if len(observed_tool_surfaces) == 1:
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_search",
+                        "function": {
+                            "name": "chunk_text_search",
+                            "arguments": '{"query":"q","tool_reasoning":"find the source chunk"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            if len(observed_tool_surfaces) == 2:
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_runtime_read",
+                        "function": {
+                            "name": "runtime_artifact_read",
+                            "arguments": '{"artifact_ids":["art_chunk_1"],"tool_reasoning":"reopen the cleared typed artifact"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            return _make_llm_result(content="done")
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal executor_call_count
+            executor_call_count += 1
+            payload = json.dumps(
+                {
+                    "artifact_id": "art_chunk_1",
+                    "artifact_type": "CHUNK_SET",
+                    "schema_version": "1.0.0",
+                    "capabilities": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                    "payload": {
+                        "chunk_id": "chunk_1",
+                        "text": "Reached on August 3, 1769.",
+                    },
+                    "provenance": {
+                        "evidence_refs": [{"chunk_id": "chunk_1"}],
+                    },
+                }
+            )
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="chunk_text_search",
+                        arguments={"query": "q"},
+                        result=payload,
+                    ),
+                ],
+                [{
+                    "role": "tool",
+                    "tool_call_id": "tc_search",
+                    "content": payload,
+                }],
+            )
+
+        openai_tools = [
+            {"type": "function", "function": {"name": "chunk_text_search"}},
+            {"type": "function", "function": {"name": "todo_list"}},
+        ]
+        contracts = {
+            "chunk_text_search": {
+                "requires_all": ["QUERY_TEXT"],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            },
+            "todo_list": {"is_control": True},
+        }
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                openai_tools,
+                agent_result,
+                mock_executor,
+                4,
+                None,
+                False,
+                50000,
+                max_message_chars=400,
+                enforce_tool_contracts=True,
+                progressive_tool_disclosure=True,
+                tool_contracts=contracts,
+                initial_artifacts=("QUERY_TEXT",),
+                timeout=60,
+                kwargs={
+                    "tool_result_keep_recent": 0,
+                    "tool_result_context_preview_chars": 80,
+                },
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert executor_call_count == 1
+        assert len(observed_tool_surfaces) == 3
+        assert "runtime_artifact_read" not in observed_tool_surfaces[0]
+        assert "runtime_artifact_read" in observed_tool_surfaces[1]
+        assert agent_result.metadata["runtime_artifact_registry_size"] == 1
+        assert agent_result.metadata["runtime_artifact_registry_ids"] == ["art_chunk_1"]
+        runtime_records = [
+            record for record in agent_result.tool_calls
+            if record.tool == "runtime_artifact_read"
+        ]
+        assert runtime_records
+        runtime_payload = json.loads(str(runtime_records[0].result or "{}"))
+        assert runtime_payload["artifact_ids"] == ["art_chunk_1"]
+        assert runtime_payload["artifacts"][0]["artifact_id"] == "art_chunk_1"
+        assert agent_result.metadata["context_tool_results_cleared"] >= 1
+        assert any(
+            "use runtime_artifact_read with artifact_ids" in str(msg.get("content", ""))
+            for msg in agent_result.conversation_trace
+            if isinstance(msg, dict)
+        )
+
+    async def test_handle_input_contract_injects_resolved_artifacts_for_consumer_tool(self) -> None:
+        """Declarative handle inputs can resolve artifact handles into injected executor args."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_calls: list[dict[str, Any]] = []
+
+        async def mock_inner_acall(model, messages, **kwargs):
+            if len(executor_calls) == 0:
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_search",
+                        "function": {
+                            "name": "chunk_text_search",
+                            "arguments": '{"query":"q","tool_reasoning":"find a chunk"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            if len(executor_calls) == 1:
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_extract",
+                        "function": {
+                            "name": "extract_date_mentions_from_artifacts",
+                            "arguments": '{"chunk_artifact_ids":["art_chunk_1"],"tool_reasoning":"extract date from the artifact handle"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            return _make_llm_result(content="done")
+
+        async def mock_executor(tool_calls, max_len):
+            executor_calls.extend(tool_calls)
+            tool_name = tool_calls[0]["function"]["name"]
+            if tool_name == "chunk_text_search":
+                payload = json.dumps(
+                    {
+                        "artifact_id": "art_chunk_1",
+                        "artifact_type": "CHUNK_SET",
+                        "schema_version": "1.0.0",
+                        "capabilities": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                        "payload": {
+                            "chunk_id": "chunk_1",
+                            "text": "Reached on August 3, 1769.",
+                        },
+                    }
+                )
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="chunk_text_search",
+                            arguments={"query": "q"},
+                            result=payload,
+                        ),
+                    ],
+                    [{
+                        "role": "tool",
+                        "tool_call_id": "tc_search",
+                        "content": payload,
+                    }],
+                )
+
+            injected_args = json.loads(tool_calls[0]["function"]["arguments"])
+            assert injected_args["chunk_artifact_ids"] == ["art_chunk_1"]
+            assert injected_args["chunk_artifacts"] == [
+                {
+                    "chunk_id": "chunk_1",
+                    "text": "Reached on August 3, 1769.",
+                }
+            ]
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="extract_date_mentions_from_artifacts",
+                        arguments=injected_args,
+                        result='{"dates":[{"normalized_date":"August 3, 1769"}]}',
+                    ),
+                ],
+                [{
+                    "role": "tool",
+                    "tool_call_id": "tc_extract",
+                    "content": '{"dates":[{"normalized_date":"August 3, 1769"}]}',
+                }],
+            )
+
+        openai_tools = [
+            {"type": "function", "function": {"name": "chunk_text_search"}},
+            {"type": "function", "function": {"name": "extract_date_mentions_from_artifacts"}},
+        ]
+        contracts = {
+            "chunk_text_search": {
+                "requires_all": ["QUERY_TEXT"],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            },
+            "extract_date_mentions_from_artifacts": {
+                "artifact_prereqs": "none",
+                "handle_inputs": [
+                    {
+                        "arg": "chunk_artifact_ids",
+                        "inject_arg": "chunk_artifacts",
+                        "representation": "payload",
+                        "accepts": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                    }
+                ],
+                "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            },
+        }
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                openai_tools,
+                agent_result,
+                mock_executor,
+                4,
+                None,
+                False,
+                50000,
+                max_message_chars=400,
+                enforce_tool_contracts=True,
+                progressive_tool_disclosure=True,
+                tool_contracts=contracts,
+                initial_artifacts=("QUERY_TEXT",),
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert len(executor_calls) == 2
+        assert agent_result.metadata["handle_input_resolution_count"] >= 1
+        assert agent_result.metadata["handle_input_resolved_artifact_count"] >= 1
+
+    async def test_handle_input_contract_rejects_unknown_artifact_handle(self) -> None:
+        """Handle-aware contracts should reject unknown artifact handles before executor runs."""
+        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+
+        async def mock_inner_acall(model, messages, **kwargs):
+            if not any(msg.get("role") == "tool" for msg in messages if isinstance(msg, dict)):
+                return _make_llm_result(
+                    content="",
+                    tool_calls=[{
+                        "id": "tc_extract",
+                        "function": {
+                            "name": "extract_date_mentions_from_artifacts",
+                            "arguments": '{"chunk_artifact_ids":["art_missing"],"tool_reasoning":"try the missing handle"}',
+                        },
+                    }],
+                    finish_reason="tool_calls",
+                )
+            return _make_llm_result(content="done")
+
+        async def mock_executor(tool_calls, max_len):
+            raise AssertionError("executor should not run when handle contract validation fails")
+
+        openai_tools = [
+            {"type": "function", "function": {"name": "extract_date_mentions_from_artifacts"}},
+        ]
+        contracts = {
+            "extract_date_mentions_from_artifacts": {
+                "artifact_prereqs": "none",
+                "handle_inputs": [
+                    {
+                        "arg": "chunk_artifact_ids",
+                        "inject_arg": "chunk_artifacts",
+                        "representation": "payload",
+                        "accepts": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                    }
+                ],
+            },
+        }
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                openai_tools,
+                agent_result,
+                mock_executor,
+                2,
+                None,
+                False,
+                50000,
+                max_message_chars=200,
+                enforce_tool_contracts=True,
+                progressive_tool_disclosure=True,
+                tool_contracts=contracts,
+                initial_artifacts=("QUERY_TEXT",),
+                timeout=60,
+                kwargs={},
+            )
+
+        assert content == "done"
+        assert finish == "stop"
+        assert agent_result.metadata["tool_contract_rejections"] == 1
+        violation = agent_result.metadata["tool_contract_violation_events"][0]
+        assert violation["tool"] == "extract_date_mentions_from_artifacts"
+        assert violation["error_code"] == "TOOL_VALIDATION_REJECTED_MISSING_PREREQUISITE"
+        assert "requires known runtime artifact handles" in violation["reason"]
+
     async def test_progressive_disclosure_reports_bounded_unavailable_reasons(self) -> None:
         """Disclosure adds bounded unavailable reason guidance and tracks overhead metadata."""
         from llm_client.mcp_agent import MCPAgentResult, _agent_loop
@@ -2436,8 +3196,8 @@ class TestAgentDiagnostics:
         assert agent_result.metadata["primary_failure_class"] == "policy"
         assert agent_result.metadata["first_terminal_failure_event_code"] == "REQUIRED_SUBMIT_NOT_ATTEMPTED"
 
-    async def test_autofill_reasoning_for_todo_reset(self) -> None:
-        """todo_reset missing tool_reasoning is auto-filled and executed in strict mode."""
+    async def test_autofill_reasoning_for_todo_write(self) -> None:
+        """todo_write missing tool_reasoning is auto-filled and executed in strict mode."""
         from llm_client.mcp_agent import MCPAgentResult, _agent_loop
 
         observed_tool_calls: list[dict[str, Any]] = []
@@ -2445,16 +3205,16 @@ class TestAgentDiagnostics:
         async def mock_executor(tool_calls, max_len):
             observed_tool_calls.extend(tool_calls)
             return (
-                [MCPToolCallRecord(server="srv", tool="todo_reset", arguments={}, result='{"status":"reset"}')],
-                [{"role": "tool", "tool_call_id": "tc_reset", "content": '{"status":"reset"}'}],
+                [MCPToolCallRecord(server="srv", tool="todo_write", arguments={}, result='{"status":"ok"}')],
+                [{"role": "tool", "tool_call_id": "tc_write", "content": '{"status":"ok"}'}],
             )
 
         llm_results = [
             _make_llm_result(
                 content="",
                 tool_calls=[{
-                    "id": "tc_reset",
-                    "function": {"name": "todo_reset", "arguments": "{}"},
+                    "id": "tc_write",
+                    "function": {"name": "todo_write", "arguments": "{}"},
                 }],
                 finish_reason="tool_calls",
             ),
@@ -2466,7 +3226,7 @@ class TestAgentDiagnostics:
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
-                [{"type": "function", "function": {"name": "todo_reset"}}],
+                [{"type": "function", "function": {"name": "todo_write"}}],
                 agent_result,
                 mock_executor,
                 3,
@@ -2488,249 +3248,6 @@ class TestAgentDiagnostics:
             "observability: missing tool_reasoning on tools:" in w.lower()
             for w in agent_result.warnings
         )
-
-    async def test_autofill_reasoning_for_todo_update(self) -> None:
-        """todo_update missing tool_reasoning is auto-filled and executed in strict mode."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
-
-        observed_tool_calls: list[dict[str, Any]] = []
-
-        async def mock_executor(tool_calls, max_len):
-            observed_tool_calls.extend(tool_calls)
-            return (
-                [
-                    MCPToolCallRecord(
-                        server="srv",
-                        tool="todo_update",
-                        arguments={"todo_id": "todo_1", "status": "done"},
-                        result='{"status":"updated"}',
-                    )
-                ],
-                [{"role": "tool", "tool_call_id": "tc_update", "content": '{"status":"updated"}'}],
-            )
-
-        llm_results = [
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_update",
-                    "function": {
-                        "name": "todo_update",
-                        "arguments": '{"todo_id":"todo_1","status":"done"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(content="done"),
-        ]
-
-        agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
-            content, finish = await _agent_loop(
-                "test-model",
-                [{"role": "user", "content": "q"}],
-                [{"type": "function", "function": {"name": "todo_update"}}],
-                agent_result,
-                mock_executor,
-                3,
-                None,
-                True,
-                50000,
-                max_message_chars=60,
-                timeout=60,
-                kwargs={},
-            )
-
-        assert content == "done"
-        assert finish == "stop"
-        assert observed_tool_calls
-        args = json.loads(observed_tool_calls[0]["function"]["arguments"])
-        assert "tool_reasoning" in args
-        assert agent_result.metadata["rejected_missing_reasoning_calls"] == 0
-
-    async def test_submit_answer_suppressed_until_todo_progress(self) -> None:
-        """Repeated submit_answer calls are suppressed until TODO state changes."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
-
-        executor_call_count = 0
-
-        async def mock_executor(tool_calls, max_len):
-            nonlocal executor_call_count
-            executor_call_count += 1
-            return (
-                [
-                    MCPToolCallRecord(
-                        server="srv",
-                        tool="submit_answer",
-                        arguments={"reasoning": "r", "answer": "a"},
-                        error="Cannot submit yet. Unfinished TODOs: todo_1.",
-                    ),
-                ],
-                [
-                    {
-                        "role": "tool",
-                        "tool_call_id": "tc_submit_1",
-                        "content": '{"error":"Cannot submit yet. Unfinished TODOs: todo_1."}',
-                    }
-                ],
-            )
-
-        llm_results = [
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_1",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit now"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_2",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit again"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(content="final"),
-        ]
-
-        agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
-            content, finish = await _agent_loop(
-                "test-model",
-                [{"role": "user", "content": "q"}],
-                [{"type": "function", "function": {"name": "submit_answer"}}],
-                agent_result,
-                mock_executor,
-                3,
-                None,
-                False,
-                50000,
-                max_message_chars=60,
-                suppress_control_loop_calls=True,
-                timeout=60,
-                kwargs={},
-            )
-
-        assert content == "final"
-        assert finish == "stop"
-        # First submit call executes; second is suppressed before executor.
-        assert executor_call_count == 1
-        assert agent_result.metadata["control_loop_suppressed_calls"] >= 1
-        assert any(
-            "submit_answer suppressed" in (record.error or "")
-            for record in agent_result.tool_calls
-            if record.tool == "submit_answer"
-        )
-
-    async def test_control_churn_stall_forces_final_answer(self) -> None:
-        """Repeated non-executable submit loops force a final answer before max_turns."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
-
-        executor_call_count = 0
-
-        async def mock_executor(tool_calls, max_len):
-            nonlocal executor_call_count
-            executor_call_count += 1
-            return (
-                [
-                    MCPToolCallRecord(
-                        server="srv",
-                        tool="submit_answer",
-                        arguments={"reasoning": "r", "answer": "a"},
-                        error="Cannot submit yet. Unfinished TODOs: todo_1.",
-                    ),
-                ],
-                [
-                    {
-                        "role": "tool",
-                        "tool_call_id": "tc_submit_1",
-                        "content": '{"error":"Cannot submit yet. Unfinished TODOs: todo_1."}',
-                    }
-                ],
-            )
-
-        llm_results = [
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_1",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit 1"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_2",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit 2"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_3",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit 3"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_4",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r","answer":"a","tool_reasoning":"submit 4"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(content="best effort answer"),
-        ]
-
-        agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
-            content, finish = await _agent_loop(
-                "test-model",
-                [{"role": "user", "content": "q"}],
-                [{"type": "function", "function": {"name": "submit_answer"}}],
-                agent_result,
-                mock_executor,
-                12,
-                None,
-                False,
-                50000,
-                max_message_chars=60,
-                suppress_control_loop_calls=True,
-                timeout=60,
-                kwargs={},
-            )
-
-        assert content == "best effort answer"
-        assert finish == "stop"
-        # First submit executes and fails, subsequent submits are suppressed, then churn guard forces final call.
-        assert executor_call_count == 1
-        assert agent_result.metadata["max_zero_exec_tool_turn_streak"] >= 3
-        assert agent_result.metadata["primary_failure_class"] == "control_churn"
-        failure_counts = agent_result.metadata["failure_event_code_counts"]
-        assert failure_counts.get("CONTROL_CHURN_THRESHOLD_EXCEEDED", 0) >= 1
 
     async def test_retrieval_stagnation_forces_final_answer(self) -> None:
         """Repeated evidence calls with unchanged evidence digest trigger retrieval stagnation fuse."""
@@ -2924,148 +3441,6 @@ class TestAgentDiagnostics:
         failure_counts = agent_result.metadata["failure_event_code_counts"]
         assert failure_counts.get("RETRIEVAL_STAGNATION_OBSERVED", 0) >= 1
 
-    async def test_submit_needs_revision_is_not_treated_as_success(self) -> None:
-        """submit_answer status=needs_revision must not terminate the loop as submitted."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
-
-        executor_call_count = 0
-
-        async def mock_executor(tool_calls, max_len):
-            nonlocal executor_call_count
-            executor_call_count += 1
-            tool_name = tool_calls[0]["function"]["name"]
-            if tool_name == "submit_answer" and executor_call_count == 1:
-                return (
-                    [
-                        MCPToolCallRecord(
-                            server="srv",
-                            tool="submit_answer",
-                            arguments={"reasoning": "r1", "answer": "first"},
-                            result='{"status":"needs_revision","validation_error":{"reason_code":"unfinished_todos","message":"todo_2 pending"}}',
-                        ),
-                    ],
-                    [
-                        {
-                            "role": "tool",
-                            "tool_call_id": "tc_submit_1",
-                            "content": '{"status":"needs_revision","validation_error":{"reason_code":"unfinished_todos","message":"todo_2 pending"}}',
-                        }
-                    ],
-                )
-            if tool_name == "todo_update":
-                return (
-                    [
-                        MCPToolCallRecord(
-                            server="srv",
-                            tool="todo_update",
-                            arguments={"todo_id": "todo_2", "status": "done"},
-                            result='{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
-                        ),
-                    ],
-                    [
-                        {
-                            "role": "tool",
-                            "tool_call_id": "tc_todo_done",
-                            "content": '{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
-                        }
-                    ],
-                )
-            return (
-                [
-                    MCPToolCallRecord(
-                        server="srv",
-                        tool="submit_answer",
-                        arguments={"reasoning": "r2", "answer": "second"},
-                        result='{"status":"submitted","answer":"second"}',
-                    ),
-                ],
-                [
-                    {
-                        "role": "tool",
-                        "tool_call_id": "tc_submit_2",
-                        "content": '{"status":"submitted","answer":"second"}',
-                    }
-                ],
-            )
-
-        llm_results = [
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_1",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r1","answer":"first","tool_reasoning":"submit attempt 1"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_2",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r2","answer":"second","tool_reasoning":"submit attempt 2 (should be suppressed)"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_todo_done",
-                    "function": {
-                        "name": "todo_update",
-                        "arguments": '{"todo_id":"todo_2","status":"done","tool_reasoning":"mark todo done after evidence"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_3",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r3","answer":"second","tool_reasoning":"final submit"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-        ]
-
-        agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
-            content, finish = await _agent_loop(
-                "test-model",
-                [{"role": "user", "content": "q"}],
-                [{"type": "function", "function": {"name": "submit_answer"}}],
-                agent_result,
-                mock_executor,
-                6,
-                None,
-                False,
-                50000,
-                max_message_chars=60,
-                suppress_control_loop_calls=True,
-                timeout=60,
-                kwargs={},
-            )
-
-        assert content == "second"
-        assert finish == "submitted"
-        # 1st submit executed, 2nd submit suppressed, todo_update executed, final submit executed
-        assert executor_call_count == 3
-        assert any(
-            record.tool == "submit_answer" and "suppressed" in (record.error or "")
-            for record in agent_result.tool_calls
-        )
-        assert any(
-            msg.get("role") == "user" and "submit_answer failed" in msg.get("content", "")
-            for msg in agent_result.conversation_trace
-        )
-
     async def test_submit_retry_requires_new_evidence_signal(self) -> None:
         """If submit validation requires new evidence, suppress resubmit until evidence tool succeeds."""
         from llm_client.mcp_agent import MCPAgentResult, _agent_loop
@@ -3210,150 +3585,3 @@ class TestAgentDiagnostics:
         assert isinstance(agent_result.metadata.get("evidence_digest"), str)
         # Successful evidence call should clear pending digest gate.
         assert agent_result.metadata.get("submit_evidence_digest_at_last_failure") is None
-
-    async def test_answer_not_grounded_with_todo_span_requires_todo_progress(self) -> None:
-        """answer_not_grounded + todo answer_span should engage TODO-progress suppression."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
-
-        executor_call_count = 0
-
-        async def mock_executor(tool_calls, max_len):
-            nonlocal executor_call_count
-            executor_call_count += 1
-            tool_name = tool_calls[0]["function"]["name"]
-            if tool_name == "submit_answer" and executor_call_count == 1:
-                return (
-                    [
-                        MCPToolCallRecord(
-                            server="srv",
-                            tool="submit_answer",
-                            arguments={"reasoning": "r1", "answer": "candidate"},
-                            result='{"status":"needs_revision","validation_error":{"reason_code":"answer_not_grounded","message":"Missing TODO answer_span for todo_2"}}',
-                        ),
-                    ],
-                    [
-                        {
-                            "role": "tool",
-                            "tool_call_id": "tc_submit_1",
-                            "content": '{"status":"needs_revision","validation_error":{"reason_code":"answer_not_grounded","message":"Missing TODO answer_span for todo_2"}}',
-                        }
-                    ],
-                )
-            if tool_name == "todo_update":
-                return (
-                    [
-                        MCPToolCallRecord(
-                            server="srv",
-                            tool="todo_update",
-                            arguments={"todo_id": "todo_2", "status": "done"},
-                            result='{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
-                        ),
-                    ],
-                    [
-                        {
-                            "role": "tool",
-                            "tool_call_id": "tc_todo_2_done",
-                            "content": '{"status":"updated","todo":{"id":"todo_2","status":"done"}}',
-                        }
-                    ],
-                )
-            return (
-                [
-                    MCPToolCallRecord(
-                        server="srv",
-                        tool="submit_answer",
-                        arguments={"reasoning": "r3", "answer": "final answer"},
-                        result='{"status":"submitted","answer":"final answer"}',
-                    ),
-                ],
-                [
-                    {
-                        "role": "tool",
-                        "tool_call_id": "tc_submit_3",
-                        "content": '{"status":"submitted","answer":"final answer"}',
-                    }
-                ],
-            )
-
-        llm_results = [
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_1",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r1","answer":"candidate","tool_reasoning":"initial submit"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_2",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r2","answer":"candidate","tool_reasoning":"resubmit too early"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_todo_2_done",
-                    "function": {
-                        "name": "todo_update",
-                        "arguments": '{"todo_id":"todo_2","status":"done","tool_reasoning":"mark todo done"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-            _make_llm_result(
-                content="",
-                tool_calls=[{
-                    "id": "tc_submit_3",
-                    "function": {
-                        "name": "submit_answer",
-                        "arguments": '{"reasoning":"r3","answer":"final answer","tool_reasoning":"submit after todo progress"}',
-                    },
-                }],
-                finish_reason="tool_calls",
-            ),
-        ]
-
-        agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
-            content, finish = await _agent_loop(
-                "test-model",
-                [{"role": "user", "content": "q"}],
-                [
-                    {"type": "function", "function": {"name": "submit_answer"}},
-                    {"type": "function", "function": {"name": "todo_update"}},
-                ],
-                agent_result,
-                mock_executor,
-                8,
-                None,
-                False,
-                50000,
-                max_message_chars=60,
-                suppress_control_loop_calls=True,
-                timeout=60,
-                kwargs={},
-            )
-
-        assert content == "final answer"
-        assert finish == "submitted"
-        # First submit + todo update + final submit execute; middle submit is suppressed.
-        assert executor_call_count == 3
-        assert agent_result.metadata["control_loop_suppressed_calls"] >= 1
-        assert any(
-            record.tool == "submit_answer"
-            and "TODO state has not changed" in (record.error or "")
-            for record in agent_result.tool_calls
-        )
-        assert any(
-            msg.get("role") == "user" and "Create/update TODOs first" in msg.get("content", "")
-            for msg in agent_result.conversation_trace
-        )
