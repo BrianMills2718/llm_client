@@ -5246,24 +5246,31 @@ async def _agent_loop(
                 )
             agent_result.warnings.append(warning)
             logger.warning(warning)
-        if accept_forced_answer_on_max_tool_calls and final_content.strip():
+        # Accept the best available answer when budget/turns are exhausted.
+        # Sources in priority order:
+        #   1. Agent's last explicit submit_answer guess (non-refusal)
+        #   2. Forced-final text extraction (only when forced-final succeeded)
+        # When forced-final errored (finish_reason="error"), its content is an
+        # error message, not an answer — never extract from it.
+        _has_fallback_guess = (
+            isinstance(fallback_submit_guess_value, str)
+            and bool(fallback_submit_guess_value.strip())
+        )
+        _forced_final_succeeded = final_finish_reason != "error"
+        _has_final_content = _forced_final_succeeded and bool(final_content.strip())
+        if accept_forced_answer_on_max_tool_calls and (_has_final_content or _has_fallback_guess):
             submit_forced_accept_on_budget_exhaustion = True
             submit_answer_succeeded = True
-            # Prefer the agent's last explicit submit_answer guess (non-refusal)
-            # over free-text extraction from the final turn.  The agent's deliberate
-            # answer submission is a far stronger signal than incidental text
-            # (entity names, system budget messages, etc.) in the last turn.
-            if (
-                isinstance(fallback_submit_guess_value, str)
-                and fallback_submit_guess_value.strip()
-            ):
+            if _has_fallback_guess:
                 normalized_forced_answer = fallback_submit_guess_value.strip()
-            else:
+            elif _has_final_content:
                 normalized_forced_answer = _normalize_forced_final_answer(final_content)
+            else:
+                normalized_forced_answer = ""
             submitted_answer_value = (
                 submitted_answer_value
                 or normalized_forced_answer
-                or final_content.strip()
+                or (final_content.strip() if _forced_final_succeeded else "")
             )
             required_submit_missing = False
             if forced_exhaustion_reason == "budget":
@@ -5415,6 +5422,7 @@ async def _agent_loop(
     agent_result.metadata["submit_answer_succeeded"] = submit_answer_succeeded
     agent_result.metadata["submit_validator_accepted"] = submit_validator_accepted
     agent_result.metadata["required_submit_missing"] = required_submit_missing
+    agent_result.metadata["submitted_answer_value"] = submitted_answer_value
     agent_result.metadata["submit_forced_retry_on_budget_exhaustion"] = submit_forced_retry_on_budget_exhaustion
     agent_result.metadata["submit_forced_accept_on_budget_exhaustion"] = submit_forced_accept_on_budget_exhaustion
     agent_result.metadata["submit_completion_mode"] = submit_completion_mode
