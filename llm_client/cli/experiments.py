@@ -162,8 +162,8 @@ def _render_conversation_trace(trace: list) -> None:
                     else:
                         args = args_raw or {}
 
-                    # Remove tool_reasoning from display args
-                    args.pop("tool_reasoning", None)
+                    # Extract and display tool_reasoning
+                    tool_reasoning = args.pop("tool_reasoning", None)
 
                     # Show compact key args
                     key_args = {}
@@ -177,7 +177,9 @@ def _render_conversation_trace(trace: list) -> None:
                         else:
                             key_args[k] = v
                     args_str = ", ".join(f'{k}={json.dumps(v)}' for k, v in key_args.items())
-                    print(f"  [{step}] {name}({args_str})")
+                    if tool_reasoning:
+                        print(f"  [{step}] REASON: {tool_reasoning}")
+                    print(f"       {name}({args_str})")
                     step += 1
             elif content.strip():
                 print(f"  [{step}] AGENT: {content[:200]}")
