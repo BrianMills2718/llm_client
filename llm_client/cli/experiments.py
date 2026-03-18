@@ -8,6 +8,253 @@ import sys
 from typing import Any
 
 
+def _evaluate_adoption_gate(
+    items: list[dict[str, Any]],
+    *,
+    required_profile: str | None,
+    require_satisfied: bool,
+) -> dict[str, Any] | None:
+    from llm_client.experiment_eval import extract_adoption_profile
+
+    required_profile_norm = str(required_profile or "").strip().lower() or None
+    if required_profile_norm is None and not require_satisfied:
+        return None
+
+    failures: list[dict[str, Any]] = []
+    n_with_metadata = 0
+    for item in items:
+        item_id = str(item.get("item_id") or item.get("id") or "")
+        adoption = extract_adoption_profile(item)
+        requested = adoption["requested_profile"]
+        effective = adoption["effective_profile"]
+        satisfied = adoption["satisfied"]
+        has_metadata = adoption["has_metadata"]
+        if has_metadata:
+            n_with_metadata += 1
+
+        item_failures: list[str] = []
+        if not has_metadata:
+            item_failures.append("missing adoption-profile metadata")
+        if required_profile_norm and (effective or "").strip().lower() != required_profile_norm:
+            item_failures.append(
+                f"effective adoption profile {effective or '-'} != required {required_profile_norm}"
+            )
+        if require_satisfied and satisfied is not True:
+            item_failures.append("adoption profile not satisfied")
+
+        if item_failures:
+            failures.append({"item_id": item_id, "reasons": item_failures})
+
+    return {
+        "enabled": True,
+        "required_profile": required_profile_norm,
+        "require_satisfied": require_satisfied,
+        "n_items": len(items),
+        "n_items_with_metadata": n_with_metadata,
+        "passed": not failures,
+        "failing_items": failures,
+    }
+
+
+def _cmd_experiments_trace(args: argparse.Namespace) -> None:
+    """Show step-by-step tool chain for a specific experiment item."""
+    from llm_client import io_log
+
+    run_id, item_id = args.trace
+    items = io_log.get_run_items(run_id)
+    if not items:
+        print(f"No items found for run {run_id}")
+        return
+
+    item = None
+    for it in items:
+        if it["item_id"] == item_id:
+            item = it
+            break
+    if item is None:
+        print(f"Item '{item_id}' not found in run {run_id}")
+        print(f"Available items: {[it['item_id'] for it in items]}")
+        return
+
+    extra = item.get("extra") or {}
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except json.JSONDecodeError:
+            extra = {}
+
+    # Header
+    gold = item.get("gold", "?")
+    predicted = item.get("predicted", "?")
+    metrics = item.get("metrics") or {}
+    if isinstance(metrics, str):
+        try:
+            metrics = json.loads(metrics)
+        except json.JSONDecodeError:
+            metrics = {}
+    em = metrics.get("em", "?")
+    llm_em = metrics.get("llm_em", "?")
+    f1 = metrics.get("f1", "?")
+    cost = item.get("cost", 0) or 0
+    trace_id = item.get("trace_id", "?")
+    status = "PASS" if llm_em else "FAIL"
+
+    print(f"Item:    {item_id}")
+    print(f"Run:     {run_id}")
+    print(f"Trace:   {trace_id}")
+    print(f"Status:  {status}  (EM={em}, LLM_EM={llm_em}, F1={f1})")
+    print(f"Gold:    {gold}")
+    print(f"Pred:    {str(predicted)[:200]}")
+    print(f"Cost:    ${cost:.4f}")
+    print()
+
+    # Try conversation_trace first (most complete)
+    trace = extra.get("conversation_trace")
+    if trace and isinstance(trace, list):
+        _render_conversation_trace(trace)
+        return
+
+    # Fall back to tool_details
+    tool_details = extra.get("tool_details")
+    if tool_details and isinstance(tool_details, list):
+        _render_tool_details(tool_details)
+        return
+
+    # Fall back to tool_calls (name-only list)
+    tool_calls = extra.get("tool_calls")
+    if tool_calls:
+        print("(Only tool names available — no results stored. "
+              "Re-run benchmark to capture conversation_trace.)")
+        print()
+        for i, tc in enumerate(tool_calls):
+            if isinstance(tc, str):
+                print(f"  [{i}] {tc}")
+            elif isinstance(tc, dict):
+                print(f"  [{i}] {tc.get('tool', '?')}")
+        return
+
+    print("No trace data found in this item's extra field.")
+    print("Re-run the benchmark to capture conversation_trace and tool_details.")
+
+
+def _render_conversation_trace(trace: list) -> None:
+    """Render a conversation trace as a step-by-step tool chain."""
+    step = 0
+    errors = 0
+    for msg in trace:
+        role = msg.get("role", "?")
+        content = str(msg.get("content", ""))
+
+        if role == "system":
+            continue
+
+        if role == "assistant":
+            tcs = msg.get("tool_calls", [])
+            if tcs:
+                for tc in tcs:
+                    name = tc.get("name") or tc.get("function", {}).get("name", "?")
+                    args_raw = tc.get("arguments") or tc.get("function", {}).get("arguments", "{}")
+                    if isinstance(args_raw, str):
+                        try:
+                            args = json.loads(args_raw)
+                        except json.JSONDecodeError:
+                            args = {}
+                    else:
+                        args = args_raw or {}
+
+                    # Remove tool_reasoning from display args
+                    args.pop("tool_reasoning", None)
+
+                    # Show compact key args
+                    key_args = {}
+                    for k, v in args.items():
+                        if isinstance(v, str) and len(v) > 80:
+                            key_args[k] = v[:77] + "..."
+                        elif isinstance(v, list) and len(v) > 3:
+                            key_args[k] = f"[{len(v)} items]"
+                        elif isinstance(v, dict) and len(str(v)) > 80:
+                            key_args[k] = f"{{...{len(v)} keys}}"
+                        else:
+                            key_args[k] = v
+                    args_str = ", ".join(f'{k}={json.dumps(v)}' for k, v in key_args.items())
+                    print(f"  [{step}] {name}({args_str})")
+                    step += 1
+            elif content.strip():
+                print(f"  [{step}] AGENT: {content[:200]}")
+                step += 1
+
+        elif role == "tool":
+            # Compact tool result
+            if content.startswith("{") or content.startswith("["):
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "error" in parsed:
+                        print(f"       ERROR: {parsed['error'][:150]}")
+                        errors += 1
+                    elif isinstance(parsed, dict):
+                        # Show key fields compactly
+                        summary_parts = []
+                        for k, v in parsed.items():
+                            if k.startswith("_"):
+                                continue
+                            if isinstance(v, list):
+                                summary_parts.append(f"{k}=[{len(v)}]")
+                            elif isinstance(v, str) and len(v) > 60:
+                                summary_parts.append(f"{k}={v[:57]}...")
+                            else:
+                                summary_parts.append(f"{k}={v}")
+                            if len(summary_parts) >= 4:
+                                break
+                        print(f"       → {', '.join(summary_parts)}")
+                    else:
+                        print(f"       → {content[:150]}")
+                except json.JSONDecodeError:
+                    print(f"       → {content[:150]}")
+            else:
+                # Non-JSON result (e.g. formatted relationship output)
+                first_line = content.split("\n")[0][:150]
+                print(f"       → {first_line}")
+
+    print()
+    if errors:
+        print(f"  Tool errors: {errors}")
+    print(f"  Total steps: {step}")
+
+
+def _render_tool_details(tool_details: list) -> None:
+    """Render tool_details list (from extract_tool_calls)."""
+    errors = 0
+    for i, tc in enumerate(tool_details):
+        if tc is None:
+            continue
+        if not isinstance(tc, dict):
+            continue
+        tool = tc.get("tool", "?")
+        args = tc.get("arguments", {})
+        error = tc.get("error")
+        result = tc.get("result_preview") or tc.get("result")
+        has_error = tc.get("has_error", bool(error))
+
+        # Compact args
+        args_str = json.dumps(args)
+        if len(args_str) > 120:
+            args_str = args_str[:117] + "..."
+
+        print(f"  [{i}] {tool}({args_str})")
+        if has_error and error:
+            print(f"       ERROR: {error[:150]}")
+            errors += 1
+        elif result:
+            print(f"       → {str(result)[:150]}")
+        else:
+            print(f"       → (no result captured)")
+
+    print()
+    if errors:
+        print(f"  Tool errors: {errors}")
+    print(f"  Total steps: {len([t for t in tool_details if t is not None])}")
+
+
 def cmd_experiments(args: argparse.Namespace) -> None:
     from llm_client import io_log
 
@@ -21,6 +268,10 @@ def cmd_experiments(args: argparse.Namespace) -> None:
 
     if args.compare:
         _cmd_experiments_compare(args)
+        return
+
+    if args.trace:
+        _cmd_experiments_trace(args)
         return
 
     if args.detail:
@@ -177,6 +428,8 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
     runs = result["runs"]
     deltas = result["deltas_from_first"]
     item_deltas = result.get("item_deltas_from_first", [])
+    outcome_deltas = result.get("outcome_deltas_from_first", [])
+    adoption_deltas = result.get("adoption_deltas_from_first", [])
 
     print("\nExperiment Comparison:")
     print("─" * 70)
@@ -187,6 +440,23 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
         print(f"  [{r['run_id'][:12]}] {r['dataset']} / {r['model']}")
         print(f"    {r['n_completed']}/{r['n_items']} items  ${r['total_cost']:.4f}  {label}")
         print(f"    {metrics_str}")
+        outcome_summary = r.get("outcome_summary") or {}
+        if outcome_summary:
+            print(
+                "    Outcomes:"
+                f" grounded={outcome_summary.get('grounded_completed_count')}/{outcome_summary.get('n_items')}"
+                f" forced={outcome_summary.get('forced_terminal_accepted_count')}"
+                f" reliability={outcome_summary.get('reliability_completed_count')}"
+                f" missing_submit={outcome_summary.get('required_submit_missing_count')}"
+            )
+        adoption_summary = r.get("adoption_summary") or {}
+        if adoption_summary:
+            print(
+                "    Adoption:"
+                f" metadata={adoption_summary.get('n_items_with_metadata')}/{adoption_summary.get('n_items')}"
+                f" satisfied={adoption_summary.get('satisfied_count')}/{adoption_summary.get('n_items')}"
+                f" effective={adoption_summary.get('effective_profile_counts')}"
+            )
         if r.get("cpu_time_s") is not None:
             print(
                 f"    CPU: {r['cpu_time_s']:.2f}s"
@@ -223,6 +493,16 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
                 print(f"      EM down: {em_down_ids}")
                 print(f"      LLM_EM up: {llm_up_ids}")
                 print(f"      LLM_EM down: {llm_down_ids}")
+        if i > 0 and i - 1 < len(outcome_deltas):
+            outcome_delta = outcome_deltas[i - 1]
+            if outcome_delta:
+                delta_str = "  ".join(f"{k}={v:+.4f}" for k, v in outcome_delta.items())
+                print(f"    Outcome deltas: {delta_str}")
+        if i > 0 and i - 1 < len(adoption_deltas):
+            adoption_delta = adoption_deltas[i - 1]
+            if adoption_delta:
+                delta_str = "  ".join(f"{k}={v:+.4f}" for k, v in adoption_delta.items())
+                print(f"    Adoption deltas: {delta_str}")
         print()
 
 
@@ -286,9 +566,13 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
     from llm_client.experiment_eval import (
         build_gate_signals,
         evaluate_gate_policy,
+        extract_adoption_profile,
+        extract_agent_outcome,
         load_gate_policy,
         review_items_with_rubric,
         run_deterministic_checks_for_items,
+        summarize_adoption_profiles,
+        summarize_agent_outcomes,
         triage_items,
     )
 
@@ -301,6 +585,13 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
 
     run_info = io_log.get_run(run_id)
     triage_report = triage_items(items)
+    outcome_summary = summarize_agent_outcomes(items)
+    adoption_summary = summarize_adoption_profiles(items)
+    adoption_gate = _evaluate_adoption_gate(
+        items,
+        required_profile=args.require_adoption_profile,
+        require_satisfied=bool(args.require_adoption_satisfied),
+    )
 
     deterministic_report = None
     if args.det_checks and args.det_checks.strip().lower() not in {"none", "off", "0", "false"}:
@@ -341,6 +632,8 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
                 "run": run_info,
                 "items": items,
                 "triage": triage_report,
+                "outcomes": outcome_summary,
+                "adoption": adoption_summary,
             }
             if deterministic_report is not None:
                 payload["deterministic_checks"] = deterministic_report
@@ -353,6 +646,8 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
             print(json.dumps(payload, indent=2))
         else:
             print(json.dumps(items, indent=2))
+        if adoption_gate is not None and not adoption_gate.get("passed", False):
+            sys.exit(args.adoption_gate_fail_exit_code)
         if gate_report is not None and not gate_report.get("passed", False) and args.gate_fail_exit_code:
             sys.exit(2)
         return
@@ -363,25 +658,41 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
         sm = run_info.get("summary_metrics") or {}
         if sm:
             print(f"  Summary: {'  '.join(f'{k}={v}' for k, v in sm.items())}")
+        print(
+            "  Outcomes:"
+            f" grounded={outcome_summary.get('grounded_completed_count')}/{outcome_summary.get('n_items')}"
+            f" forced={outcome_summary.get('forced_terminal_accepted_count')}"
+            f" reliability={outcome_summary.get('reliability_completed_count')}"
+            f" missing_submit={outcome_summary.get('required_submit_missing_count')}"
+        )
+        if adoption_summary.get("n_items_with_metadata"):
+            print(
+                "  Adoption:"
+                f" metadata={adoption_summary.get('n_items_with_metadata')}/{adoption_summary.get('n_items')}"
+                f" satisfied={adoption_summary.get('satisfied_count')}/{adoption_summary.get('n_items')}"
+                f" effective={adoption_summary.get('effective_profile_counts')}"
+            )
         print()
 
-    headers = ["Item", "Metrics", "Predicted", "Gold", "Cost", "Latency", "Error"]
+    headers = ["Item", "Metrics", "Mode", "Predicted", "Gold", "Cost", "Latency", "Error"]
     col_widths = [max(len(h), 6) for h in headers]
 
     display_rows = []
     for it in items:
         iid = str(it["item_id"])[:10]
         m = it.get("metrics") or {}
+        outcome = extract_agent_outcome(it)
         metrics_str = " ".join(f"{k}={v}" for k, v in m.items())
         if len(metrics_str) > 30:
             metrics_str = metrics_str[:27] + "..."
+        mode = str(outcome.get("submit_completion_mode") or "-")[:22]
         pred = (it.get("predicted") or "-")[:30]
         gold = (it.get("gold") or "-")[:30]
         cost = f"${(it.get('cost') or 0.0):.4f}"
         lat = f"{it['latency_s']:.1f}s" if it.get("latency_s") else "-"
         err = (it.get("error") or "")[:20]
 
-        row = (iid, metrics_str, pred, gold, cost, lat, err)
+        row = (iid, metrics_str, mode, pred, gold, cost, lat, err)
         display_rows.append(row)
         for i, v in enumerate(row):
             col_widths[i] = max(col_widths[i], len(str(v)))
@@ -458,6 +769,20 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
         if not gate_report.get("passed", False) and args.gate_fail_exit_code:
             sys.exit(2)
 
+    if adoption_gate is not None:
+        verdict = "PASS" if adoption_gate.get("passed") else "FAIL"
+        print(f"\nAdoption Gate: {verdict}")
+        print(
+            "  "
+            f"required_profile={adoption_gate.get('required_profile') or '-'} "
+            f"require_satisfied={adoption_gate.get('require_satisfied')} "
+            f"metadata={adoption_gate.get('n_items_with_metadata')}/{adoption_gate.get('n_items')}"
+        )
+        for item in (adoption_gate.get("failing_items") or [])[:12]:
+            print(f"    {item.get('item_id')}: {' | '.join(item.get('reasons') or [])}")
+        if not adoption_gate.get("passed", False):
+            sys.exit(args.adoption_gate_fail_exit_code)
+
 
 def register_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("experiments", help="List and compare experiment runs")
@@ -489,6 +814,12 @@ def register_parser(subparsers: Any) -> None:
     )
     parser.add_argument("--detail", metavar="RUN_ID", help="Show per-item detail for a run")
     parser.add_argument(
+        "--trace",
+        nargs=2,
+        metavar=("RUN_ID", "ITEM_ID"),
+        help="Show step-by-step tool chain for a specific item (requires conversation_trace in extra)",
+    )
+    parser.add_argument(
         "--include-triage",
         action="store_true",
         help="When using --detail --format json, include triage/review bundle payload",
@@ -515,6 +846,22 @@ def register_parser(subparsers: Any) -> None:
         "--gate-fail-exit-code",
         action="store_true",
         help="Exit with code 2 when --gate-policy evaluates to FAIL",
+    )
+    parser.add_argument(
+        "--require-adoption-profile",
+        choices=["minimal", "standard", "strict"],
+        help="For --detail, fail if any item does not report this effective adoption profile",
+    )
+    parser.add_argument(
+        "--require-adoption-satisfied",
+        action="store_true",
+        help="For --detail, fail if any item does not report adoption_profile_satisfied=true",
+    )
+    parser.add_argument(
+        "--adoption-gate-fail-exit-code",
+        type=int,
+        default=4,
+        help="Exit code used when the adoption-profile gate fails for --detail",
     )
     parser.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
     parser.set_defaults(handler=cmd_experiments)
