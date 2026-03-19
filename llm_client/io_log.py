@@ -563,8 +563,12 @@ def log_call(
     caller: str = "call_llm",
     task: str | None = None,
     trace_id: str | None = None,
+    prompt_ref: str | None = None,
 ) -> None:
-    """Append one JSONL record. Never raises — logging must not break calls."""
+    """Append one call record with optional prompt asset identity.
+
+    Never raises — observability must not break model execution.
+    """
     if not _enabled:
         return
     try:
@@ -631,6 +635,7 @@ def log_call(
             "caller": caller,
             "task": task,
             "trace_id": trace_id,
+            "prompt_ref": prompt_ref,
         }
         with open(d / "calls.jsonl", "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
@@ -653,6 +658,7 @@ def log_call(
             caller=caller,
             task=task,
             trace_id=trace_id,
+            prompt_ref=prompt_ref,
         )
     except Exception:
         # Never break LLM calls for logging
@@ -790,7 +796,8 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     error TEXT,
     caller TEXT,
     task TEXT,
-    trace_id TEXT
+    trace_id TEXT,
+    prompt_ref TEXT
 );
 
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -876,6 +883,22 @@ CREATE TABLE IF NOT EXISTS experiment_items (
     UNIQUE(run_id, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS experiment_aggregates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    aggregate_id TEXT NOT NULL UNIQUE,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    dataset TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    condition_id TEXT,
+    scenario_id TEXT,
+    phase TEXT,
+    metrics TEXT NOT NULL,
+    provenance TEXT,
+    source_run_ids TEXT
+);
+
 CREATE TABLE IF NOT EXISTS foundation_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -896,6 +919,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_model ON llm_calls(model);
 CREATE INDEX IF NOT EXISTS idx_calls_task ON llm_calls(task);
 CREATE INDEX IF NOT EXISTS idx_calls_project ON llm_calls(project);
 CREATE INDEX IF NOT EXISTS idx_calls_trace_id ON llm_calls(trace_id);
+CREATE INDEX IF NOT EXISTS idx_calls_prompt_ref ON llm_calls(prompt_ref);
 CREATE INDEX IF NOT EXISTS idx_emb_timestamp ON embeddings(timestamp);
 CREATE INDEX IF NOT EXISTS idx_emb_model ON embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_emb_task ON embeddings(task);
@@ -920,6 +944,14 @@ CREATE INDEX IF NOT EXISTS idx_expr_condition_seed ON experiment_runs(condition_
 CREATE INDEX IF NOT EXISTS idx_expri_run_id ON experiment_items(run_id);
 CREATE INDEX IF NOT EXISTS idx_expri_item_id ON experiment_items(item_id);
 CREATE INDEX IF NOT EXISTS idx_expri_trace_id ON experiment_items(trace_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expagg_aggregate_id ON experiment_aggregates(aggregate_id);
+CREATE INDEX IF NOT EXISTS idx_expagg_project ON experiment_aggregates(project);
+CREATE INDEX IF NOT EXISTS idx_expagg_dataset ON experiment_aggregates(dataset);
+CREATE INDEX IF NOT EXISTS idx_expagg_family_id ON experiment_aggregates(family_id);
+CREATE INDEX IF NOT EXISTS idx_expagg_type ON experiment_aggregates(aggregate_type);
+CREATE INDEX IF NOT EXISTS idx_expagg_condition_id ON experiment_aggregates(condition_id);
+CREATE INDEX IF NOT EXISTS idx_expagg_scenario_id ON experiment_aggregates(scenario_id);
+CREATE INDEX IF NOT EXISTS idx_expagg_phase ON experiment_aggregates(phase);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fevent_event_id ON foundation_events(event_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_run_id ON foundation_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_trace_id ON foundation_events(trace_id);
@@ -946,6 +978,9 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN marginal_cost REAL")
     if "cache_hit" not in llm_cols:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN cache_hit INTEGER DEFAULT 0")
+    if "prompt_ref" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN prompt_ref TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_prompt_ref ON llm_calls(prompt_ref)")
 
     # task_scores: add git_commit if missing
     scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
@@ -1015,6 +1050,7 @@ def _write_call_to_db(
     caller: str,
     task: str | None,
     trace_id: str | None = None,
+    prompt_ref: str | None = None,
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:
@@ -1027,15 +1063,15 @@ def _write_call_to_db(
                (timestamp, project, model, messages, response,
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                finish_reason, latency_s, error, caller, task, trace_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp, _get_project(), model,
                 json.dumps(messages, default=str) if messages else None,
                 response,
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                finish_reason, latency_s, error, caller, task, trace_id,
+                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
             ),
         )
         db.commit()
@@ -1157,8 +1193,8 @@ def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
                    (timestamp, project, model, messages, response,
                     prompt_tokens, completion_tokens, total_tokens,
                     cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                    finish_reason, latency_s, error, caller, task, trace_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    finish_reason, latency_s, error, caller, task, trace_id, prompt_ref)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     r.get("timestamp"), project, r.get("model"),
                     json.dumps(r.get("messages"), default=str) if r.get("messages") else None,
@@ -1172,7 +1208,7 @@ def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
                     r.get("cache_hit", 0),
                     r.get("finish_reason"),
                     r.get("latency_s"), r.get("error"),
-                    r.get("caller"), r.get("task"), r.get("trace_id"),
+                    r.get("caller"), r.get("task"), r.get("trace_id"), r.get("prompt_ref"),
                 ),
             )
         else:  # embeddings
@@ -1557,6 +1593,68 @@ def get_run_items(run_id: str) -> list[dict[str, Any]]:
     from llm_client.observability.experiments import get_run_items as _get_run_items
 
     return _get_run_items(run_id)
+
+
+def log_experiment_aggregate(
+    *,
+    dataset: str,
+    family_id: str,
+    aggregate_type: str,
+    metrics: dict[str, Any],
+    aggregate_id: str | None = None,
+    project: str | None = None,
+    condition_id: str | None = None,
+    scenario_id: str | None = None,
+    phase: str | None = None,
+    provenance: dict[str, Any] | None = None,
+    source_run_ids: list[str] | None = None,
+) -> str:
+    """Compatibility shim: delegate to observability.experiments.log_experiment_aggregate."""
+    from llm_client.observability.experiments import (
+        log_experiment_aggregate as _log_experiment_aggregate,
+    )
+
+    return _log_experiment_aggregate(
+        dataset=dataset,
+        family_id=family_id,
+        aggregate_type=aggregate_type,
+        metrics=metrics,
+        aggregate_id=aggregate_id,
+        project=project,
+        condition_id=condition_id,
+        scenario_id=scenario_id,
+        phase=phase,
+        provenance=provenance,
+        source_run_ids=source_run_ids,
+    )
+
+
+def get_experiment_aggregates(
+    *,
+    dataset: str | None = None,
+    family_id: str | None = None,
+    aggregate_type: str | None = None,
+    project: str | None = None,
+    condition_id: str | None = None,
+    scenario_id: str | None = None,
+    phase: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Compatibility shim: delegate to observability.experiments.get_experiment_aggregates."""
+    from llm_client.observability.experiments import (
+        get_experiment_aggregates as _get_experiment_aggregates,
+    )
+
+    return _get_experiment_aggregates(
+        dataset=dataset,
+        family_id=family_id,
+        aggregate_type=aggregate_type,
+        project=project,
+        condition_id=condition_id,
+        scenario_id=scenario_id,
+        phase=phase,
+        limit=limit,
+    )
 
 
 def compare_runs(run_ids: list[str]) -> dict[str, Any]:

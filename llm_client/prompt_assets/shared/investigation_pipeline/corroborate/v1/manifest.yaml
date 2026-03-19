@@ -1,0 +1,13 @@
+id: shared.investigation_pipeline.corroborate
+version: 1
+kind: chat_prompt
+status: canonical
+description: Shared corroboration agent prompt for investigative journalism lead triage.
+tags:
+  - investigation
+  - corroboration
+  - tool_calling
+  - reusable
+template_path: template.yaml
+input_schema: investigation.corroborate_input.v1
+output_schema: investigation.corroboration_agent_report.v1

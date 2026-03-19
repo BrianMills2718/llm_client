@@ -1,10 +1,12 @@
-"""Rubric-based output scoring for the improvement flywheel.
+"""Optional rubric-based output scoring for the improvement flywheel.
 
-Load YAML rubrics, score task outputs via LLM-as-judge, and log results
-to the observability DB for analysis by prompt_eval, analyzer, and evolve.
+This module is an eval-layer helper built on top of the shared runtime and
+observability substrate. It loads YAML rubrics, scores task outputs via
+LLM-as-judge, and logs results for downstream analysis by prompt-eval and
+related review tooling.
 
 Usage:
-    from llm_client import score_output, ascore_output, load_rubric
+    from llm_client.scoring import score_output, ascore_output, load_rubric
 
     result = await ascore_output(
         output="<task output text>",

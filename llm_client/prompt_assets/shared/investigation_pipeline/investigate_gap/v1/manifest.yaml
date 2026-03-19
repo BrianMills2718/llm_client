@@ -1,0 +1,13 @@
+id: shared.investigation_pipeline.investigate_gap
+version: 1
+kind: chat_prompt
+status: canonical
+description: Shared targeted gap-investigation prompt for journalism-style research pipelines.
+tags:
+  - investigation
+  - gap_filling
+  - tool_calling
+  - reusable
+template_path: template.yaml
+input_schema: investigation.gap_probe_input.v1
+output_schema: investigation.collection_synthesis.v1

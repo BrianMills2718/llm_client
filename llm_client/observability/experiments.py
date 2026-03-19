@@ -16,6 +16,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from llm_client.experiment_summary import summarize_adoption_profiles, summarize_agent_outcomes
 from llm_client import io_log as _io_log
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ def finish_run(
     db = _io_log._get_db()
 
     item_rows = db.execute(
-        "SELECT metrics, cost, error FROM experiment_items WHERE run_id = ?",
+        "SELECT metrics, cost, error, predicted, extra, item_id FROM experiment_items WHERE run_id = ?",
         (run_id,),
     ).fetchall()
 
@@ -316,6 +317,54 @@ def finish_run(
                 summary_metrics[f"avg_{metric_name}"] = round(
                     100.0 * sum(values) / len(values), 2
                 )
+    else:
+        summary_metrics = dict(summary_metrics)
+
+    try:
+        outcome_items: list[dict[str, Any]] = []
+        for metrics_json, _cost, error, predicted, extra_json, item_id in item_rows:
+            extra = json.loads(extra_json) if extra_json else None
+            outcome_items.append(
+                {
+                    "item_id": item_id,
+                    "predicted": predicted,
+                    "error": error,
+                    "metrics": json.loads(metrics_json) if metrics_json else {},
+                    "extra": extra,
+                }
+            )
+        outcome_summary = summarize_agent_outcomes(outcome_items)
+        adoption_summary = summarize_adoption_profiles(outcome_items)
+        for key in (
+            "answer_present_count",
+            "answer_present_rate",
+            "grounded_completed_count",
+            "grounded_completed_rate",
+            "forced_terminal_accepted_count",
+            "forced_terminal_accepted_rate",
+            "reliability_completed_count",
+            "reliability_completed_rate",
+            "required_submit_missing_count",
+            "required_submit_missing_rate",
+            "submit_validator_accepted_count",
+            "submit_validator_accepted_rate",
+        ):
+            summary_metrics.setdefault(key, outcome_summary.get(key))
+        for key, value in (outcome_summary.get("submit_completion_mode_counts") or {}).items():
+            summary_metrics.setdefault(f"submit_mode_{key}_count", value)
+        for key, value in (outcome_summary.get("primary_failure_class_counts") or {}).items():
+            summary_metrics.setdefault(f"primary_failure_{key}_count", value)
+        for key in (
+            "n_items_with_metadata",
+            "metadata_coverage_rate",
+            "satisfied_count",
+            "satisfied_rate",
+        ):
+            summary_metrics.setdefault(f"adoption_{key}", adoption_summary.get(key))
+        for key, value in (adoption_summary.get("effective_profile_counts") or {}).items():
+            summary_metrics.setdefault(f"adoption_profile_{key}_count", value)
+    except Exception:
+        logger.debug("observability.experiments.finish_run outcome summary failed", exc_info=True)
 
     try:
         db.execute(
@@ -758,6 +807,181 @@ def get_run_items(run_id: str) -> list[dict[str, Any]]:
     return results
 
 
+def log_experiment_aggregate(
+    *,
+    dataset: str,
+    family_id: str,
+    aggregate_type: str,
+    metrics: dict[str, Any],
+    aggregate_id: str | None = None,
+    project: str | None = None,
+    condition_id: str | None = None,
+    scenario_id: str | None = None,
+    phase: str | None = None,
+    provenance: dict[str, Any] | None = None,
+    source_run_ids: list[str] | None = None,
+) -> str:
+    """Persist one family-level experiment aggregate and return its ID.
+
+    This is the shared observability surface for metrics derived across multiple
+    runs rather than within a single run. Prompt-eval corpus metrics are the
+    first consumer, but the record shape is generic.
+    """
+    normalized_dataset = str(dataset).strip()
+    normalized_family_id = str(family_id).strip()
+    normalized_type = str(aggregate_type).strip()
+    if not normalized_dataset:
+        raise ValueError("log_experiment_aggregate requires a non-empty dataset.")
+    if not normalized_family_id:
+        raise ValueError("log_experiment_aggregate requires a non-empty family_id.")
+    if not normalized_type:
+        raise ValueError("log_experiment_aggregate requires a non-empty aggregate_type.")
+    if not isinstance(metrics, dict) or not metrics:
+        raise ValueError("log_experiment_aggregate requires a non-empty metrics dict.")
+
+    normalized_condition_id = str(condition_id).strip() if condition_id is not None else None
+    if normalized_condition_id == "":
+        normalized_condition_id = None
+    normalized_scenario_id = str(scenario_id).strip() if scenario_id is not None else None
+    if normalized_scenario_id == "":
+        normalized_scenario_id = None
+    normalized_phase = str(phase).strip() if phase is not None else None
+    if normalized_phase == "":
+        normalized_phase = None
+    normalized_source_run_ids = None
+    if source_run_ids is not None:
+        normalized_source_run_ids = [str(run_id).strip() for run_id in source_run_ids if str(run_id).strip()]
+
+    if aggregate_id is None:
+        aggregate_id = uuid.uuid4().hex[:12]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    proj = project or _io_log._get_project()
+
+    try:
+        d = _io_log._log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        record = {
+            "type": "aggregate",
+            "aggregate_id": aggregate_id,
+            "timestamp": timestamp,
+            "project": proj,
+            "dataset": normalized_dataset,
+            "family_id": normalized_family_id,
+            "aggregate_type": normalized_type,
+            "condition_id": normalized_condition_id,
+            "scenario_id": normalized_scenario_id,
+            "phase": normalized_phase,
+            "metrics": metrics,
+            "provenance": provenance,
+            "source_run_ids": normalized_source_run_ids,
+        }
+        with open(d / "experiments.jsonl", "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        logger.debug("observability.experiments.log_experiment_aggregate JSONL write failed", exc_info=True)
+
+    try:
+        db = _io_log._get_db()
+        db.execute(
+            """INSERT INTO experiment_aggregates
+               (aggregate_id, timestamp, project, dataset, family_id, aggregate_type,
+                condition_id, scenario_id, phase, metrics, provenance, source_run_ids)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                aggregate_id,
+                timestamp,
+                proj,
+                normalized_dataset,
+                normalized_family_id,
+                normalized_type,
+                normalized_condition_id,
+                normalized_scenario_id,
+                normalized_phase,
+                json.dumps(metrics, default=str),
+                json.dumps(provenance, default=str) if provenance else None,
+                json.dumps(normalized_source_run_ids) if normalized_source_run_ids else None,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("observability.experiments.log_experiment_aggregate DB write failed", exc_info=True)
+
+    return aggregate_id
+
+
+def get_experiment_aggregates(
+    *,
+    dataset: str | None = None,
+    family_id: str | None = None,
+    aggregate_type: str | None = None,
+    project: str | None = None,
+    condition_id: str | None = None,
+    scenario_id: str | None = None,
+    phase: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Query family-level experiment aggregates, newest first."""
+    db = _io_log._get_db()
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if dataset is not None:
+        clauses.append("dataset = ?")
+        params.append(dataset)
+    if family_id is not None:
+        clauses.append("family_id = ?")
+        params.append(family_id)
+    if aggregate_type is not None:
+        clauses.append("aggregate_type = ?")
+        params.append(aggregate_type)
+    if project is not None:
+        clauses.append("project = ?")
+        params.append(project)
+    if condition_id is not None:
+        clauses.append("condition_id = ?")
+        params.append(condition_id)
+    if scenario_id is not None:
+        clauses.append("scenario_id = ?")
+        params.append(scenario_id)
+    if phase is not None:
+        clauses.append("phase = ?")
+        params.append(phase)
+
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+
+    rows = db.execute(
+        f"""SELECT aggregate_id, timestamp, project, dataset, family_id, aggregate_type,
+                   condition_id, scenario_id, phase, metrics, provenance, source_run_ids
+            FROM experiment_aggregates
+            {where}
+            ORDER BY timestamp DESC
+            LIMIT ?""",  # noqa: S608
+        params,
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        results.append(
+            {
+                "aggregate_id": row[0],
+                "timestamp": row[1],
+                "project": row[2],
+                "dataset": row[3],
+                "family_id": row[4],
+                "aggregate_type": row[5],
+                "condition_id": row[6],
+                "scenario_id": row[7],
+                "phase": row[8],
+                "metrics": json.loads(row[9]) if row[9] else {},
+                "provenance": json.loads(row[10]) if row[10] else None,
+                "source_run_ids": json.loads(row[11]) if row[11] else [],
+            }
+        )
+    return results
+
+
 def compare_runs(run_ids: list[str]) -> dict[str, Any]:
     """Side-by-side summary_metrics for 2+ runs, with deltas from first run."""
     if len(run_ids) < 2:
@@ -854,22 +1078,55 @@ def compare_runs(run_ids: list[str]) -> dict[str, Any]:
 
     baseline = runs[0]["summary_metrics"]
     deltas = []
-    baseline_items = get_run_items(run_ids[0])
+    all_items_by_run = {rid: get_run_items(rid) for rid in run_ids}
+    for run in runs:
+        run["outcome_summary"] = summarize_agent_outcomes(all_items_by_run[run["run_id"]])
+        run["adoption_summary"] = summarize_adoption_profiles(all_items_by_run[run["run_id"]])
+    baseline_items = all_items_by_run[run_ids[0]]
     item_deltas = []
+    outcome_deltas = []
+    adoption_deltas = []
     for run in runs[1:]:
         d: dict[str, float] = {}
         for k, v in run["summary_metrics"].items():
             if k in baseline and isinstance(v, (int, float)) and isinstance(baseline[k], (int, float)):
                 d[k] = round(v - baseline[k], 2)
         deltas.append(d)
-        per_item = _item_delta(baseline_items, get_run_items(run["run_id"]))
+        per_item = _item_delta(baseline_items, all_items_by_run[run["run_id"]])
         per_item["run_id"] = run["run_id"]
         item_deltas.append(per_item)
+        outcome_delta: dict[str, float] = {}
+        base_outcome = runs[0]["outcome_summary"]
+        cand_outcome = run["outcome_summary"]
+        for key in (
+            "answer_present_rate",
+            "grounded_completed_rate",
+            "forced_terminal_accepted_rate",
+            "reliability_completed_rate",
+            "required_submit_missing_rate",
+            "submit_validator_accepted_rate",
+        ):
+            base_v = base_outcome.get(key)
+            cand_v = cand_outcome.get(key)
+            if isinstance(base_v, (int, float)) and isinstance(cand_v, (int, float)):
+                outcome_delta[key] = round(float(cand_v) - float(base_v), 4)
+        outcome_deltas.append(outcome_delta)
+        adoption_delta: dict[str, float] = {}
+        base_adoption = runs[0]["adoption_summary"]
+        cand_adoption = run["adoption_summary"]
+        for key in ("metadata_coverage_rate", "satisfied_rate"):
+            base_v = base_adoption.get(key)
+            cand_v = cand_adoption.get(key)
+            if isinstance(base_v, (int, float)) and isinstance(cand_v, (int, float)):
+                adoption_delta[key] = round(float(cand_v) - float(base_v), 4)
+        adoption_deltas.append(adoption_delta)
 
     return {
         "runs": runs,
         "deltas_from_first": deltas,
         "item_deltas_from_first": item_deltas,
+        "outcome_deltas_from_first": outcome_deltas,
+        "adoption_deltas_from_first": adoption_deltas,
     }
 
 

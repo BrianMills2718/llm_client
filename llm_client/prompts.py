@@ -2,7 +2,8 @@
 
 Convention: every project stores LLM prompts as YAML files with Jinja2
 templates in a ``prompts/`` directory.  This module provides the single
-entry point for loading and rendering them.
+entry point for loading and rendering them. The same renderer also supports
+explicit shared prompt asset references via ``prompt_ref=...``.
 
 YAML format::
 
@@ -35,6 +36,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 from jinja2 import BaseLoader, Environment, StrictUndefined, TemplateNotFound
+from llm_client.prompt_assets import resolve_prompt_asset
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +55,41 @@ _env = Environment(loader=_YAMLInlineLoader(), undefined=StrictUndefined)
 
 
 def render_prompt(
-    template_path: str | Path,
+    template_path: str | Path | None = None,
+    *,
+    prompt_ref: str | None = None,
     **context: Any,
 ) -> list[dict[str, str]]:
-    """Load a YAML prompt template and render Jinja2 placeholders.
+    """Load a YAML prompt template or prompt asset and render Jinja2 placeholders.
 
     Args:
         template_path: Path to the YAML file (absolute, or relative to cwd).
+            Mutually exclusive with ``prompt_ref``.
+        prompt_ref: Explicit shared prompt asset reference such as
+            ``shared.summarize.concise@1``. Mutually exclusive with
+            ``template_path``.
         **context: Variables to substitute into Jinja2 templates.
 
     Returns:
         List of message dicts (OpenAI chat format): [{"role": ..., "content": ...}]
 
     Raises:
-        FileNotFoundError: If template_path doesn't exist.
+        FileNotFoundError: If the template or prompt asset doesn't exist.
         yaml.YAMLError: If YAML is malformed.
         jinja2.UndefinedError: If a template variable is missing from context.
-        ValueError: If YAML structure is invalid (no messages key, bad format).
+        ValueError: If the render request or YAML structure is invalid.
     """
-    path = Path(template_path)
-    if not path.is_absolute():
-        path = Path.cwd() / path
+    if (template_path is None) == (prompt_ref is None):
+        raise ValueError("Provide exactly one of template_path or prompt_ref.")
+
+    if prompt_ref is not None:
+        resolved_asset = resolve_prompt_asset(prompt_ref)
+        path = resolved_asset.template_path
+    else:
+        assert template_path is not None  # narrow for type-checking
+        path = Path(template_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
 
     if not path.exists():
         raise FileNotFoundError(f"Prompt template not found: {path}")

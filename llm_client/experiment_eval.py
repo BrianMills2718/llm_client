@@ -1,6 +1,9 @@
-"""Experiment review, gating, and triage helpers.
+"""Optional experiment review, gating, and triage helpers.
 
-This module keeps evaluation logic reusable across projects and CLIs:
+This module sits above the shared observability substrate. It keeps reusable
+evaluation logic available inside `llm_client` without treating that logic as
+part of the core call/routing/runtime boundary:
+
 - optional rubric-based LLM review
 - deterministic structural checks
 - gate-policy evaluation over run/item signals
@@ -14,6 +17,12 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+from llm_client.experiment_summary import (
+    extract_adoption_profile,
+    extract_agent_outcome,
+    summarize_adoption_profiles,
+    summarize_agent_outcomes,
+)
 from llm_client.scoring import score_output
 
 DEFAULT_DETERMINISTIC_CHECKS: tuple[str, ...] = (
@@ -33,6 +42,11 @@ _GATE_SUFFIX_OPS: tuple[tuple[str, str], ...] = (
 )
 
 _CMP_RE = re.compile(r"^\s*(>=|<=|!=|==|>|<)\s*(.+?)\s*$")
+
+
+def _slug_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return token or "unknown"
 
 
 def _to_float(value: Any) -> float | None:
@@ -338,6 +352,39 @@ def build_gate_signals(
     signals["control_loop_suppressed_total"] = float(control_loop_total)
     signals["tool_arg_validation_rejection_total"] = float(arg_validation_total)
 
+    outcome_summary = summarize_agent_outcomes(items)
+    for key in (
+        "answer_present_count",
+        "answer_present_rate",
+        "grounded_completed_count",
+        "grounded_completed_rate",
+        "forced_terminal_accepted_count",
+        "forced_terminal_accepted_rate",
+        "reliability_completed_count",
+        "reliability_completed_rate",
+        "required_submit_missing_count",
+        "required_submit_missing_rate",
+        "submit_validator_accepted_count",
+        "submit_validator_accepted_rate",
+    ):
+        value = _to_float(outcome_summary.get(key))
+        if value is not None:
+            signals[key] = value
+
+    for label, count in (outcome_summary.get("submit_completion_mode_counts") or {}).items():
+        if count is None:
+            continue
+        token = _slug_token(str(label))
+        signals[f"submit_mode_{token}_count"] = float(count)
+        signals[f"submit_mode_{token}_rate"] = round(float(count) / len(items), 4) if items else 0.0
+
+    for label, count in (outcome_summary.get("primary_failure_class_counts") or {}).items():
+        if count is None:
+            continue
+        token = _slug_token(str(label))
+        signals[f"primary_failure_{token}_count"] = float(count)
+        signals[f"primary_failure_{token}_rate"] = round(float(count) / len(items), 4) if items else 0.0
+
     if deterministic_report:
         pass_rate = _to_float(deterministic_report.get("pass_rate"))
         failed_items = _to_float(deterministic_report.get("n_failed_items"))
@@ -465,6 +512,7 @@ def evaluate_gate_policy(
 
 def _triage_categories_for_item(item: dict[str, Any]) -> list[str]:
     categories: list[str] = []
+    outcome = extract_agent_outcome(item)
 
     if str(item.get("error") or "").strip():
         categories.append("runtime_error")
@@ -492,6 +540,19 @@ def _triage_categories_for_item(item: dict[str, Any]) -> list[str]:
         categories.append("tool_runtime")
     if control_suppressed > 0:
         categories.append("control_loop")
+
+    if outcome["forced_terminal_accepted"]:
+        categories.append("forced_terminal_accept")
+    if outcome["required_submit_missing"]:
+        categories.append("required_submit_missing")
+    if outcome["grounded_completed"]:
+        categories.append("grounded_completion")
+    elif outcome["answer_present"]:
+        categories.append("answer_present_not_grounded")
+
+    primary_failure_class = str(outcome.get("primary_failure_class") or "").strip()
+    if primary_failure_class and primary_failure_class not in {"none", "unknown"}:
+        categories.append(f"failure_{_slug_token(primary_failure_class)}")
 
     metrics = item.get("metrics") or {}
     em = _to_float(metrics.get("em"))
@@ -534,3 +595,19 @@ def triage_items(items: list[dict[str, Any]]) -> dict[str, Any]:
         "category_counts": sorted_counts,
         "items": per_item,
     }
+
+
+__all__ = [
+    "DEFAULT_DETERMINISTIC_CHECKS",
+    "build_gate_signals",
+    "evaluate_gate_policy",
+    "extract_adoption_profile",
+    "extract_agent_outcome",
+    "load_gate_policy",
+    "review_items_with_rubric",
+    "run_deterministic_checks_for_item",
+    "run_deterministic_checks_for_items",
+    "summarize_adoption_profiles",
+    "summarize_agent_outcomes",
+    "triage_items",
+]

@@ -1,0 +1,13 @@
+id: shared.investigation_pipeline.goal_decompose
+version: 1
+kind: chat_prompt
+status: canonical
+description: Shared investigation-scope decomposition prompt for journalism-style research pipelines.
+tags:
+  - investigation
+  - planning
+  - structured_output
+  - reusable
+template_path: template.yaml
+input_schema: investigation.goal_decompose_input.v1
+output_schema: investigation.goal_scope.v1

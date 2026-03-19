@@ -93,6 +93,25 @@ class TestLogCall:
         assert row[0] == "trace_xyz"
         db.close()
 
+    def test_prompt_ref_logged_to_jsonl_and_sqlite(self, tmp_path):
+        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        io_log.log_call(
+            model="gpt-5",
+            result=result,
+            latency_s=1.0,
+            trace_id="trace_prompt_ref",
+            prompt_ref="shared.investigation_pipeline.collect@1",
+        )
+
+        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        record = json.loads(log_file.read_text().strip())
+        assert record["prompt_ref"] == "shared.investigation_pipeline.collect@1"
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT prompt_ref FROM llm_calls").fetchone()
+        assert row[0] == "shared.investigation_pipeline.collect@1"
+        db.close()
+
     def test_error_logged(self, tmp_path):
         io_log.log_call(model="gpt-5", error=ValueError("boom"), latency_s=0.5)
 
@@ -233,8 +252,8 @@ class TestSQLiteDB:
         assert "idx_emb_trace_id" in idx_names
 
     def test_migrate_adds_trace_id(self, tmp_path):
-        """Migration adds trace_id to a DB created without it."""
-        # Create a DB with old schema (has all columns except trace_id)
+        """Migration adds trace and prompt asset columns to old DBs."""
+        # Create a DB with old schema (has all columns except trace_id/prompt_ref)
         old_db_path = tmp_path / "old.db"
         old_conn = sqlite3.connect(str(old_db_path))
         old_conn.executescript("""
@@ -258,10 +277,12 @@ class TestSQLiteDB:
         io_log._db_conn = None
         db = io_log._get_db()
 
-        # Verify trace_id column was added
+        # Verify trace_id / prompt_ref columns were added
         for table in ("llm_calls", "embeddings"):
             cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
             assert "trace_id" in cols
+        llm_cols = {r[1] for r in db.execute("PRAGMA table_info(llm_calls)").fetchall()}
+        assert "prompt_ref" in llm_cols
 
 
 # ---------------------------------------------------------------------------

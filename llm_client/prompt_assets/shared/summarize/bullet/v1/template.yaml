@@ -1,0 +1,13 @@
+name: shared_summarize_bullet
+version: "1"
+description: Shared bullet-summary prompt asset derived from concise summarization.
+messages:
+  - role: system
+    content: |
+      You are a concise analyst. Return a focused bullet summary grounded in the
+      provided text.
+  - role: user
+    content: |
+      Summarize the following text as {{ bullet_count }} bullet points.
+
+      {input}

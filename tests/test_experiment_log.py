@@ -93,6 +93,7 @@ class TestExperimentTables:
         ).fetchall()}
         assert "experiment_runs" in tables
         assert "experiment_items" in tables
+        assert "experiment_aggregates" in tables
 
     def test_indexes_created(self, tmp_path):
         db = io_log._get_db()
@@ -106,6 +107,89 @@ class TestExperimentTables:
         assert "idx_expr_scenario_id" in indexes
         assert "idx_expr_phase" in indexes
         assert "idx_expri_run_id" in indexes
+
+
+# ---------------------------------------------------------------------------
+# experiment_aggregates
+# ---------------------------------------------------------------------------
+
+
+class TestExperimentAggregates:
+    def test_log_experiment_aggregate_writes_sqlite_and_jsonl(self, tmp_path):
+        aggregate_id = io_log.log_experiment_aggregate(
+            dataset="HotpotQA",
+            family_id="exec_123",
+            aggregate_type="prompt_eval.corpus_evaluator",
+            condition_id="variant_a",
+            scenario_id="query_exp",
+            phase="evaluation",
+            metrics={"score": 0.6, "coverage": 0.8},
+            provenance={"source_package": "prompt_eval"},
+            source_run_ids=["run_a_0", "run_a_1"],
+        )
+        assert isinstance(aggregate_id, str)
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            """SELECT dataset, family_id, aggregate_type, condition_id, scenario_id, phase,
+                      metrics, provenance, source_run_ids
+               FROM experiment_aggregates
+               WHERE aggregate_id = ?""",
+            (aggregate_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "HotpotQA"
+        assert row[1] == "exec_123"
+        assert row[2] == "prompt_eval.corpus_evaluator"
+        assert row[3] == "variant_a"
+        assert row[4] == "query_exp"
+        assert row[5] == "evaluation"
+        assert json.loads(row[6]) == {"score": 0.6, "coverage": 0.8}
+        assert json.loads(row[7]) == {"source_package": "prompt_eval"}
+        assert json.loads(row[8]) == ["run_a_0", "run_a_1"]
+        db.close()
+
+        jsonl = tmp_path / "test_project" / "test_project_llm_client_data" / "experiments.jsonl"
+        lines = [json.loads(line) for line in jsonl.read_text().strip().split("\n")]
+        aggregate_record = lines[-1]
+        assert aggregate_record["type"] == "aggregate"
+        assert aggregate_record["aggregate_id"] == aggregate_id
+        assert aggregate_record["family_id"] == "exec_123"
+
+    def test_get_experiment_aggregates_filters(self, tmp_path):
+        io_log.log_experiment_aggregate(
+            dataset="HotpotQA",
+            family_id="exec_123",
+            aggregate_type="prompt_eval.corpus_evaluator",
+            condition_id="variant_a",
+            metrics={"score": 0.6},
+        )
+        io_log.log_experiment_aggregate(
+            dataset="HotpotQA",
+            family_id="exec_123",
+            aggregate_type="prompt_eval.corpus_evaluator",
+            condition_id="variant_b",
+            metrics={"score": 0.7},
+        )
+        io_log.log_experiment_aggregate(
+            dataset="MuSiQue",
+            family_id="exec_other",
+            aggregate_type="other.aggregate",
+            condition_id="variant_a",
+            metrics={"score": 0.1},
+        )
+
+        aggregates = io_log.get_experiment_aggregates(
+            dataset="HotpotQA",
+            family_id="exec_123",
+            aggregate_type="prompt_eval.corpus_evaluator",
+            limit=10,
+        )
+
+        assert len(aggregates) == 2
+        assert {row["condition_id"] for row in aggregates} == {"variant_a", "variant_b"}
+        assert {row["family_id"] for row in aggregates} == {"exec_123"}
+        assert {row["aggregate_type"] for row in aggregates} == {"prompt_eval.corpus_evaluator"}
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +425,74 @@ class TestFinishRun:
         assert result["n_completed"] == 1
         assert result["n_errors"] == 1
 
+    def test_auto_aggregates_agent_outcome_metrics(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y", metrics_schema=["em"])
+        io_log.log_item(
+            run_id=rid,
+            item_id="q1",
+            metrics={"em": 1},
+            predicted="Alice",
+            extra={
+                "submit_completion_mode": "grounded_submit",
+                "submit_validator_accepted": True,
+                "grounded_completed": True,
+            },
+        )
+        io_log.log_item(
+            run_id=rid,
+            item_id="q2",
+            metrics={"em": 0},
+            predicted="Bob",
+            extra={
+                "submit_completion_mode": "forced_terminal_accept",
+                "forced_terminal_accepted": True,
+            },
+        )
+
+        result = io_log.finish_run(run_id=rid)
+        sm = result["summary_metrics"]
+        assert sm["grounded_completed_count"] == 1
+        assert sm["forced_terminal_accepted_count"] == 1
+        assert sm["answer_present_rate"] == 1.0
+        assert sm["submit_mode_grounded_submit_count"] == 1
+        assert sm["submit_mode_forced_terminal_accept_count"] == 1
+
+    def test_auto_aggregates_adoption_profile_metrics(self, tmp_path):
+        rid = io_log.start_run(dataset="X", model="Y")
+        io_log.log_item(
+            run_id=rid,
+            item_id="q1",
+            metrics={},
+            predicted="Alice",
+            extra={
+                "agent": {
+                    "adoption_profile_effective": "strict",
+                    "adoption_profile_satisfied": True,
+                    "adoption_profile_violations": [],
+                }
+            },
+        )
+        io_log.log_item(
+            run_id=rid,
+            item_id="q2",
+            metrics={},
+            predicted="Bob",
+            extra={
+                "agent": {
+                    "adoption_profile_effective": "standard",
+                    "adoption_profile_satisfied": False,
+                    "adoption_profile_violations": ["require_tool_reasoning must be enabled"],
+                }
+            },
+        )
+        result = io_log.finish_run(run_id=rid)
+        sm = result["summary_metrics"]
+        assert sm["adoption_n_items_with_metadata"] == 2
+        assert sm["adoption_satisfied_count"] == 1
+        assert sm["adoption_metadata_coverage_rate"] == 1.0
+        assert sm["adoption_profile_strict_count"] == 1
+        assert sm["adoption_profile_standard_count"] == 1
+
     def test_explicit_summary_metrics(self, tmp_path):
         rid = io_log.start_run(dataset="X", model="Y")
         io_log.log_item(run_id=rid, item_id="q1", metrics={"em": 1})
@@ -567,6 +719,52 @@ class TestCompareRuns:
         assert deltas["shared_items"] == 2
         assert deltas["improved"]["em"] == ["q1"]
         assert deltas["regressed"]["em"] == ["q2"]
+
+    def test_compare_runs_includes_outcome_summary_and_deltas(self, tmp_path):
+        r1 = io_log.start_run(dataset="X", model="m1")
+        io_log.log_item(
+            run_id=r1,
+            item_id="q1",
+            metrics={},
+            predicted="Alice",
+            extra={
+                "submit_completion_mode": "grounded_submit",
+                "submit_validator_accepted": True,
+                "agent": {
+                    "adoption_profile_effective": "strict",
+                    "adoption_profile_satisfied": True,
+                    "adoption_profile_violations": [],
+                },
+            },
+        )
+        io_log.finish_run(run_id=r1)
+
+        r2 = io_log.start_run(dataset="X", model="m2")
+        io_log.log_item(
+            run_id=r2,
+            item_id="q1",
+            metrics={},
+            predicted="Alice",
+            extra={
+                "submit_completion_mode": "forced_terminal_accept",
+                "forced_terminal_accepted": True,
+                "agent": {
+                    "adoption_profile_effective": "standard",
+                    "adoption_profile_satisfied": False,
+                    "adoption_profile_violations": ["require_tool_reasoning must be enabled"],
+                },
+            },
+        )
+        io_log.finish_run(run_id=r2)
+
+        result = io_log.compare_runs([r1, r2])
+        assert result["runs"][0]["outcome_summary"]["grounded_completed_count"] == 1
+        assert result["runs"][1]["outcome_summary"]["forced_terminal_accepted_count"] == 1
+        assert result["outcome_deltas_from_first"][0]["grounded_completed_rate"] == -1.0
+        assert result["outcome_deltas_from_first"][0]["forced_terminal_accepted_rate"] == 1.0
+        assert result["runs"][0]["adoption_summary"]["effective_profile_counts"] == {"strict": 1}
+        assert result["runs"][1]["adoption_summary"]["effective_profile_counts"] == {"standard": 1}
+        assert result["adoption_deltas_from_first"][0]["satisfied_rate"] == -1.0
 
 
 class TestCompareCohorts:

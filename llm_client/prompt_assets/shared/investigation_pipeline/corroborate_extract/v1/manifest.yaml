@@ -1,0 +1,13 @@
+id: shared.investigation_pipeline.corroborate_extract
+version: 1
+kind: chat_prompt
+status: canonical
+description: Shared structured extraction prompt for corroboration-agent reports.
+tags:
+  - investigation
+  - corroboration
+  - structured_output
+  - reusable
+template_path: template.yaml
+input_schema: investigation.corroborate_extract_input.v1
+output_schema: investigation.corroborate_extract_output.v1

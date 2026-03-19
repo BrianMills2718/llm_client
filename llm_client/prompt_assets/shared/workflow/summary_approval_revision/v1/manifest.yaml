@@ -1,0 +1,13 @@
+id: shared.workflow.summary_approval_revision
+version: 1
+kind: chat_prompt
+status: canonical
+description: Revise a summary draft after human review feedback.
+tags:
+  - workflow
+  - summarization
+  - approval
+  - revision
+template_path: template.yaml
+input_schema: workflow.summary_approval.revision_input.v1
+output_schema: text.summary_draft.v1

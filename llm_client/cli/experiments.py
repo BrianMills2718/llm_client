@@ -14,7 +14,7 @@ def _evaluate_adoption_gate(
     required_profile: str | None,
     require_satisfied: bool,
 ) -> dict[str, Any] | None:
-    from llm_client.experiment_eval import extract_adoption_profile
+    from llm_client.experiment_summary import extract_adoption_profile
 
     required_profile_norm = str(required_profile or "").strip().lower() or None
     if required_profile_norm is None and not require_satisfied:
@@ -137,7 +137,7 @@ def _cmd_experiments_trace(args: argparse.Namespace) -> None:
     print("Re-run the benchmark to capture conversation_trace and tool_details.")
 
 
-def _render_conversation_trace(trace: list) -> None:
+def _render_conversation_trace(trace: list[dict[str, Any]]) -> None:
     """Render a conversation trace as a step-by-step tool chain."""
     step = 0
     errors = 0
@@ -223,7 +223,7 @@ def _render_conversation_trace(trace: list) -> None:
     print(f"  Total steps: {step}")
 
 
-def _render_tool_details(tool_details: list) -> None:
+def _render_tool_details(tool_details: list[dict[str, Any] | None]) -> None:
     """Render tool_details list (from extract_tool_calls)."""
     errors = 0
     for i, tc in enumerate(tool_details):
@@ -258,25 +258,26 @@ def _render_tool_details(tool_details: list) -> None:
 
 
 def cmd_experiments(args: argparse.Namespace) -> None:
+    """Dispatch experiment CLI actions from an argparse namespace."""
     from llm_client import io_log
 
-    if args.compare_cohorts is not None:
+    if getattr(args, "compare_cohorts", None) is not None:
         _cmd_experiments_compare_cohorts(args)
         return
 
-    if args.compare_diff:
+    if getattr(args, "compare_diff", None):
         _cmd_experiments_compare_diff(args)
         return
 
-    if args.compare:
+    if getattr(args, "compare", None):
         _cmd_experiments_compare(args)
         return
 
-    if args.trace:
+    if getattr(args, "trace", None):
         _cmd_experiments_trace(args)
         return
 
-    if args.detail:
+    if getattr(args, "detail", None):
         _cmd_experiments_detail(args)
         return
 
@@ -568,14 +569,16 @@ def _cmd_experiments_detail(args: argparse.Namespace) -> None:
     from llm_client.experiment_eval import (
         build_gate_signals,
         evaluate_gate_policy,
-        extract_adoption_profile,
-        extract_agent_outcome,
         load_gate_policy,
         review_items_with_rubric,
         run_deterministic_checks_for_items,
+        triage_items,
+    )
+    from llm_client.experiment_summary import (
+        extract_adoption_profile,
+        extract_agent_outcome,
         summarize_adoption_profiles,
         summarize_agent_outcomes,
-        triage_items,
     )
 
     run_id = args.detail

@@ -1,0 +1,14 @@
+id: research_v3_native_ingest.investigation_pipeline.corroborate
+version: 1
+kind: chat_prompt
+status: canonical
+description: Native-ingest corroboration agent prompt with stronger source-authority emphasis.
+derived_from: shared.investigation_pipeline.corroborate@1
+tags:
+  - investigation
+  - corroboration
+  - tool_calling
+  - native_ingest
+template_path: template.yaml
+input_schema: investigation.corroborate_input.v1
+output_schema: investigation.corroboration_agent_report.v1

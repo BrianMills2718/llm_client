@@ -21,7 +21,7 @@ def lookup_result(trace_id: str) -> dict[str, Any] | None:
         return None
     row = db.execute(
         "SELECT response, model, cost, latency_s, finish_reason, "
-        "prompt_tokens, completion_tokens, timestamp "
+        "prompt_tokens, completion_tokens, timestamp, prompt_ref "
         "FROM llm_calls WHERE trace_id = ? AND error IS NULL "
         "ORDER BY timestamp DESC LIMIT 1",
         (trace_id,),
@@ -37,6 +37,7 @@ def lookup_result(trace_id: str) -> dict[str, Any] | None:
         "prompt_tokens": row[5],
         "completion_tokens": row[6],
         "timestamp": row[7],
+        "prompt_ref": row[8],
     }
 
 
@@ -189,6 +190,14 @@ def get_runs(**kwargs: Any) -> list[dict[str, Any]]:
     from llm_client.observability.experiments import get_runs as _get_runs
 
     return _get_runs(**kwargs)
+
+
+def get_experiment_aggregates(**kwargs: Any) -> list[dict[str, Any]]:
+    from llm_client.observability.experiments import (
+        get_experiment_aggregates as _get_experiment_aggregates,
+    )
+
+    return _get_experiment_aggregates(**kwargs)
 
 
 def compare_runs(run_ids: list[str]) -> dict[str, Any]:

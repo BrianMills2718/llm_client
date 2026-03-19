@@ -1,8 +1,9 @@
-"""Self-improvement analyzer for task graph runs.
+"""Optional self-improvement analyzer for task-graph runs.
 
-Reads experiment JSONL logs, classifies issues into 8 categories, generates
-improvement proposals with risk classification, and maintains model_floors.json
-for cumulative learning.
+This module is not part of the core call boundary. It is an optional
+post-run analysis surface for the `task_graph` workflow: it reads experiment
+logs, classifies issues into the task-graph failure taxonomy, generates
+improvement proposals, and maintains model-floor guidance for that loop.
 
 Usage:
     from llm_client.analyzer import analyze_run, analyze_history

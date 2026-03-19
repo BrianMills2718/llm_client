@@ -1,0 +1,13 @@
+id: shared.summarize.bullet
+version: 1
+kind: chat_prompt
+status: candidate
+description: Bullet-oriented summarization prompt derived from the concise shared prompt.
+derived_from: shared.summarize.concise@1
+tags:
+  - summarize
+  - reusable
+  - bullets
+template_path: template.yaml
+input_schema: prompt_eval.text_input.v1
+output_schema: text.summary_bullets.v1

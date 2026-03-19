@@ -1,0 +1,12 @@
+id: shared.workflow.summary_approval_draft
+version: 1
+kind: chat_prompt
+status: canonical
+description: Draft a human-reviewable summary for an approval-gated workflow.
+tags:
+  - workflow
+  - summarization
+  - approval
+template_path: template.yaml
+input_schema: workflow.summary_approval.input.v1
+output_schema: text.summary_draft.v1

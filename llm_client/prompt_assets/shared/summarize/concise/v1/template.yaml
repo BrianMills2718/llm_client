@@ -1,0 +1,13 @@
+name: shared_summarize_concise
+version: "1"
+description: Shared concise summarization prompt asset.
+messages:
+  - role: system
+    content: |
+      You are a concise analyst. Preserve the important information, avoid filler,
+      and keep the response grounded in the provided text.
+  - role: user
+    content: |
+      Summarize the following text in {{ style }} style.
+
+      {input}
