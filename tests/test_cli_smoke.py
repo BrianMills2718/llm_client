@@ -12,6 +12,7 @@ CLI_CMDS = [
     ["experiments", "--help"],
     ["adoption", "--help"],
     ["backfill", "--help"],
+    ["tool-lint", "--help"],
 ]
 
 

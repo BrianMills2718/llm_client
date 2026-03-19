@@ -67,7 +67,7 @@ def _apply_gate(summary: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 
 def cmd_adoption(args: argparse.Namespace) -> None:
-    from llm_client import get_background_mode_adoption
+    from llm_client.observability.query import get_background_mode_adoption
 
     try:
         summary = get_background_mode_adoption(

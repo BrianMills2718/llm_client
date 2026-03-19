@@ -468,6 +468,47 @@ tasks:
 
 
 @pytest.mark.asyncio
+async def test_codex_yolo_mode_passthrough(tmp_path: Path):
+    """Codex tasks can opt into yolo_mode in graph YAML."""
+
+    content = f"""
+graph:
+  id: codex_yolo_mode
+  description: "Codex yolo mode passthrough"
+  timeout_minutes: 5
+  checkpoint: none
+
+tasks:
+  t1:
+    difficulty: 4
+    agent: codex
+    model: codex
+    prompt: "Hello"
+    working_directory: {tmp_path}
+    yolo_mode: true
+"""
+    f = tmp_path / "codex_yolo_mode.yaml"
+    f.write_text(content)
+    graph = load_graph(f)
+
+    captured_kwargs = {}
+
+    async def capture_acall(model, messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeResult()
+
+    mock_acall = AsyncMock(side_effect=capture_acall)
+    with patch("llm_client.task_graph._acall_llm", mock_acall):
+        report = await run_graph(graph, experiment_log=tmp_path / "exp.jsonl")
+
+    assert report.status == "completed"
+    assert captured_kwargs.get("approval_policy") == "never"
+    assert captured_kwargs.get("yolo_mode") is True
+    assert captured_kwargs.get("working_directory") == str(tmp_path.resolve())
+    assert captured_kwargs.get("execution_mode") == "workspace_agent"
+
+
+@pytest.mark.asyncio
 async def test_non_agent_mcp_sets_workspace_tools_mode(tmp_path: Path):
     """Non-agent MCP tasks should declare workspace_tools execution mode."""
     content = """

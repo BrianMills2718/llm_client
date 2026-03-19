@@ -1,7 +1,10 @@
-"""Task graph runner — parse YAML DAGs, dispatch to agents, validate, checkpoint.
+"""Optional simple DAG runner for task-oriented agent execution.
 
-Dumb runner, smart coordinator. The runner is mechanical — parse, sort, dispatch,
-validate, log. OpenClaw (the LLM coordinator) does all reasoning about what to run.
+This module is intentionally limited. It parses YAML DAGs, dispatches tasks to
+agents, validates outputs, and records results, but it is not the durable
+workflow layer for the ecosystem. It stays a "dumb runner, smart coordinator"
+surface while LangGraph-backed workflow capabilities remain a separate future
+layer.
 
 Usage:
     from llm_client.task_graph import load_graph, run_graph
@@ -71,6 +74,7 @@ class TaskDef(BaseModel):
     investigate_first: list[str] = []
     timeout: int = 300  # Per-task timeout in seconds
     skip_git_repo_check: bool = False  # Codex-only: bypass trusted-repo guard
+    yolo_mode: bool = False  # Convenience profile for headless agent autonomy
     reasoning_effort: str | None = None  # "low", "medium", "high", "xhigh"
     max_tokens: int | None = None  # Optional cap for completion output tokens
 
@@ -254,6 +258,13 @@ def toposort_waves(graph: TaskGraph) -> list[list[str]]:
     return waves
 
 
+def _resolve_task_model(task: TaskDef, effective_tier: int) -> str | None:
+    """Resolve task model from the difficulty router unless an override is pinned."""
+    if effective_tier == 0:
+        return None
+    return get_model_for_difficulty(effective_tier, override_model=task.model)
+
+
 # ---------------------------------------------------------------------------
 # Template resolution
 # ---------------------------------------------------------------------------
@@ -333,10 +344,8 @@ async def run_graph(
         if dry_run:
             for task_id in wave:
                 task = graph.tasks[task_id]
-                model = get_model_for_difficulty(
-                    get_effective_tier(task_id, task.difficulty, model_floors),
-                    override_model=task.model,
-                )
+                effective_tier = get_effective_tier(task_id, task.difficulty, model_floors)
+                model = _resolve_task_model(task, effective_tier)
                 val_results = run_validators(task.validators, dry_run=True) if task.validators else []
                 task_results[task_id] = TaskResult(
                     task_id=task_id,
@@ -453,7 +462,7 @@ async def _execute_task(
 
     # --- Model selection ---
     effective_tier = get_effective_tier(task.id, task.difficulty, model_floors)
-    model = get_model_for_difficulty(effective_tier, override_model=task.model)
+    model = _resolve_task_model(task, effective_tier)
     model_is_agent = _is_agent_model_family(model) if model is not None else False
 
     if model is None:
@@ -536,8 +545,12 @@ async def _execute_task(
     # Agent permission modes — headless dispatch needs full autonomy
     if model.startswith("claude-code"):
         kwargs.setdefault("permission_mode", "bypassPermissions")
+        if task.yolo_mode:
+            kwargs["yolo_mode"] = True
     elif model.startswith("codex"):
         kwargs.setdefault("approval_policy", "never")
+        if task.yolo_mode:
+            kwargs["yolo_mode"] = True
         if task.skip_git_repo_check:
             kwargs["skip_git_repo_check"] = True
 
