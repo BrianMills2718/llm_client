@@ -15,6 +15,7 @@ from typing import Any, Callable, NoReturn, TypeVar, cast
 from llm_client.client import AsyncCachePolicy, CachePolicy, Hooks, LLMCallResult, RetryPolicy
 from llm_client.config import ClientConfig
 from llm_client.errors import LLMCapabilityError
+from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -154,6 +155,7 @@ def _call_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,
@@ -686,6 +688,7 @@ async def _acall_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,

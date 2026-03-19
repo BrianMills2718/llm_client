@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 import llm_client.client as _client_mod
+from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 
 _client: Any = _client_mod
 
@@ -44,6 +45,7 @@ def stream_llm_impl(
         task, trace_id, max_budget, caller="stream_llm",
     )
     _client._check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     if _client._is_agent_model(model):
         from llm_client.agents import _route_stream
 
@@ -186,6 +188,7 @@ async def astream_llm_impl(
         task, trace_id, max_budget, caller="astream_llm",
     )
     _client._check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     if _client._is_agent_model(model):
         from llm_client.agents import _route_astream
 

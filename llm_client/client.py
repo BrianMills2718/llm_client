@@ -183,6 +183,11 @@ T = TypeVar("T", bound=BaseModel)
 # Silence litellm's noisy default logging
 litellm.suppress_debug_info = True
 
+# Activate Langfuse callbacks if LITELLM_CALLBACKS=langfuse is set
+from llm_client.langfuse_callbacks import configure_langfuse_callbacks, inject_metadata as _inject_langfuse_metadata
+
+configure_langfuse_callbacks()
+
 from llm_client.model_detection import GEMINI_NATIVE_MODE_ENV  # noqa: F811
 GEMINI_NATIVE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({

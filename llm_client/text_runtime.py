@@ -13,6 +13,7 @@ from typing import Any, Callable, cast
 
 from llm_client.client import AsyncCachePolicy, CachePolicy, ExecutionMode, Hooks, LLMCallResult, RetryPolicy
 from llm_client.config import ClientConfig
+from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 
 _client: Any = import_module("llm_client.client")
 
@@ -101,6 +102,10 @@ def _call_llm_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+
+    # Inject task/trace_id into litellm metadata for callback propagation
+    # (e.g. Langfuse). Harmless when no callbacks are configured.
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
@@ -583,6 +588,10 @@ async def _acall_llm_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+
+    # Inject task/trace_id into litellm metadata for callback propagation
+    # (e.g. Langfuse). Harmless when no callbacks are configured.
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
