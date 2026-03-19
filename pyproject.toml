@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "llm-client"
 version = "0.7.0"
-description = "Thin LLM client wrapping litellm + agent SDKs. Swap models by changing one string."
+description = "Runtime substrate for multi-provider LLM calls, observability, budgets, and agent routing."
 requires-python = ">=3.10"
 dependencies = [
     "litellm>=1.81.3",
@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 structured = ["instructor>=1.14.0"]
+workflow = ["langgraph>=1.1.3"]
 agents = ["claude-agent-sdk>=0.1.30"]
 codex = ["openai-codex-sdk>=0.1.11"]
 mcp = ["mcp>=1.0.0"]
@@ -25,6 +26,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "instructor>=1.14.0",
+    "langgraph>=1.1.3",
 ]
 
 [project.scripts]
@@ -32,6 +34,9 @@ llm-cost = "llm_client.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["llm_client*"]
+
+[tool.setuptools.package-data]
+llm_client = ["prompts/*.yaml", "prompt_assets/**/*.yaml", "data/*.json"]
 
 [tool.mypy]
 python_version = "3.12"

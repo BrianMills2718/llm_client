@@ -1,4 +1,8 @@
-# LLM Model Guide — February 2026
+# LLM Model Guide
+
+> **Last updated: 2026-02-15.** Model rankings and pricing change frequently.
+> Verify against provider pricing pages and [Artificial Analysis](https://artificialanalysis.ai/)
+> before making cost-sensitive decisions. Entries may be stale.
 
 Practical reference for choosing models. Data from [Artificial Analysis](https://artificialanalysis.ai/) leaderboard + provider pricing pages.
 

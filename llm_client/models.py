@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from importlib import import_module
+from importlib.resources import files as resource_files
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,169 +70,88 @@ class TaskProfile(BaseModel):
     prefer: list[str] = []  # sort keys: "intelligence", "-cost" (- = lower is better)
 
 
+@dataclass(frozen=True)
+class ModelPerformanceObservation:
+    """Observed error-rate summary for one model on one task window."""
+
+    litellm_id: str
+    error_rate: float
+    call_count: int
+
+
+@dataclass
+class PerformanceOverlayDecision:
+    """Result of applying empirical reliability demotion to static candidates.
+
+    This keeps the empirical overlay explicit and inspectable without changing
+    the public selection API. Static selection happens first; this structure
+    then records which candidates stayed in place, which ones were demoted, and
+    what observations were available.
+    """
+
+    ordered_candidates: list[ModelInfo]
+    reliable_candidates: list[ModelInfo]
+    demoted_candidates: list[ModelInfo]
+    observations: dict[str, ModelPerformanceObservation]
+
+
 # ---------------------------------------------------------------------------
-# Default registry (embedded — no external file needed)
+# Packaged default registry data
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODELS: list[dict[str, Any]] = [
-    {
-        "name": "deepseek-chat",
-        "litellm_id": "openrouter/deepseek/deepseek-chat",
-        "provider": "openrouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "intelligence": 42,
-        "speed": 36,
-        "cost": 0.32,
-        "context": 128_000,
-        "structured_output": True,
-        "tags": ["open-weight", "cheap"],
-    },
-    {
-        "name": "gemini-3-flash",
-        "litellm_id": "gemini/gemini-3-flash-preview",
-        "provider": "google",
-        "api_key_env": "GEMINI_API_KEY",
-        "intelligence": 46,
-        "speed": 207,
-        "cost": 1.13,
-        "context": 1_000_000,
-        "structured_output": True,
-        "tags": ["mid-tier"],
-    },
-    {
-        "name": "gemini-2.5-flash",
-        "litellm_id": "gemini/gemini-2.5-flash",
-        "provider": "google",
-        "api_key_env": "GEMINI_API_KEY",
-        "intelligence": 34,
-        "speed": 152,
-        "cost": 0.68,
-        "context": 1_000_000,
-        "structured_output": True,
-        "tags": ["free-tier"],
-    },
-    {
-        "name": "gemini-2.5-flash-lite",
-        "litellm_id": "gemini/gemini-2.5-flash-lite",
-        "provider": "google",
-        "api_key_env": "GEMINI_API_KEY",
-        "intelligence": 28,
-        "speed": 250,
-        "cost": 0.175,
-        "context": 1_000_000,
-        "structured_output": True,
-        "tool_calling": False,
-        "tags": ["cheapest-google"],
-    },
-    {
-        "name": "gpt-5-mini",
-        "litellm_id": "openrouter/openai/gpt-5-mini",
-        "provider": "openrouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "intelligence": 41,
-        "speed": 127,
-        "cost": 0.69,
-        "context": 128_000,
-        "structured_output": True,
-        "tags": ["reliable-structured"],
-    },
-    {
-        "name": "gpt-5",
-        "litellm_id": "openrouter/openai/gpt-5",
-        "provider": "openrouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "intelligence": 45,
-        "speed": 98,
-        "cost": 3.44,
-        "context": 128_000,
-        "structured_output": True,
-        "tags": ["frontier"],
-    },
-    {
-        "name": "gpt-5-nano",
-        "litellm_id": "openrouter/openai/gpt-5-nano",
-        "provider": "openrouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "intelligence": 27,
-        "speed": 141,
-        "cost": 0.14,
-        "context": 128_000,
-        "structured_output": True,
-        "tags": ["cheapest-openai"],
-    },
-    {
-        "name": "grok-4.1-fast",
-        "litellm_id": "openrouter/x-ai/grok-4.1-fast",
-        "provider": "openrouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "intelligence": 39,
-        "speed": 179,
-        "cost": 0.28,
-        "context": 2_000_000,
-        "structured_output": True,
-        "tags": ["2m-context"],
-    },
-    {
-        "name": "gpt-5.2-pro",
-        "litellm_id": "gpt-5.2-pro",
-        "provider": "openai",
-        "api_key_env": "OPENAI_API_KEY",
-        "intelligence": 50,
-        "speed": 5,
-        "cost": 94.5,  # blended: $21 input + $168 output per 1M
-        "context": 128_000,
-        "structured_output": True,
-        "tags": ["frontier", "long-thinking", "deep-review"],
-    },
-]
+_PACKAGED_DEFAULT_CONFIG_PATH = "data/default_model_registry.json"
 
-_DEFAULT_TASKS: dict[str, dict[str, Any]] = {
-    "extraction": {
-        "description": "Structured output with Pydantic",
-        "require": {"structured_output": True, "min_intelligence": 35},
-        "prefer": ["intelligence", "-cost"],
-    },
-    "bulk_cheap": {
-        "description": "High-volume, cost-sensitive",
-        "require": {"min_intelligence": 25},
-        "prefer": ["-cost", "speed"],
-    },
-    "synthesis": {
-        "description": "Research synthesis, reports",
-        "require": {"min_intelligence": 40},
-        "prefer": ["intelligence", "-cost"],
-    },
-    "graph_building": {
-        "description": "Knowledge graph construction",
-        "require": {"structured_output": True, "min_intelligence": 30},
-        "prefer": ["-cost", "speed"],
-    },
-    "agent_reasoning": {
-        "description": "Complex multi-step reasoning",
-        "require": {"min_intelligence": 42},
-        "prefer": ["intelligence"],
-    },
-    "code_generation": {
-        "description": "Writing and reviewing code",
-        "require": {"min_intelligence": 38},
-        "prefer": ["intelligence", "speed"],
-    },
-    "judging": {
-        "description": "LLM-as-judge rubric scoring of task outputs",
-        "require": {"structured_output": True, "min_intelligence": 30},
-        "prefer": ["-cost", "intelligence"],
-    },
-    "deep_review": {
-        "description": "Research-grade architectural review (long-thinking)",
-        "require": {"min_intelligence": 48},
-        "prefer": ["intelligence"],
-    },
-}
 
-_DEFAULT_CONFIG: dict[str, Any] = {
-    "models": _DEFAULT_MODELS,
-    "tasks": _DEFAULT_TASKS,
-}
+def _parse_packaged_default_config(raw_text: str) -> dict[str, Any]:
+    """Parse and validate the packaged default model registry payload.
+
+    The packaged defaults are data, not code. Validation stays fail-loud so an
+    invalid wheel or source tree raises immediately instead of silently falling
+    back to stale embedded literals.
+    """
+
+    try:
+        loaded = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Invalid packaged model registry JSON {_PACKAGED_DEFAULT_CONFIG_PATH}: {exc}"
+        ) from exc
+
+    if not isinstance(loaded, dict):
+        raise RuntimeError(
+            f"Invalid packaged model registry {_PACKAGED_DEFAULT_CONFIG_PATH}: "
+            f"expected top-level object, got {type(loaded).__name__}"
+        )
+
+    models = loaded.get("models")
+    tasks = loaded.get("tasks")
+    if not isinstance(models, list):
+        raise RuntimeError(
+            f"Invalid packaged model registry {_PACKAGED_DEFAULT_CONFIG_PATH}: "
+            f"'models' must be a list"
+        )
+    if not isinstance(tasks, dict):
+        raise RuntimeError(
+            f"Invalid packaged model registry {_PACKAGED_DEFAULT_CONFIG_PATH}: "
+            f"'tasks' must be a dict"
+        )
+    return {"models": models, "tasks": tasks}
+
+
+def _load_packaged_default_config() -> dict[str, Any]:
+    """Load the packaged default registry from package data."""
+
+    resource = resource_files("llm_client").joinpath(_PACKAGED_DEFAULT_CONFIG_PATH)
+    try:
+        raw_text = resource.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Packaged model registry not found: {_PACKAGED_DEFAULT_CONFIG_PATH}"
+        ) from exc
+    return _parse_packaged_default_config(raw_text)
+
+
+_DEFAULT_CONFIG: dict[str, Any] = _load_packaged_default_config()
 
 
 # ---------------------------------------------------------------------------
@@ -329,26 +250,12 @@ def get_model(
         RuntimeError: No models qualify (after filtering).
     """
     config = _load_config()
-    tasks_cfg = config["tasks"]
-    if task not in tasks_cfg:
-        raise KeyError(f"Unknown task {task!r}. Available: {sorted(tasks_cfg)}")
-
-    profile = TaskProfile(**tasks_cfg[task]) if isinstance(tasks_cfg[task], dict) else tasks_cfg[task]
-    models = [ModelInfo(**m) if isinstance(m, dict) else m for m in config["models"]]
-
-    # Filter by hard requirements
-    candidates = []
-    for m in models:
-        req = profile.require
-        if req.structured_output and not m.structured_output:
-            continue
-        if m.intelligence < req.min_intelligence:
-            continue
-        if m.context < req.min_context:
-            continue
-        if available_only and not os.environ.get(m.api_key_env):
-            continue
-        candidates.append(m)
+    profile = _load_task_profile(config, task)
+    candidates = _select_static_candidates(
+        config=config,
+        profile=profile,
+        available_only=available_only,
+    )
 
     if not candidates:
         raise RuntimeError(
@@ -362,12 +269,13 @@ def get_model(
 
     # Demote unreliable models based on real performance data
     if use_performance and len(candidates) > 1:
-        candidates = _demote_unreliable(
+        overlay = _apply_performance_overlay(
             candidates, task,
             days=performance_days,
             min_calls=min_calls,
             error_threshold=error_threshold,
         )
+        candidates = overlay.ordered_candidates
 
     return candidates[0].litellm_id
 
@@ -382,38 +290,25 @@ def list_models(
     Returns list of dicts with all model fields plus ``available: bool``.
     """
     config = _load_config()
-    models = [ModelInfo(**m) if isinstance(m, dict) else m for m in config["models"]]
+    models = _load_registry_models(config)
 
     profile: TaskProfile | None = None
     if task is not None:
-        tasks_cfg = config["tasks"]
-        if task not in tasks_cfg:
-            raise KeyError(f"Unknown task {task!r}. Available: {sorted(tasks_cfg)}")
-        profile = TaskProfile(**tasks_cfg[task]) if isinstance(tasks_cfg[task], dict) else tasks_cfg[task]
+        profile = _load_task_profile(config, task)
+        models = _select_static_candidates(
+            config=config,
+            profile=profile,
+            available_only=available_only,
+        )
 
     result = []
     for m in models:
         available = bool(os.environ.get(m.api_key_env))
         if available_only and not available:
             continue
-        if profile is not None:
-            req = profile.require
-            if req.structured_output and not m.structured_output:
-                continue
-            if m.intelligence < req.min_intelligence:
-                continue
-            if m.context < req.min_context:
-                continue
         d = m.model_dump()
         d["available"] = available
         result.append(d)
-
-    if profile is not None:
-        info_list = [ModelInfo(**{k: v for k, v in d.items() if k != "available"}) for d in result]
-        sorted_infos = _sort_by_prefer(info_list, profile.prefer)
-        # Re-order result to match
-        name_order = [m.name for m in sorted_infos]
-        result.sort(key=lambda d: name_order.index(d["name"]))
 
     return result
 
@@ -459,7 +354,6 @@ def _query_performance_sql(
     """SQL-backed performance query."""
     from llm_client.io_log import _get_db
 
-    cutoff = datetime.now(timezone.utc).isoformat()[:10]  # date only for rough cutoff
     cutoff_dt = datetime.now(timezone.utc).timestamp() - (days * 86400)
     cutoff_iso = datetime.fromtimestamp(cutoff_dt, tz=timezone.utc).isoformat()
 
@@ -597,50 +491,128 @@ def supports_tool_calling(litellm_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _demote_unreliable(
+def _load_registry_models(config: dict[str, Any]) -> list[ModelInfo]:
+    """Normalize configured model entries into typed registry objects."""
+    return [ModelInfo(**model) if isinstance(model, dict) else model for model in config["models"]]
+
+
+def _load_task_profile(config: dict[str, Any], task: str) -> TaskProfile:
+    """Load one task profile from config and fail loudly on unknown tasks."""
+    tasks_cfg = config["tasks"]
+    if task not in tasks_cfg:
+        raise KeyError(f"Unknown task {task!r}. Available: {sorted(tasks_cfg)}")
+    raw_profile = tasks_cfg[task]
+    return TaskProfile(**raw_profile) if isinstance(raw_profile, dict) else raw_profile
+
+
+def _model_qualifies_for_profile(
+    model: ModelInfo,
+    profile: TaskProfile,
+    *,
+    available_only: bool,
+) -> bool:
+    """Apply static requirement and availability checks for one model."""
+    req = profile.require
+    if req.structured_output and not model.structured_output:
+        return False
+    if model.intelligence < req.min_intelligence:
+        return False
+    if model.context < req.min_context:
+        return False
+    if available_only and not os.environ.get(model.api_key_env):
+        return False
+    return True
+
+
+def _select_static_candidates(
+    *,
+    config: dict[str, Any],
+    profile: TaskProfile,
+    available_only: bool,
+) -> list[ModelInfo]:
+    """Return candidates selected by static registry policy only.
+
+    This helper intentionally excludes any observed-performance overlay so the
+    static policy and empirical demotion steps remain separable.
+    """
+    models = _load_registry_models(config)
+    candidates = [
+        model
+        for model in models
+        if _model_qualifies_for_profile(model, profile, available_only=available_only)
+    ]
+    return _sort_by_prefer(candidates, profile.prefer)
+
+
+def _load_performance_observations(
+    *,
+    task: str,
+    days: int,
+) -> dict[str, ModelPerformanceObservation]:
+    """Load model performance observations for one task window.
+
+    Returns an empty mapping when performance data is unavailable or when the
+    observability query fails. Callers remain responsible for deciding whether
+    and how to use the observations.
+    """
+
+    try:
+        perf = _query_performance_sql(task=task, days=days)
+    except Exception:
+        return {}
+
+    observations: dict[str, ModelPerformanceObservation] = {}
+    for row in perf:
+        litellm_id = row["model"]
+        observations[litellm_id] = ModelPerformanceObservation(
+            litellm_id=litellm_id,
+            error_rate=float(row["error_rate"]),
+            call_count=int(row["call_count"]),
+        )
+    return observations
+
+
+def _apply_performance_overlay(
     candidates: list[ModelInfo],
     task: str,
     *,
     days: int,
     min_calls: int,
     error_threshold: float,
-) -> list[ModelInfo]:
-    """Stable-partition candidates: reliable first, unreliable last.
+) -> PerformanceOverlayDecision:
+    """Apply empirical reliability demotion over an already static candidate order.
 
     Queries the observability DB for error rates by model+task over the
     look-back window. Models with error_rate > threshold AND call_count >=
     min_calls are moved to the back. Relative order within each group
-    (reliable / unreliable) is preserved from the prefer-sorted input.
-
-    Returns candidates unchanged if no performance data or all models
-    are equally reliable/unreliable.
+    (reliable / demoted) is preserved from the static prefer-sorted input.
     """
-    try:
-        perf = _query_performance_sql(task=task, days=days)
-    except Exception:
-        return candidates
 
-    if not perf:
-        return candidates
+    observations = _load_performance_observations(task=task, days=days)
+    if not observations:
+        return PerformanceOverlayDecision(
+            ordered_candidates=list(candidates),
+            reliable_candidates=list(candidates),
+            demoted_candidates=[],
+            observations={},
+        )
 
-    # Build lookup: litellm_id → (error_rate, call_count)
-    # Performance DB stores the model string as-is from the call
-    error_by_model: dict[str, tuple[float, int]] = {}
-    for row in perf:
-        error_by_model[row["model"]] = (row["error_rate"], row["call_count"])
-
-    def is_unreliable(m: ModelInfo) -> bool:
-        info = error_by_model.get(m.litellm_id)
+    def is_unreliable(model: ModelInfo) -> bool:
+        info = observations.get(model.litellm_id)
         if info is None:
             return False  # no data = no penalty
-        error_rate, call_count = info
-        return call_count >= min_calls and error_rate > error_threshold
+        return info.call_count >= min_calls and info.error_rate > error_threshold
 
     reliable = [c for c in candidates if not is_unreliable(c)]
     unreliable = [c for c in candidates if is_unreliable(c)]
 
     if not reliable:
-        return candidates  # all unreliable — don't change order
+        return PerformanceOverlayDecision(
+            ordered_candidates=list(candidates),
+            reliable_candidates=[],
+            demoted_candidates=list(candidates),
+            observations=observations,
+        )
 
     if unreliable:
         demoted_names = [m.name for m in unreliable]
@@ -650,7 +622,12 @@ def _demote_unreliable(
             task, demoted_names, chosen,
         )
 
-    return reliable + unreliable
+    return PerformanceOverlayDecision(
+        ordered_candidates=reliable + unreliable,
+        reliable_candidates=reliable,
+        demoted_candidates=unreliable,
+        observations=observations,
+    )
 
 
 def _sort_by_prefer(models: list[ModelInfo], prefer: list[str]) -> list[ModelInfo]:

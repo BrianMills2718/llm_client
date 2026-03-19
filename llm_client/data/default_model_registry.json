@@ -1,0 +1,229 @@
+{
+  "models": [
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 128000,
+      "cost": 0.32,
+      "intelligence": 42,
+      "litellm_id": "openrouter/deepseek/deepseek-chat",
+      "name": "deepseek-chat",
+      "provider": "openrouter",
+      "speed": 36,
+      "structured_output": true,
+      "tags": [
+        "open-weight",
+        "cheap"
+      ]
+    },
+    {
+      "api_key_env": "GEMINI_API_KEY",
+      "context": 1000000,
+      "cost": 1.13,
+      "intelligence": 46,
+      "litellm_id": "gemini/gemini-3-flash-preview",
+      "name": "gemini-3-flash",
+      "provider": "google",
+      "speed": 207,
+      "structured_output": true,
+      "tags": [
+        "mid-tier"
+      ]
+    },
+    {
+      "api_key_env": "GEMINI_API_KEY",
+      "context": 1000000,
+      "cost": 0.68,
+      "intelligence": 34,
+      "litellm_id": "gemini/gemini-2.5-flash",
+      "name": "gemini-2.5-flash",
+      "provider": "google",
+      "speed": 152,
+      "structured_output": true,
+      "tags": [
+        "free-tier"
+      ]
+    },
+    {
+      "api_key_env": "GEMINI_API_KEY",
+      "context": 1000000,
+      "cost": 0.175,
+      "intelligence": 28,
+      "litellm_id": "gemini/gemini-2.5-flash-lite",
+      "name": "gemini-2.5-flash-lite",
+      "provider": "google",
+      "speed": 250,
+      "structured_output": true,
+      "tags": [
+        "cheapest-google"
+      ],
+      "tool_calling": false
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 128000,
+      "cost": 0.69,
+      "intelligence": 41,
+      "litellm_id": "openrouter/openai/gpt-5-mini",
+      "name": "gpt-5-mini",
+      "provider": "openrouter",
+      "speed": 127,
+      "structured_output": true,
+      "tags": [
+        "reliable-structured"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 128000,
+      "cost": 3.44,
+      "intelligence": 45,
+      "litellm_id": "openrouter/openai/gpt-5",
+      "name": "gpt-5",
+      "provider": "openrouter",
+      "speed": 98,
+      "structured_output": true,
+      "tags": [
+        "frontier"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 128000,
+      "cost": 0.14,
+      "intelligence": 27,
+      "litellm_id": "openrouter/openai/gpt-5-nano",
+      "name": "gpt-5-nano",
+      "provider": "openrouter",
+      "speed": 141,
+      "structured_output": true,
+      "tags": [
+        "cheapest-openai"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 2000000,
+      "cost": 0.28,
+      "intelligence": 39,
+      "litellm_id": "openrouter/x-ai/grok-4.1-fast",
+      "name": "grok-4.1-fast",
+      "provider": "openrouter",
+      "speed": 179,
+      "structured_output": true,
+      "tags": [
+        "2m-context"
+      ]
+    },
+    {
+      "api_key_env": "OPENAI_API_KEY",
+      "context": 128000,
+      "cost": 94.5,
+      "intelligence": 50,
+      "litellm_id": "gpt-5.2-pro",
+      "name": "gpt-5.2-pro",
+      "provider": "openai",
+      "speed": 5,
+      "structured_output": true,
+      "tags": [
+        "frontier",
+        "long-thinking",
+        "deep-review"
+      ]
+    }
+  ],
+  "tasks": {
+    "agent_reasoning": {
+      "description": "Complex multi-step reasoning",
+      "prefer": [
+        "intelligence"
+      ],
+      "require": {
+        "min_intelligence": 42
+      }
+    },
+    "budget_extraction": {
+      "description": "Budget-sensitive structured extraction with a quality floor",
+      "prefer": [
+        "-cost",
+        "intelligence",
+        "speed"
+      ],
+      "require": {
+        "min_intelligence": 40,
+        "structured_output": true
+      }
+    },
+    "bulk_cheap": {
+      "description": "High-volume, cost-sensitive",
+      "prefer": [
+        "-cost",
+        "speed"
+      ],
+      "require": {
+        "min_intelligence": 25
+      }
+    },
+    "code_generation": {
+      "description": "Writing and reviewing code",
+      "prefer": [
+        "intelligence",
+        "speed"
+      ],
+      "require": {
+        "min_intelligence": 38
+      }
+    },
+    "deep_review": {
+      "description": "Research-grade architectural review (long-thinking)",
+      "prefer": [
+        "intelligence"
+      ],
+      "require": {
+        "min_intelligence": 48
+      }
+    },
+    "extraction": {
+      "description": "Structured output with Pydantic",
+      "prefer": [
+        "intelligence",
+        "-cost"
+      ],
+      "require": {
+        "min_intelligence": 35,
+        "structured_output": true
+      }
+    },
+    "graph_building": {
+      "description": "Knowledge graph construction",
+      "prefer": [
+        "-cost",
+        "speed"
+      ],
+      "require": {
+        "min_intelligence": 30,
+        "structured_output": true
+      }
+    },
+    "judging": {
+      "description": "LLM-as-judge rubric scoring of task outputs",
+      "prefer": [
+        "-cost",
+        "intelligence"
+      ],
+      "require": {
+        "min_intelligence": 30,
+        "structured_output": true
+      }
+    },
+    "synthesis": {
+      "description": "Research synthesis, reports",
+      "prefer": [
+        "intelligence",
+        "-cost"
+      ],
+      "require": {
+        "min_intelligence": 40
+      }
+    }
+  }
+}

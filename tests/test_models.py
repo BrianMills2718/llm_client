@@ -10,10 +10,14 @@ from unittest.mock import patch
 import pytest
 
 from llm_client.models import (
-    ModelInfo,
-    TaskProfile,
     _DEFAULT_CONFIG,
+    _apply_performance_overlay,
+    _PACKAGED_DEFAULT_CONFIG_PATH,
+    _load_packaged_default_config,
+    _load_task_profile,
+    _parse_packaged_default_config,
     _reset_config,
+    _select_static_candidates,
     get_model,
     list_models,
     query_performance,
@@ -44,6 +48,12 @@ class TestGetModel:
         model = get_model("bulk_cheap", available_only=False)
         # gpt-5-nano is cheapest at $0.14 (via OpenRouter)
         assert model == "openrouter/openai/gpt-5-nano"
+
+    def test_budget_extraction_prefers_deepseek_over_lower_floor_graph_model(self):
+        model = get_model("budget_extraction", available_only=False)
+        # budget_extraction adds a quality floor (intel>=40) before optimizing
+        # cost, which excludes grok-4.1-fast (intel=39) and picks deepseek-chat.
+        assert model == "openrouter/deepseek/deepseek-chat"
 
     def test_graph_building_returns_cheapest_structured(self):
         model = get_model("graph_building", available_only=False)
@@ -183,10 +193,10 @@ class TestPerformanceDemotion:
         # Give it 50% error rate
         self._insert_calls("gpt-5.2-pro", "extraction", 5, 5)
         # gemini-3-flash (intel=46) is reliable
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 20, 0)
+        self._insert_calls("gemini/gemini-3-flash-preview", "extraction", 20, 0)
 
         model = get_model("extraction", available_only=False)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gemini/gemini-3-flash-preview"
 
     def test_no_demotion_below_min_calls(self):
         """Models with fewer than min_calls aren't penalized."""
@@ -208,7 +218,7 @@ class TestPerformanceDemotion:
         """When ALL qualifying models are unreliable, original prefer order is kept."""
         # All models that qualify for extraction (structured_output + intel>=35)
         self._insert_calls("gpt-5.2-pro", "extraction", 5, 10)
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 5, 10)
+        self._insert_calls("gemini/gemini-3-flash-preview", "extraction", 5, 10)
         self._insert_calls("openrouter/openai/gpt-5", "extraction", 5, 10)
         self._insert_calls("openrouter/deepseek/deepseek-chat", "extraction", 5, 10)
         self._insert_calls("openrouter/openai/gpt-5-mini", "extraction", 5, 10)
@@ -228,7 +238,7 @@ class TestPerformanceDemotion:
         """Custom error_threshold is respected."""
         # gpt-5.2-pro has 10% error rate
         self._insert_calls("gpt-5.2-pro", "extraction", 18, 2)
-        self._insert_calls("gemini/gemini-3-flash", "extraction", 20, 0)
+        self._insert_calls("gemini/gemini-3-flash-preview", "extraction", 20, 0)
 
         # Default threshold (15%) — not demoted
         model = get_model("extraction", available_only=False, error_threshold=0.15)
@@ -236,7 +246,54 @@ class TestPerformanceDemotion:
 
         # Stricter threshold (5%) — demoted
         model = get_model("extraction", available_only=False, error_threshold=0.05)
-        assert model == "gemini/gemini-3-flash"
+        assert model == "gemini/gemini-3-flash-preview"
+
+    def test_apply_performance_overlay_returns_demotion_metadata(self):
+        """The empirical overlay should expose which candidates were demoted and why."""
+        self._insert_calls("gpt-5.2-pro", "extraction", 5, 5)
+        self._insert_calls("gemini/gemini-3-flash-preview", "extraction", 20, 0)
+
+        profile = _load_task_profile(_DEFAULT_CONFIG, "extraction")
+        candidates = _select_static_candidates(
+            config=_DEFAULT_CONFIG,
+            profile=profile,
+            available_only=False,
+        )
+        overlay = _apply_performance_overlay(
+            candidates,
+            "extraction",
+            days=7,
+            min_calls=10,
+            error_threshold=0.15,
+        )
+
+        assert overlay.ordered_candidates[0].litellm_id == "gemini/gemini-3-flash-preview"
+        assert [model.litellm_id for model in overlay.demoted_candidates] == ["gpt-5.2-pro"]
+        assert overlay.observations["gpt-5.2-pro"].call_count == 10
+        assert overlay.observations["gpt-5.2-pro"].error_rate == pytest.approx(0.5)
+
+    def test_apply_performance_overlay_is_neutral_without_data(self):
+        """No observations should leave the static order untouched."""
+        profile = _load_task_profile(_DEFAULT_CONFIG, "extraction")
+        candidates = _select_static_candidates(
+            config=_DEFAULT_CONFIG,
+            profile=profile,
+            available_only=False,
+        )
+
+        overlay = _apply_performance_overlay(
+            candidates,
+            "extraction",
+            days=7,
+            min_calls=10,
+            error_threshold=0.15,
+        )
+
+        assert [model.litellm_id for model in overlay.ordered_candidates] == [
+            model.litellm_id for model in candidates
+        ]
+        assert overlay.demoted_candidates == []
+        assert overlay.observations == {}
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +438,23 @@ class TestQueryPerformance:
 
 
 class TestConfigLoading:
+    def test_packaged_default_config_matches_exported_default_config(self):
+        assert _load_packaged_default_config() == _DEFAULT_CONFIG
+
+    def test_parse_packaged_default_config_rejects_invalid_json(self):
+        with pytest.raises(RuntimeError, match="Invalid packaged model registry JSON"):
+            _parse_packaged_default_config("{not-json}")
+
+    def test_parse_packaged_default_config_rejects_invalid_shape(self):
+        with pytest.raises(RuntimeError, match="'tasks' must be a dict"):
+            _parse_packaged_default_config(json.dumps({"models": [], "tasks": []}))
+
+    def test_packaged_default_registry_file_exists(self):
+        from importlib.resources import files as resource_files
+
+        resource = resource_files("llm_client").joinpath(_PACKAGED_DEFAULT_CONFIG_PATH)
+        assert resource.is_file()
+
     def test_yaml_override(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write("""
@@ -416,6 +490,21 @@ tasks:
             _reset_config()
             with pytest.raises(RuntimeError, match="non-existent file"):
                 get_model("extraction")
+
+
+class TestStaticPolicySelection:
+    def test_select_static_candidates_matches_public_list_order(self):
+        profile = _load_task_profile(_DEFAULT_CONFIG, "extraction")
+        static_candidates = _select_static_candidates(
+            config=_DEFAULT_CONFIG,
+            profile=profile,
+            available_only=False,
+        )
+        public_models = list_models(task="extraction", available_only=False)
+
+        assert [candidate.litellm_id for candidate in static_candidates] == [
+            model["litellm_id"] for model in public_models
+        ]
 
 
 # ---------------------------------------------------------------------------
