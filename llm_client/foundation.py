@@ -491,6 +491,7 @@ class FoundationEventBase(BaseModel):
         "ToolFailed",
         "ArtifactCreated",
         "LLMCalled",
+        "LLMCallLifecycle",
         "DecisionMade",
         "RuleRegistered",
         "ConfigChanged",
@@ -524,6 +525,24 @@ class LLMCalledPayload(BaseModel):
     response_sha256: str = Field(pattern=r"^sha256:[0-9a-fA-F]{64}$")
     token_usage: dict[str, Any] = Field(default_factory=dict)
     cost_usd: float | None = Field(default=None, ge=0)
+
+
+class LLMCallLifecyclePayload(BaseModel):
+    """Lifecycle state for one public non-streaming LLM call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_id: str = Field(pattern=r"^llmcall_[A-Za-z0-9._:-]+$")
+    phase: Literal["started", "completed", "failed"]
+    call_kind: Literal["text", "structured"]
+    requested_model_id: str = Field(min_length=1)
+    resolved_model_id: str | None = None
+    provider_timeout_s: int | None = Field(default=None, ge=0)
+    timeout_policy: Literal["allow", "ban"]
+    prompt_ref: str | None = None
+    latency_s: float | None = Field(default=None, ge=0)
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 class DecisionPayload(BaseModel):
@@ -563,6 +582,11 @@ class LLMCalledEvent(FoundationEventBase):
     llm: LLMCalledPayload
 
 
+class LLMCallLifecycleEvent(FoundationEventBase):
+    event_type: Literal["LLMCallLifecycle"]
+    llm_call_lifecycle: LLMCallLifecyclePayload
+
+
 class DecisionMadeEvent(FoundationEventBase):
     event_type: Literal["DecisionMade"]
     decision: DecisionPayload
@@ -586,6 +610,7 @@ FoundationEvent = Annotated[
     | ToolFailedEvent
     | ArtifactCreatedEvent
     | LLMCalledEvent
+    | LLMCallLifecycleEvent
     | DecisionMadeEvent
     | RuleRegisteredEvent
     | ConfigChangedEvent

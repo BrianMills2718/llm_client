@@ -203,3 +203,40 @@ def test_validate_foundation_event_artifact_created_with_typed_artifacts() -> No
     validated = validate_foundation_event(payload)
     assert validated["event_type"] == "ArtifactCreated"
     assert validated["artifacts"][0]["artifact_type"] == "CHUNK_SET"
+
+
+def test_validate_foundation_event_llm_call_lifecycle_shape() -> None:
+    payload = {
+        "event_id": "evt_llm_lifecycle_1",
+        "event_type": "LLMCallLifecycle",
+        "timestamp": "2026-03-19T00:00:00Z",
+        "run_id": "run_test",
+        "session_id": "sess_test",
+        "actor_id": "service:llm_client:call_runtime:1",
+        "operation": {"name": "call_llm", "version": None},
+        "inputs": {
+            "artifact_ids": [],
+            "params": {
+                "task": "test",
+                "trace_id": "trace.lifecycle",
+                "call_kind": "text",
+            },
+            "bindings": {},
+        },
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "llm_call_lifecycle": {
+            "call_id": "llmcall_test_1",
+            "phase": "completed",
+            "call_kind": "text",
+            "requested_model_id": "gpt-4",
+            "resolved_model_id": "gpt-4",
+            "provider_timeout_s": 60,
+            "timeout_policy": "allow",
+            "prompt_ref": "shared.test.prompt@1",
+            "latency_s": 1.25,
+        },
+    }
+    validated = validate_foundation_event(payload)
+    assert validated["event_type"] == "LLMCallLifecycle"
+    assert validated["llm_call_lifecycle"]["phase"] == "completed"
+    assert validated["llm_call_lifecycle"]["timeout_policy"] == "allow"

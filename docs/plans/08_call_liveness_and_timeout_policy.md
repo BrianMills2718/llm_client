@@ -1,6 +1,6 @@
 # Plan 08: Call Liveness and Timeout Policy
 
-**Status:** In Progress
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -28,8 +28,15 @@ operability.
 ## References Reviewed
 
 - `CLAUDE.md` - repo governance and observability expectations
+- `docs/adr/0001-model-identity-v0.md` - stable model identity baseline
+- `docs/adr/0002-routing-config-precedence.md` - routing and config authority rules
+- `docs/adr/0003-warning-taxonomy.md` - warning contract and operator-facing warning semantics
+- `docs/adr/0004-result-model-semantics-migration.md` - result-shape and backward-compatibility contract
+- `docs/adr/0005-reason-code-registry-governance.md` - explicit machine-readable failure-code discipline
+- `docs/adr/0006-actor-id-issuance-policy.md` - canonical Foundation actor identity policy
 - `docs/adr/0007-observability-contract-boundary.md` - existing observability boundary
 - `docs/adr/0009-long-thinking-background-polling.md` - prior timeout-related runtime decision
+- `docs/adr/0010-cross-project-runtime-substrate.md` - shared control-plane boundary for runtime changes
 - `llm_client/client.py` - public call wrappers and shared logging helpers
 - `llm_client/text_runtime.py` - text-call control flow and timeout normalization
 - `llm_client/structured_runtime.py` - structured-call control flow and timeout normalization
@@ -43,6 +50,8 @@ operability.
 
 ## Files Affected
 
+- `CLAUDE.md` (modify)
+- `AGENTS.md` (regenerate)
 - `docs/adr/0013-provider-timeouts-are-not-the-default-liveness-mechanism.md` (create)
 - `docs/adr/README.md` (modify)
 - `docs/plans/08_call_liveness_and_timeout_policy.md` (create)
@@ -105,11 +114,19 @@ operability.
 
 ## Acceptance Criteria
 
-- [ ] ADR and plan indices are updated
-- [ ] Foundation validation accepts the new lifecycle event type
-- [ ] Public text and structured wrappers emit `started` and terminal lifecycle events
-- [ ] Failed calls emit explicit lifecycle failures with error metadata
-- [ ] `pytest -q tests/test_foundation.py tests/test_client.py -k "lifecycle or prompt_ref or timeout_policy"` passes
+- [x] ADR and plan indices are updated
+- [x] Foundation validation accepts the new lifecycle event type
+- [x] Public text and structured wrappers emit `started` and terminal lifecycle events
+- [x] Failed calls emit explicit lifecycle failures with error metadata
+- [x] `pytest -q tests/test_foundation.py tests/test_client.py -k "lifecycle or prompt_ref or timeout_policy"` passes
+
+**Verified:** 2026-03-19
+**Evidence:**
+
+- `pytest -q tests/test_foundation.py tests/test_client.py -k "lifecycle or prompt_ref or timeout_policy"`
+- `pytest -q tests/test_structured_runtime.py`
+- `pytest -q tests/test_client.py -k "call_llm_failure_emits_failed_lifecycle_event"`
+- `mypy --follow-imports=silent llm_client/foundation.py llm_client/client.py tests/test_foundation.py`
 
 ---
 

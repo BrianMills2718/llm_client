@@ -51,6 +51,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable, Iterable, Literal, NoReturn, TypeVar
 
 import litellm
@@ -75,6 +76,12 @@ from llm_client.result_finalization import (
 )
 from llm_client.timeout_policy import (
     normalize_timeout as _normalize_timeout,
+    timeout_policy_label as _timeout_policy_label,
+)
+from llm_client.foundation import (
+    coerce_run_id as _coerce_foundation_run_id,
+    new_event_id as _new_foundation_event_id,
+    now_iso as _foundation_now_iso,
 )
 from llm_client.routing import (
     CallRequest,
@@ -90,6 +97,7 @@ from llm_client.execution_kernel import (
 )
 
 from llm_client.errors import (
+    LLMError,
     LLMCapabilityError,
     LLMConfigurationError,
     LLMEmptyResponseError,
@@ -209,6 +217,7 @@ from llm_client.openrouter import (  # noqa: F811
     OPENROUTER_ROUTING_ENV,
 )
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
+_LLM_CALL_RUNTIME_ACTOR_ID = "service:llm_client:call_runtime:1"
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -1189,6 +1198,119 @@ def _log_call_event(
         task=task,
         trace_id=trace_id,
         prompt_ref=prompt_ref,
+    )
+
+
+def _new_llm_call_lifecycle_id() -> str:
+    """Return a stable correlation id shared across lifecycle events for one call."""
+    return f"llmcall_{uuid.uuid4().hex}"
+
+
+def _llm_call_lifecycle_session_id(call_id: str) -> str:
+    """Derive a deterministic Foundation session id for one public call lifecycle."""
+    suffix = call_id.removeprefix("llmcall_")
+    return f"sess_{suffix}"
+
+
+def _llm_lifecycle_error_message(error: Exception) -> str:
+    """Return a non-empty error message for lifecycle failure records."""
+    if isinstance(error, LLMError) and error.original is not None:
+        error = error.original
+    message = str(error).strip()
+    if message:
+        return message
+    return error.__class__.__name__
+
+
+def _llm_lifecycle_error_type(error: Exception) -> str:
+    """Return the most informative error type for lifecycle failure records."""
+    if isinstance(error, LLMError) and error.original is not None:
+        return error.original.__class__.__name__
+    return error.__class__.__name__
+
+
+def _provider_timeout_for_lifecycle(timeout: Any) -> int:
+    """Compute the effective provider-timeout value without mutating runtime warnings.
+
+    Public wrappers need a normalized timeout value for lifecycle observability,
+    but they should not consume or suppress the warning contract that the inner
+    runtime surfaces on the final `LLMCallResult`.
+    """
+    if _timeout_policy_label() == "ban":
+        return 0
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
+
+
+def _emit_llm_call_lifecycle_event(
+    *,
+    call_id: str,
+    phase: Literal["started", "completed", "failed"],
+    call_kind: Literal["text", "structured"],
+    caller: str,
+    task: str,
+    trace_id: str,
+    requested_model: str,
+    provider_timeout_s: int,
+    prompt_ref: str | None,
+    resolved_model: str | None = None,
+    latency_s: float | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Emit a Foundation-backed lifecycle event for one public non-streaming call.
+
+    This gives operators a queryable `started -> completed/failed` sequence for
+    normal text and structured calls without relying on transport timeouts as
+    the only signal that a call is still alive.
+    """
+    params: dict[str, Any] = {
+        "task": task,
+        "trace_id": trace_id,
+        "call_kind": call_kind,
+    }
+    if prompt_ref is not None:
+        params["prompt_ref"] = prompt_ref
+    if resolved_model is not None:
+        params["resolved_model"] = resolved_model
+
+    _io_log.log_foundation_event(
+        event={
+            "event_id": _new_foundation_event_id(),
+            "event_type": "LLMCallLifecycle",
+            "timestamp": _foundation_now_iso(),
+            "run_id": _coerce_foundation_run_id(None, trace_id),
+            "session_id": _llm_call_lifecycle_session_id(call_id),
+            "actor_id": _LLM_CALL_RUNTIME_ACTOR_ID,
+            "operation": {"name": caller, "version": None},
+            "inputs": {
+                "artifact_ids": [],
+                "params": params,
+                "bindings": {},
+            },
+            "outputs": {
+                "artifact_ids": [],
+                "payload_hashes": [],
+            },
+            "llm_call_lifecycle": {
+                "call_id": call_id,
+                "phase": phase,
+                "call_kind": call_kind,
+                "requested_model_id": requested_model,
+                "resolved_model_id": resolved_model,
+                "provider_timeout_s": provider_timeout_s if provider_timeout_s > 0 else None,
+                "timeout_policy": _timeout_policy_label(),
+                "prompt_ref": prompt_ref,
+                "latency_s": latency_s,
+                "error_type": _llm_lifecycle_error_type(error) if error is not None else None,
+                "error_message": _llm_lifecycle_error_message(error) if error is not None else None,
+            },
+        },
+        caller=caller,
+        task=task,
+        trace_id=trace_id,
     )
 
 
@@ -2545,7 +2667,8 @@ def call_llm(
                "claude-code/opus")
         messages: Chat messages in OpenAI format
                   [{"role": "user", "content": "Hello"}]
-        timeout: Request timeout in seconds
+        timeout: Provider request timeout in seconds. This is a transport
+                 control, not the primary liveness mechanism for the call.
         num_retries: Number of retries on transient failure
         reasoning_effort: Reasoning effort level — only used for Claude models,
                          silently ignored for others
@@ -2573,26 +2696,85 @@ def call_llm(
     """
     from llm_client.text_runtime import _call_llm_impl
 
-    return _call_llm_impl(
-        model,
-        messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        execution_mode=execution_mode,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="call_llm",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+    )
+    try:
+        result = _call_llm_impl(
+            model,
+            messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            execution_mode=execution_mode,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="text",
+            caller="call_llm",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+        )
+        raise
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        latency_s=time.monotonic() - started_at,
+    )
+    return result
 
 
 def call_llm_structured(
@@ -2626,7 +2808,8 @@ def call_llm_structured(
         model: Model name
         messages: Chat messages in OpenAI format
         response_model: Pydantic model class to extract
-        timeout: Request timeout in seconds
+        timeout: Provider request timeout in seconds. This is a transport
+                 control, not the primary liveness mechanism for the call.
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
@@ -2642,26 +2825,85 @@ def call_llm_structured(
     """
     from llm_client.structured_runtime import _call_llm_structured_impl
 
-    return _call_llm_structured_impl(
-        model,
-        messages,
-        response_model,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="call_llm_structured",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+    )
+    try:
+        parsed, result = _call_llm_structured_impl(
+            model,
+            messages,
+            response_model,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="structured",
+            caller="call_llm_structured",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+        )
+        raise
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        latency_s=time.monotonic() - started_at,
+    )
+    return parsed, result
 
 
 def call_llm_with_tools(
@@ -2766,7 +3008,8 @@ async def acall_llm(
                "anthropic/claude-sonnet-4-5-20250929",
                "claude-code", "claude-code/opus")
         messages: Chat messages in OpenAI format
-        timeout: Request timeout in seconds
+        timeout: Provider request timeout in seconds. This is a transport
+                 control, not the primary liveness mechanism for the call.
         num_retries: Number of retries on transient failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
@@ -2786,26 +3029,85 @@ async def acall_llm(
     """
     from llm_client.text_runtime import _acall_llm_impl
 
-    return await _acall_llm_impl(
-        model,
-        messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        execution_mode=execution_mode,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="acall_llm",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+    )
+    try:
+        result = await _acall_llm_impl(
+            model,
+            messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            execution_mode=execution_mode,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="text",
+            caller="acall_llm",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+        )
+        raise
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        latency_s=time.monotonic() - started_at,
+    )
+    return result
 
 
 async def acall_llm_structured(
@@ -2839,7 +3141,8 @@ async def acall_llm_structured(
         model: Model name
         messages: Chat messages in OpenAI format
         response_model: Pydantic model class to extract
-        timeout: Request timeout in seconds
+        timeout: Provider request timeout in seconds. This is a transport
+                 control, not the primary liveness mechanism for the call.
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
@@ -2855,26 +3158,85 @@ async def acall_llm_structured(
     """
     from llm_client.structured_runtime import _acall_llm_structured_impl
 
-    return await _acall_llm_structured_impl(
-        model,
-        messages,
-        response_model,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="acall_llm_structured",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+    )
+    try:
+        parsed, result = await _acall_llm_structured_impl(
+            model,
+            messages,
+            response_model,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="structured",
+            caller="acall_llm_structured",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+        )
+        raise
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        latency_s=time.monotonic() - started_at,
+    )
+    return parsed, result
 
 
 async def acall_llm_with_tools(

@@ -235,6 +235,60 @@ class TestCallLLM:
         assert "prompt_ref" not in provider_kwargs
         assert mock_log_call.call_args.kwargs["prompt_ref"] == "shared.investigation_pipeline.collect@1"
 
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_call_llm_emits_lifecycle_foundation_events(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Sync text calls should emit started and completed lifecycle events."""
+        mock_comp.return_value = _mock_response()
+
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            prompt_ref="shared.test.prompt@1",
+            task="test",
+            trace_id="trace.lifecycle.sync",
+            max_budget=0,
+        )
+
+        assert mock_log_foundation_event.call_count == 2
+        started = mock_log_foundation_event.call_args_list[0].kwargs["event"]
+        completed = mock_log_foundation_event.call_args_list[1].kwargs["event"]
+        assert started["event_type"] == "LLMCallLifecycle"
+        assert started["llm_call_lifecycle"]["phase"] == "started"
+        assert started["llm_call_lifecycle"]["requested_model_id"] == "gpt-4"
+        assert completed["llm_call_lifecycle"]["phase"] == "completed"
+        assert completed["llm_call_lifecycle"]["resolved_model_id"] == "gpt-4"
+        assert completed["llm_call_lifecycle"]["call_id"] == started["llm_call_lifecycle"]["call_id"]
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion", side_effect=RuntimeError("provider boom"))
+    def test_call_llm_failure_emits_failed_lifecycle_event(
+        self,
+        mock_comp: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Sync text failures should emit a terminal lifecycle failure event."""
+        with pytest.raises(LLMError, match="provider boom"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                task="test",
+                trace_id="trace.lifecycle.sync.fail",
+                max_budget=0,
+            )
+
+        assert mock_log_foundation_event.call_count == 2
+        failed = mock_log_foundation_event.call_args_list[1].kwargs["event"]
+        assert failed["llm_call_lifecycle"]["phase"] == "failed"
+        assert failed["llm_call_lifecycle"]["error_type"] == "RuntimeError"
+        assert failed["llm_call_lifecycle"]["error_message"] == "provider boom"
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")
     def test_timeout_policy_ban_omits_timeout(
@@ -565,6 +619,34 @@ class TestFinishReasonAndRawResponse:
         result = await acall_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_raw_response", max_budget=0)
         assert result.raw_response is resp
 
+    @pytest.mark.asyncio
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_acall_llm_emits_lifecycle_foundation_events(
+        self,
+        mock_acomp: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Async text calls should emit started and completed lifecycle events."""
+        mock_acomp.return_value = _mock_response()
+
+        await acall_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="trace.lifecycle.async",
+            max_budget=0,
+        )
+
+        assert mock_log_foundation_event.call_count == 2
+        started = mock_log_foundation_event.call_args_list[0].kwargs["event"]
+        completed = mock_log_foundation_event.call_args_list[1].kwargs["event"]
+        assert started["llm_call_lifecycle"]["phase"] == "started"
+        assert completed["llm_call_lifecycle"]["phase"] == "completed"
+        assert completed["llm_call_lifecycle"]["call_id"] == started["llm_call_lifecycle"]["call_id"]
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("instructor.from_litellm")
     def test_structured_finish_reason_extracted(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
@@ -590,6 +672,44 @@ class TestFinishReasonAndRawResponse:
         )
         assert meta.finish_reason == "stop"
         assert meta.raw_response is raw_resp
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_call_llm_structured_emits_lifecycle_foundation_events(
+        self,
+        mock_from_litellm: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Sync structured calls should emit started and completed lifecycle events."""
+
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response(finish_reason="stop")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.return_value = (parsed, raw_resp)
+        mock_from_litellm.return_value = mock_client
+
+        result, meta = call_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            task="test",
+            trace_id="trace.lifecycle.structured",
+            max_budget=0,
+        )
+
+        assert result.name == "test"
+        assert meta.resolved_model == "gpt-4"
+        assert mock_log_foundation_event.call_count == 2
+        started = mock_log_foundation_event.call_args_list[0].kwargs["event"]
+        completed = mock_log_foundation_event.call_args_list[1].kwargs["event"]
+        assert started["llm_call_lifecycle"]["phase"] == "started"
+        assert completed["llm_call_lifecycle"]["phase"] == "completed"
+        assert completed["llm_call_lifecycle"]["call_kind"] == "structured"
 
 
 class TestSmartRetry:
