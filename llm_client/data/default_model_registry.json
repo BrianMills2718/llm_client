@@ -193,6 +193,18 @@
         "structured_output": true
       }
     },
+    "fast_extraction": {
+      "description": "Fast structured extraction for high-throughput prompt iteration",
+      "prefer": [
+        "speed",
+        "intelligence",
+        "-cost"
+      ],
+      "require": {
+        "min_intelligence": 35,
+        "structured_output": true
+      }
+    },
     "graph_building": {
       "description": "Knowledge graph construction",
       "prefer": [

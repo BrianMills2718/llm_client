@@ -40,23 +40,30 @@ def _reset():
 class TestGetModel:
     def test_extraction_returns_highest_intelligence_structured(self):
         # available_only=False so we don't need env vars set
-        model = get_model("extraction", available_only=False)
+        model = get_model("extraction", available_only=False, use_performance=False)
         # gpt-5.2-pro has intelligence=50 and structured_output=True (highest)
         assert model == "gpt-5.2-pro"
 
     def test_bulk_cheap_returns_cheapest(self):
-        model = get_model("bulk_cheap", available_only=False)
+        model = get_model("bulk_cheap", available_only=False, use_performance=False)
         # gpt-5-nano is cheapest at $0.14 (via OpenRouter)
         assert model == "openrouter/openai/gpt-5-nano"
 
     def test_budget_extraction_prefers_deepseek_over_lower_floor_graph_model(self):
-        model = get_model("budget_extraction", available_only=False)
+        model = get_model("budget_extraction", available_only=False, use_performance=False)
         # budget_extraction adds a quality floor (intel>=40) before optimizing
         # cost, which excludes grok-4.1-fast (intel=39) and picks deepseek-chat.
         assert model == "openrouter/deepseek/deepseek-chat"
 
+    def test_fast_extraction_prefers_fast_structured_gemini(self):
+        model = get_model("fast_extraction", available_only=False, use_performance=False)
+        # fast_extraction optimizes for speed first, while still requiring
+        # structured output and a usable intelligence floor. Gemini wins that
+        # lane over slower frontier models and lower-intelligence cheap models.
+        assert model == "gemini/gemini-3-flash-preview"
+
     def test_graph_building_returns_cheapest_structured(self):
-        model = get_model("graph_building", available_only=False)
+        model = get_model("graph_building", available_only=False, use_performance=False)
         # cheapest with structured_output and intel>=30:
         # gpt-5-nano (intel=27) fails intel check
         # gemini-2.5-flash-lite (intel=28) fails intel check
@@ -65,19 +72,19 @@ class TestGetModel:
         assert model == "openrouter/x-ai/grok-4.1-fast"
 
     def test_agent_reasoning_filters_high_intelligence(self):
-        model = get_model("agent_reasoning", available_only=False)
+        model = get_model("agent_reasoning", available_only=False, use_performance=False)
         # min_intelligence=42, prefer intelligence
         # gpt-5.2-pro (50), gemini-3-flash (46), gpt-5 (45), deepseek (42)
         assert model == "gpt-5.2-pro"
 
     def test_synthesis_prefers_intelligence_then_cost(self):
-        model = get_model("synthesis", available_only=False)
+        model = get_model("synthesis", available_only=False, use_performance=False)
         # min_intelligence=40, prefer intelligence then -cost
         # gpt-5.2-pro (50), gemini-3-flash (46), gpt-5 (45), deepseek (42)
         assert model == "gpt-5.2-pro"
 
     def test_code_generation_prefers_intelligence_then_speed(self):
-        model = get_model("code_generation", available_only=False)
+        model = get_model("code_generation", available_only=False, use_performance=False)
         # min_intelligence=38, prefer intelligence then speed
         # gpt-5.2-pro (50, speed=5), gemini-3-flash (46, speed=207)
         # gpt-5.2-pro wins on intelligence even though slower
@@ -118,7 +125,7 @@ class TestGetModel:
         with patch.dict(os.environ, env, clear=False):
             for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "DEEPSEEK_API_KEY"]:
                 os.environ.pop(k, None)
-            model = get_model("bulk_cheap", available_only=True)
+            model = get_model("bulk_cheap", available_only=True, use_performance=False)
             assert model == "openrouter/openai/gpt-5-nano"
 
     def test_available_only_no_keys_raises(self):
@@ -133,7 +140,7 @@ class TestGetModel:
             for k in env_clear:
                 os.environ.pop(k, None)
             with pytest.raises(RuntimeError, match="No models qualify"):
-                get_model("extraction", available_only=True)
+                get_model("extraction", available_only=True, use_performance=False)
 
     def test_use_performance_false_ignores_db(self):
         """use_performance=False returns same as static selection."""
