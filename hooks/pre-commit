@@ -53,7 +53,7 @@ fi
 DOC_COUPLING=$(find_script "check_doc_coupling.py")
 if [[ -n "$DOC_COUPLING" ]]; then
     echo "Checking doc-code coupling..."
-    if ! python "$DOC_COUPLING" --strict 2>/dev/null; then
+    if ! python "$DOC_COUPLING" --strict --staged 2>/dev/null; then
         echo ""
         echo "ERROR: Doc-coupling violation detected!"
         echo "Run 'python $DOC_COUPLING --suggest' to see which docs to update."

@@ -240,3 +240,38 @@ def test_validate_foundation_event_llm_call_lifecycle_shape() -> None:
     assert validated["event_type"] == "LLMCallLifecycle"
     assert validated["llm_call_lifecycle"]["phase"] == "completed"
     assert validated["llm_call_lifecycle"]["timeout_policy"] == "allow"
+
+
+def test_validate_foundation_event_llm_call_lifecycle_accepts_heartbeat_phase() -> None:
+    payload = {
+        "event_id": "evt_llm_lifecycle_heartbeat",
+        "event_type": "LLMCallLifecycle",
+        "timestamp": "2026-03-19T00:00:05Z",
+        "run_id": "run_test",
+        "session_id": "sess_test",
+        "actor_id": "service:llm_client:call_runtime:1",
+        "operation": {"name": "call_llm", "version": None},
+        "inputs": {
+            "artifact_ids": [],
+            "params": {
+                "task": "test",
+                "trace_id": "trace.lifecycle",
+                "call_kind": "text",
+            },
+            "bindings": {},
+        },
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "llm_call_lifecycle": {
+            "call_id": "llmcall_test_heartbeat",
+            "phase": "heartbeat",
+            "call_kind": "text",
+            "requested_model_id": "gpt-4",
+            "timeout_policy": "allow",
+            "elapsed_s": 5.0,
+            "heartbeat_interval_s": 1.0,
+            "stall_after_s": 30.0,
+        },
+    }
+    validated = validate_foundation_event(payload)
+    assert validated["llm_call_lifecycle"]["phase"] == "heartbeat"
+    assert validated["llm_call_lifecycle"]["elapsed_s"] == 5.0

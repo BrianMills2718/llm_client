@@ -27,6 +27,7 @@ from llm_client.observability.experiments import (
     get_experiment_aggregates,
 )
 from llm_client.observability.query import (
+    get_active_llm_calls,
     get_background_mode_adoption,
     get_completed_traces,
     get_cost,
@@ -55,6 +56,7 @@ __all__ = [
     "finish_run",
     "get_active_experiment_run_id",
     "get_active_feature_profile",
+    "get_active_llm_calls",
     "get_background_mode_adoption",
     "get_completed_traces",
     "get_cost",

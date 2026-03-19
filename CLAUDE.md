@@ -32,7 +32,7 @@ python ~/projects/project-meta/scripts/audit_governed_repo.py --repo-root "$PWD"
 - Treat `scripts/relationships.yaml` as the machine-readable governance graph for required reading and doc coupling.
 - Preserve the runtime-substrate boundary: project repos should use `llm_client`, not bypass it with direct provider calls.
 - Keep the required call contract explicit: project code must pass `task=`, `trace_id=`, and `max_budget=`.
-- Treat provider request timeouts as transport controls, not the primary liveness mechanism; prefer lifecycle observability and explicit orchestration for long-running calls.
+- Treat provider request timeouts as transport controls, not the primary liveness mechanism; prefer lifecycle observability, heartbeats, non-destructive stall marking, and explicit orchestration for long-running calls.
 - Fail loud on governance drift or missing hook dependencies; the gate should not silently allow unsafe edits.
 - Add observability when changing control-plane behavior so operator review can reconstruct what happened.
 

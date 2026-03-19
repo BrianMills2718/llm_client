@@ -2,6 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
+Last verified: 2026-03-19
 
 ## Context
 
@@ -39,4 +40,3 @@ Negative:
 
 Week 2+: extract pure routing resolver with typed output:
 `resolve_call(request, config) -> ResolvedCallPlan`.
-

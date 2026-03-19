@@ -47,6 +47,7 @@ import json as _json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -218,6 +219,10 @@ from llm_client.openrouter import (  # noqa: F811
 )
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 _LLM_CALL_RUNTIME_ACTOR_ID = "service:llm_client:call_runtime:1"
+_LIFECYCLE_HEARTBEAT_INTERVAL_ENV = "LLM_CLIENT_LIFECYCLE_HEARTBEAT_INTERVAL_S"
+_LIFECYCLE_STALL_AFTER_ENV = "LLM_CLIENT_LIFECYCLE_STALL_AFTER_S"
+_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S = 15.0
+_DEFAULT_LIFECYCLE_STALL_AFTER_S = 300.0
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -1245,10 +1250,52 @@ def _provider_timeout_for_lifecycle(timeout: Any) -> int:
     return max(parsed, 0)
 
 
+def _normalize_lifecycle_seconds(
+    value: Any,
+    *,
+    default: float,
+) -> float:
+    """Normalize heartbeat/stall thresholds from caller or env values."""
+    if value is None:
+        return max(default, 0.0)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed <= 0:
+        return 0.0
+    return parsed
+
+
+def _resolve_lifecycle_monitoring_settings(
+    *,
+    heartbeat_interval: Any,
+    stall_after: Any,
+) -> tuple[float, float]:
+    """Resolve public liveness settings without forwarding them to providers."""
+    heartbeat_default = _normalize_lifecycle_seconds(
+        os.environ.get(_LIFECYCLE_HEARTBEAT_INTERVAL_ENV, _DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S),
+        default=_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S,
+    )
+    stall_default = _normalize_lifecycle_seconds(
+        os.environ.get(_LIFECYCLE_STALL_AFTER_ENV, _DEFAULT_LIFECYCLE_STALL_AFTER_S),
+        default=_DEFAULT_LIFECYCLE_STALL_AFTER_S,
+    )
+    resolved_heartbeat = _normalize_lifecycle_seconds(
+        heartbeat_interval,
+        default=heartbeat_default,
+    )
+    resolved_stall = _normalize_lifecycle_seconds(
+        stall_after,
+        default=stall_default,
+    )
+    return resolved_heartbeat, resolved_stall
+
+
 def _emit_llm_call_lifecycle_event(
     *,
     call_id: str,
-    phase: Literal["started", "completed", "failed"],
+    phase: Literal["started", "heartbeat", "stalled", "completed", "failed"],
     call_kind: Literal["text", "structured"],
     caller: str,
     task: str,
@@ -1258,6 +1305,9 @@ def _emit_llm_call_lifecycle_event(
     prompt_ref: str | None,
     resolved_model: str | None = None,
     latency_s: float | None = None,
+    elapsed_s: float | None = None,
+    heartbeat_interval_s: float | None = None,
+    stall_after_s: float | None = None,
     error: Exception | None = None,
 ) -> None:
     """Emit a Foundation-backed lifecycle event for one public non-streaming call.
@@ -1303,7 +1353,10 @@ def _emit_llm_call_lifecycle_event(
                 "provider_timeout_s": provider_timeout_s if provider_timeout_s > 0 else None,
                 "timeout_policy": _timeout_policy_label(),
                 "prompt_ref": prompt_ref,
+                "elapsed_s": elapsed_s,
                 "latency_s": latency_s,
+                "heartbeat_interval_s": heartbeat_interval_s if heartbeat_interval_s and heartbeat_interval_s > 0 else None,
+                "stall_after_s": stall_after_s if stall_after_s and stall_after_s > 0 else None,
                 "error_type": _llm_lifecycle_error_type(error) if error is not None else None,
                 "error_message": _llm_lifecycle_error_message(error) if error is not None else None,
             },
@@ -1312,6 +1365,209 @@ def _emit_llm_call_lifecycle_event(
         task=task,
         trace_id=trace_id,
     )
+
+
+class _SyncLLMCallHeartbeatMonitor:
+    """Emit heartbeat and stall lifecycle events while a sync call is in flight."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        call_kind: Literal["text", "structured"],
+        caller: str,
+        task: str,
+        trace_id: str,
+        requested_model: str,
+        provider_timeout_s: int,
+        prompt_ref: str | None,
+        heartbeat_interval_s: float,
+        stall_after_s: float,
+        started_at: float,
+    ) -> None:
+        self.call_id = call_id
+        self.call_kind = call_kind
+        self.caller = caller
+        self.task = task
+        self.trace_id = trace_id
+        self.requested_model = requested_model
+        self.provider_timeout_s = provider_timeout_s
+        self.prompt_ref = prompt_ref
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.stall_after_s = stall_after_s
+        self.started_at = started_at
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the background liveness monitor when thresholds are enabled."""
+        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"llm-call-heartbeat-{self.call_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the monitor and wait briefly for clean exit."""
+        if self._thread is None:
+            return
+        self._stop_event.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        """Emit in-flight lifecycle markers until the wrapped call terminates."""
+        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
+        stalled_emitted = False
+        while True:
+            elapsed = time.monotonic() - self.started_at
+            waits: list[float] = []
+            if next_heartbeat is not None:
+                waits.append(max(next_heartbeat - elapsed, 0.001))
+            if self.stall_after_s > 0 and not stalled_emitted:
+                waits.append(max(self.stall_after_s - elapsed, 0.001))
+            if not waits:
+                return
+            if self._stop_event.wait(min(waits)):
+                return
+            elapsed = time.monotonic() - self.started_at
+            if next_heartbeat is not None and elapsed >= next_heartbeat:
+                _emit_llm_call_lifecycle_event(
+                    call_id=self.call_id,
+                    phase="heartbeat",
+                    call_kind=self.call_kind,
+                    caller=self.caller,
+                    task=self.task,
+                    trace_id=self.trace_id,
+                    requested_model=self.requested_model,
+                    provider_timeout_s=self.provider_timeout_s,
+                    prompt_ref=self.prompt_ref,
+                    elapsed_s=elapsed,
+                    heartbeat_interval_s=self.heartbeat_interval_s,
+                    stall_after_s=self.stall_after_s,
+                )
+                while next_heartbeat is not None and elapsed >= next_heartbeat:
+                    next_heartbeat += self.heartbeat_interval_s
+            if self.stall_after_s > 0 and not stalled_emitted and elapsed >= self.stall_after_s:
+                _emit_llm_call_lifecycle_event(
+                    call_id=self.call_id,
+                    phase="stalled",
+                    call_kind=self.call_kind,
+                    caller=self.caller,
+                    task=self.task,
+                    trace_id=self.trace_id,
+                    requested_model=self.requested_model,
+                    provider_timeout_s=self.provider_timeout_s,
+                    prompt_ref=self.prompt_ref,
+                    elapsed_s=elapsed,
+                    heartbeat_interval_s=self.heartbeat_interval_s,
+                    stall_after_s=self.stall_after_s,
+                )
+                stalled_emitted = True
+
+
+class _AsyncLLMCallHeartbeatMonitor:
+    """Emit heartbeat and stall lifecycle events while an async call is in flight."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        call_kind: Literal["text", "structured"],
+        caller: str,
+        task: str,
+        trace_id: str,
+        requested_model: str,
+        provider_timeout_s: int,
+        prompt_ref: str | None,
+        heartbeat_interval_s: float,
+        stall_after_s: float,
+        started_at: float,
+    ) -> None:
+        self.call_id = call_id
+        self.call_kind = call_kind
+        self.caller = caller
+        self.task = task
+        self.trace_id = trace_id
+        self.requested_model = requested_model
+        self.provider_timeout_s = provider_timeout_s
+        self.prompt_ref = prompt_ref
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.stall_after_s = stall_after_s
+        self.started_at = started_at
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Start the async heartbeat task when thresholds are enabled."""
+        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
+            return
+        self._task = asyncio.create_task(
+            self._run(),
+            name=f"llm-call-heartbeat-{self.call_id}",
+        )
+
+    async def stop(self) -> None:
+        """Stop the heartbeat task and await clean exit."""
+        if self._task is None:
+            return
+        self._stop_event.set()
+        await self._task
+
+    async def _run(self) -> None:
+        """Emit in-flight lifecycle markers until the wrapped async call terminates."""
+        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
+        stalled_emitted = False
+        while True:
+            elapsed = time.monotonic() - self.started_at
+            waits: list[float] = []
+            if next_heartbeat is not None:
+                waits.append(max(next_heartbeat - elapsed, 0.001))
+            if self.stall_after_s > 0 and not stalled_emitted:
+                waits.append(max(self.stall_after_s - elapsed, 0.001))
+            if not waits:
+                return
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=min(waits))
+                return
+            except TimeoutError:
+                pass
+            elapsed = time.monotonic() - self.started_at
+            if next_heartbeat is not None and elapsed >= next_heartbeat:
+                _emit_llm_call_lifecycle_event(
+                    call_id=self.call_id,
+                    phase="heartbeat",
+                    call_kind=self.call_kind,
+                    caller=self.caller,
+                    task=self.task,
+                    trace_id=self.trace_id,
+                    requested_model=self.requested_model,
+                    provider_timeout_s=self.provider_timeout_s,
+                    prompt_ref=self.prompt_ref,
+                    elapsed_s=elapsed,
+                    heartbeat_interval_s=self.heartbeat_interval_s,
+                    stall_after_s=self.stall_after_s,
+                )
+                while next_heartbeat is not None and elapsed >= next_heartbeat:
+                    next_heartbeat += self.heartbeat_interval_s
+            if self.stall_after_s > 0 and not stalled_emitted and elapsed >= self.stall_after_s:
+                _emit_llm_call_lifecycle_event(
+                    call_id=self.call_id,
+                    phase="stalled",
+                    call_kind=self.call_kind,
+                    caller=self.caller,
+                    task=self.task,
+                    trace_id=self.trace_id,
+                    requested_model=self.requested_model,
+                    provider_timeout_s=self.provider_timeout_s,
+                    prompt_ref=self.prompt_ref,
+                    elapsed_s=elapsed,
+                    heartbeat_interval_s=self.heartbeat_interval_s,
+                    stall_after_s=self.stall_after_s,
+                )
+                stalled_emitted = True
 
 
 def _strip_incompatible_sampling_params(model: str, call_kwargs: dict[str, Any]) -> list[str]:
@@ -2682,8 +2938,13 @@ def call_llm(
             or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm.completion
                   (e.g., temperature, max_tokens, stream).
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
                   For GPT-5 models, response_format is automatically
                   converted and max_tokens is stripped.
                   For agent models, agent-specific kwargs are extracted:
@@ -2707,6 +2968,10 @@ def call_llm(
     effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
 
     runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
     runtime_kwargs["task"] = resolved_task
     runtime_kwargs["trace_id"] = resolved_trace_id
     runtime_kwargs["max_budget"] = resolved_max_budget
@@ -2724,7 +2989,23 @@ def call_llm(
         requested_model=model,
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
+    monitor = _SyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    monitor.start()
     try:
         result = _call_llm_impl(
             model,
@@ -2747,6 +3028,7 @@ def call_llm(
             **runtime_kwargs,
         )
     except Exception as exc:
+        monitor.stop()
         _emit_llm_call_lifecycle_event(
             call_id=call_id,
             phase="failed",
@@ -2759,8 +3041,12 @@ def call_llm(
             prompt_ref=normalized_prompt_ref,
             latency_s=time.monotonic() - started_at,
             error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
         )
         raise
+    monitor.stop()
+    elapsed_s = time.monotonic() - started_at
     _emit_llm_call_lifecycle_event(
         call_id=call_id,
         phase="completed",
@@ -2772,7 +3058,10 @@ def call_llm(
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
         resolved_model=result.resolved_model or str(result.model or "") or None,
-        latency_s=time.monotonic() - started_at,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
     return result
 
@@ -2817,8 +3106,13 @@ def call_llm_structured(
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
@@ -2836,6 +3130,10 @@ def call_llm_structured(
     effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
 
     runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
     runtime_kwargs["task"] = resolved_task
     runtime_kwargs["trace_id"] = resolved_trace_id
     runtime_kwargs["max_budget"] = resolved_max_budget
@@ -2853,7 +3151,23 @@ def call_llm_structured(
         requested_model=model,
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
+    monitor = _SyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    monitor.start()
     try:
         parsed, result = _call_llm_structured_impl(
             model,
@@ -2876,6 +3190,7 @@ def call_llm_structured(
             **runtime_kwargs,
         )
     except Exception as exc:
+        monitor.stop()
         _emit_llm_call_lifecycle_event(
             call_id=call_id,
             phase="failed",
@@ -2888,8 +3203,12 @@ def call_llm_structured(
             prompt_ref=normalized_prompt_ref,
             latency_s=time.monotonic() - started_at,
             error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
         )
         raise
+    monitor.stop()
+    elapsed_s = time.monotonic() - started_at
     _emit_llm_call_lifecycle_event(
         call_id=call_id,
         phase="completed",
@@ -2901,7 +3220,10 @@ def call_llm_structured(
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
         resolved_model=result.resolved_model or str(result.model or "") or None,
-        latency_s=time.monotonic() - started_at,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
     return parsed, result
 
@@ -3020,8 +3342,13 @@ async def acall_llm(
             ``"text"`` (default), ``"structured"``, ``"workspace_agent"``,
             or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         LLMCallResult with content, usage, cost, model, tool_calls,
@@ -3040,6 +3367,10 @@ async def acall_llm(
     effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
 
     runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
     runtime_kwargs["task"] = resolved_task
     runtime_kwargs["trace_id"] = resolved_trace_id
     runtime_kwargs["max_budget"] = resolved_max_budget
@@ -3057,7 +3388,23 @@ async def acall_llm(
         requested_model=model,
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
+    monitor = _AsyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    monitor.start()
     try:
         result = await _acall_llm_impl(
             model,
@@ -3080,6 +3427,7 @@ async def acall_llm(
             **runtime_kwargs,
         )
     except Exception as exc:
+        await monitor.stop()
         _emit_llm_call_lifecycle_event(
             call_id=call_id,
             phase="failed",
@@ -3092,8 +3440,12 @@ async def acall_llm(
             prompt_ref=normalized_prompt_ref,
             latency_s=time.monotonic() - started_at,
             error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
         )
         raise
+    await monitor.stop()
+    elapsed_s = time.monotonic() - started_at
     _emit_llm_call_lifecycle_event(
         call_id=call_id,
         phase="completed",
@@ -3105,7 +3457,10 @@ async def acall_llm(
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
         resolved_model=result.resolved_model or str(result.model or "") or None,
-        latency_s=time.monotonic() - started_at,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
     return result
 
@@ -3150,8 +3505,13 @@ async def acall_llm_structured(
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.acompletion.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
@@ -3169,6 +3529,10 @@ async def acall_llm_structured(
     effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
 
     runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
     runtime_kwargs["task"] = resolved_task
     runtime_kwargs["trace_id"] = resolved_trace_id
     runtime_kwargs["max_budget"] = resolved_max_budget
@@ -3186,7 +3550,23 @@ async def acall_llm_structured(
         requested_model=model,
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
+    monitor = _AsyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    monitor.start()
     try:
         parsed, result = await _acall_llm_structured_impl(
             model,
@@ -3209,6 +3589,7 @@ async def acall_llm_structured(
             **runtime_kwargs,
         )
     except Exception as exc:
+        await monitor.stop()
         _emit_llm_call_lifecycle_event(
             call_id=call_id,
             phase="failed",
@@ -3221,8 +3602,12 @@ async def acall_llm_structured(
             prompt_ref=normalized_prompt_ref,
             latency_s=time.monotonic() - started_at,
             error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
         )
         raise
+    await monitor.stop()
+    elapsed_s = time.monotonic() - started_at
     _emit_llm_call_lifecycle_event(
         call_id=call_id,
         phase="completed",
@@ -3234,7 +3619,10 @@ async def acall_llm_structured(
         provider_timeout_s=effective_provider_timeout,
         prompt_ref=normalized_prompt_ref,
         resolved_model=result.resolved_model or str(result.model or "") or None,
-        latency_s=time.monotonic() - started_at,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
     )
     return parsed, result
 
@@ -3876,3 +4264,36 @@ async def aembed(
         trace_id=trace_id,
         **kwargs,
     )
+
+
+__all__ = [
+    "AsyncCachePolicy",
+    "AsyncLLMStream",
+    "CachePolicy",
+    "EmbeddingResult",
+    "Hooks",
+    "LLMCallResult",
+    "LLMStream",
+    "LRUCache",
+    "RetryPolicy",
+    "acall_llm",
+    "acall_llm_batch",
+    "acall_llm_structured",
+    "acall_llm_structured_batch",
+    "acall_llm_with_tools",
+    "aembed",
+    "astream_llm",
+    "astream_llm_with_tools",
+    "call_llm",
+    "call_llm_batch",
+    "call_llm_structured",
+    "call_llm_structured_batch",
+    "call_llm_with_tools",
+    "embed",
+    "exponential_backoff",
+    "fixed_backoff",
+    "linear_backoff",
+    "stream_llm",
+    "stream_llm_with_tools",
+    "strip_fences",
+]

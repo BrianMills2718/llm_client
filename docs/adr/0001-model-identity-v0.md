@@ -2,6 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
+Last verified: 2026-03-19
 
 ## Context
 
@@ -49,4 +50,3 @@ Negative:
 
 After router extraction (`resolve_call -> ResolvedCallPlan`) and shared kernel
 work, propose a follow-up ADR to unify or deprecate ambiguous `model` usage.
-

@@ -289,6 +289,42 @@ class TestCallLLM:
         assert failed["llm_call_lifecycle"]["error_type"] == "RuntimeError"
         assert failed["llm_call_lifecycle"]["error_message"] == "provider boom"
 
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_call_llm_emits_heartbeat_and_stalled_lifecycle_events(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Slow sync text calls should emit heartbeat and stalled events before completion."""
+
+        def _slow_completion(**_: object) -> MagicMock:
+            client_mod.time.sleep(0.05)
+            return _mock_response()
+
+        mock_comp.side_effect = _slow_completion
+
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="trace.lifecycle.sync.slow",
+            max_budget=0,
+            lifecycle_heartbeat_interval_s=0.01,
+            lifecycle_stall_after_s=0.02,
+        )
+
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert "heartbeat" in phases
+        assert "stalled" in phases
+        assert phases[-1] == "completed"
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")
     def test_timeout_policy_ban_omits_timeout(
@@ -647,6 +683,42 @@ class TestFinishReasonAndRawResponse:
         assert completed["llm_call_lifecycle"]["phase"] == "completed"
         assert completed["llm_call_lifecycle"]["call_id"] == started["llm_call_lifecycle"]["call_id"]
 
+    @pytest.mark.asyncio
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_acall_llm_emits_heartbeat_lifecycle_events(
+        self,
+        mock_acomp: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Slow async text calls should emit heartbeat lifecycle events while in flight."""
+
+        async def _slow_acompletion(**_: object) -> MagicMock:
+            await client_mod.asyncio.sleep(0.05)
+            return _mock_response()
+
+        mock_acomp.side_effect = _slow_acompletion
+
+        await acall_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="trace.lifecycle.async.slow",
+            max_budget=0,
+            lifecycle_heartbeat_interval_s=0.01,
+            lifecycle_stall_after_s=0.03,
+        )
+
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert "heartbeat" in phases
+        assert phases[-1] == "completed"
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("instructor.from_litellm")
     def test_structured_finish_reason_extracted(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
@@ -710,6 +782,52 @@ class TestFinishReasonAndRawResponse:
         assert started["llm_call_lifecycle"]["phase"] == "started"
         assert completed["llm_call_lifecycle"]["phase"] == "completed"
         assert completed["llm_call_lifecycle"]["call_kind"] == "structured"
+
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("instructor.from_litellm")
+    def test_call_llm_structured_emits_heartbeat_lifecycle_events(
+        self,
+        mock_from_litellm: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Slow sync structured calls should emit heartbeat lifecycle events."""
+
+        class Item(BaseModel):
+            name: str
+
+        parsed = Item(name="test")
+        raw_resp = _mock_response(finish_reason="stop")
+
+        def _slow_create_with_completion(**_: object) -> tuple[Item, MagicMock]:
+            client_mod.time.sleep(0.05)
+            return parsed, raw_resp
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create_with_completion.side_effect = (
+            _slow_create_with_completion
+        )
+        mock_from_litellm.return_value = mock_client
+
+        call_llm_structured(
+            "gpt-4",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            task="test",
+            trace_id="trace.lifecycle.structured.slow",
+            max_budget=0,
+            lifecycle_heartbeat_interval_s=0.01,
+            lifecycle_stall_after_s=0.03,
+        )
+
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert "heartbeat" in phases
+        assert phases[-1] == "completed"
 
 
 class TestSmartRetry:

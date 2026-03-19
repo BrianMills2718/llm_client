@@ -2,6 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
+Last verified: 2026-03-19
 
 ## Context
 
@@ -34,4 +35,3 @@ Negative:
 
 Add stable warning codes (`LLMC_WARN_*`) with structured metadata once
 router/kernel contracts are stabilized.
-

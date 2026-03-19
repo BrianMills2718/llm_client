@@ -521,6 +521,78 @@ class TestGetTraceTree:
         assert t["task"] == "extraction"
 
 
+class TestGetActiveLLMCalls:
+    def _log_lifecycle_event(
+        self,
+        *,
+        phase: str,
+        call_id: str,
+        timestamp: str,
+        trace_id: str = "trace.active",
+        task: str = "test",
+    ) -> None:
+        io_log.log_foundation_event(
+            caller="test",
+            task=task,
+            trace_id=trace_id,
+            event={
+                "event_id": f"evt_{call_id}_{phase}",
+                "event_type": "LLMCallLifecycle",
+                "timestamp": timestamp,
+                "run_id": "run_trace_active",
+                "session_id": f"sess_{call_id}",
+                "actor_id": "service:llm_client:call_runtime:1",
+                "operation": {"name": "call_llm", "version": None},
+                "inputs": {
+                    "artifact_ids": [],
+                    "params": {
+                        "task": task,
+                        "trace_id": trace_id,
+                        "call_kind": "text",
+                    },
+                    "bindings": {},
+                },
+                "outputs": {"artifact_ids": [], "payload_hashes": []},
+                "llm_call_lifecycle": {
+                    "call_id": call_id,
+                    "phase": phase,
+                    "call_kind": "text",
+                    "requested_model_id": "gpt-4",
+                    "timeout_policy": "allow",
+                    "elapsed_s": 5.0,
+                },
+            },
+        )
+
+    def test_get_active_llm_calls_returns_latest_non_terminal_lifecycle_state(self, tmp_path):
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_active",
+            timestamp="2026-03-19T10:00:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_active",
+            timestamp="2026-03-19T10:00:10Z",
+        )
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_done",
+            timestamp="2026-03-19T10:01:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="completed",
+            call_id="llmcall_done",
+            timestamp="2026-03-19T10:01:05Z",
+        )
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_active"
+        assert active[0]["phase"] == "heartbeat"
+        assert active[0]["trace_id"] == "trace.active"
+
+
 class TestBackgroundModeAdoption:
     def test_summarizes_task_graph_experiment_dimensions(self, tmp_path):
         experiments = tmp_path / "experiments.jsonl"
