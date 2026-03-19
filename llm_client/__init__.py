@@ -320,6 +320,7 @@ from llm_client.client import (
     stream_llm_with_tools,
     strip_fences,
 )
+from llm_client.data_types import TurnEvent
 
 _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "LLMAuthError",
@@ -342,6 +343,7 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "LLMCallResult",
     "LLMStream",
     "LRUCache",
+    "TurnEvent",
     "ClientConfig",
     "CallRequest",
     "ResolvedCallPlan",

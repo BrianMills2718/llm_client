@@ -100,6 +100,34 @@ class EmbeddingResult:
     model: str
 
 
+@dataclass
+class TurnEvent:
+    """Best-effort progress event for agent-style SDK calls.
+
+    This event gives callers incremental visibility into long-running agent
+    executions without changing the final ``LLMCallResult`` contract. The
+    fields are intentionally small and transport-friendly so callbacks can log
+    or display progress without depending on provider-specific response types.
+
+    Notes:
+        - ``turn`` is a 1-based ordinal for the observed agent turn/event.
+        - ``elapsed_s`` is wall-clock time since the agent call started.
+        - ``tool_calls`` contains any tool invocations visible for that turn.
+        - ``text_preview`` is a short assistant-text preview and may be empty
+          for tool-only turns.
+
+    The callback surface is best-effort rather than provider-identical:
+    Claude-style SDKs can emit true per-turn updates, while Codex currently
+    emits a completion event because the SDK does not expose richer
+    intermediate turn hooks.
+    """
+
+    turn: int
+    elapsed_s: float
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    text_preview: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Cache infrastructure
 # ---------------------------------------------------------------------------
