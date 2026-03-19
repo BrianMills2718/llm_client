@@ -1,9 +1,12 @@
 """Persistent I/O logging for LLM calls and embeddings.
 
 Appends one JSONL record per LLM call to:
-    {DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/calls.jsonl
+    {DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/calls_YYYY-MM-DD.jsonl
 Appends one JSONL record per embedding call to:
-    {DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/embeddings.jsonl
+    {DATA_ROOT}/{PROJECT}/{PROJECT}_llm_client_data/embeddings_YYYY-MM-DD.jsonl
+
+Log files are date-stamped to prevent unbounded growth. Old files are
+automatically deleted after a configurable retention period (default 30 days).
 
 Optionally writes both to a SQLite database at LLM_CLIENT_DB_PATH
 (default: ~/projects/data/llm_observability.db).
@@ -11,10 +14,11 @@ Optionally writes both to a SQLite database at LLM_CLIENT_DB_PATH
 Configured via env vars (library convention — llm_client already auto-loads
 from ~/.secrets/api_keys.env):
 
-    LLM_CLIENT_LOG_ENABLED  — "1" (default) or "0" to disable
-    LLM_CLIENT_DATA_ROOT    — base dir (default: ~/projects/data)
-    LLM_CLIENT_PROJECT      — project name (default: basename(os.getcwd()))
-    LLM_CLIENT_DB_PATH      — SQLite DB path (default: ~/projects/data/llm_observability.db)
+    LLM_CLIENT_LOG_ENABLED          — "1" (default) or "0" to disable
+    LLM_CLIENT_DATA_ROOT            — base dir (default: ~/projects/data)
+    LLM_CLIENT_PROJECT              — project name (default: basename(os.getcwd()))
+    LLM_CLIENT_DB_PATH              — SQLite DB path (default: ~/projects/data/llm_observability.db)
+    LLM_CLIENT_LOG_RETENTION_DAYS   — days to keep dated JSONL logs (default: 30)
 
 Or override at runtime via configure().
 """
@@ -81,6 +85,108 @@ _BUILTIN_FEATURE_PROFILES: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+# ---------------------------------------------------------------------------
+# Date-based JSONL log rotation
+# ---------------------------------------------------------------------------
+
+_LOG_RETENTION_DAYS_ENV = "LLM_CLIENT_LOG_RETENTION_DAYS"
+_DEFAULT_LOG_RETENTION_DAYS = 30
+_last_cleanup_date: date | None = None
+_cleanup_lock = threading.Lock()
+
+
+def _get_log_retention_days() -> int:
+    """Return configured log retention in days from env, default 30."""
+    raw = os.environ.get(_LOG_RETENTION_DAYS_ENV, "")
+    if raw.strip().isdigit():
+        return max(1, int(raw.strip()))
+    return _DEFAULT_LOG_RETENTION_DAYS
+
+
+def _dated_jsonl_path(directory: Path, stem: str) -> Path:
+    """Return the date-stamped JSONL path for today, e.g. ``calls_2026-03-19.jsonl``.
+
+    Each day gets a new file, preventing any single file from growing unbounded.
+    """
+    today = date.today().isoformat()
+    return directory / f"{stem}_{today}.jsonl"
+
+
+def _cleanup_old_jsonl(directory: Path, stem: str) -> None:
+    """Delete dated JSONL files older than the retention period.
+
+    Matches files named ``{stem}_YYYY-MM-DD.jsonl`` and removes those whose
+    date is strictly older than ``today - retention_days``. Runs at most once
+    per calendar day per process to avoid unnecessary I/O on every log append.
+    Never raises — cleanup failure must not break logging.
+    """
+    global _last_cleanup_date
+    today = date.today()
+
+    # Fast check outside lock — skip if already cleaned up today
+    if _last_cleanup_date == today:
+        return
+
+    with _cleanup_lock:
+        # Re-check under lock
+        if _last_cleanup_date == today:
+            return
+        _last_cleanup_date = today
+
+    # Do actual cleanup outside the lock — it's idempotent
+    try:
+        retention = _get_log_retention_days()
+        cutoff = today - timedelta(days=retention)
+        pattern = re.compile(rf"^{re.escape(stem)}_(\d{{4}}-\d{{2}}-\d{{2}})\.jsonl$")
+        if not directory.is_dir():
+            return
+        for path in directory.iterdir():
+            m = pattern.match(path.name)
+            if m:
+                try:
+                    file_date = date.fromisoformat(m.group(1))
+                except ValueError:
+                    continue
+                if file_date < cutoff:
+                    path.unlink(missing_ok=True)
+                    logger.debug("Deleted old log file: %s", path)
+    except Exception:
+        logger.debug("_cleanup_old_jsonl failed", exc_info=True)
+
+
+def _append_jsonl(directory: Path, stem: str, record: dict[str, Any]) -> None:
+    """Append a JSON record to today's dated JSONL file and trigger cleanup.
+
+    Writes to ``{directory}/{stem}_YYYY-MM-DD.jsonl``. Triggers cleanup of old
+    files at most once per calendar day. The write completes before any cleanup
+    runs, so no data loss can occur during rotation.
+    """
+    path = _dated_jsonl_path(directory, stem)
+    with open(path, "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+    _cleanup_old_jsonl(directory, stem)
+
+
+def glob_jsonl_files(directory: Path, stem: str) -> list[Path]:
+    """Return all JSONL files for a given stem, both legacy and dated.
+
+    Finds the legacy undated file (``{stem}.jsonl``) and any dated files
+    (``{stem}_YYYY-MM-DD.jsonl``), sorted oldest-first. Useful for readers
+    that need to scan all historical log data.
+    """
+    files: list[Path] = []
+    if not directory.is_dir():
+        return files
+    legacy = directory / f"{stem}.jsonl"
+    if legacy.is_file():
+        files.append(legacy)
+    dated = sorted(
+        p for p in directory.iterdir()
+        if re.match(rf"^{re.escape(stem)}_\d{{4}}-\d{{2}}-\d{{2}}\.jsonl$", p.name)
+    )
+    files.extend(dated)
+    return files
 
 
 def _get_project() -> str:
@@ -637,8 +743,7 @@ def log_call(
             "trace_id": trace_id,
             "prompt_ref": prompt_ref,
         }
-        with open(d / "calls.jsonl", "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        _append_jsonl(d, "calls", record)
 
         # SQLite dual-write
         _write_call_to_db(
@@ -701,8 +806,7 @@ def log_embedding(
             "task": task,
             "trace_id": trace_id,
         }
-        with open(d / "embeddings.jsonl", "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        _append_jsonl(d, "embeddings", record)
 
         # SQLite dual-write
         _write_embedding_to_db(
@@ -754,8 +858,7 @@ def log_foundation_event(
             "event_type": event_type or None,
             "event": normalized_event,
         }
-        with open(d / "foundation_events.jsonl", "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        _append_jsonl(d, "foundation_events", record)
 
         _write_foundation_event_to_db(
             timestamp=timestamp,
@@ -1154,8 +1257,12 @@ def _write_foundation_event_to_db(
 def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
     """Import existing JSONL records into SQLite. Returns count imported.
 
+    Works with both legacy undated files (``calls.jsonl``) and dated files
+    (``calls_2026-03-19.jsonl``). Use ``glob_jsonl_files()`` to discover all
+    files for a given stem.
+
     Args:
-        jsonl_path: Path to the JSONL file (calls.jsonl or embeddings.jsonl).
+        jsonl_path: Path to the JSONL file (e.g. calls.jsonl or calls_2026-03-19.jsonl).
         table: Target table — "llm_calls" or "embeddings".
 
     Returns:
@@ -1281,8 +1388,7 @@ def log_score(
             "trace_id": trace_id,
             "git_commit": git_commit,
         }
-        with open(d / "scores.jsonl", "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        _append_jsonl(d, "scores", record)
 
         # SQLite write
         db = _get_db()

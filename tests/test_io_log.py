@@ -1,15 +1,22 @@
 """Tests for llm_client.io_log — JSONL logging, embedding logging, SQLite DB."""
 
 import json
+import os
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from llm_client import io_log
+
+
+def _today_jsonl(tmp_path: Path, stem: str) -> Path:
+    """Return the expected dated JSONL path for today inside the test log dir."""
+    today = date.today().isoformat()
+    return tmp_path / "test_project" / "test_project_llm_client_data" / f"{stem}_{today}.jsonl"
 
 
 @pytest.fixture(autouse=True)
@@ -20,12 +27,14 @@ def _isolate_io_log(tmp_path):
     old_project = io_log._project
     old_db_path = io_log._db_path
     old_db_conn = io_log._db_conn
+    old_last_cleanup = io_log._last_cleanup_date
 
     io_log._enabled = True
     io_log._data_root = tmp_path
     io_log._project = "test_project"
     io_log._db_path = tmp_path / "test.db"
     io_log._db_conn = None
+    io_log._last_cleanup_date = None
 
     yield tmp_path
 
@@ -36,6 +45,7 @@ def _isolate_io_log(tmp_path):
     if io_log._db_conn is not None:
         io_log._db_conn.close()
     io_log._db_conn = old_db_conn
+    io_log._last_cleanup_date = old_last_cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +58,7 @@ class TestLogCall:
         result = MagicMock(content="hello", usage={"prompt_tokens": 10, "total_tokens": 20}, cost=0.001, finish_reason="stop")
         io_log.log_call(model="gpt-5", result=result, latency_s=1.5, task="test_task")
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        log_file = _today_jsonl(tmp_path, "calls")
         assert log_file.exists()
         record = json.loads(log_file.read_text().strip())
         assert record["model"] == "gpt-5"
@@ -73,14 +83,14 @@ class TestLogCall:
     def test_disabled_skips_logging(self, tmp_path):
         io_log._enabled = False
         io_log.log_call(model="gpt-5", latency_s=1.0)
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        log_file = _today_jsonl(tmp_path, "calls")
         assert not log_file.exists()
 
     def test_trace_id_jsonl(self, tmp_path):
         result = MagicMock(content="hi", usage={}, cost=0.0, finish_reason="stop")
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_abc")
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        log_file = _today_jsonl(tmp_path, "calls")
         record = json.loads(log_file.read_text().strip())
         assert record["trace_id"] == "trace_abc"
 
@@ -103,7 +113,7 @@ class TestLogCall:
             prompt_ref="shared.investigation_pipeline.collect@1",
         )
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        log_file = _today_jsonl(tmp_path, "calls")
         record = json.loads(log_file.read_text().strip())
         assert record["prompt_ref"] == "shared.investigation_pipeline.collect@1"
 
@@ -115,7 +125,7 @@ class TestLogCall:
     def test_error_logged(self, tmp_path):
         io_log.log_call(model="gpt-5", error=ValueError("boom"), latency_s=0.5)
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "calls.jsonl"
+        log_file = _today_jsonl(tmp_path, "calls")
         record = json.loads(log_file.read_text().strip())
         assert record["error"] == "boom"
 
@@ -143,7 +153,7 @@ class TestLogEmbedding:
             task="vdb_build",
         )
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        log_file = _today_jsonl(tmp_path, "embeddings")
         assert log_file.exists()
         record = json.loads(log_file.read_text().strip())
         assert record["model"] == "text-embedding-3-small"
@@ -187,7 +197,7 @@ class TestLogEmbedding:
             model="text-embedding-3-small", input_count=1, input_chars=50,
             dimensions=256, usage={}, cost=0.0, latency_s=0.1, trace_id="emb_trace_1",
         )
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        log_file = _today_jsonl(tmp_path, "embeddings")
         record = json.loads(log_file.read_text().strip())
         assert record["trace_id"] == "emb_trace_1"
 
@@ -210,7 +220,7 @@ class TestLogEmbedding:
             latency_s=5.0,
         )
 
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        log_file = _today_jsonl(tmp_path, "embeddings")
         record = json.loads(log_file.read_text().strip())
         assert record["error"] == "timeout"
         assert record["dimensions"] is None
@@ -218,7 +228,7 @@ class TestLogEmbedding:
     def test_disabled_skips(self, tmp_path):
         io_log._enabled = False
         io_log.log_embedding(model="x", input_count=1, input_chars=10)
-        log_file = tmp_path / "test_project" / "test_project_llm_client_data" / "embeddings.jsonl"
+        log_file = _today_jsonl(tmp_path, "embeddings")
         assert not log_file.exists()
 
 
@@ -369,7 +379,7 @@ class TestLogScoreGitCommit:
             git_commit="def5678",
         )
 
-        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
+        scores_file = _today_jsonl(tmp_path, "scores")
         record = json.loads(scores_file.read_text().strip())
         assert record["git_commit"] == "def5678"
 
@@ -699,3 +709,159 @@ class TestConfigure:
         new_db = tmp_path / "new.db"
         io_log.configure(db_path=new_db)
         assert io_log._db_conn is None
+
+
+# ---------------------------------------------------------------------------
+# Date-based JSONL log rotation
+# ---------------------------------------------------------------------------
+
+
+class TestDateBasedLogRotation:
+    def test_writes_to_dated_file(self, tmp_path):
+        """log_call writes to calls_YYYY-MM-DD.jsonl, not calls.jsonl."""
+        result = MagicMock(content="hi", usage={}, cost=0.0, finish_reason="stop")
+        io_log.log_call(model="gpt-5", result=result, latency_s=1.0, task="test")
+
+        data_dir = tmp_path / "test_project" / "test_project_llm_client_data"
+        today = date.today().isoformat()
+        dated_file = data_dir / f"calls_{today}.jsonl"
+        legacy_file = data_dir / "calls.jsonl"
+
+        assert dated_file.exists(), f"Expected dated file {dated_file}"
+        assert not legacy_file.exists(), "Legacy calls.jsonl should not be created"
+
+        record = json.loads(dated_file.read_text().strip())
+        assert record["model"] == "gpt-5"
+
+    def test_embeddings_write_to_dated_file(self, tmp_path):
+        """log_embedding writes to embeddings_YYYY-MM-DD.jsonl."""
+        io_log.log_embedding(
+            model="text-embedding-3-small", input_count=1, input_chars=50,
+            dimensions=256, usage={}, cost=0.0, latency_s=0.1,
+        )
+        dated_file = _today_jsonl(tmp_path, "embeddings")
+        assert dated_file.exists()
+
+    def test_glob_jsonl_finds_legacy_and_dated(self, tmp_path):
+        """glob_jsonl_files returns both legacy and dated files."""
+        data_dir = tmp_path / "test_project" / "test_project_llm_client_data"
+        data_dir.mkdir(parents=True)
+
+        # Create legacy file
+        (data_dir / "calls.jsonl").write_text('{"model":"old"}\n')
+        # Create dated files
+        (data_dir / "calls_2026-03-17.jsonl").write_text('{"model":"day1"}\n')
+        (data_dir / "calls_2026-03-18.jsonl").write_text('{"model":"day2"}\n')
+        # Create unrelated file that shouldn't match
+        (data_dir / "calls_summary.txt").write_text("ignore")
+
+        files = io_log.glob_jsonl_files(data_dir, "calls")
+        names = [f.name for f in files]
+
+        assert names[0] == "calls.jsonl"  # legacy first
+        assert "calls_2026-03-17.jsonl" in names
+        assert "calls_2026-03-18.jsonl" in names
+        assert len(files) == 3
+
+    def test_glob_jsonl_empty_dir(self, tmp_path):
+        """glob_jsonl_files returns empty list for nonexistent dir."""
+        files = io_log.glob_jsonl_files(tmp_path / "nonexistent", "calls")
+        assert files == []
+
+    def test_cleanup_deletes_old_files(self, tmp_path):
+        """_cleanup_old_jsonl removes files older than retention period."""
+        data_dir = tmp_path / "test_project" / "test_project_llm_client_data"
+        data_dir.mkdir(parents=True)
+
+        today = date.today()
+        old_date = (today - timedelta(days=60)).isoformat()
+        recent_date = (today - timedelta(days=5)).isoformat()
+        today_str = today.isoformat()
+
+        old_file = data_dir / f"calls_{old_date}.jsonl"
+        recent_file = data_dir / f"calls_{recent_date}.jsonl"
+        today_file = data_dir / f"calls_{today_str}.jsonl"
+        legacy_file = data_dir / "calls.jsonl"
+
+        for f in (old_file, recent_file, today_file, legacy_file):
+            f.write_text('{"model":"test"}\n')
+
+        io_log._cleanup_old_jsonl(data_dir, "calls")
+
+        assert not old_file.exists(), "60-day-old file should be deleted"
+        assert recent_file.exists(), "5-day-old file should be kept"
+        assert today_file.exists(), "Today's file should be kept"
+        assert legacy_file.exists(), "Legacy file should not be touched"
+
+    def test_cleanup_respects_retention_env(self, tmp_path, monkeypatch):
+        """Retention period is configurable via LLM_CLIENT_LOG_RETENTION_DAYS."""
+        data_dir = tmp_path / "test_project" / "test_project_llm_client_data"
+        data_dir.mkdir(parents=True)
+
+        monkeypatch.setenv("LLM_CLIENT_LOG_RETENTION_DAYS", "7")
+
+        today = date.today()
+        eight_days_ago = (today - timedelta(days=8)).isoformat()
+        six_days_ago = (today - timedelta(days=6)).isoformat()
+
+        old_file = data_dir / f"calls_{eight_days_ago}.jsonl"
+        recent_file = data_dir / f"calls_{six_days_ago}.jsonl"
+        old_file.write_text('{"model":"old"}\n')
+        recent_file.write_text('{"model":"recent"}\n')
+
+        io_log._cleanup_old_jsonl(data_dir, "calls")
+
+        assert not old_file.exists(), "8-day-old file should be deleted with 7-day retention"
+        assert recent_file.exists(), "6-day-old file should be kept with 7-day retention"
+
+    def test_cleanup_runs_once_per_day(self, tmp_path):
+        """Cleanup only runs once per calendar day."""
+        data_dir = tmp_path / "test_project" / "test_project_llm_client_data"
+        data_dir.mkdir(parents=True)
+
+        today = date.today()
+        old_date = (today - timedelta(days=60)).isoformat()
+        old_file = data_dir / f"calls_{old_date}.jsonl"
+        old_file.write_text('{"model":"old"}\n')
+
+        # First call should clean up
+        io_log._cleanup_old_jsonl(data_dir, "calls")
+        assert not old_file.exists()
+
+        # Re-create the old file; second call same day should skip cleanup
+        old_file.write_text('{"model":"old"}\n')
+        io_log._cleanup_old_jsonl(data_dir, "calls")
+        assert old_file.exists(), "Second cleanup same day should be a no-op"
+
+    def test_dated_jsonl_path_format(self, tmp_path):
+        """_dated_jsonl_path returns correctly formatted path."""
+        path = io_log._dated_jsonl_path(tmp_path, "calls")
+        today = date.today().isoformat()
+        assert path == tmp_path / f"calls_{today}.jsonl"
+
+    def test_append_jsonl_creates_and_appends(self, tmp_path):
+        """_append_jsonl creates a dated file and appends records."""
+        io_log._append_jsonl(tmp_path, "test_log", {"key": "value1"})
+        io_log._append_jsonl(tmp_path, "test_log", {"key": "value2"})
+
+        today = date.today().isoformat()
+        log_file = tmp_path / f"test_log_{today}.jsonl"
+        lines = log_file.read_text().strip().split("\n")
+        assert len(lines) == 2
+        assert json.loads(lines[0])["key"] == "value1"
+        assert json.loads(lines[1])["key"] == "value2"
+
+    def test_default_retention_days(self):
+        """Default retention is 30 days."""
+        assert io_log._get_log_retention_days() == 30
+
+    def test_retention_env_parsing(self, monkeypatch):
+        """LLM_CLIENT_LOG_RETENTION_DAYS env var is parsed correctly."""
+        monkeypatch.setenv("LLM_CLIENT_LOG_RETENTION_DAYS", "90")
+        assert io_log._get_log_retention_days() == 90
+
+        monkeypatch.setenv("LLM_CLIENT_LOG_RETENTION_DAYS", "0")
+        assert io_log._get_log_retention_days() == 1  # minimum 1 day
+
+        monkeypatch.setenv("LLM_CLIENT_LOG_RETENTION_DAYS", "invalid")
+        assert io_log._get_log_retention_days() == 30  # fallback
