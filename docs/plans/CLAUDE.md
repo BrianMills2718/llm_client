@@ -11,6 +11,7 @@ Track all implementation work here.
 | 3 | [Model Policy Modernization](03_model-policy-modernization.md) | High | ✅ Complete | - |
 | 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
+| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
 
 ## Status Key
 
