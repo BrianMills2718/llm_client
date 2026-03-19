@@ -43,22 +43,15 @@ Full provider list: https://docs.litellm.ai/docs/providers
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import hashlib
-import inspect
 import json as _json
 import logging
 import os
-import random
 import re
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Literal, NoReturn, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Callable, Iterable, Literal, NoReturn, TypeVar
 
 import litellm
 from pydantic import BaseModel
@@ -104,6 +97,85 @@ from llm_client.errors import (
     wrap_error,
 )
 
+# Re-export data types for backward compatibility — all downstream modules
+# that import these from llm_client.client continue to work unchanged.
+from llm_client.data_types import (  # noqa: F401
+    AsyncCachePolicy,
+    CachePolicy,
+    EmbeddingResult,
+    LLMCallResult,
+    LRUCache,
+    _async_cache_get,
+    _async_cache_set,
+    _cache_key,
+)
+
+# Re-export retry infrastructure for backward compatibility.
+from llm_client.retry import (  # noqa: F401
+    Hooks,
+    RetryPolicy,
+    _NON_RETRYABLE_PATTERNS,
+    _RETRYABLE_PATTERNS,
+    _EMPTY_POLICY_FINISH_REASONS,
+    _EMPTY_TOOL_PROTOCOL_FINISH_REASONS,
+    _calculate_backoff,
+    _check_retryable,
+    _coerce_retry_delay_seconds,
+    _compute_retry_delay,
+    _effective_retry,
+    _error_status_code,
+    _error_text,
+    _is_retryable,
+    _retry_delay_hint,
+    _retry_delay_hint_seconds,
+    exponential_backoff,
+    fixed_backoff,
+    linear_backoff,
+)
+
+# Re-export OpenRouter utilities for backward compatibility.
+from llm_client.openrouter import (  # noqa: F401
+    _is_openrouter_call,
+    _is_openrouter_key_limit_error,
+    _mask_api_key,
+    _maybe_retry_with_openrouter_key_rotation,
+    _normalize_api_key_value,
+    _openrouter_key_candidates_from_env,
+    _openrouter_routing_enabled,
+    _reset_openrouter_key_rotation_state,
+    _rotate_openrouter_api_key,
+    _split_api_keys,
+)
+
+# Re-export streaming classes for backward compatibility.
+from llm_client.streaming import (  # noqa: F401
+    AsyncLLMStream,
+    LLMStream,
+)
+
+# Re-export model detection utilities for backward compatibility.
+from llm_client.model_detection import (  # noqa: F401
+    _base_model_name,
+    _gemini_model_name,
+    _gemini_native_mode_enabled,
+    _is_claude_model,
+    _is_gemini_model,
+    _is_image_generation_model,
+    _is_responses_api_model,
+    _is_thinking_model,
+    _normalize_model_for_routing,
+    _resolve_api_base_for_model,
+)
+
+# Re-export cost/usage utilities for backward compatibility.
+from llm_client.cost_utils import (  # noqa: F401
+    FALLBACK_COST_FLOOR_USD_PER_TOKEN,  # noqa: F811
+    _compute_cost,
+    _extract_tool_calls,
+    _extract_usage,
+    _parse_cost_result,
+)
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -111,9 +183,7 @@ T = TypeVar("T", bound=BaseModel)
 # Silence litellm's noisy default logging
 litellm.suppress_debug_info = True
 
-# Accounting constants (documented in agent_ecology3/docs/ACCOUNTING_CONSTANTS.md)
-FALLBACK_COST_FLOOR_USD_PER_TOKEN = 0.000001
-GEMINI_NATIVE_MODE_ENV = "LLM_CLIENT_GEMINI_NATIVE_MODE"
+from llm_client.model_detection import GEMINI_NATIVE_MODE_ENV  # noqa: F811
 GEMINI_NATIVE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
     "max_tokens",
@@ -125,163 +195,15 @@ GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
     "tool_choice",
     "thinking",
 })
-OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
-OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
-OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
-OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
-OPENROUTER_API_KEYS_ENV = "OPENROUTER_API_KEYS"
+# Re-export OpenRouter constants from their canonical home.
+from llm_client.openrouter import (  # noqa: F811
+    OPENROUTER_API_BASE_ENV,
+    OPENROUTER_API_KEY_ENV,
+    OPENROUTER_API_KEYS_ENV,
+    OPENROUTER_DEFAULT_API_BASE,
+    OPENROUTER_ROUTING_ENV,
+)
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
-
-_OPENROUTER_KEY_ROTATION_LOCK = threading.Lock()
-_OPENROUTER_KEY_RING: tuple[str, ...] = ()
-_OPENROUTER_KEY_RING_INDEX: int = 0
-# ---------------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class LLMCallResult:
-    """Result from an LLM call. Returned by all call_llm* functions.
-
-    Attributes:
-        content: The text response from the model
-        usage: Token counts (prompt_tokens, completion_tokens, total_tokens)
-        cost: Cost in USD for this call
-        model: The model string that was used
-        tool_calls: List of tool calls if the model invoked tools, else empty
-        finish_reason: Why the model stopped: "stop", "length", "tool_calls",
-                       "content_filter", etc. Empty string if unavailable.
-        raw_response: The full litellm response object for edge cases
-                      (e.g., accessing provider-specific data like Claude
-                      thinking blocks). Excluded from repr to keep logs clean.
-    """
-
-    content: str
-    usage: dict[str, Any]
-    cost: float
-    model: str
-    requested_model: str | None = None
-    """Raw model string provided at the public API boundary."""
-    resolved_model: str | None = None
-    """Best-effort model string used for the successful terminal attempt."""
-    execution_model: str | None = None
-    """Alias for resolved terminal model, kept additive for migration clarity."""
-    routing_trace: dict[str, Any] | None = field(default=None, repr=False)
-    """Optional routing/fallback trace for contract characterization and debugging."""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    finish_reason: str = ""
-    raw_response: Any = field(default=None, repr=False)
-    warnings: list[str] = field(default_factory=list)
-    """Diagnostic warnings accumulated during retry/fallback/routing.
-    Empty list on clean calls. Populated with RETRY/FALLBACK/STICKY_FALLBACK
-    messages when non-obvious decisions occurred."""
-    warning_records: list[dict[str, Any]] = field(default_factory=list, repr=False)
-    """Machine-readable warning records (code/category/message/remediation)."""
-    full_text: str | None = field(default=None, repr=False)
-    """For agent SDKs: full conversation text (all assistant messages).
-    ``content`` holds only the final assistant message.
-    None for non-agent calls."""
-    cost_source: str = "unspecified"
-    """How cost was determined: provider_reported, computed, fallback_estimate, cache_hit, etc."""
-    billing_mode: str = "api_metered"
-    """Billing mode: api_metered, subscription_included, or unknown."""
-    marginal_cost: float | None = None
-    """Incremental cost attributed to this call; defaults to ``cost`` when omitted."""
-    cache_hit: bool = False
-    """Whether this result came from cache instead of a model call."""
-
-    def __post_init__(self) -> None:
-        if self.marginal_cost is None:
-            self.marginal_cost = 0.0 if self.cache_hit else float(self.cost)
-        if self.execution_model is None and self.resolved_model is not None:
-            self.execution_model = self.resolved_model
-
-
-@dataclass
-class EmbeddingResult:
-    """Result from an embedding call.
-
-    Attributes:
-        embeddings: List of embedding vectors (one per input text)
-        usage: Token counts (prompt_tokens, total_tokens)
-        cost: Cost in USD for this call
-        model: The model string that was used
-    """
-
-    embeddings: list[list[float]]
-    usage: dict[str, Any]
-    cost: float
-    model: str
-
-
-# ---------------------------------------------------------------------------
-# Cache infrastructure
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class CachePolicy(Protocol):
-    """Protocol for LLM response caches. Implement get/set for custom backends."""
-
-    def get(self, key: str) -> LLMCallResult | None: ...
-    def set(self, key: str, value: LLMCallResult) -> None: ...
-
-
-@runtime_checkable
-class AsyncCachePolicy(Protocol):
-    """Protocol for async LLM response caches (Redis, etc.).
-
-    Async functions accept either ``CachePolicy`` or ``AsyncCachePolicy``.
-    When an ``AsyncCachePolicy`` is detected, ``await`` is used for get/set
-    so the event loop is never blocked.
-    """
-
-    async def get(self, key: str) -> LLMCallResult | None: ...
-    async def set(self, key: str, value: LLMCallResult) -> None: ...
-
-
-class LRUCache:
-    """Thread-safe in-memory LRU cache for LLM responses.
-
-    Args:
-        maxsize: Maximum number of entries. Oldest evicted on overflow.
-        ttl: Time-to-live in seconds. ``None`` means entries never expire.
-    """
-
-    def __init__(self, maxsize: int = 128, ttl: float | None = None) -> None:
-        self._cache: OrderedDict[str, tuple[LLMCallResult, float]] = OrderedDict()
-        self._maxsize = maxsize
-        self._ttl = ttl
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> LLMCallResult | None:
-        with self._lock:
-            if key not in self._cache:
-                return None
-            value, ts = self._cache[key]
-            if self._ttl is not None and time.monotonic() - ts > self._ttl:
-                del self._cache[key]
-                return None
-            self._cache.move_to_end(key)
-            return value
-
-    def set(self, key: str, value: LLMCallResult) -> None:
-        with self._lock:
-            self._cache[key] = (value, time.monotonic())
-            self._cache.move_to_end(key)
-            if len(self._cache) > self._maxsize:
-                self._cache.popitem(last=False)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
-
-
-def _cache_key(model: str, messages: list[dict[str, Any]], **kwargs: Any) -> str:
-    """Build a deterministic cache key from call parameters."""
-    key_data = _json.dumps({"model": model, "messages": messages, **kwargs}, sort_keys=True)
-    return hashlib.sha256(key_data.encode()).hexdigest()
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -416,465 +338,6 @@ class _NativeSchemaFallback(Exception):
     """Signal native-schema rejection and trigger instructor fallback."""
 
 
-# ---------------------------------------------------------------------------
-# Retry infrastructure
-# ---------------------------------------------------------------------------
-
-_RETRYABLE_PATTERNS = [
-    "rate limit",
-    "rate_limit",
-    "timeout",
-    "timed out",
-    "connection reset",
-    "connection error",
-    "network error",
-    "service unavailable",
-    "unavailable",
-    "high demand",
-    "internal server error",
-    "server error",
-    "overloaded",
-    "http 500",
-    "http 502",
-    "http 503",
-    "http 529",
-    "empty content",
-    "empty response",
-    "no json found",
-    "json parse error",
-    "invalid json",
-    "malformed json",
-    "unterminated string",
-    "expecting",
-    "delimiter",
-    "temporary failure",
-]
-
-_EMPTY_POLICY_FINISH_REASONS = frozenset({
-    "blocked",
-    "content_filter",
-    "recitation",
-    "safety",
-})
-
-_EMPTY_TOOL_PROTOCOL_FINISH_REASONS = frozenset({
-    "malformed_function_call",
-    "unexpected_tool_call",
-    "too_many_tool_calls",
-})
-
-# Patterns in error messages that indicate permanent failure (never retry).
-# Checked before _RETRYABLE_PATTERNS so they take precedence.
-_NON_RETRYABLE_PATTERNS = [
-    "quota",
-    "billing",
-    "insufficient",
-    "exceeded your current",
-    "plan and billing",
-    "account deactivated",
-    "account suspended",
-]
-
-
-def _normalize_api_key_value(value: Any) -> str:
-    """Normalize API key env/input values."""
-    return str(value or "").strip().strip("\"'")
-
-
-def _split_api_keys(raw: str) -> list[str]:
-    """Split comma/semicolon/newline-delimited key lists."""
-    normalized: list[str] = []
-    for part in re.split(r"[,\n;]", raw):
-        value = _normalize_api_key_value(part)
-        if value:
-            normalized.append(value)
-    return normalized
-
-
-def _openrouter_key_candidates_from_env() -> tuple[str, ...]:
-    """Collect OpenRouter keys from supported env vars in stable order."""
-    candidates: list[str] = []
-
-    raw_multi = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEYS_ENV))
-    if raw_multi:
-        candidates.extend(_split_api_keys(raw_multi))
-
-    primary = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
-    if primary:
-        candidates.append(primary)
-
-    numbered_re = re.compile(rf"^{re.escape(OPENROUTER_API_KEY_ENV)}_(\d+)$")
-    numbered: list[tuple[int, str]] = []
-    for env_name, env_value in os.environ.items():
-        match = numbered_re.match(env_name)
-        if not match:
-            continue
-        normalized = _normalize_api_key_value(env_value)
-        if not normalized:
-            continue
-        numbered.append((int(match.group(1)), normalized))
-    numbered.sort(key=lambda item: item[0])
-    candidates.extend(value for _, value in numbered)
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for key in candidates:
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(key)
-    return tuple(deduped)
-
-
-def _mask_api_key(key: str | None) -> str:
-    """Return a safe, short key fingerprint for logs/warnings."""
-    normalized = _normalize_api_key_value(key)
-    if not normalized:
-        return "<empty>"
-    return f"...{normalized[-4:]}"
-
-
-def _is_openrouter_call(model: str, api_base: str | None) -> bool:
-    """Best-effort OpenRouter call detection."""
-    model_lower = str(model or "").strip().lower()
-    if model_lower.startswith("openrouter/"):
-        return True
-    base_lower = str(api_base or "").strip().lower()
-    return "openrouter.ai" in base_lower
-
-
-def _error_status_code(error: Exception) -> int | None:
-    """Extract HTTP status code from litellm/generic errors."""
-    for attr in ("status_code", "status", "http_status", "code"):
-        value = getattr(error, attr, None)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
-
-    response = getattr(error, "response", None)
-    if response is not None:
-        for attr in ("status_code", "status", "code"):
-            value = getattr(response, attr, None)
-            if isinstance(value, int):
-                return value
-            if isinstance(value, str) and value.isdigit():
-                return int(value)
-
-    text = str(error)
-    match = re.search(r"\b(401|403|404|409|429|500|502|503)\b", text)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def _is_openrouter_key_limit_error(error: Exception) -> bool:
-    """Whether an error is OpenRouter key/quota exhaustion suitable for key rotation."""
-    text = str(error or "").lower()
-    status = _error_status_code(error)
-
-    key_limit = ("key limit exceeded" in text) or ("key limit reached" in text)
-    insufficient_credits = (
-        ("insufficient credits" in text)
-        or ("insufficient quota" in text)
-        or (status == 402)
-    )
-    if not (key_limit or insufficient_credits):
-        return False
-
-    if status not in {None, 402, 403}:
-        return False
-
-    provider = str(getattr(error, "llm_provider", "") or "").lower()
-    model = str(getattr(error, "model", "") or "").lower()
-    if "openrouter" in provider or model.startswith("openrouter/") or "openrouter" in text:
-        return True
-    if key_limit:
-        return status in {None, 403}
-    return status == 402
-
-
-def _reset_openrouter_key_rotation_state() -> None:
-    """Test helper: reset OpenRouter key-ring cache/index."""
-    global _OPENROUTER_KEY_RING, _OPENROUTER_KEY_RING_INDEX  # noqa: PLW0603
-    with _OPENROUTER_KEY_ROTATION_LOCK:
-        _OPENROUTER_KEY_RING = ()
-        _OPENROUTER_KEY_RING_INDEX = 0
-
-
-def _rotate_openrouter_api_key() -> tuple[str, str, int] | None:
-    """Rotate OPENROUTER_API_KEY to the next configured key, if available."""
-    global _OPENROUTER_KEY_RING, _OPENROUTER_KEY_RING_INDEX  # noqa: PLW0603
-
-    with _OPENROUTER_KEY_ROTATION_LOCK:
-        ring = _openrouter_key_candidates_from_env()
-        if not ring:
-            return None
-
-        if ring != _OPENROUTER_KEY_RING:
-            _OPENROUTER_KEY_RING = ring
-            current_env_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
-            if current_env_key and current_env_key in ring:
-                _OPENROUTER_KEY_RING_INDEX = ring.index(current_env_key)
-            elif _OPENROUTER_KEY_RING_INDEX >= len(ring):
-                _OPENROUTER_KEY_RING_INDEX = 0
-
-        if len(ring) < 2:
-            return None
-
-        current_env_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
-        if current_env_key and current_env_key in ring:
-            current_idx = ring.index(current_env_key)
-        else:
-            current_idx = _OPENROUTER_KEY_RING_INDEX
-
-        next_idx = (current_idx + 1) % len(ring)
-        if next_idx == current_idx:
-            return None
-
-        old_key = ring[current_idx]
-        new_key = ring[next_idx]
-        os.environ[OPENROUTER_API_KEY_ENV] = new_key
-        _OPENROUTER_KEY_RING_INDEX = next_idx
-        return old_key, new_key, len(ring)
-
-
-def _maybe_retry_with_openrouter_key_rotation(
-    *,
-    error: Exception,
-    attempt: int,
-    max_retries: int,
-    current_model: str,
-    current_api_base: str | None,
-    user_kwargs: dict[str, Any],
-    warning_sink: list[str] | None,
-    on_retry: Callable[[int, Exception, float], None] | None,
-    caller: str,
-) -> bool:
-    """Rotate OpenRouter key on key/quota exhaustion and trigger immediate retry."""
-    explicit_api_key = bool(_normalize_api_key_value(user_kwargs.get("api_key")))
-    if explicit_api_key:
-        return False
-    if not _is_openrouter_call(current_model, current_api_base):
-        return False
-    if not _is_openrouter_key_limit_error(error):
-        return False
-
-    rotated = _rotate_openrouter_api_key()
-    if rotated is None:
-        msg = (
-            "OPENROUTER_KEY_ROTATION_UNAVAILABLE: received OpenRouter key/quota "
-            "exhaustion but no backup keys are configured."
-        )
-        if warning_sink is not None:
-            warning_sink.append(msg)
-        logger.warning("%s %s", caller, msg)
-        return False
-
-    old_key, new_key, pool_size = rotated
-    rotation_msg = (
-        "OPENROUTER_KEY_ROTATED: "
-        f"{_mask_api_key(old_key)} -> {_mask_api_key(new_key)} "
-        f"(pool={pool_size})"
-    )
-    if warning_sink is not None:
-        warning_sink.append(rotation_msg)
-    logger.warning("%s %s", caller, rotation_msg)
-
-    if attempt >= max_retries:
-        return False
-
-    retry_delay_source = "openrouter_key_rotation"
-    delay = 0.0
-    if on_retry is not None:
-        on_retry(attempt, error, delay)
-    if warning_sink is not None:
-        warning_sink.append(
-            f"RETRY {attempt + 1}/{max_retries + 1}: "
-            f"{current_model} ({type(error).__name__}: {error}) "
-            f"[retry_delay_source={retry_delay_source}]"
-        )
-    logger.warning(
-        "%s attempt %d/%d failed (retrying immediately, source=%s): %s",
-        caller,
-        attempt + 1,
-        max_retries + 1,
-        retry_delay_source,
-        error,
-    )
-    return True
-
-
-def _coerce_retry_delay_seconds(raw_value: Any) -> float | None:
-    """Normalize a retry-delay value into seconds with sanity bounds."""
-    if raw_value is None:
-        return None
-
-    value: float | None = None
-    unit = "s"
-    if isinstance(raw_value, (int, float)):
-        value = float(raw_value)
-    else:
-        text = str(raw_value).strip()
-        if not text:
-            return None
-        match = re.fullmatch(
-            r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hour|hours)?",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return None
-        try:
-            value = float(match.group(1))
-        except Exception:
-            return None
-        unit = (match.group(2) or "s").strip().lower()
-
-    if value is None:
-        return None
-    if unit in {"ms"}:
-        value /= 1000.0
-    elif unit in {"m", "min", "mins", "minute", "minutes"}:
-        value *= 60.0
-    elif unit in {"h", "hour", "hours"}:
-        value *= 3600.0
-    if value <= 0:
-        return None
-    # Bound absurd delays while still honoring provider windows.
-    return min(value, 600.0)
-
-
-def _retry_delay_hint_seconds(error: Exception) -> float | None:
-    """Parse provider retry-after hints from an error message (seconds)."""
-    text = str(error)
-    if not text:
-        return None
-
-    patterns = [
-        r'retry(?:ing)?\s+(?:in|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hour|hours)?',
-        r'"retryDelay"\s*:\s*"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)?"',
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, flags=re.IGNORECASE)
-        if not m:
-            continue
-        hint = _coerce_retry_delay_seconds(f"{m.group(1)}{m.group(2) or 's'}")
-        if hint is not None:
-            return hint
-    return None
-
-
-def _retry_delay_hint(error: Exception) -> tuple[float | None, str]:
-    """Return retry hint delay with source classification."""
-    for attr in ("retry_after", "retry_after_seconds", "retry_after_s", "retry_delay"):
-        hint = _coerce_retry_delay_seconds(getattr(error, attr, None))
-        if hint is not None:
-            return hint, "structured"
-
-    response = getattr(error, "response", None)
-    headers = getattr(response, "headers", None)
-    if headers is not None:
-        header_value: Any = None
-        if hasattr(headers, "get"):
-            header_value = headers.get("retry-after") or headers.get("Retry-After")
-        hint = _coerce_retry_delay_seconds(header_value)
-        if hint is not None:
-            return hint, "structured"
-
-    hint = _retry_delay_hint_seconds(error)
-    if hint is not None:
-        return hint, "parsed"
-    return None, "none"
-
-
-def _error_text(error: Exception) -> str:
-    """Return a stable non-empty error string for classification/logging."""
-    text = str(error).strip()
-    if text:
-        return text
-    return type(error).__name__
-
-
-def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> bool:
-    """Check if an error is transient and worth retrying.
-
-    Uses litellm exception types for reliable classification, with string
-    pattern matching as fallback for generic exceptions.
-    """
-    if isinstance(error, LLMEmptyResponseError):
-        return bool(error.retryable)
-
-    # Timeout exceptions are transient even when message is empty.
-    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
-        return True
-
-    # RuntimeError is used for non-retryable conditions (e.g., truncation)
-    if isinstance(error, RuntimeError):
-        return False
-
-    # -- Check litellm exception types (preferred over string matching) -------
-    try:
-        import litellm as _lt
-
-        def _litellm_error_types(*names: str) -> tuple[type[BaseException], ...]:
-            out: list[type[BaseException]] = []
-            for name in names:
-                candidate = getattr(_lt, name, None)
-                if isinstance(candidate, type) and issubclass(candidate, BaseException):
-                    out.append(candidate)
-            return tuple(out)
-
-        # Permanent failures — never retry
-        permanent_types = _litellm_error_types(
-            "AuthenticationError",      # 401: bad API key
-            "PermissionDeniedError",    # 403: forbidden
-            "BudgetExceededError",      # litellm budget limit
-            "ContentPolicyViolationError",  # content filter
-            "NotFoundError",            # 404: model doesn't exist
-        )
-        if permanent_types and isinstance(error, permanent_types):
-            return False
-
-        # RateLimitError (429) is ambiguous — could be transient rate limit
-        # or permanent quota exhaustion. Check the message.
-        rate_limit_types = _litellm_error_types("RateLimitError")
-        if rate_limit_types and isinstance(error, rate_limit_types):
-            error_str = str(error).lower()
-            # Provider-specified retry windows are considered retryable even
-            # when the message includes "quota" phrasing.
-            hint_delay, _hint_source = _retry_delay_hint(error)
-            if hint_delay is not None:
-                return True
-            if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
-                return False
-            return True  # transient rate limit — retry
-
-        # Transient server errors — always retry
-        transient_types = _litellm_error_types(
-            "InternalServerError",   # 500
-            "ServiceUnavailableError",  # 503
-            "APIConnectionError",    # network issues
-            "BadGatewayError",       # 502
-        )
-        if transient_types and isinstance(error, transient_types):
-            return True
-    except ImportError:
-        pass  # litellm not available, fall through to string matching
-
-    # -- Fallback: string pattern matching for generic exceptions --------------
-    error_str = _error_text(error).lower()
-
-    # Check non-retryable patterns first
-    if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
-        return False
-
-    patterns = _RETRYABLE_PATTERNS
-    if extra_patterns:
-        patterns = list(patterns) + [p.lower() for p in extra_patterns]
-    return any(p in error_str for p in patterns)
-
-
 def _compact_diagnostics(diagnostics: dict[str, Any], *, max_len: int = 600) -> str:
     """Render diagnostics dict into a bounded JSON string for errors/logging."""
     try:
@@ -938,401 +401,7 @@ def _is_schema_error(error: Exception) -> bool:
     return any(p in error_str for p in _SCHEMA_ERROR_PATTERNS)
 
 
-# -- Backoff strategies ----------------------------------------------------
 
-
-def exponential_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
-    """Exponential backoff with jitter, capped at *max_delay*."""
-    delay = base_delay * (2 ** attempt)
-    jitter = random.uniform(0.5, 1.5)
-    return float(min(delay * jitter, max_delay))
-
-
-def linear_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
-    """Linear backoff with jitter, capped at *max_delay*."""
-    delay = base_delay * (attempt + 1)
-    jitter = random.uniform(0.8, 1.2)
-    return float(min(delay * jitter, max_delay))
-
-
-def fixed_backoff(attempt: int, base_delay: float = 1.0, max_delay: float = 30.0) -> float:
-    """Fixed delay (no escalation), capped at *max_delay*."""
-    return float(min(base_delay, max_delay))
-
-
-# Backward-compat alias (used by existing tests)
-_calculate_backoff = exponential_backoff
-
-
-# -- RetryPolicy -----------------------------------------------------------
-
-
-@dataclass
-class RetryPolicy:
-    """Reusable retry configuration.
-
-    Create once and pass to multiple calls for consistent behaviour::
-
-        policy = RetryPolicy(max_retries=5, base_delay=0.5, on_retry=my_logger)
-        call_llm("gpt-4o", msgs, retry=policy)
-        call_llm("gpt-4o", msgs2, retry=policy)
-
-    When ``retry`` is provided it **overrides** the individual retry params
-    (``num_retries``, ``base_delay``, ``max_delay``, ``retry_on``,
-    ``on_retry``).
-
-    Attributes:
-        max_retries: How many times to retry on transient failure.
-        base_delay: Starting delay for backoff (seconds).
-        max_delay: Cap on backoff delay (seconds).
-        retry_on: Extra retryable patterns (added to built-in defaults).
-        on_retry: ``(attempt, error, delay)`` callback fired before each sleep.
-        backoff: Backoff function ``(attempt, base_delay, max_delay) → delay``.
-            Defaults to :func:`exponential_backoff`. Also available:
-            :func:`linear_backoff`, :func:`fixed_backoff`, or any custom
-            callable.
-        should_retry: Fully custom retryability check ``(error) → bool``.
-            When set, **replaces** the built-in pattern matching entirely.
-    """
-
-    max_retries: int = 2
-    base_delay: float = 1.0
-    max_delay: float = 30.0
-    retry_on: list[str] | None = None
-    on_retry: Callable[[int, Exception, float], None] | None = None
-    backoff: Callable[[int, float, float], float] | None = None
-    should_retry: Callable[[Exception], bool] | None = None
-
-
-@dataclass
-class Hooks:
-    """Observability hooks fired during LLM calls.
-
-    Attach callbacks for logging, metrics, tracing, or OpenTelemetry
-    integration. All fields are optional — set only the ones you need.
-
-    Example::
-
-        hooks = Hooks(
-            before_call=lambda model, msgs, kw: print(f"Calling {model}"),
-            after_call=lambda result: print(f"Got {len(result.content)} chars"),
-            on_error=lambda err, attempt: print(f"Attempt {attempt} failed: {err}"),
-        )
-        result = call_llm("gpt-4o", messages, hooks=hooks)
-
-    Attributes:
-        before_call: ``(model, messages, kwargs) → None``. Fired before each
-            LLM API call (including retries and fallbacks).
-        after_call: ``(LLMCallResult) → None``. Fired after a successful call.
-        on_error: ``(error, attempt) → None``. Fired on each failed attempt.
-    """
-
-    before_call: Callable[[str, list[dict[str, Any]], dict[str, Any]], None] | None = None
-    after_call: Callable[[LLMCallResult], None] | None = None
-    on_error: Callable[[Exception, int], None] | None = None
-
-
-def _effective_retry(
-    retry: RetryPolicy | None,
-    num_retries: int,
-    base_delay: float,
-    max_delay: float,
-    retry_on: list[str] | None,
-    on_retry: Callable[[int, Exception, float], None] | None,
-) -> RetryPolicy:
-    """Resolve a RetryPolicy — use the explicit object or build one from individual params."""
-    if retry is not None:
-        return retry
-    return RetryPolicy(
-        max_retries=num_retries,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-    )
-
-
-def _check_retryable(error: Exception, policy: RetryPolicy) -> bool:
-    """Decide if *error* is retryable according to *policy*."""
-    if policy.should_retry is not None:
-        return policy.should_retry(error)
-    return _is_retryable(error, extra_patterns=policy.retry_on)
-
-
-def _compute_retry_delay(
-    *,
-    attempt: int,
-    error: Exception,
-    policy: RetryPolicy,
-    backoff_fn: Callable[[int, float, float], float],
-) -> tuple[float, str]:
-    """Compute retry delay and source, honoring provider hints when present."""
-    delay = backoff_fn(attempt, policy.base_delay, policy.max_delay)
-    hint, hint_source = _retry_delay_hint(error)
-    if hint is None:
-        return delay, "none"
-    # Use the larger delay to avoid hammering providers before their window.
-    return max(delay, hint), hint_source
-
-
-# ---------------------------------------------------------------------------
-# Async cache helpers
-# ---------------------------------------------------------------------------
-
-
-async def _async_cache_get(cache: Any, key: str) -> LLMCallResult | None:
-    """Get from cache, awaiting if the cache is async."""
-    result = cache.get(key)
-    if inspect.isawaitable(result):
-        awaited = await result
-        return awaited if isinstance(awaited, LLMCallResult) else None
-    return result if isinstance(result, LLMCallResult) else None
-
-
-async def _async_cache_set(cache: Any, key: str, value: LLMCallResult) -> None:
-    """Set into cache, awaiting if the cache is async."""
-    result = cache.set(key, value)
-    if inspect.isawaitable(result):
-        await result
-
-
-# ---------------------------------------------------------------------------
-# Streaming
-# ---------------------------------------------------------------------------
-
-
-class LLMStream:
-    """Sync streaming wrapper. Yields text chunks, then exposes ``.result``.
-
-    Example::
-
-        stream = stream_llm("gpt-4o", messages)
-        for chunk in stream:
-            print(chunk, end="", flush=True)
-        print()
-        print(stream.result.usage)
-    """
-
-    def __init__(
-        self, response_iter: Any, model: str, hooks: Hooks | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        task: str | None = None,
-        trace_id: str | None = None,
-        prompt_ref: str | None = None,
-        warnings: list[str] | None = None,
-        requested_model: str | None = None,
-        resolved_model: str | None = None,
-        routing_trace: dict[str, Any] | None = None,
-    ) -> None:
-        self._iter = response_iter
-        self._model = model
-        self._hooks = hooks
-        self._messages = messages
-        self._task = task
-        self._trace_id = trace_id
-        self._prompt_ref = prompt_ref
-        self._warnings = warnings or []
-        self._requested_model = requested_model
-        self._resolved_model = resolved_model
-        self._routing_trace = routing_trace
-        self._t0 = time.monotonic()
-        self._chunks_text: list[str] = []
-        self._raw_chunks: list[Any] = []
-        self._result: LLMCallResult | None = None
-
-    def __iter__(self) -> LLMStream:
-        return self
-
-    def __next__(self) -> str:
-        try:
-            chunk = next(self._iter)
-        except StopIteration:
-            self._finalize()
-            raise
-        self._raw_chunks.append(chunk)
-        text = ""
-        if chunk.choices:
-            delta = chunk.choices[0].delta
-            text = (delta.content if delta and delta.content else "") or ""
-        self._chunks_text.append(text)
-        return text
-
-    def _finalize(self) -> None:
-        content = "".join(self._chunks_text)
-        usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        cost = 0.0
-        finish_reason = "stop"
-        tool_calls: list[dict[str, Any]] = []
-        try:
-            complete = litellm.stream_chunk_builder(self._raw_chunks)
-            if complete:
-                usage = _extract_usage(complete)
-                cost, cost_source = _parse_cost_result(_compute_cost(complete))
-                first_choice = complete.choices[0]
-                finish_reason = str(getattr(first_choice, "finish_reason", "") or "stop")
-                message_obj = getattr(first_choice, "message", None)
-                if message_obj is not None and getattr(message_obj, "tool_calls", None):
-                    tool_calls = _extract_tool_calls(message_obj)
-            else:
-                cost_source = "unavailable"
-        except Exception:
-            cost_source = "unavailable"
-        self._result = LLMCallResult(
-            content=content,
-            usage=usage,
-            cost=cost,
-            model=self._model,
-            requested_model=self._requested_model,
-            resolved_model=self._resolved_model or self._model,
-            routing_trace=self._routing_trace,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
-            warnings=self._warnings,
-            cost_source=cost_source,
-        )
-        self._result = _finalize_result(
-            self._result,
-            requested_model=self._requested_model or self._model,
-            resolved_model=self._resolved_model or self._model,
-            routing_trace=self._routing_trace,
-        )
-        if self._hooks and self._hooks.after_call:
-            self._hooks.after_call(self._result)
-        _log_call_event(
-            model=self._model,
-            messages=self._messages,
-            result=self._result,
-            latency_s=time.monotonic() - self._t0,
-            caller="stream_llm",
-            task=self._task,
-            trace_id=self._trace_id,
-            prompt_ref=self._prompt_ref,
-        )
-
-    @property
-    def result(self) -> LLMCallResult:
-        """The accumulated result. Available after the stream is fully consumed."""
-        if self._result is None:
-            raise RuntimeError("Stream not yet consumed. Iterate first.")
-        return self._result
-
-
-class AsyncLLMStream:
-    """Async streaming wrapper. Yields text chunks, then exposes ``.result``.
-
-    Example::
-
-        stream = await astream_llm("gpt-4o", messages)
-        async for chunk in stream:
-            print(chunk, end="", flush=True)
-        print()
-        print(stream.result.usage)
-    """
-
-    def __init__(
-        self, response_iter: Any, model: str, hooks: Hooks | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        task: str | None = None,
-        trace_id: str | None = None,
-        prompt_ref: str | None = None,
-        warnings: list[str] | None = None,
-        requested_model: str | None = None,
-        resolved_model: str | None = None,
-        routing_trace: dict[str, Any] | None = None,
-    ) -> None:
-        self._iter = response_iter
-        self._model = model
-        self._hooks = hooks
-        self._messages = messages
-        self._task = task
-        self._trace_id = trace_id
-        self._prompt_ref = prompt_ref
-        self._warnings = warnings or []
-        self._requested_model = requested_model
-        self._resolved_model = resolved_model
-        self._routing_trace = routing_trace
-        self._t0 = time.monotonic()
-        self._chunks_text: list[str] = []
-        self._raw_chunks: list[Any] = []
-        self._result: LLMCallResult | None = None
-
-    def __aiter__(self) -> AsyncLLMStream:
-        return self
-
-    async def __anext__(self) -> str:
-        try:
-            chunk = await self._iter.__anext__()
-        except StopAsyncIteration:
-            self._finalize()
-            raise
-        self._raw_chunks.append(chunk)
-        text = ""
-        if chunk.choices:
-            delta = chunk.choices[0].delta
-            text = (delta.content if delta and delta.content else "") or ""
-        self._chunks_text.append(text)
-        return text
-
-    def _finalize(self) -> None:
-        content = "".join(self._chunks_text)
-        usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        cost = 0.0
-        finish_reason = "stop"
-        tool_calls: list[dict[str, Any]] = []
-        try:
-            complete = litellm.stream_chunk_builder(self._raw_chunks)
-            if complete:
-                usage = _extract_usage(complete)
-                cost, cost_source = _parse_cost_result(_compute_cost(complete))
-                first_choice = complete.choices[0]
-                finish_reason = str(getattr(first_choice, "finish_reason", "") or "stop")
-                message_obj = getattr(first_choice, "message", None)
-                if message_obj is not None and getattr(message_obj, "tool_calls", None):
-                    tool_calls = _extract_tool_calls(message_obj)
-            else:
-                cost_source = "unavailable"
-        except Exception:
-            cost_source = "unavailable"
-        self._result = LLMCallResult(
-            content=content,
-            usage=usage,
-            cost=cost,
-            model=self._model,
-            requested_model=self._requested_model,
-            resolved_model=self._resolved_model or self._model,
-            routing_trace=self._routing_trace,
-            tool_calls=tool_calls,
-            finish_reason=finish_reason,
-            raw_response=self._raw_chunks[-1] if self._raw_chunks else None,
-            warnings=self._warnings,
-            cost_source=cost_source,
-        )
-        self._result = _finalize_result(
-            self._result,
-            requested_model=self._requested_model or self._model,
-            resolved_model=self._resolved_model or self._model,
-            routing_trace=self._routing_trace,
-        )
-        if self._hooks and self._hooks.after_call:
-            self._hooks.after_call(self._result)
-        _log_call_event(
-            model=self._model,
-            messages=self._messages,
-            result=self._result,
-            latency_s=time.monotonic() - self._t0,
-            caller="astream_llm",
-            task=self._task,
-            trace_id=self._trace_id,
-            prompt_ref=self._prompt_ref,
-        )
-
-    @property
-    def result(self) -> LLMCallResult:
-        """The accumulated result. Available after the stream is fully consumed."""
-        if self._result is None:
-            raise RuntimeError("Stream not yet consumed. Iterate first.")
-        return self._result
 
 
 # ---------------------------------------------------------------------------
@@ -1354,98 +423,9 @@ def strip_fences(content: str) -> str:
     return content.strip()
 
 
-def _is_claude_model(model: str) -> bool:
-    """Check if model string refers to a Claude model."""
-    return "claude" in model.lower() or "anthropic" in model.lower()
-
-
-def _is_thinking_model(model: str) -> bool:
-    """Check if model needs thinking budget configuration.
-
-    Gemini 2.5+ thinking models allocate reasoning tokens by default,
-    consuming output token budget. Setting budget_tokens=0 disables
-    this so all tokens go to the actual response.
-    """
-    lower = model.lower()
-    # Gemini 2.5-flash, 2.5-pro, 2.5-flash-lite, 3.x, 4.x are all thinking models
-    return "gemini-2.5" in lower or "gemini-3" in lower or "gemini-4" in lower
-
-
-def _extract_usage(response: Any) -> dict[str, Any]:
-    """Extract token usage dict from litellm response.
-
-    Includes provider-level prompt caching details when available
-    (OpenAI cached_tokens, DeepSeek prompt_cache_hit_tokens,
-    Anthropic cache_read_input_tokens).
-    """
-    usage = response.usage
-    result = {
-        "prompt_tokens": usage.prompt_tokens,
-        "completion_tokens": usage.completion_tokens,
-        "total_tokens": usage.total_tokens,
-    }
-    # Extract prompt caching details (litellm normalizes all providers
-    # into prompt_tokens_details.cached_tokens)
-    ptd = getattr(usage, "prompt_tokens_details", None)
-    if ptd is not None:
-        cached = getattr(ptd, "cached_tokens", None) or 0
-        cache_creation = getattr(ptd, "cache_creation_tokens", None) or 0
-        result["cached_tokens"] = cached
-        result["cache_creation_tokens"] = cache_creation
-    return result
-
-
-def _compute_cost(response: Any) -> tuple[float, str]:
-    """Compute cost via litellm.completion_cost, with explicit source tagging."""
-    try:
-        cost = float(litellm.completion_cost(completion_response=response))
-        return cost, "computed"
-    except Exception:
-        # Fallback: rough estimate based on total tokens
-        total: int = response.usage.total_tokens
-        fallback = total * FALLBACK_COST_FLOOR_USD_PER_TOKEN
-        logger.warning(
-            "completion_cost failed, using fallback: $%.6f for %d tokens",
-            fallback,
-            total,
-        )
-        return fallback, "fallback_estimate"
-
-
-def _parse_cost_result(value: float | tuple[float, str], default_source: str = "computed") -> tuple[float, str]:
-    """Normalize cost helper return values.
-
-    Supports both new tuple return and legacy float return to keep monkeypatch
-    compatibility in tests and downstream callers.
-    """
-    if isinstance(value, tuple) and len(value) == 2:
-        return float(value[0]), str(value[1])
-    return float(value), default_source
-
-
-def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
-    """Extract tool calls from response message into plain dicts."""
-    if not message.tool_calls:
-        return []
-    result: list[dict[str, Any]] = []
-    for tc in message.tool_calls:
-        result.append({
-            "id": tc.id,
-            "type": tc.type,
-            "function": {
-                "name": tc.function.name,
-                "arguments": tc.function.arguments,
-            },
-        })
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Responses API helpers (GPT-5 models)
 # ---------------------------------------------------------------------------
-
-
-_RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-pro"}
 _GPT5_ALWAYS_STRIP_SAMPLING = {"gpt-5", "gpt-5-mini", "gpt-5-nano"}
 _GPT5_REASONING_GATED_SAMPLING = {
     "gpt-5.1",
@@ -1470,107 +450,6 @@ _UNSUPPORTED_PARAM_POLICY_ALIASES = {
     "raise": "error",
     "error_only": "error",
 }
-
-def _is_responses_api_model(model: str) -> bool:
-    """Check if model requires litellm.responses() instead of completion().
-
-    GPT-5 models use OpenAI's Responses API which has different parameters
-    and response format than the Chat Completions API. This function
-    detects them so call_llm/acall_llm can route automatically.
-
-    Only bare OpenAI model names match. Provider-prefixed models
-    (openrouter/openai/gpt-5, azure/gpt-5, etc.) use Chat Completions API.
-    """
-    lower = model.lower()
-    # Any provider prefix means proxied → Chat Completions, not Responses API
-    if "/" in lower:
-        return False
-    return lower in _RESPONSES_API_MODELS
-
-
-def _base_model_name(model: str) -> str:
-    """Return the provider-agnostic lowercase model name."""
-    return model.lower().rsplit("/", 1)[-1]
-
-
-def _is_image_generation_model(model: str) -> bool:
-    """Best-effort detection for image-generation model families."""
-    base = _base_model_name(model)
-    hints = (
-        "gpt-image",
-        "dall-e",
-        "imagen",
-        "stable-diffusion",
-        "sdxl",
-        "flux",
-    )
-    return any(h in base for h in hints)
-
-
-def _openrouter_routing_enabled() -> bool:
-    """Whether automatic OpenRouter model normalization is enabled."""
-    raw = os.environ.get(OPENROUTER_ROUTING_ENV, "on").strip().lower()
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    if raw in {"1", "true", "yes", "on", ""}:
-        return True
-    logger.warning(
-        "Invalid %s=%r; expected on/off boolean. Defaulting to on.",
-        OPENROUTER_ROUTING_ENV,
-        raw,
-    )
-    return True
-
-
-def _normalize_model_for_routing(model: str) -> str:
-    """Route non-Gemini, non-image model IDs through OpenRouter by default.
-
-    Note: with default routing enabled, bare ``gpt-5*`` model IDs are normalized
-    to ``openrouter/openai/gpt-5*`` and therefore use completion routing instead
-    of OpenAI Responses API. Disable routing via
-    ``LLM_CLIENT_OPENROUTER_ROUTING=off`` to keep bare OpenAI IDs.
-    """
-    cfg = ClientConfig.from_env()
-    req = CallRequest(model=model)
-    return resolve_call(req, cfg).primary_model
-
-
-def _resolve_api_base_for_model(
-    model: str,
-    api_base: str | None,
-    config: ClientConfig | None = None,
-) -> str | None:
-    """Resolve provider API base after model normalization."""
-    cfg = config or ClientConfig.from_env()
-    return resolve_api_base_for_model(model, api_base, cfg)
-
-
-def _is_gemini_model(model: str) -> bool:
-    """Check if model targets Google's Gemini API namespace."""
-    return model.lower().startswith("gemini/")
-
-
-def _gemini_native_mode_enabled() -> bool:
-    """Whether native Gemini REST path is enabled via env flag."""
-    raw = os.environ.get(GEMINI_NATIVE_MODE_ENV, "off").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off", ""}:
-        return False
-    logger.warning(
-        "Invalid %s=%r; expected on/off boolean. Defaulting to off.",
-        GEMINI_NATIVE_MODE_ENV,
-        raw,
-    )
-    return False
-
-
-def _gemini_model_name(model: str) -> str:
-    """Return raw Gemini model id without provider prefix."""
-    if not _is_gemini_model(model):
-        return model
-    return model.split("/", 1)[1]
-
 
 def _as_text_content(content: Any) -> str:
     """Best-effort conversion of OpenAI-style content into plain text."""
