@@ -41,6 +41,7 @@ from llm_client import (
 )
 from llm_client.agents import (
     _build_agent_options,
+    _build_codex_cli_command,
     _messages_to_agent_prompt,
     _normalize_codex_reasoning_effort,
     _parse_agent_model,
@@ -496,6 +497,19 @@ class TestBuildAgentOptions:
         )
         assert options.env.get("CLAUDECODE") == ""
         assert options.env.get("GEMINI_API_KEY") == ""
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    def test_yolo_mode_sets_claude_bypass_permissions(self, monkeypatch) -> None:
+        """yolo_mode should map to Claude's headless permission mode."""
+
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setattr("llm_client._auto_loaded_keys", frozenset())
+        _, options, _ = _build_agent_options(
+            "claude-code",
+            [{"role": "user", "content": "Hi"}],
+            yolo_mode=True,
+        )
+        assert options.permission_mode == "bypassPermissions"
 
 
 class TestAgentFallback:
@@ -1158,6 +1172,70 @@ class TestCodexCall:
         assert result.content == "ok"
         assert calls["timeout"] == 0
 
+    def test_timeout_policy_ban_logs_shared_message(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        """Agent timeout policy should use the shared timeout warning contract."""
+
+        monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+        with caplog.at_level("WARNING"):
+            normalized = agents_mod._normalize_timeout(42, caller="test_agents_timeout", logger=agents_mod.logger)
+
+        assert normalized == 0
+        assert "TIMEOUT_DISABLED[test_agents_timeout]: timeout=42s ignored" in caplog.text
+
+    def test_timeout_policy_ban_auto_transport_prefers_cli_with_hard_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Auto transport should choose CLI immediately when provider timeouts are disabled."""
+
+        def _unexpected_sdk(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            raise AssertionError("SDK path should not run when timeout is banned and hard timeout is set")
+
+        def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del messages, output_schema, kwargs
+            return LLMCallResult(
+                content=f"cli via auto {timeout}",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                warnings=[fallback_warning] if fallback_warning else [],
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _unexpected_sdk)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="auto",
+            timeout=99,
+            agent_hard_timeout=21,
+            task="test",
+            trace_id="test_agent_timeout_ban_cli_auto",
+            max_budget=0,
+        )
+
+        assert result.content == "cli via auto 0"
+        assert result.raw_response == {"transport": "codex_cli"}
+        assert any("CODEX_TRANSPORT_AUTO[sdk->cli]" in warning for warning in result.warnings)
+
 
 # ---------------------------------------------------------------------------
 # Codex structured (mocked)
@@ -1417,6 +1495,246 @@ class TestCodexFallback:
             )
         assert result.content == "Fallback response"
         assert result.model == "gpt-4o"
+
+    def test_codex_transport_auto_falls_back_to_cli_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Auto transport should fall back from SDK to CLI inside llm_client."""
+
+        async def _fake_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del model, messages, timeout, kwargs
+            raise TimeoutError("sdk stalled")
+
+        calls: dict[str, object] = {}
+
+        def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            calls["model"] = model
+            calls["timeout"] = timeout
+            calls["fallback_warning"] = fallback_warning
+            calls["agent_hard_timeout"] = kwargs.get("agent_hard_timeout")
+            assert output_schema is None
+            return LLMCallResult(
+                content="cli ok",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                warnings=[fallback_warning] if fallback_warning else [],
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="auto",
+            timeout=17,
+            agent_hard_timeout=23,
+            task="test",
+            trace_id="test_codex_transport_auto_sync",
+            max_budget=0,
+        )
+
+        assert result.content == "cli ok"
+        assert calls["model"] == "codex"
+        assert calls["timeout"] == 17
+        assert calls["agent_hard_timeout"] == 23
+        assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
+
+    def test_codex_transport_auto_does_not_swallow_programming_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Auto transport should re-raise unexpected SDK failures instead of masking them."""
+
+        async def _fake_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del model, messages, timeout, kwargs
+            raise ValueError("bad adapter code")
+
+        def _unexpected_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            raise AssertionError("CLI fallback should not run for ValueError")
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _unexpected_cli)
+
+        with pytest.raises(Exception, match="bad adapter code"):
+            call_llm(
+                "codex",
+                [{"role": "user", "content": "Hi"}],
+                codex_transport="auto",
+                timeout=17,
+                agent_hard_timeout=23,
+                task="test",
+                trace_id="test_codex_transport_auto_value_error",
+                max_budget=0,
+            )
+
+    def test_codex_transport_auto_falls_back_on_worker_runtime_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Worker runtime wrappers should still fall back to CLI transport."""
+
+        async def _fake_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del model, messages, timeout, kwargs
+            raise RuntimeError("CODEX_WORKER_ERROR[test]")
+
+        calls: dict[str, object] = {}
+
+        def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del messages, output_schema, kwargs
+            calls["fallback_warning"] = fallback_warning
+            return LLMCallResult(
+                content="cli ok",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                warnings=[fallback_warning] if fallback_warning else [],
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="auto",
+            timeout=17,
+            agent_hard_timeout=23,
+            task="test",
+            trace_id="test_codex_transport_auto_worker_error",
+            max_budget=0,
+        )
+
+        assert result.content == "cli ok"
+        assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
+
+    @pytest.mark.asyncio
+    async def test_codex_transport_cli_dispatches_async(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicit CLI transport should bypass the SDK path entirely."""
+
+        async def _unexpected_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            raise AssertionError("SDK path should not run for codex_transport=cli")
+
+        async def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del messages, output_schema, fallback_warning, kwargs
+            return LLMCallResult(
+                content=f"cli async {timeout}",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _unexpected_inproc)
+        monkeypatch.setattr(agents_mod, "_acall_codex_via_cli", _fake_cli)
+
+        result = await acall_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="cli",
+            timeout=19,
+            task="test",
+            trace_id="test_codex_transport_cli_async",
+            max_budget=0,
+        )
+
+        assert result.content == "cli async 19"
+        assert result.raw_response == {"transport": "codex_cli"}
+
+    def test_build_codex_cli_command_forwards_reasoning_effort(self, tmp_path) -> None:
+        """CLI transport should carry normalized reasoning effort into codex exec."""
+
+        command, _env, stdin_payload = _build_codex_cli_command(
+            "codex",
+            "Reply with OK only.",
+            output_schema=None,
+            kwargs={
+                "working_directory": str(tmp_path),
+                "approval_policy": "never",
+                "sandbox_mode": "workspace-write",
+                "skip_git_repo_check": True,
+                "model_reasoning_effort": "xhigh",
+            },
+            output_path=str(tmp_path / "last.txt"),
+            schema_path=None,
+        )
+
+        assert "-c" in command
+        assert 'model_reasoning_effort="high"' in command
+        assert stdin_payload == "Reply with OK only."
+
+    def test_build_codex_cli_command_yolo_mode_sets_skip_git_repo_check(self, tmp_path) -> None:
+        """yolo_mode should enable Codex's trusted-repo bypass convenience flag."""
+
+        command, _env, stdin_payload = _build_codex_cli_command(
+            "codex",
+            "Reply with OK only.",
+            output_schema=None,
+            kwargs={
+                "working_directory": str(tmp_path),
+                "yolo_mode": True,
+            },
+            output_path=str(tmp_path / "last.txt"),
+            schema_path=None,
+        )
+
+        assert "--skip-git-repo-check" in command
+        assert "--dangerously-bypass-approvals-and-sandbox" in command
+        assert stdin_payload == "Reply with OK only."
 
 
 # ---------------------------------------------------------------------------

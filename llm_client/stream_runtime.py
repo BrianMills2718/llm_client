@@ -39,6 +39,7 @@ def stream_llm_impl(
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
+    prompt_ref = _client._normalize_prompt_ref(kwargs.pop("prompt_ref", None))
     task, trace_id, max_budget, _entry_warnings = _client._require_tags(
         task, trace_id, max_budget, caller="stream_llm",
     )
@@ -92,6 +93,7 @@ def stream_llm_impl(
                 messages=messages,
                 task=task,
                 trace_id=trace_id,
+                prompt_ref=prompt_ref,
                 warnings=_warnings,
                 requested_model=model,
                 resolved_model=current_model,
@@ -179,6 +181,7 @@ async def astream_llm_impl(
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
+    prompt_ref = _client._normalize_prompt_ref(kwargs.pop("prompt_ref", None))
     task, trace_id, max_budget, _entry_warnings = _client._require_tags(
         task, trace_id, max_budget, caller="astream_llm",
     )
@@ -232,6 +235,7 @@ async def astream_llm_impl(
                 messages=messages,
                 task=task,
                 trace_id=trace_id,
+                prompt_ref=prompt_ref,
                 warnings=_warnings,
                 requested_model=model,
                 resolved_model=current_model,

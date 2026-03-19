@@ -19,6 +19,7 @@ import json as _json
 import logging
 from typing import Any, Callable
 
+from llm_client.agent_outcomes import _classify_failure_signals
 from llm_client.client import LLMCallResult
 from llm_client.compliance_gate import (
     build_tool_parameter_index,
@@ -40,12 +41,12 @@ from llm_client.mcp_agent import (
     EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
     EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
     EVENT_CODE_TOOL_VALIDATION_SCHEMA,
+)
+from llm_client.tool_runtime_common import (
     MCPAgentResult,
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
-    _classify_failure_signals,
-    _extract_usage,
-    _inner_acall_llm,
+    extract_usage_counts as _extract_usage,
 )
 from llm_client.tool_utils import execute_direct_tool_calls, prepare_direct_tools
 
@@ -55,6 +56,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------------
+
+
+async def _inner_acall_llm(
+    model: str,
+    messages: list[dict[str, Any]],
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Call ``acall_llm`` through a local wrapper for focused test patching."""
+    from llm_client.client import acall_llm
+
+    return await acall_llm(model, messages, **kwargs)
 
 
 def _extract_first_json_object(text: str) -> dict[str, Any] | None:

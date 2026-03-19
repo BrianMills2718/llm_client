@@ -1,17 +1,17 @@
 """Tests for observability defaults and agent retry safety switches."""
 
-from llm_client.client import (
-    _agent_retry_safe_enabled,
-    _build_model_chain,
-    _require_tags,
+from llm_client.call_contracts import (
+    agent_retry_safe_enabled,
+    require_tags,
 )
+from llm_client.client import _build_model_chain
 
 
 def test_require_tags_defaults_when_not_strict(monkeypatch) -> None:
     monkeypatch.delenv("LLM_CLIENT_REQUIRE_TAGS", raising=False)
     monkeypatch.delenv("CI", raising=False)
 
-    task, trace_id, max_budget, warnings = _require_tags(
+    task, trace_id, max_budget, warnings = require_tags(
         None, None, None, caller="test_call",
     )
 
@@ -25,7 +25,7 @@ def test_require_tags_defaults_when_not_strict(monkeypatch) -> None:
 def test_require_tags_strict_raises(monkeypatch) -> None:
     monkeypatch.setenv("LLM_CLIENT_REQUIRE_TAGS", "1")
     try:
-        _require_tags(None, None, None, caller="test_call")
+        require_tags(None, None, None, caller="test_call")
     except ValueError as exc:
         assert "Missing required kwargs" in str(exc)
     else:
@@ -39,8 +39,8 @@ def test_openrouter_default_routing_for_bare_gpt5(monkeypatch) -> None:
 
 def test_agent_retry_safe_switch(monkeypatch) -> None:
     monkeypatch.delenv("LLM_CLIENT_AGENT_RETRY_SAFE", raising=False)
-    assert _agent_retry_safe_enabled(None) is False
-    assert _agent_retry_safe_enabled(True) is True
+    assert agent_retry_safe_enabled(None) is False
+    assert agent_retry_safe_enabled(True) is True
 
     monkeypatch.setenv("LLM_CLIENT_AGENT_RETRY_SAFE", "1")
-    assert _agent_retry_safe_enabled(None) is True
+    assert agent_retry_safe_enabled(None) is True

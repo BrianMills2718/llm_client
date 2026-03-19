@@ -57,8 +57,8 @@ def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestRequiredTags:
     def test_calls_experiment_enforcement_hook(self) -> None:
         with (
-            patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
-            patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
+            patch("llm_client.call_contracts._io_log.enforce_feature_profile") as mock_feature_enforce,
+            patch("llm_client.call_contracts._io_log.enforce_experiment_context") as mock_experiment_enforce,
         ):
             client_mod._require_tags(
                 "digimon.benchmark",
@@ -72,8 +72,8 @@ class TestRequiredTags:
     def test_missing_tags_raise_before_enforcement(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LLM_CLIENT_REQUIRE_TAGS", "1")
         with (
-            patch("llm_client.client._io_log.enforce_feature_profile") as mock_feature_enforce,
-            patch("llm_client.client._io_log.enforce_experiment_context") as mock_experiment_enforce,
+            patch("llm_client.call_contracts._io_log.enforce_feature_profile") as mock_feature_enforce,
+            patch("llm_client.call_contracts._io_log.enforce_experiment_context") as mock_experiment_enforce,
         ):
             with pytest.raises(ValueError, match="Missing required kwargs"):
                 client_mod._require_tags(
@@ -188,6 +188,29 @@ class TestCallLLM:
         kwargs = mock_comp.call_args.kwargs
         assert "api_base" not in kwargs
 
+    @patch("llm_client.client._io_log.log_call")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.client.litellm.completion")
+    def test_prompt_ref_is_logged_but_not_forwarded_to_provider(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_call: MagicMock,
+    ) -> None:
+        """prompt_ref belongs to observability, not provider transport kwargs."""
+        mock_comp.return_value = _mock_response()
+        call_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            prompt_ref="shared.investigation_pipeline.collect@1",
+            task="test",
+            trace_id="test_prompt_ref_sync",
+            max_budget=0,
+        )
+        provider_kwargs = mock_comp.call_args.kwargs
+        assert "prompt_ref" not in provider_kwargs
+        assert mock_log_call.call_args.kwargs["prompt_ref"] == "shared.investigation_pipeline.collect@1"
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")
     def test_timeout_policy_ban_omits_timeout(
@@ -254,6 +277,37 @@ class TestCallLLMWithTools:
         )
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
+
+
+class TestPromptRefObservability:
+    """Prompt asset identity should survive specialized runtime branches."""
+
+    @patch("llm_client.client._io_log.log_call")
+    def test_finalize_agent_loop_result_logs_prompt_ref(self, mock_log_call: MagicMock) -> None:
+        """Tool-loop finalization records the shared prompt asset used to start the run."""
+        result = LLMCallResult(
+            content="final synthesis",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            cost=0.01,
+            model="gpt-4",
+            resolved_model="gpt-4",
+        )
+        finalized = client_mod._finalize_agent_loop_result(
+            result=result,
+            requested_model="gpt-4",
+            primary_model="gpt-4",
+            requested_api_base=None,
+            config=client_mod.ClientConfig.from_env(),
+            routing_policy="direct",
+            caller="test_finalize_agent_loop_result",
+            messages=[{"role": "user", "content": "Collect evidence"}],
+            log_started_at=client_mod.time.monotonic(),
+            task="collect",
+            trace_id="test/finalize_prompt_ref",
+            prompt_ref="shared.investigation_pipeline.collect@1",
+        )
+        assert finalized.requested_model == "gpt-4"
+        assert mock_log_call.call_args.kwargs["prompt_ref"] == "shared.investigation_pipeline.collect@1"
 
 
 class TestAcallLLM:
@@ -1031,17 +1085,29 @@ class TestOpenRouterKeyRotation:
 class TestThinkingModelDetection:
     """Tests for automatic thinking model configuration."""
 
+    @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
-    def test_gemini_3_gets_thinking_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+    def test_gemini_3_gets_thinking_config(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        _mock_supported: MagicMock,
+    ) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini3_thinking", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
+    @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
-    def test_gemini_4_gets_thinking_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
+    def test_gemini_4_gets_thinking_config(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        _mock_supported: MagicMock,
+    ) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-4-pro", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini4_thinking", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
@@ -1052,6 +1118,20 @@ class TestThinkingModelDetection:
     def test_non_thinking_model_no_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-2.0-flash-lite", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_non_thinking", max_budget=0)
+        kwargs = mock_comp.call_args.kwargs
+        assert "thinking" not in kwargs
+
+    @patch("litellm.get_supported_openai_params", return_value=[])
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_thinking_model_without_supported_param_has_no_config(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        _mock_supported: MagicMock,
+    ) -> None:
+        mock_comp.return_value = _mock_response()
+        call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini3_thinking_unsupported", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
         assert "thinking" not in kwargs
 
@@ -1066,17 +1146,29 @@ class TestThinkingModelDetection:
         assert kwargs["thinking"] == custom
 
     @pytest.mark.asyncio
+    @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.acompletion")
-    async def test_async_gemini_3_gets_thinking_config(self, mock_acomp: MagicMock, mock_cost: MagicMock) -> None:
+    async def test_async_gemini_3_gets_thinking_config(
+        self,
+        mock_acomp: MagicMock,
+        mock_cost: MagicMock,
+        _mock_supported: MagicMock,
+    ) -> None:
         mock_acomp.return_value = _mock_response()
         await acall_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_gemini3_thinking", max_budget=0)
         kwargs = mock_acomp.call_args.kwargs
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
+    @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("instructor.from_litellm")
-    def test_structured_gemini_3_gets_thinking_config(self, mock_from_litellm: MagicMock, mock_cost: MagicMock) -> None:
+    def test_structured_gemini_3_gets_thinking_config(
+        self,
+        mock_from_litellm: MagicMock,
+        mock_cost: MagicMock,
+        _mock_supported: MagicMock,
+    ) -> None:
         class Item(BaseModel):
             name: str
 
@@ -2240,6 +2332,10 @@ class TestCache:
         result2 = call_llm("gpt-4", messages, cache=cache, task="test", trace_id="test_cache_hit", max_budget=0)
         assert result2.content == "First"  # cached
         assert mock_comp.call_count == 1  # no additional call
+        assert result1.cache_hit is False
+        assert result2.cache_hit is True
+        assert result2.cost_source == "cache_hit"
+        assert result2.marginal_cost == 0.0
 
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.completion")
@@ -2799,6 +2895,17 @@ class TestExecutionModeContracts:
                 working_directory="/tmp",
                 task="test",
                 trace_id="test_agent_kwargs_non_agent",
+                max_budget=0,
+            )
+
+    def test_yolo_mode_rejected_for_non_agent(self) -> None:
+        with pytest.raises(LLMCapabilityError, match="agent-only kwargs"):
+            call_llm(
+                "gpt-4",
+                [{"role": "user", "content": "Hi"}],
+                yolo_mode=True,
+                task="test",
+                trace_id="test_yolo_mode_non_agent",
                 max_budget=0,
             )
 

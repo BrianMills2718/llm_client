@@ -33,7 +33,7 @@ import time
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Awaitable, Callable, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -41,6 +41,7 @@ from llm_client.client import Hooks, LLMCallResult
 
 logger = logging.getLogger(__name__)
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
+_CODEX_TRANSPORT_FALLBACK_EXCEPTIONS = (TimeoutError, ConnectionError, OSError)
 
 
 def _agent_billing_mode() -> str:
@@ -77,6 +78,67 @@ def _parse_agent_model(model: str) -> tuple[str, str | None]:
     return (lower, None)
 
 
+def _is_codex_transport_fallback_error(exc: BaseException) -> bool:
+    """Return whether a Codex SDK failure should fall back to CLI transport."""
+
+    if isinstance(exc, _CODEX_TRANSPORT_FALLBACK_EXCEPTIONS):
+        return True
+    if isinstance(exc, RuntimeError):
+        message = _safe_error_text(exc)
+        return message.startswith(
+            (
+                "CODEX_WORKER_ERROR",
+                "CODEX_STRUCTURED_WORKER_ERROR",
+                "CODEX_WORKER_EOF",
+                "CODEX_STRUCTURED_WORKER_EOF",
+            )
+        )
+    return False
+
+
+def _codex_transport_fallback_warning(exc: BaseException) -> str:
+    """Build the standard SDK-to-CLI fallback warning string."""
+
+    return (
+        "CODEX_TRANSPORT_FALLBACK[sdk->cli]: "
+        f"{type(exc).__name__}: {_safe_error_text(exc)}"
+    )
+
+
+async def _acall_codex_auto_fallback(
+    sdk_call: Callable[[], Awaitable[_T]],
+    cli_call: Callable[[str], Awaitable[_T]],
+) -> _T:
+    """Run one async Codex SDK call with bounded auto fallback to CLI transport."""
+
+    try:
+        return await sdk_call()
+    except BaseException as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        if not _is_codex_transport_fallback_error(exc):
+            raise
+        warning = _codex_transport_fallback_warning(exc)
+        logger.warning(warning)
+        return await cli_call(warning)
+
+
+def _call_codex_auto_fallback(
+    sdk_call: Callable[[], _T],
+    cli_call: Callable[[str], _T],
+) -> _T:
+    """Run one sync Codex SDK call with bounded auto fallback to CLI transport."""
+
+    try:
+        return sdk_call()
+    except BaseException as exc:
+        if not _is_codex_transport_fallback_error(exc):
+            raise
+        warning = _codex_transport_fallback_warning(exc)
+        logger.warning(warning)
+        return cli_call(warning)
+
+
 # kwargs consumed by agent SDKs (not passed through)
 _AGENT_KWARGS = frozenset({
     # Claude Agent SDK
@@ -84,10 +146,12 @@ _AGENT_KWARGS = frozenset({
     # Codex SDK
     "sandbox_mode", "working_directory", "approval_policy",
     "model_reasoning_effort", "network_access_enabled", "web_search_enabled",
-    "additional_directories", "skip_git_repo_check",
+    "additional_directories", "skip_git_repo_check", "yolo_mode",
     "api_key", "base_url",
     # Codex MCP server control
     "codex_home", "mcp_servers",
+    # Codex transport controls
+    "codex_transport", "codex_cli_path", "agent_hard_timeout",
     # Codex runtime isolation controls
     "codex_process_isolation", "codex_process_start_method", "codex_process_grace_s",
 })
@@ -96,7 +160,8 @@ _CODEX_PROCESS_ISOLATION_ENV = "LLM_CLIENT_CODEX_PROCESS_ISOLATION"
 _CODEX_PROCESS_START_METHOD_ENV = "LLM_CLIENT_CODEX_PROCESS_START_METHOD"
 _CODEX_PROCESS_GRACE_ENV = "LLM_CLIENT_CODEX_PROCESS_GRACE_S"
 _CODEX_ALLOW_MINIMAL_EFFORT_ENV = "LLM_CLIENT_CODEX_ALLOW_MINIMAL_EFFORT"
-_TIMEOUT_POLICY_ENV = "LLM_CLIENT_TIMEOUT_POLICY"
+_CODEX_TRANSPORT_ENV = "LLM_CLIENT_CODEX_TRANSPORT"
+from llm_client.timeout_policy import normalize_timeout as _normalize_timeout
 
 
 def _normalize_codex_reasoning_effort(value: Any) -> str:
@@ -127,6 +192,26 @@ def _normalize_codex_reasoning_effort(value: Any) -> str:
     if raw in {"none", "off", "disabled"}:
         return "minimal"
     return "high"
+
+
+def _apply_agent_yolo_defaults(agent_name: str, agent_kw: dict[str, Any]) -> dict[str, Any]:
+    """Apply convenience defaults for an explicitly autonomous agent run.
+
+    `yolo_mode=True` is syntactic sugar for callers who want the agent to run
+    headlessly without having to remember the exact per-SDK knobs. Explicit
+    kwargs still win over the convenience defaults.
+    """
+
+    if not agent_kw.get("yolo_mode"):
+        return agent_kw
+
+    if agent_name == "codex":
+        agent_kw.setdefault("sandbox_mode", "workspace-write")
+        agent_kw.setdefault("approval_policy", "never")
+        agent_kw.setdefault("skip_git_repo_check", True)
+    elif agent_name == "claude-code":
+        agent_kw.setdefault("permission_mode", "bypassPermissions")
+    return agent_kw
 
 
 def _messages_to_agent_prompt(
@@ -193,35 +278,6 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
-def _timeouts_disabled() -> bool:
-    raw = str(os.environ.get(_TIMEOUT_POLICY_ENV, "") or "").strip().lower()
-    if not raw:
-        return False
-    if raw in {"allow", "allowed", "enable", "enabled", "on", "true", "yes", "1"}:
-        return False
-    if raw in {"ban", "disable", "disabled", "off", "none", "false", "no", "0"}:
-        return True
-    return False
-
-
-def _normalize_timeout(timeout: Any, *, caller: str) -> int:
-    try:
-        parsed = int(timeout)
-    except (TypeError, ValueError):
-        parsed = 0
-    if parsed < 0:
-        parsed = 0
-    if parsed > 0 and _timeouts_disabled():
-        logger.warning(
-            "TIMEOUT_DISABLED[%s]: timeout=%ss ignored (set %s=allow to re-enable).",
-            caller,
-            parsed,
-            _TIMEOUT_POLICY_ENV,
-        )
-        return 0
-    return parsed
-
-
 def _codex_process_isolation_enabled(kwargs: dict[str, Any]) -> bool:
     """Resolve Codex process isolation policy.
 
@@ -251,6 +307,38 @@ def _codex_process_grace_s(kwargs: dict[str, Any]) -> float:
         return max(0.5, float(raw))
     except Exception:
         return 3.0
+
+
+def _codex_transport(kwargs: dict[str, Any]) -> str:
+    """Resolve Codex transport selection."""
+
+    raw = str(
+        kwargs.get("codex_transport")
+        or os.environ.get(_CODEX_TRANSPORT_ENV, "sdk")
+    ).strip().lower()
+    if raw in {"sdk", "cli", "auto"}:
+        return raw
+    return "sdk"
+
+
+def _codex_cli_path(kwargs: dict[str, Any]) -> str:
+    """Resolve the Codex CLI executable."""
+
+    raw = str(kwargs.get("codex_cli_path") or "codex").strip()
+    return raw or "codex"
+
+
+def _agent_hard_timeout(kwargs: dict[str, Any], default_timeout: int) -> int:
+    """Resolve a transport-level hard timeout independent of provider request timeout policy."""
+
+    raw = kwargs.get("agent_hard_timeout")
+    if raw is None:
+        return max(0, int(default_timeout))
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return max(0, int(default_timeout))
+    return max(0, parsed)
 
 
 # ===========================================================================
@@ -308,6 +396,7 @@ def _build_agent_options(
             agent_kw[k] = v
         else:
             logger.debug("Ignoring kwarg %r for agent model %s", k, model)
+    agent_kw = _apply_agent_yolo_defaults("claude-code", agent_kw)
 
     # Build ClaudeAgentOptions
     options_kw: dict[str, Any] = {}
@@ -453,7 +542,7 @@ async def _acall_agent(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Claude Agent SDK and return an LLMCallResult."""
-    timeout = _normalize_timeout(timeout, caller="_acall_agent")
+    timeout = _normalize_timeout(timeout, caller="_acall_agent", logger=logger)
     prompt, options, sdk = _build_agent_options(model, messages, **kwargs)
     AssistantMessage, _, ResultMessage, TextBlock, ToolUseBlock, query_fn = sdk
     from claude_agent_sdk import ToolResultBlock
@@ -548,7 +637,7 @@ async def _acall_agent_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Claude Agent SDK with structured output (JSON schema)."""
-    timeout = _normalize_timeout(timeout, caller="_acall_agent_structured")
+    timeout = _normalize_timeout(timeout, caller="_acall_agent_structured", logger=logger)
     schema = response_model.model_json_schema()
     output_format = {"type": "json_schema", "schema": schema}
 
@@ -1151,6 +1240,7 @@ def _build_codex_options(
             agent_kw[k] = v
         else:
             logger.debug("Ignoring kwarg %r for codex model %s", k, model)
+    agent_kw = _apply_agent_yolo_defaults("codex", agent_kw)
 
     # CodexOptions (connection-level)
     codex_kw: dict[str, Any] = {}
@@ -1348,6 +1438,191 @@ def _deserialize_llm_result(payload: dict[str, Any]) -> LLMCallResult:
     )
 
 
+def _build_codex_cli_command(
+    model: str,
+    prompt: str,
+    *,
+    output_schema: dict[str, Any] | None,
+    kwargs: dict[str, Any],
+    output_path: str,
+    schema_path: str | None,
+) -> tuple[list[str], dict[str, str], str]:
+    """Build a direct `codex exec` command for one prompt."""
+
+    kwargs = _apply_agent_yolo_defaults("codex", dict(kwargs))
+    _, underlying_model = _parse_agent_model(model)
+    cli_path = _codex_cli_path(kwargs)
+    working_directory = str(kwargs.get("working_directory") or os.getcwd())
+    sandbox_mode = str(kwargs.get("sandbox_mode") or "workspace-write")
+    approval_policy = str(kwargs.get("approval_policy") or "never")
+    reasoning_effort = _normalize_codex_reasoning_effort(
+        kwargs.get("model_reasoning_effort")
+    )
+    command = [
+        cli_path,
+        "exec",
+        "--color",
+        "never",
+        "-C",
+        working_directory,
+        "-s",
+        sandbox_mode,
+        "-o",
+        output_path,
+    ]
+    if approval_policy == "never":
+        command.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        command.extend(["-a", approval_policy])
+    if kwargs.get("skip_git_repo_check"):
+        command.append("--skip-git-repo-check")
+    if underlying_model:
+        command.extend(["--model", underlying_model])
+    if reasoning_effort:
+        command.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+    for add_dir in kwargs.get("additional_directories", []) or []:
+        command.extend(["--add-dir", str(add_dir)])
+    if schema_path is not None and output_schema is not None:
+        command.extend(["--output-schema", schema_path])
+    command.append("-")
+
+    env = dict(os.environ)
+    codex_home = kwargs.get("codex_home")
+    if codex_home:
+        env["HOME"] = str(codex_home)
+    return command, env, prompt
+
+
+def _result_from_codex_cli(
+    model: str,
+    final_response: str,
+    *,
+    transport: str,
+    warning: str | None = None,
+) -> LLMCallResult:
+    """Build an `LLMCallResult` from direct Codex CLI output."""
+
+    result = LLMCallResult(
+        content=final_response,
+        usage={},
+        cost=0.0,
+        model=model,
+        finish_reason="stop",
+        raw_response={"transport": transport},
+        cost_source="subscription_included",
+        billing_mode="subscription_included",
+    )
+    if warning:
+        result.warnings.append(warning)
+    return result
+
+
+def _call_codex_via_cli(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 300,
+    output_schema: dict[str, Any] | None = None,
+    fallback_warning: str | None = None,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Run Codex through the local CLI with enforced subprocess timeouts."""
+
+    prompt, system_prompt = _messages_to_agent_prompt(messages)
+    if system_prompt:
+        prompt = f"{system_prompt}\n\n{prompt}"
+    hard_timeout = _agent_hard_timeout(kwargs, timeout)
+    with tempfile.TemporaryDirectory(prefix="llm_client_codex_cli_") as tmp_dir:
+        output_path = str(Path(tmp_dir) / "last_message.txt")
+        schema_path: str | None = None
+        if output_schema is not None:
+            schema_path = str(Path(tmp_dir) / "output_schema.json")
+            Path(schema_path).write_text(_json.dumps(output_schema))
+        command, env, stdin_payload = _build_codex_cli_command(
+            model,
+            prompt,
+            output_schema=output_schema,
+            kwargs=kwargs,
+            output_path=output_path,
+            schema_path=schema_path,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=stdin_payload,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=(float(hard_timeout) if hard_timeout > 0 else None),
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            diagnostics = {
+                "phase": "codex_cli_exec",
+                "command": command[:10],
+                "timeout_s": hard_timeout,
+                "stdout_tail": _safe_line_preview(exc.stdout, max_chars=400),
+                "stderr_tail": _safe_line_preview(exc.stderr, max_chars=400),
+            }
+            raise TimeoutError(
+                _codex_timeout_message(
+                    model=model,
+                    timeout_s=max(hard_timeout, 0),
+                    working_directory=kwargs.get("working_directory"),
+                    sandbox_mode=kwargs.get("sandbox_mode"),
+                    approval_policy=kwargs.get("approval_policy"),
+                    diagnostics=diagnostics,
+                    structured=output_schema is not None,
+                )
+            ) from exc
+
+        if completed.returncode != 0:
+            diagnostics = {
+                "phase": "codex_cli_exec",
+                "returncode": completed.returncode,
+                "stdout_tail": _safe_line_preview(completed.stdout, max_chars=500),
+                "stderr_tail": _safe_line_preview(completed.stderr, max_chars=500),
+            }
+            raise RuntimeError(
+                "CODEX_CLI_ERROR "
+                f"(model={model}, returncode={completed.returncode}) "
+                f"diagnostics={_compact_json(diagnostics)}"
+            )
+
+        final_response = Path(output_path).read_text() if Path(output_path).exists() else ""
+        final_response = final_response.strip()
+        if not final_response:
+            raise ValueError("Empty response from Codex CLI")
+        return _result_from_codex_cli(
+            model,
+            final_response,
+            transport="codex_cli",
+            warning=fallback_warning,
+        )
+
+
+async def _acall_codex_via_cli(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    timeout: int = 300,
+    output_schema: dict[str, Any] | None = None,
+    fallback_warning: str | None = None,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Async wrapper for direct Codex CLI execution."""
+
+    return await asyncio.to_thread(
+        _call_codex_via_cli,
+        model,
+        messages,
+        timeout=timeout,
+        output_schema=output_schema,
+        fallback_warning=fallback_warning,
+        **kwargs,
+    )
+
+
 def _codex_timeout_message(
     *,
     model: str,
@@ -1451,7 +1726,7 @@ async def _acall_codex_inproc(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Codex SDK and return an LLMCallResult."""
-    timeout = _normalize_timeout(timeout, caller="_acall_codex_inproc")
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_inproc", logger=logger)
     kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
     try:
         prompt, codex_opts, thread_opts, turn_opts, sdk = _build_codex_options(
@@ -1572,7 +1847,8 @@ def _call_codex_in_isolated_process(
     grace_s = _codex_process_grace_s(kwargs)
     ctx = _mp.get_context(start_method)
     recv_conn, send_conn = ctx.Pipe(duplex=False)
-    proc = ctx.Process(
+    process_factory = getattr(ctx, "Process")
+    proc = process_factory(
         target=_codex_text_worker_entry,
         args=(send_conn, model, messages, int(timeout), dict(kwargs)),
         daemon=True,
@@ -1671,16 +1947,49 @@ async def _acall_codex(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call Codex SDK and return an LLMCallResult."""
-    timeout = _normalize_timeout(timeout, caller="_acall_codex")
-    if _codex_process_isolation_enabled(kwargs):
-        return await asyncio.to_thread(
-            _call_codex_in_isolated_process,
+    timeout = _normalize_timeout(timeout, caller="_acall_codex", logger=logger)
+    transport = _codex_transport(kwargs)
+    hard_timeout = _agent_hard_timeout(kwargs, timeout)
+    if transport == "cli":
+        return await _acall_codex_via_cli(model, messages, timeout=timeout, **kwargs)
+    if transport == "auto" and timeout <= 0 and hard_timeout > 0:
+        warning = (
+            "CODEX_TRANSPORT_AUTO[sdk->cli]: provider timeout unavailable; "
+            f"using CLI transport with agent_hard_timeout={hard_timeout}s"
+        )
+        logger.warning(warning)
+        return await _acall_codex_via_cli(
             model,
             messages,
             timeout=timeout,
-            kwargs=dict(kwargs),
+            fallback_warning=warning,
+            **kwargs,
         )
-    return await _acall_codex_inproc(model, messages, timeout=timeout, **kwargs)
+    if _codex_process_isolation_enabled(kwargs):
+        async def _sdk_call() -> LLMCallResult:
+            return await asyncio.to_thread(
+                _call_codex_in_isolated_process,
+                model,
+                messages,
+                timeout=timeout,
+                kwargs=dict(kwargs),
+            )
+    else:
+        async def _sdk_call() -> LLMCallResult:
+            return await _acall_codex_inproc(model, messages, timeout=timeout, **kwargs)
+
+    if transport != "auto":
+        return await _sdk_call()
+    return await _acall_codex_auto_fallback(
+        _sdk_call,
+        lambda warning: _acall_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            fallback_warning=warning,
+            **kwargs,
+        ),
+    )
 
 
 def _call_codex(
@@ -1691,8 +2000,48 @@ def _call_codex(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Sync wrapper for _acall_codex."""
-    coro = _acall_codex(model, messages, timeout=timeout, **kwargs)
-    return cast(LLMCallResult, _run_sync(coro))
+    timeout = _normalize_timeout(timeout, caller="_call_codex", logger=logger)
+    transport = _codex_transport(kwargs)
+    hard_timeout = _agent_hard_timeout(kwargs, timeout)
+    if transport == "cli":
+        return _call_codex_via_cli(model, messages, timeout=timeout, **kwargs)
+    if transport == "auto" and timeout <= 0 and hard_timeout > 0:
+        warning = (
+            "CODEX_TRANSPORT_AUTO[sdk->cli]: provider timeout unavailable; "
+            f"using CLI transport with agent_hard_timeout={hard_timeout}s"
+        )
+        logger.warning(warning)
+        return _call_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            fallback_warning=warning,
+            **kwargs,
+        )
+    if _codex_process_isolation_enabled(kwargs):
+        def _sdk_call() -> LLMCallResult:
+            return _call_codex_in_isolated_process(
+                model,
+                messages,
+                timeout=timeout,
+                kwargs=dict(kwargs),
+            )
+    else:
+        def _sdk_call() -> LLMCallResult:
+            return cast(LLMCallResult, _run_sync(_acall_codex_inproc(model, messages, timeout=timeout, **kwargs)))
+
+    if transport != "auto":
+        return _sdk_call()
+    return _call_codex_auto_fallback(
+        _sdk_call,
+        lambda warning: _call_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            fallback_warning=warning,
+            **kwargs,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1717,7 +2066,7 @@ async def _acall_codex_structured_inproc(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Codex SDK with structured output (JSON schema)."""
-    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured_inproc")
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured_inproc", logger=logger)
     kwargs, tmp_dir = _prepare_codex_mcp(kwargs)
     try:
         schema = response_model.model_json_schema()
@@ -1877,7 +2226,8 @@ def _call_codex_structured_in_isolated_process(
     ctx = _mp.get_context(start_method)
     recv_conn, send_conn = ctx.Pipe(duplex=False)
     schema = response_model.model_json_schema()
-    proc = ctx.Process(
+    process_factory = getattr(ctx, "Process")
+    proc = process_factory(
         target=_codex_structured_worker_entry,
         args=(send_conn, model, messages, schema, int(timeout), dict(kwargs)),
         daemon=True,
@@ -1983,23 +2333,73 @@ async def _acall_codex_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Call Codex SDK with structured output (JSON schema)."""
-    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured")
-    if _codex_process_isolation_enabled(kwargs):
-        return await asyncio.to_thread(
-            _call_codex_structured_in_isolated_process,
+    timeout = _normalize_timeout(timeout, caller="_acall_codex_structured", logger=logger)
+    transport = _codex_transport(kwargs)
+    hard_timeout = _agent_hard_timeout(kwargs, timeout)
+    if transport == "cli":
+        llm_result = await _acall_codex_via_cli(
             model,
             messages,
-            response_model,
             timeout=timeout,
-            kwargs=dict(kwargs),
+            output_schema=response_model.model_json_schema(),
+            **kwargs,
         )
-    return await _acall_codex_structured_inproc(
-        model,
-        messages,
-        response_model,
-        timeout=timeout,
-        **kwargs,
-    )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+    if transport == "auto" and timeout <= 0 and hard_timeout > 0:
+        warning = (
+            "CODEX_TRANSPORT_AUTO[sdk->cli]: provider timeout unavailable; "
+            f"using CLI transport with agent_hard_timeout={hard_timeout}s"
+        )
+        logger.warning(warning)
+        llm_result = await _acall_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            output_schema=response_model.model_json_schema(),
+            fallback_warning=warning,
+            **kwargs,
+        )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+
+    if _codex_process_isolation_enabled(kwargs):
+        async def _sdk_call() -> tuple[BaseModel, LLMCallResult]:
+            return await asyncio.to_thread(
+                _call_codex_structured_in_isolated_process,
+                model,
+                messages,
+                response_model,
+                timeout=timeout,
+                kwargs=dict(kwargs),
+            )
+    else:
+        async def _sdk_call() -> tuple[BaseModel, LLMCallResult]:
+            return await _acall_codex_structured_inproc(
+                model,
+                messages,
+                response_model,
+                timeout=timeout,
+                **kwargs,
+            )
+
+    if transport != "auto":
+        return await _sdk_call()
+    async def _cli_from_warning(warning: str) -> tuple[BaseModel, LLMCallResult]:
+        llm_result = await _acall_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            output_schema=response_model.model_json_schema(),
+            fallback_warning=warning,
+            **kwargs,
+        )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+    return await _acall_codex_auto_fallback(_sdk_call, _cli_from_warning)
 
 
 def _call_codex_structured(
@@ -2011,10 +2411,77 @@ def _call_codex_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Sync wrapper for _acall_codex_structured."""
-    coro = _acall_codex_structured(
-        model, messages, response_model, timeout=timeout, **kwargs,
-    )
-    return cast(tuple[BaseModel, LLMCallResult], _run_sync(coro))
+    timeout = _normalize_timeout(timeout, caller="_call_codex_structured", logger=logger)
+    transport = _codex_transport(kwargs)
+    hard_timeout = _agent_hard_timeout(kwargs, timeout)
+    if transport == "cli":
+        llm_result = _call_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            output_schema=response_model.model_json_schema(),
+            **kwargs,
+        )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+    if transport == "auto" and timeout <= 0 and hard_timeout > 0:
+        warning = (
+            "CODEX_TRANSPORT_AUTO[sdk->cli]: provider timeout unavailable; "
+            f"using CLI transport with agent_hard_timeout={hard_timeout}s"
+        )
+        logger.warning(warning)
+        llm_result = _call_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            output_schema=response_model.model_json_schema(),
+            fallback_warning=warning,
+            **kwargs,
+        )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+    if transport != "auto":
+        return cast(
+            tuple[BaseModel, LLMCallResult],
+            _run_sync(
+                _acall_codex_structured(
+                    model,
+                    messages,
+                    response_model,
+                    timeout=timeout,
+                    **kwargs,
+                )
+            ),
+        )
+    def _sdk_call() -> tuple[BaseModel, LLMCallResult]:
+        return cast(
+            tuple[BaseModel, LLMCallResult],
+            _run_sync(
+                _acall_codex_structured(
+                    model,
+                    messages,
+                    response_model,
+                    timeout=timeout,
+                    **kwargs,
+                )
+            ),
+        )
+
+    def _cli_from_warning(warning: str) -> tuple[BaseModel, LLMCallResult]:
+        llm_result = _call_codex_via_cli(
+            model,
+            messages,
+            timeout=timeout,
+            output_schema=response_model.model_json_schema(),
+            fallback_warning=warning,
+            **kwargs,
+        )
+        parsed = response_model.model_validate_json(llm_result.content)
+        llm_result.content = parsed.model_dump_json()
+        return parsed, llm_result
+    return _call_codex_auto_fallback(_sdk_call, _cli_from_warning)
 
 
 # ---------------------------------------------------------------------------
@@ -2222,7 +2689,7 @@ def _route_call(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Route a sync agent call to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_call")
+    timeout = _normalize_timeout(timeout, caller="_route_call", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _call_codex(model, messages, timeout=timeout, **kwargs)
@@ -2244,7 +2711,7 @@ async def _route_acall(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Route an async agent call to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_acall")
+    timeout = _normalize_timeout(timeout, caller="_route_acall", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _acall_codex(model, messages, timeout=timeout, **kwargs)
@@ -2267,7 +2734,7 @@ def _route_call_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Route a sync structured agent call to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_call_structured")
+    timeout = _normalize_timeout(timeout, caller="_route_call_structured", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _call_codex_structured(model, messages, response_model, timeout=timeout, **kwargs)
@@ -2290,7 +2757,7 @@ async def _route_acall_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Route an async structured agent call to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_acall_structured")
+    timeout = _normalize_timeout(timeout, caller="_route_acall_structured", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _acall_codex_structured(model, messages, response_model, timeout=timeout, **kwargs)
@@ -2313,7 +2780,7 @@ def _route_stream(
     **kwargs: Any,
 ) -> AgentStream | CodexStream:
     """Route a sync agent stream to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_stream")
+    timeout = _normalize_timeout(timeout, caller="_route_stream", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return _stream_codex(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -2336,7 +2803,7 @@ async def _route_astream(
     **kwargs: Any,
 ) -> AsyncAgentStream | AsyncCodexStream:
     """Route an async agent stream to the appropriate SDK."""
-    timeout = _normalize_timeout(timeout, caller="_route_astream")
+    timeout = _normalize_timeout(timeout, caller="_route_astream", logger=logger)
     sdk_name, _ = _parse_agent_model(model)
     if sdk_name == "codex":
         return await _astream_codex(model, messages, hooks=hooks, timeout=timeout, **kwargs)
@@ -2348,3 +2815,4 @@ async def _route_astream(
             "Only 'claude-code' and 'codex' are implemented."
         )
     raise ValueError(f"Unknown agent SDK: {sdk_name}")
+_T = TypeVar("_T")

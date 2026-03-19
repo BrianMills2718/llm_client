@@ -21,6 +21,8 @@ from llm_client import (
     LLMCallResult,
     MCPAgentResult,
     callable_to_openai_tool,
+    lint_tool_callable,
+    lint_tool_registry,
     prepare_direct_tools,
 )
 from llm_client.tool_utils import execute_direct_tool_calls
@@ -70,6 +72,28 @@ def failing_tool(x: str) -> str:
 def fetch_chunks(chunk_ids: list[str]) -> str:
     """Return joined chunk ids."""
     return "|".join(chunk_ids)
+
+
+def no_description_complex(query: str, limit: int = 10) -> str:
+    return f"{query}:{limit}"
+
+
+def described_complex(query: str, limit: int = 10) -> str:
+    """Search with limit."""
+    return f"{query}:{limit}"
+
+
+def handle_consumer(
+    chunk_artifact_ids: list[str] | None = None,
+    chunk_artifacts: list[dict] | None = None,
+) -> str:
+    """Consume runtime-resolved chunk artifacts."""
+    return json.dumps(
+        {
+            "chunk_artifact_ids": chunk_artifact_ids or [],
+            "n_chunk_artifacts": len(chunk_artifacts or []),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +200,92 @@ class TestPrepareDirectTools:
         tool_map, openai_tools = prepare_direct_tools([])
         assert tool_map == {}
         assert openai_tools == []
+
+
+class TestToolLinting:
+    def test_lint_tool_callable_warns_for_missing_description_examples_and_contract(self) -> None:
+        findings = lint_tool_callable(no_description_complex)
+        codes = {finding["code"] for finding in findings}
+        assert "missing_description" in codes
+        assert "missing_examples" in codes
+        assert "missing_contract" in codes
+
+    def test_lint_tool_callable_accepts_examples_and_valid_contract(self) -> None:
+        described_complex.__tool_input_examples__ = [  # type: ignore[attr-defined]
+            {"query": "Paris", "limit": 5}
+        ]
+        try:
+            findings = lint_tool_callable(
+                described_complex,
+                contract={
+                    "call_modes": [
+                        {
+                            "mode": "search",
+                            "when_args_present_any": ["query"],
+                            "artifact_prereqs": "none",
+                            "produces": ["CHUNK_SET"],
+                        }
+                    ]
+                },
+            )
+        finally:
+            delattr(described_complex, "__tool_input_examples__")
+        assert findings == []
+
+    def test_lint_tool_callable_reports_selectorless_call_mode(self) -> None:
+        findings = lint_tool_callable(
+            described_complex,
+            contract={"call_modes": [{"mode": "broken", "artifact_prereqs": "none"}]},
+        )
+        assert any(finding["code"] == "call_mode_missing_selector" for finding in findings)
+
+    def test_lint_tool_registry_aggregates_findings(self) -> None:
+        report = lint_tool_registry([add, no_description_complex])
+        assert report["n_tools"] == 2
+        assert report["n_findings"] >= 1
+        assert report["n_warnings"] >= 1
+        assert report["passed"] is True
+
+    def test_lint_tool_callable_accepts_valid_handle_input_contract(self) -> None:
+        handle_consumer.__tool_input_examples__ = [  # type: ignore[attr-defined]
+            {"chunk_artifact_ids": ["art_chunk_1"]}
+        ]
+        try:
+            findings = lint_tool_callable(
+                handle_consumer,
+                contract={
+                    "artifact_prereqs": "none",
+                    "handle_inputs": [
+                        {
+                            "arg": "chunk_artifact_ids",
+                            "inject_arg": "chunk_artifacts",
+                            "representation": "payload",
+                            "accepts": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+                        }
+                    ],
+                },
+            )
+        finally:
+            delattr(handle_consumer, "__tool_input_examples__")
+        assert findings == []
+
+    def test_lint_tool_callable_rejects_handle_input_for_missing_inject_arg(self) -> None:
+        findings = lint_tool_callable(
+            described_complex,
+            contract={
+                "artifact_prereqs": "none",
+                "handle_inputs": [
+                    {
+                        "arg": "chunk_artifact_ids",
+                        "inject_arg": "chunk_artifacts",
+                        "representation": "payload",
+                    }
+                ],
+            },
+        )
+        codes = {finding["code"] for finding in findings}
+        assert "handle_input_missing_arg" in codes
+        assert "handle_input_missing_inject_arg" in codes
 
 
 # ---------------------------------------------------------------------------

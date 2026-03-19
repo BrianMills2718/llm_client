@@ -35,9 +35,69 @@ import os
 import re
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Mapping
 
+from llm_client.agent_artifacts import (
+    _artifact_handle_summaries as _agent_artifact_handle_summaries,
+    _build_active_artifact_context_content as _agent_build_active_artifact_context_content,
+    _collect_evidence_pointer_labels as _agent_collect_evidence_pointer_labels,
+    _collect_recent_artifact_handles as _agent_collect_recent_artifact_handles,
+    _evidence_digest as _agent_evidence_digest,
+    _runtime_artifact_read_contract as _agent_runtime_artifact_read_contract,
+    _runtime_artifact_read_result as _agent_runtime_artifact_read_result,
+    _runtime_artifact_read_tool_def as _agent_runtime_artifact_read_tool_def,
+    _tool_evidence_pointer_labels as _agent_tool_evidence_pointer_labels,
+    _upsert_active_artifact_context_message as _agent_upsert_active_artifact_context_message,
+)
+from llm_client.agent_contracts import (
+    CapabilityRequirement,
+    ToolCallValidation,
+    _analyze_lane_closure as _agent_analyze_lane_closure,
+    _apply_handle_input_injections as _agent_apply_handle_input_injections,
+    _artifact_output_state_from_payload as _agent_artifact_output_state_from_payload,
+    _capability_requirement_from_raw as _agent_capability_requirement_from_raw,
+    _capability_state_add as _agent_capability_state_add,
+    _capability_state_has as _agent_capability_state_has,
+    _capability_state_snapshot as _agent_capability_state_snapshot,
+    _contract_declares_no_artifact_prereqs as _agent_contract_declares_no_artifact_prereqs,
+    _contract_output_capabilities as _agent_contract_output_capabilities,
+    _contract_outputs as _agent_contract_outputs,
+    _effective_contract_requirements as _agent_effective_contract_requirements,
+    _find_repair_tools_for_missing_requirements as _agent_find_repair_tools_for_missing_requirements,
+    _full_bindings_spec as _agent_full_bindings_spec,
+    _full_bindings_state_hash as _agent_full_bindings_state_hash,
+    _hard_bindings_spec as _agent_hard_bindings_spec,
+    _hard_bindings_state_hash as _agent_hard_bindings_state_hash,
+    _infer_output_capabilities as _agent_infer_output_capabilities,
+    _is_control_tool_name as _agent_is_control_tool_name,
+    _normalize_artifact_kind as _agent_normalize_artifact_kind,
+    _short_requirement as _agent_short_requirement,
+    _tool_declares_no_artifact_prereqs as _agent_tool_declares_no_artifact_prereqs,
+    _validate_tool_contract_call as _agent_validate_tool_contract_call,
+)
+from llm_client.agent_disclosure import (
+    _deficit_labels_from_hidden_entries as _agent_deficit_labels_from_hidden_entries,
+    _disclosure_message as _agent_disclosure_message,
+    _disclosure_reason_from_entry as _agent_disclosure_reason_from_entry,
+    _filter_tools_for_disclosure as _agent_filter_tools_for_disclosure,
+)
+from llm_client.agent_adoption import (
+    DEFAULT_ADOPTION_PROFILE,
+    AdoptionProfileAssessment,
+    assess_adoption_profile,
+    normalize_adoption_profile,
+)
+from llm_client.agent_outcomes import (
+    ForcedFinalizationResult,
+    _PRIMARY_FAILURE_PRIORITY,
+    _TERMINAL_FAILURE_EVENT_CODES,
+    _classify_failure_signals,
+    _failure_class_for_event_code,
+    _first_terminal_failure_event_code,
+    _summarize_failure_events,
+    _summarize_finalization_attempts,
+)
 from llm_client.client import LLMCallResult
 from llm_client.compliance_gate import (
     build_tool_parameter_index,
@@ -61,6 +121,18 @@ from llm_client.foundation import (
     sha256_text,
     validate_foundation_event,
 )
+from llm_client.tool_runtime_common import (
+    DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS as DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS,
+    DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS as DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS,
+    MCPAgentResult as MCPAgentResult,
+    MCPToolCallRecord as MCPToolCallRecord,
+    TOOL_REASONING_FIELD as TOOL_REASONING_FIELD,
+    append_input_examples_to_description as _append_input_examples_to_description,
+    extract_usage_counts as _extract_usage,
+    normalize_tool_contracts as _shared_normalize_tool_contracts,
+    normalize_tool_input_examples as _normalize_tool_input_examples,
+    truncate_text as _truncate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +146,6 @@ DEFAULT_MAX_TURNS: int = 20
 
 DEFAULT_MAX_TOOL_CALLS: int | None = 20
 """Maximum tool calls before forcing a final answer. None disables tool budgeting."""
-
-TOOL_REASONING_FIELD: str = "tool_reasoning"
-"""Optional argument every tool call can include for action-level observability."""
 
 DEFAULT_REQUIRE_TOOL_REASONING: bool = False
 """Hard-fail tool calls missing tool_reasoning when enabled."""
@@ -121,12 +190,6 @@ DEFAULT_ACTIVE_ARTIFACT_CONTEXT_MAX_HANDLES: int = 8
 
 DEFAULT_ACTIVE_ARTIFACT_CONTEXT_MAX_CHARS: int = 900
 """Maximum chars for the rolling artifact-context summary injected into active context."""
-
-DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS: int = 2
-"""Maximum tool input examples appended to tool descriptions."""
-
-DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS: int = 240
-"""Max chars retained per input example snippet in tool descriptions."""
 
 DEFAULT_ENFORCE_TOOL_CONTRACTS: bool = False
 """When enabled, reject tool calls that violate declared composability contracts."""
@@ -181,12 +244,6 @@ DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS: bool = True
 
 FOUNDATION_SCHEMA_STRICT_ENV: str = "FOUNDATION_SCHEMA_STRICT"
 """When true, invalid foundation events raise instead of only warning."""
-
-DEFAULT_ADOPTION_PROFILE: str = "minimal"
-"""Default agent-runtime adoption profile for workspace tool loops."""
-
-ADOPTION_PROFILE_VALUES: frozenset[str] = frozenset({"minimal", "standard", "strict"})
-"""Supported adoption-profile names."""
 
 ADOPTION_PROFILE_ENV: str = "LLM_CLIENT_ADOPTION_PROFILE"
 """Optional default adoption profile when not passed explicitly."""
@@ -289,89 +346,6 @@ TOOL_LOOP_KWARGS = frozenset({
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MCPToolCallRecord:
-    """Record of a single MCP tool call during the agent loop."""
-
-    server: str
-    tool: str
-    arguments: dict[str, Any]
-    tool_call_id: str | None = None
-    tool_reasoning: str | None = None
-    arg_coercions: list[dict[str, Any]] = field(default_factory=list)
-    artifact_ids: list[str] = field(default_factory=list)
-    artifact_handles: list[dict[str, Any]] = field(default_factory=list)
-    result: str | None = None
-    error: str | None = None
-    latency_s: float = 0.0
-
-
-@dataclass(frozen=True)
-class CapabilityRequirement:
-    """Normalized capability requirement for composability checks."""
-
-    kind: str
-    ref_type: str | None = None
-    namespace: str | None = None
-    bindings_hash: str | None = None
-
-    def to_dict(self) -> dict[str, str]:
-        payload: dict[str, str] = {"kind": self.kind}
-        if self.ref_type:
-            payload["ref_type"] = self.ref_type
-        if self.namespace:
-            payload["namespace"] = self.namespace
-        if self.bindings_hash:
-            payload["bindings_hash"] = self.bindings_hash
-        return payload
-
-    def short_label(self) -> str:
-        suffix_parts: list[str] = []
-        if self.ref_type:
-            suffix_parts.append(f"ref_type={self.ref_type}")
-        if self.namespace:
-            suffix_parts.append(f"namespace={self.namespace}")
-        if self.bindings_hash:
-            suffix_parts.append(f"bindings_hash={self.bindings_hash[:12]}")
-        if not suffix_parts:
-            return self.kind
-        return f"{self.kind}[{', '.join(suffix_parts)}]"
-
-
-@dataclass
-class ToolCallValidation:
-    """Normalized pre-execution validation outcome for a tool call."""
-
-    is_valid: bool
-    reason: str = ""
-    error_code: str | None = None
-    failure_phase: str | None = None
-    call_bindings: dict[str, str | None] = field(default_factory=dict)
-    missing_requirements: list[dict[str, str]] = field(default_factory=list)
-    contract_mode: str | None = None
-
-
-@dataclass
-class MCPAgentResult:
-    """Accumulated result from the MCP agent loop.
-
-    Stored in LLMCallResult.raw_response for introspection.
-    """
-
-    tool_calls: list[MCPToolCallRecord] = field(default_factory=list)
-    turns: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cached_tokens: int = 0
-    total_cache_creation_tokens: int = 0
-    conversation_trace: list[dict[str, Any]] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
-    """Diagnostic warnings accumulated across turns (retries, fallbacks, sticky model switches)."""
-    models_used: set[str] = field(default_factory=set)
-    """Set of model strings actually used during the agent loop (tracks fallback switches)."""
-
-
 # ---------------------------------------------------------------------------
 # Session Pool — reuse MCP servers across multiple calls
 # ---------------------------------------------------------------------------
@@ -422,49 +396,6 @@ class MCPSessionPool:
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
-
-
-def _normalize_tool_input_examples(raw: Any) -> list[str]:
-    """Normalize raw input examples into compact display strings."""
-    if raw is None:
-        return []
-    items: list[Any]
-    if isinstance(raw, list):
-        items = raw
-    else:
-        items = [raw]
-
-    normalized: list[str] = []
-    for item in items:
-        if len(normalized) >= DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS:
-            break
-        if isinstance(item, str):
-            text = item.strip()
-        elif isinstance(item, (dict, list)):
-            try:
-                text = _json.dumps(item, ensure_ascii=False)
-            except Exception:
-                text = str(item).strip()
-        else:
-            text = str(item).strip()
-        if not text:
-            continue
-        normalized.append(text[:DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS])
-    return normalized
-
-
-def _append_input_examples_to_description(description: str, examples: list[str]) -> str:
-    """Append bounded input examples to tool description text."""
-    base = str(description or "").strip()
-    if not examples:
-        return base
-    bullet_lines = "\n".join(f"- {ex}" for ex in examples)
-    examples_block = "Input examples:\n" + bullet_lines
-    if base:
-        return f"{base}\n\n{examples_block}"
-    return examples_block
-
-
 def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
     """Convert an MCP Tool object to OpenAI function-calling format.
 
@@ -525,22 +456,6 @@ def _mcp_tool_to_openai(tool: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _extract_usage(usage: dict[str, Any]) -> tuple[int, int, int, int]:
-    """Extract (input_tokens, output_tokens, cached_tokens, cache_creation_tokens) from usage dict.
-
-    Handles both OpenAI convention (prompt_tokens/completion_tokens)
-    and Anthropic convention (input_tokens/output_tokens).
-    Extracts provider-level prompt caching details when available.
-    """
-    inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-    out = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-    cached = usage.get("cached_tokens") or 0
-    cache_creation = usage.get("cache_creation_tokens") or 0
-    return int(inp), int(out), int(cached), int(cache_creation)
-
-
 def _build_agent_usage(agent_result: MCPAgentResult) -> dict[str, int]:
     """Build consistent usage/loop counters for agent-mode calls."""
     usage: dict[str, int] = {
@@ -556,15 +471,6 @@ def _build_agent_usage(agent_result: MCPAgentResult) -> dict[str, int]:
     if agent_result.total_cache_creation_tokens:
         usage["cache_creation_tokens"] = int(agent_result.total_cache_creation_tokens)
     return usage
-
-
-def _truncate(text: str, max_length: int) -> str:
-    """Truncate text if it exceeds max_length, appending a notice."""
-    if len(text) <= max_length:
-        return text
-    return text[:max_length] + f"\n... [truncated at {max_length} chars]"
-
-
 def _message_char_length(message: dict[str, Any]) -> int:
     """Best-effort serialized length for one chat message."""
     try:
@@ -860,61 +766,6 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _normalize_adoption_profile(value: Any) -> str:
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ADOPTION_PROFILE_VALUES:
-            return lowered
-    return DEFAULT_ADOPTION_PROFILE
-
-
-def _tool_schema_is_nontrivial(tool_schema: dict[str, Any]) -> bool:
-    fn = tool_schema.get("function") or {}
-    parameters = fn.get("parameters") or {}
-    properties = parameters.get("properties") or {}
-    if not isinstance(properties, dict):
-        return False
-    user_properties = {
-        key: value for key, value in properties.items()
-        if key != TOOL_REASONING_FIELD
-    }
-    if len(user_properties) > 1:
-        return True
-    for schema in user_properties.values():
-        if not isinstance(schema, dict):
-            continue
-        if schema.get("type") in {"array", "object"}:
-            return True
-        if schema.get("anyOf"):
-            return True
-    return False
-
-
-def _assess_tool_registry_quality(
-    *,
-    openai_tools: list[dict[str, Any]],
-    normalized_tool_contracts: dict[str, dict[str, Any]],
-) -> list[str]:
-    violations: list[str] = []
-    for tool in openai_tools:
-        fn = tool.get("function") or {}
-        if not isinstance(fn, dict):
-            continue
-        tool_name = str(fn.get("name") or "").strip()
-        if not tool_name:
-            continue
-        description = str(fn.get("description") or "").strip()
-        if not description:
-            violations.append(f"tool {tool_name} must have a one-line description")
-        if not _tool_schema_is_nontrivial(tool):
-            continue
-        if "input examples:" not in description.lower():
-            violations.append(f"nontrivial tool {tool_name} must include input examples")
-        if tool_name not in normalized_tool_contracts:
-            violations.append(f"nontrivial tool {tool_name} must declare tool_contracts")
-    return violations
-
-
 def _normalize_model_chain(raw: Any) -> list[str]:
     """Normalize fallback model config into a deterministic string list."""
     if raw is None:
@@ -941,61 +792,6 @@ def _normalize_model_chain(raw: Any) -> list[str]:
         seen.add(key)
         deduped.append(value)
     return deduped
-
-
-def _assess_adoption_profile(
-    *,
-    requested_profile: str,
-    enforce: bool,
-    openai_tools: list[dict[str, Any]],
-    normalized_tool_contracts: dict[str, dict[str, Any]],
-    require_tool_reasoning: bool,
-    enforce_tool_contracts: bool,
-    progressive_tool_disclosure: bool,
-    lane_closure_analysis: dict[str, Any],
-) -> AdoptionProfileAssessment:
-    """Evaluate whether the current run satisfies the requested adoption profile."""
-    effective_profile = _normalize_adoption_profile(requested_profile)
-    if effective_profile == "minimal":
-        return AdoptionProfileAssessment(
-            requested_profile=requested_profile,
-            effective_profile=effective_profile,
-            enforce=enforce,
-            violations=[],
-        )
-
-    has_tools = bool(openai_tools)
-    violations: list[str] = []
-    if has_tools and not require_tool_reasoning:
-        violations.append("require_tool_reasoning must be enabled")
-    if has_tools and not enforce_tool_contracts:
-        violations.append("enforce_tool_contracts must be enabled")
-    if has_tools and not normalized_tool_contracts:
-        violations.append("tool_contracts must be provided")
-    if has_tools:
-        violations.extend(
-            _assess_tool_registry_quality(
-                openai_tools=openai_tools,
-                normalized_tool_contracts=normalized_tool_contracts,
-            )
-        )
-
-    if effective_profile == "strict":
-        if has_tools and not progressive_tool_disclosure:
-            violations.append("progressive_tool_disclosure must be enabled")
-        if (
-            has_tools
-            and normalized_tool_contracts
-            and not bool(lane_closure_analysis.get("lane_closed"))
-        ):
-            violations.append("lane_closure_analysis must be closed for strict profile")
-
-    return AdoptionProfileAssessment(
-        requested_profile=requested_profile,
-        effective_profile=effective_profile,
-        enforce=enforce,
-        violations=violations,
-    )
 
 
 @dataclass(frozen=True)
@@ -1036,20 +832,6 @@ class AgentLoopToolState:
     lane_closure_analysis: dict[str, Any]
     artifact_timeline: list[dict[str, Any]]
     requires_submit_answer: bool
-
-
-@dataclass(frozen=True)
-class AdoptionProfileAssessment:
-    """Normalized adoption-profile assessment for one agent run."""
-
-    requested_profile: str
-    effective_profile: str
-    enforce: bool
-    violations: list[str]
-
-    @property
-    def satisfied(self) -> bool:
-        return not self.violations
 
 
 def _resolve_agent_runtime_policy(
@@ -1237,7 +1019,7 @@ def _resolve_agent_runtime_policy(
     run_config_spec["active_artifact_context_max_handles"] = active_artifact_context_max_handles
     run_config_spec["active_artifact_context_max_chars"] = active_artifact_context_max_chars
 
-    adoption_profile = _normalize_adoption_profile(
+    adoption_profile = normalize_adoption_profile(
         kwargs.pop("adoption_profile", os.getenv(ADOPTION_PROFILE_ENV, DEFAULT_ADOPTION_PROFILE))
     )
     adoption_profile_enforce = _coerce_bool(
@@ -1361,171 +1143,6 @@ def _initialize_agent_tool_state(
         artifact_timeline=artifact_timeline,
         requires_submit_answer=requires_submit_answer,
     )
-
-
-@dataclass(frozen=True)
-class FailureSummary:
-    """Aggregated failure counters/classification for agent-loop metadata."""
-
-    primary_failure_class: str
-    secondary_failure_classes: list[str]
-    first_terminal_failure_event_code: str | None
-    failure_event_code_counts: dict[str, int]
-    failure_event_class_counts: dict[str, int]
-    provider_failure_event_code_counts: dict[str, int]
-    provider_failure_event_total: int
-    provider_caused_incompletion: bool
-
-
-def _summarize_failure_events(
-    *,
-    failure_event_codes: list[str],
-    retrieval_no_hits_count: int,
-    control_loop_suppressed_calls: int,
-    force_final_reason: str | None,
-    run_completed: bool,
-) -> FailureSummary:
-    primary_failure_class, secondary_failure_classes = _classify_failure_signals(
-        failure_event_codes=failure_event_codes,
-        retrieval_no_hits_count=retrieval_no_hits_count,
-        control_loop_suppressed_calls=control_loop_suppressed_calls,
-        force_final_reason=force_final_reason,
-        submit_answer_succeeded=run_completed,
-    )
-    first_terminal_failure_event_code = _first_terminal_failure_event_code(failure_event_codes)
-    failure_event_code_counts: dict[str, int] = {}
-    for code in failure_event_codes:
-        failure_event_code_counts[code] = failure_event_code_counts.get(code, 0) + 1
-    failure_event_class_counts: dict[str, int] = {}
-    provider_failure_event_code_counts: dict[str, int] = {}
-    for code, count in failure_event_code_counts.items():
-        cls = _failure_class_for_event_code(code)
-        if cls is None:
-            continue
-        failure_event_class_counts[cls] = failure_event_class_counts.get(cls, 0) + count
-        if cls == "provider":
-            provider_failure_event_code_counts[code] = count
-    provider_failure_event_total = sum(provider_failure_event_code_counts.values())
-    provider_caused_incompletion = (not run_completed) and primary_failure_class == "provider"
-    return FailureSummary(
-        primary_failure_class=primary_failure_class,
-        secondary_failure_classes=secondary_failure_classes,
-        first_terminal_failure_event_code=first_terminal_failure_event_code,
-        failure_event_code_counts=failure_event_code_counts,
-        failure_event_class_counts=failure_event_class_counts,
-        provider_failure_event_code_counts=provider_failure_event_code_counts,
-        provider_failure_event_total=provider_failure_event_total,
-        provider_caused_incompletion=provider_caused_incompletion,
-    )
-
-
-@dataclass(frozen=True)
-class FinalizationSummary:
-    """Aggregated finalization counters for agent-loop metadata."""
-
-    finalization_attempt_counts_by_model: dict[str, int]
-    finalization_failure_counts_by_model: dict[str, int]
-    finalization_success_counts_by_model: dict[str, int]
-    finalization_failure_code_counts: dict[str, int]
-    provider_empty_attempt_counts_by_model: dict[str, int]
-    finalization_fallback_attempt_count: int
-    finalization_fallback_usage_rate: float
-    finalization_breaker_open_rate: float
-    finalization_breaker_open_by_model: dict[str, int]
-
-
-def _summarize_finalization_attempts(
-    *,
-    finalization_fallback_attempts: list[dict[str, Any]],
-    finalization_primary_model: str | None,
-    forced_final_attempts: int,
-    forced_final_circuit_breaker_opened: bool,
-) -> FinalizationSummary:
-    finalization_attempt_counts_by_model: dict[str, int] = {}
-    finalization_failure_counts_by_model: dict[str, int] = {}
-    finalization_success_counts_by_model: dict[str, int] = {}
-    finalization_failure_code_counts: dict[str, int] = {}
-    provider_empty_attempt_counts_by_model: dict[str, int] = {}
-    finalization_fallback_attempt_count = 0
-    for attempt in finalization_fallback_attempts:
-        model_name = str(attempt.get("model", "")).strip() or "<unknown>"
-        status = str(attempt.get("status", "")).strip().lower()
-        error_code = attempt.get("error_code")
-        finalization_attempt_counts_by_model[model_name] = (
-            finalization_attempt_counts_by_model.get(model_name, 0) + 1
-        )
-        if (
-            isinstance(finalization_primary_model, str)
-            and finalization_primary_model.strip()
-            and model_name.lower() != finalization_primary_model.lower()
-        ):
-            finalization_fallback_attempt_count += 1
-        if status == "success":
-            finalization_success_counts_by_model[model_name] = (
-                finalization_success_counts_by_model.get(model_name, 0) + 1
-            )
-            continue
-        finalization_failure_counts_by_model[model_name] = (
-            finalization_failure_counts_by_model.get(model_name, 0) + 1
-        )
-        if isinstance(error_code, str) and error_code:
-            finalization_failure_code_counts[error_code] = (
-                finalization_failure_code_counts.get(error_code, 0) + 1
-            )
-            if error_code == EVENT_CODE_PROVIDER_EMPTY:
-                provider_empty_attempt_counts_by_model[model_name] = (
-                    provider_empty_attempt_counts_by_model.get(model_name, 0) + 1
-                )
-    finalization_fallback_usage_rate = (
-        (finalization_fallback_attempt_count / forced_final_attempts)
-        if forced_final_attempts > 0
-        else 0.0
-    )
-    finalization_breaker_open_rate = 1.0 if forced_final_circuit_breaker_opened else 0.0
-    finalization_breaker_open_by_model: dict[str, int] = {}
-    if forced_final_circuit_breaker_opened and finalization_fallback_attempts:
-        breaker_model = str(finalization_fallback_attempts[-1].get("model", "")).strip() or "<unknown>"
-        finalization_breaker_open_by_model[breaker_model] = 1
-    return FinalizationSummary(
-        finalization_attempt_counts_by_model=finalization_attempt_counts_by_model,
-        finalization_failure_counts_by_model=finalization_failure_counts_by_model,
-        finalization_success_counts_by_model=finalization_success_counts_by_model,
-        finalization_failure_code_counts=finalization_failure_code_counts,
-        provider_empty_attempt_counts_by_model=provider_empty_attempt_counts_by_model,
-        finalization_fallback_attempt_count=finalization_fallback_attempt_count,
-        finalization_fallback_usage_rate=finalization_fallback_usage_rate,
-        finalization_breaker_open_rate=finalization_breaker_open_rate,
-        finalization_breaker_open_by_model=finalization_breaker_open_by_model,
-    )
-
-
-@dataclass(frozen=True)
-class ForcedFinalizationResult:
-    """Outcome and metric deltas from the forced-final execution path."""
-
-    final_content: str
-    final_finish_reason: str
-    finalization_primary_model: str
-    forced_final_attempts: int
-    forced_final_circuit_breaker_opened: bool
-    finalization_fallback_used: bool
-    finalization_fallback_succeeded: bool
-    finalization_events: list[str]
-    finalization_fallback_attempts: list[dict[str, Any]]
-    failure_event_codes: list[str]
-    context_tool_result_clearings_delta: int
-    context_tool_results_cleared_delta: int
-    context_tool_result_cleared_chars_delta: int
-    context_compactions_delta: int
-    context_compacted_messages_delta: int
-    context_compacted_chars_delta: int
-    total_cost_delta: float
-    total_input_tokens_delta: int
-    total_output_tokens_delta: int
-    total_cached_tokens_delta: int
-    total_cache_creation_tokens_delta: int
-    turns_delta: int
-
 
 async def _execute_forced_finalization(
     *,
@@ -2106,48 +1723,14 @@ def _set_tool_call_args(tc: dict[str, Any], args: dict[str, Any]) -> dict[str, A
 
 
 def _runtime_artifact_read_tool_def() -> dict[str, Any]:
-    """Declarative runtime tool for reopening prior typed artifacts by handle."""
-    return {
-        "type": "function",
-        "function": {
-            "name": RUNTIME_ARTIFACT_READ_TOOL_NAME,
-            "description": (
-                "Read previously produced typed artifacts by artifact_id from the runtime artifact registry. "
-                "Use this when older tool payloads were cleared from active context but artifact handles remain visible."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "artifact_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Stable artifact_id handles to reopen from runtime state.",
-                    },
-                    "include_payload": {
-                        "type": "boolean",
-                        "description": "Whether to include the artifact payload field. Default true.",
-                    },
-                    "include_provenance": {
-                        "type": "boolean",
-                        "description": "Whether to include provenance/evidence_refs. Default true.",
-                    },
-                    TOOL_REASONING_FIELD: {
-                        "type": "string",
-                        "description": "Short explanation of why this runtime artifact read is needed.",
-                    },
-                },
-                "required": ["artifact_ids", TOOL_REASONING_FIELD],
-            },
-        },
-    }
+    return _agent_runtime_artifact_read_tool_def(
+        tool_name=RUNTIME_ARTIFACT_READ_TOOL_NAME,
+        tool_reasoning_field=TOOL_REASONING_FIELD,
+    )
 
 
 def _runtime_artifact_read_contract() -> dict[str, Any]:
-    """Declarative contract for the runtime artifact read helper."""
-    return {
-        "is_control": True,
-        "artifact_prereqs": "none",
-    }
+    return _agent_runtime_artifact_read_contract()
 
 
 def _runtime_artifact_read_result(
@@ -2157,186 +1740,32 @@ def _runtime_artifact_read_result(
     max_result_length: int,
     require_tool_reasoning: bool,
 ) -> tuple[MCPToolCallRecord, dict[str, Any]]:
-    """Execute one runtime artifact read without delegating to an external executor."""
-    fn = tc.get("function", {})
-    tool_name = str(fn.get("name", "")).strip() or RUNTIME_ARTIFACT_READ_TOOL_NAME
-    tc_id = tc.get("id", "")
-    arguments = _extract_tool_call_args(tc)
-
-    if arguments is None:
-        record = MCPToolCallRecord(
-            server="__runtime__",
-            tool=tool_name,
-            arguments={},
-            tool_call_id=tc_id,
-            error="JSON parse error: arguments must decode to a JSON object",
-        )
-        return record, {
-            "role": "tool",
-            "tool_call_id": tc_id,
-            "content": "ERROR: Invalid JSON arguments: arguments must decode to a JSON object",
-        }
-
-    runtime_args = dict(arguments)
-    tool_reasoning_raw = runtime_args.pop(TOOL_REASONING_FIELD, None)
-    tool_reasoning = None
-    if isinstance(tool_reasoning_raw, str):
-        stripped = tool_reasoning_raw.strip()
-        if stripped:
-            tool_reasoning = stripped
-
-    record = MCPToolCallRecord(
-        server="__runtime__",
-        tool=tool_name,
-        arguments=runtime_args,
-        tool_call_id=tc_id,
-        tool_reasoning=tool_reasoning,
+    return _agent_runtime_artifact_read_result(
+        artifact_registry_by_id=artifact_registry_by_id,
+        tc=tc,
+        max_result_length=max_result_length,
+        require_tool_reasoning=require_tool_reasoning,
+        tool_name=RUNTIME_ARTIFACT_READ_TOOL_NAME,
+        tool_reasoning_field=TOOL_REASONING_FIELD,
+        record_factory=MCPToolCallRecord,
+        extract_tool_call_args=_extract_tool_call_args,
+        truncate_text=_truncate,
     )
-
-    if require_tool_reasoning and not tool_reasoning:
-        record.error = f"Missing required argument: {TOOL_REASONING_FIELD}"
-        return record, {
-            "role": "tool",
-            "tool_call_id": tc_id,
-            "content": _json.dumps({"error": record.error}),
-        }
-
-    requested_ids_raw = runtime_args.get("artifact_ids")
-    requested_ids: list[str] = []
-    if isinstance(requested_ids_raw, str):
-        requested_ids = [requested_ids_raw.strip()] if requested_ids_raw.strip() else []
-    elif isinstance(requested_ids_raw, list):
-        requested_ids = [
-            str(item).strip()
-            for item in requested_ids_raw
-            if str(item).strip()
-        ]
-    include_payload = runtime_args.get("include_payload")
-    include_payload = True if include_payload is None else bool(include_payload)
-    include_provenance = runtime_args.get("include_provenance")
-    include_provenance = True if include_provenance is None else bool(include_provenance)
-
-    found_artifacts: list[dict[str, Any]] = []
-    missing_artifact_ids: list[str] = []
-    for artifact_id in requested_ids:
-        stored = artifact_registry_by_id.get(artifact_id)
-        if not isinstance(stored, dict):
-            missing_artifact_ids.append(artifact_id)
-            continue
-        artifact_payload = _json.loads(_json.dumps(stored))
-        if not include_payload:
-            artifact_payload.pop("payload", None)
-        if not include_provenance:
-            artifact_payload.pop("provenance", None)
-        found_artifacts.append(artifact_payload)
-
-    if not found_artifacts:
-        record.error = (
-            "Unknown artifact_id(s): "
-            + ", ".join(missing_artifact_ids or requested_ids or ["<none>"])
-        )
-        return record, {
-            "role": "tool",
-            "tool_call_id": tc_id,
-            "content": _json.dumps(
-                {
-                    "error": record.error,
-                    "error_code": "RUNTIME_ARTIFACT_NOT_FOUND",
-                    "requested_artifact_ids": requested_ids,
-                    "missing_artifact_ids": missing_artifact_ids or requested_ids,
-                }
-            ),
-        }
-
-    payload = {
-        "artifacts": found_artifacts,
-        "artifact_ids": [str(item.get("artifact_id", "")).strip() for item in found_artifacts],
-        "missing_artifact_ids": missing_artifact_ids,
-        "count": len(found_artifacts),
-    }
-    content = _truncate(_json.dumps(payload), max_result_length)
-    record.result = content
-    return record, {
-        "role": "tool",
-        "tool_call_id": tc_id,
-        "content": content,
-    }
-
-
-def _normalize_evidence_pointer_label(raw: Any) -> str | None:
-    """Canonicalize one evidence reference into a stable pointer label."""
-    return evidence_pointer_label(raw)
 
 
 def _collect_evidence_pointer_labels(payload: Any, out: set[str]) -> None:
-    """Recursively extract stable evidence pointers from JSON tool payloads."""
-    if isinstance(payload, dict):
-        for envelope in extract_artifact_envelopes(payload):
-            provenance = envelope.get("provenance")
-            if isinstance(provenance, dict):
-                raw_refs = provenance.get("evidence_refs")
-                if isinstance(raw_refs, list):
-                    for item in raw_refs:
-                        normalized = _normalize_evidence_pointer_label(item)
-                        if normalized:
-                            out.add(normalized)
-
-        explicit_ref_added = False
-
-        raw_ref = payload.get("evidence_ref")
-        normalized = _normalize_evidence_pointer_label(raw_ref)
-        if normalized:
-            out.add(normalized)
-            explicit_ref_added = True
-
-        raw_refs = payload.get("evidence_refs")
-        if isinstance(raw_refs, list):
-            for item in raw_refs:
-                normalized = _normalize_evidence_pointer_label(item)
-                if normalized:
-                    out.add(normalized)
-                    explicit_ref_added = True
-
-        chunk_id = payload.get("chunk_id")
-        if (
-            not explicit_ref_added
-            and isinstance(chunk_id, str)
-            and chunk_id.strip().startswith("chunk_")
-        ):
-            out.add(f"chunk:{chunk_id.strip()}")
-
-        for value in payload.values():
-            if isinstance(value, (dict, list)):
-                _collect_evidence_pointer_labels(value, out)
-        return
-
-    if isinstance(payload, list):
-        for item in payload:
-            if isinstance(item, (dict, list)):
-                _collect_evidence_pointer_labels(item, out)
+    _agent_collect_evidence_pointer_labels(payload, out)
 
 
 def _tool_evidence_pointer_labels(record: MCPToolCallRecord) -> set[str]:
-    """Extract canonical evidence pointers from one successful evidence tool call."""
-    if record.error or _is_budget_exempt_tool(record.tool):
-        return set()
-    parsed = _parse_record_result_json_value(record)
-    if parsed is None or not isinstance(parsed, (dict, list)):
-        return set()
-    labels: set[str] = set()
-    _collect_evidence_pointer_labels(parsed, labels)
-    redundant_labels = {
-        label.split("#", 1)[0]
-        for label in labels
-        if label.startswith("chunk:") and "#" in label
-    }
-    labels.difference_update(redundant_labels)
-    return labels
+    return _agent_tool_evidence_pointer_labels(
+        record,
+        budget_exempt_tool_names=BUDGET_EXEMPT_TOOL_NAMES,
+    )
 
 
 def _evidence_digest(evidence_labels: set[str]) -> str:
-    """Deterministic digest of accumulated canonical evidence pointers."""
-    return sha256_json(sorted(evidence_labels)).replace("sha256:", "")
+    return _agent_evidence_digest(evidence_labels)
 
 
 def _autofill_tool_reasoning(
@@ -2361,62 +1790,12 @@ def _autofill_tool_reasoning(
     return _set_tool_call_args(tc, patched_args), True
 
 
-def _normalize_artifact_kind(kind: Any) -> str | None:
-    """Normalize artifact kind labels (e.g., SlotKind names) to upper snake case strings."""
-    if isinstance(kind, str):
-        normalized = kind.strip().upper()
-        return normalized or None
-    return None
-
-
-def _normalize_capability_value(value: Any) -> str | None:
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-    return None
-
-
 def _capability_requirement_from_raw(raw: Any) -> CapabilityRequirement | None:
-    """Parse one capability requirement from raw contract payload."""
-    if isinstance(raw, str):
-        kind = _normalize_artifact_kind(raw)
-        if kind:
-            return CapabilityRequirement(kind=kind)
-        return None
-
-    if not isinstance(raw, dict):
-        return None
-
-    kind = _normalize_artifact_kind(raw.get("kind"))
-    if not kind:
-        return None
-
-    ref_type = _normalize_capability_value(raw.get("ref_type"))
-    namespace = _normalize_capability_value(raw.get("namespace"))
-    bindings_hash = _normalize_capability_value(raw.get("bindings_hash"))
-    return CapabilityRequirement(
-        kind=kind,
-        ref_type=ref_type,
-        namespace=namespace,
-        bindings_hash=bindings_hash,
-    )
+    return _agent_capability_requirement_from_raw(raw)
 
 
-def _normalize_capability_requirements(raw: Any) -> list[CapabilityRequirement]:
-    if not isinstance(raw, (list, tuple, set)):
-        return []
-    out: list[CapabilityRequirement] = []
-    seen: set[tuple[str, str | None, str | None, str | None]] = set()
-    for item in raw:
-        req = _capability_requirement_from_raw(item)
-        if req is None:
-            continue
-        key = (req.kind, req.ref_type, req.namespace, req.bindings_hash)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(req)
-    return out
+def _normalize_artifact_kind(kind: Any) -> str | None:
+    return _agent_normalize_artifact_kind(kind)
 
 
 def _capability_state_add(
@@ -2427,142 +1806,42 @@ def _capability_state_add(
     namespace: str | None = None,
     bindings_hash: str | None = None,
 ) -> bool:
-    normalized_kind = _normalize_artifact_kind(kind)
-    if not normalized_kind:
-        return False
-    bucket = state.setdefault(normalized_kind, set())
-    entry = (
-        _normalize_capability_value(ref_type),
-        _normalize_capability_value(namespace),
-        _normalize_capability_value(bindings_hash),
+    return _agent_capability_state_add(
+        state,
+        kind=kind,
+        ref_type=ref_type,
+        namespace=namespace,
+        bindings_hash=bindings_hash,
     )
-    before = len(bucket)
-    bucket.add(entry)
-    return len(bucket) > before
 
 
 def _capability_state_has(
     state: dict[str, set[tuple[str | None, str | None, str | None]]],
     req: CapabilityRequirement,
 ) -> bool:
-    bucket = state.get(req.kind)
-    if not bucket:
-        return False
-    for ref_type, namespace, bindings_hash in bucket:
-        if req.ref_type and req.ref_type != ref_type:
-            continue
-        if req.namespace and req.namespace != namespace:
-            continue
-        if req.bindings_hash and req.bindings_hash != bindings_hash:
-            continue
-        return True
-    return False
+    return _agent_capability_state_has(state, req)
 
 
 def _capability_state_snapshot(
     state: dict[str, set[tuple[str | None, str | None, str | None]]],
 ) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
-    for kind in sorted(state):
-        entries = sorted(
-            state[kind],
-            key=lambda item: (
-                item[0] or "",
-                item[1] or "",
-                item[2] or "",
-            ),
-        )
-        for ref_type, namespace, bindings_hash in entries:
-            req = CapabilityRequirement(
-                kind=kind,
-                ref_type=ref_type,
-                namespace=namespace,
-                bindings_hash=bindings_hash,
-            )
-            out.append(req.to_dict())
-    return out
-
-
-def _capability_requirement_matches(
-    produced: CapabilityRequirement,
-    required: CapabilityRequirement,
-) -> bool:
-    """Whether a produced capability could satisfy a required capability."""
-    if produced.kind != required.kind:
-        return False
-    if required.ref_type and produced.ref_type and required.ref_type != produced.ref_type:
-        return False
-    if required.namespace and produced.namespace and required.namespace != produced.namespace:
-        return False
-    if (
-        required.bindings_hash
-        and produced.bindings_hash
-        and required.bindings_hash != produced.bindings_hash
-    ):
-        return False
-    return True
-
-
-def _canonical_binding_spec(
-    bindings: dict[str, str | None],
-    *,
-    keys: tuple[str, ...],
-) -> dict[str, str | None]:
-    """Canonical binding spec for deterministic hashing (stable key subset/order)."""
-    return {key: bindings.get(key) for key in keys}
+    return _agent_capability_state_snapshot(state)
 
 
 def _hard_bindings_spec(bindings: dict[str, str | None]) -> dict[str, str | None]:
-    return _canonical_binding_spec(bindings, keys=HARD_BINDING_KEYS)
+    return _agent_hard_bindings_spec(bindings)
 
 
 def _full_bindings_spec(bindings: dict[str, str | None]) -> dict[str, str | None]:
-    return _canonical_binding_spec(bindings, keys=BINDING_KEYS)
-
-
-def _binding_hash(spec: dict[str, str | None]) -> str:
-    return sha256_json(spec).replace("sha256:", "")
+    return _agent_full_bindings_spec(bindings)
 
 
 def _hard_bindings_state_hash(bindings: dict[str, str | None]) -> str:
-    return _binding_hash(_hard_bindings_spec(bindings))
+    return _agent_hard_bindings_state_hash(bindings)
 
 
 def _full_bindings_state_hash(bindings: dict[str, str | None]) -> str:
-    return _binding_hash(_full_bindings_spec(bindings))
-
-
-def _namespace_from_bindings(bindings: dict[str, str | None]) -> str | None:
-    """Best-effort namespace heuristic from authoritative binding state."""
-    for key in ("graph_id", "dataset_id", "scope_id", "corpus_id", "vector_store_id"):
-        value = bindings.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _explicit_ref_type_from_args(kind: str, args: dict[str, Any] | None) -> str | None:
-    if not isinstance(args, dict):
-        return None
-
-    def _has_values(value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            return bool(value.strip())
-        if isinstance(value, (list, tuple, set)):
-            return any(_has_values(v) for v in value)
-        return True
-
-    if kind == "ENTITY_SET":
-        if _has_values(args.get("entity_ids")) or _has_values(args.get("entity_id")):
-            return "id"
-        if _has_values(args.get("entity_names")) or _has_values(args.get("entity_name")):
-            return "name"
-    if kind == "CHUNK_SET":
-        if _has_values(args.get("chunk_ids")) or _has_values(args.get("chunk_id")):
-            return "id"
-    return None
+    return _agent_full_bindings_state_hash(bindings)
 
 
 def _infer_output_capabilities(
@@ -2572,80 +1851,12 @@ def _infer_output_capabilities(
     produced_artifacts: set[str],
     available_bindings: dict[str, str | None],
 ) -> list[CapabilityRequirement]:
-    """Infer lightweight capability tags from tool name + arguments."""
-    namespace = _namespace_from_bindings(available_bindings)
-    bindings_hash = _hard_bindings_state_hash(available_bindings)
-    inferred: list[CapabilityRequirement] = []
-
-    for kind in sorted(produced_artifacts):
-        ref_type = _explicit_ref_type_from_args(kind, parsed_args)
-        if kind == "CHUNK_SET" and "chunk_get_text" in tool_name:
-            ref_type = "fulltext"
-        elif kind == "CHUNK_SET" and "search" in tool_name and ref_type is None:
-            ref_type = "snippet"
-
-        inferred.append(
-            CapabilityRequirement(
-                kind=kind,
-                ref_type=ref_type,
-                namespace=namespace,
-                bindings_hash=bindings_hash,
-            )
-        )
-
-    return inferred
-
-
-def _artifact_capabilities_from_envelope(
-    envelope: dict[str, Any],
-    *,
-    fallback_bindings: dict[str, str | None],
-) -> list[CapabilityRequirement]:
-    """Convert typed envelope capability payloads into runtime capability requirements."""
-    bindings = normalize_bindings(envelope.get("bindings"))
-    effective_bindings = merge_binding_state(
-        available_bindings=fallback_bindings,
-        observed_bindings=bindings,
+    return _agent_infer_output_capabilities(
+        tool_name=tool_name,
+        parsed_args=parsed_args,
+        produced_artifacts=produced_artifacts,
+        available_bindings=available_bindings,
     )
-    namespace = _namespace_from_bindings(effective_bindings)
-    default_bindings_hash = _hard_bindings_state_hash(effective_bindings)
-
-    raw_caps = envelope.get("capabilities")
-    if not isinstance(raw_caps, list) or not raw_caps:
-        artifact_type = _normalize_artifact_kind(envelope.get("artifact_type"))
-        if not artifact_type:
-            return []
-        return [
-            CapabilityRequirement(
-                kind=artifact_type,
-                namespace=namespace,
-                bindings_hash=default_bindings_hash,
-            )
-        ]
-
-    out: list[CapabilityRequirement] = []
-    seen: set[tuple[str, str | None, str | None, str | None]] = set()
-    for raw_cap in raw_caps:
-        req = _capability_requirement_from_raw(raw_cap)
-        if req is None:
-            continue
-        normalized_req = CapabilityRequirement(
-            kind=req.kind,
-            ref_type=req.ref_type,
-            namespace=req.namespace or namespace,
-            bindings_hash=req.bindings_hash or default_bindings_hash,
-        )
-        key = (
-            normalized_req.kind,
-            normalized_req.ref_type,
-            normalized_req.namespace,
-            normalized_req.bindings_hash,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(normalized_req)
-    return out
 
 
 def _artifact_output_state_from_record(
@@ -2653,70 +1864,15 @@ def _artifact_output_state_from_record(
     *,
     fallback_bindings: dict[str, str | None],
 ) -> tuple[list[dict[str, Any]], set[str], list[CapabilityRequirement], list[str], dict[str, str | None]]:
-    """Parse typed artifact envelopes from one tool result for runtime state updates."""
     parsed = _parse_record_result_json_value(record)
-    if parsed is None or not isinstance(parsed, (dict, list)):
-        return [], set(), [], [], {}
-
-    envelopes = extract_artifact_envelopes(parsed)
-    if not envelopes:
-        return [], set(), [], [], {}
-
-    produced_artifacts: set[str] = set()
-    produced_capabilities: list[CapabilityRequirement] = []
-    artifact_ids: list[str] = []
-    observed_bindings: dict[str, str | None] = empty_bindings()
-
-    for envelope in envelopes:
-        artifact_type = _normalize_artifact_kind(envelope.get("artifact_type"))
-        if artifact_type:
-            produced_artifacts.add(artifact_type)
-
-        artifact_id = str(envelope.get("artifact_id", "")).strip()
-        if artifact_id:
-            artifact_ids.append(artifact_id)
-
-        observed_bindings = merge_binding_state(
-            available_bindings=observed_bindings,
-            observed_bindings=envelope.get("bindings"),
-        )
-        produced_capabilities.extend(
-            _artifact_capabilities_from_envelope(
-                envelope,
-                fallback_bindings=fallback_bindings,
-            )
-        )
-
-    return envelopes, produced_artifacts, produced_capabilities, artifact_ids, observed_bindings
+    return _agent_artifact_output_state_from_payload(
+        parsed,
+        fallback_bindings=fallback_bindings,
+    )
 
 
 def _artifact_handle_summaries(envelopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    handles: list[dict[str, Any]] = []
-    for envelope in envelopes:
-        if not isinstance(envelope, dict):
-            continue
-        artifact_id = str(envelope.get("artifact_id", "")).strip()
-        if not artifact_id:
-            continue
-        handle: dict[str, Any] = {
-            "artifact_id": artifact_id,
-            "artifact_type": str(envelope.get("artifact_type", "")).strip().upper(),
-        }
-        capabilities = envelope.get("capabilities")
-        if isinstance(capabilities, list) and capabilities:
-            first_cap = capabilities[0]
-            if isinstance(first_cap, dict):
-                kind = str(first_cap.get("kind", "")).strip().upper()
-                ref_type = str(first_cap.get("ref_type", "")).strip()
-                namespace = str(first_cap.get("namespace", "")).strip()
-                if kind:
-                    handle["kind"] = kind
-                if ref_type:
-                    handle["ref_type"] = ref_type
-                if namespace:
-                    handle["namespace"] = namespace
-        handles.append(handle)
-    return handles
+    return _agent_artifact_handle_summaries(envelopes)
 
 
 def _collect_recent_artifact_handles(
@@ -2724,27 +1880,10 @@ def _collect_recent_artifact_handles(
     *,
     max_handles: int,
 ) -> list[dict[str, Any]]:
-    handles: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    if max_handles <= 0:
-        return handles
-    for metadata in reversed(list(tool_result_metadata_by_id.values())):
-        if not isinstance(metadata, dict):
-            continue
-        raw_handles = metadata.get("artifact_handles")
-        if not isinstance(raw_handles, list):
-            continue
-        for handle in raw_handles:
-            if not isinstance(handle, dict):
-                continue
-            artifact_id = str(handle.get("artifact_id", "")).strip()
-            if not artifact_id or artifact_id in seen_ids:
-                continue
-            seen_ids.add(artifact_id)
-            handles.append(dict(handle))
-            if len(handles) >= max_handles:
-                return handles
-    return handles
+    return _agent_collect_recent_artifact_handles(
+        tool_result_metadata_by_id,
+        max_handles=max_handles,
+    )
 
 
 def _build_active_artifact_context_content(
@@ -2755,83 +1894,15 @@ def _build_active_artifact_context_content(
     max_handles: int,
     max_chars: int,
 ) -> str | None:
-    recent_handles = _collect_recent_artifact_handles(
-        tool_result_metadata_by_id,
+    return _agent_build_active_artifact_context_content(
+        available_artifacts=available_artifacts,
+        available_capabilities=available_capabilities,
+        tool_result_metadata_by_id=tool_result_metadata_by_id,
         max_handles=max_handles,
+        max_chars=max_chars,
+        runtime_artifact_read_tool_name=RUNTIME_ARTIFACT_READ_TOOL_NAME,
+        capability_state_snapshot=_capability_state_snapshot,
     )
-    capability_labels = _capability_state_snapshot(available_capabilities)
-    artifact_labels = sorted(str(kind) for kind in available_artifacts if str(kind).strip())
-    filtered_capability_labels = [
-        cap
-        for cap in capability_labels
-        if not (
-            isinstance(cap, dict)
-            and cap.get("kind") == "QUERY_TEXT"
-            and not cap.get("ref_type")
-            and not cap.get("namespace")
-            and not cap.get("bindings_hash")
-        )
-    ]
-
-    if not recent_handles and not filtered_capability_labels and artifact_labels in ([], None, ["QUERY_TEXT"]):
-        return None
-
-    handle_parts: list[str] = []
-    for handle in recent_handles:
-        artifact_id = str(handle.get("artifact_id", "")).strip()
-        artifact_type = str(handle.get("artifact_type", "")).strip().upper()
-        kind = str(handle.get("kind", "")).strip().upper()
-        ref_type = str(handle.get("ref_type", "")).strip()
-        namespace = str(handle.get("namespace", "")).strip()
-        label_parts = [artifact_id]
-        if artifact_type:
-            label_parts.append(artifact_type)
-        if kind and kind != artifact_type:
-            label_parts.append(kind)
-        if ref_type:
-            label_parts.append(f"ref_type={ref_type}")
-        if namespace:
-            label_parts.append(f"namespace={namespace}")
-        handle_parts.append(" ".join(label_parts))
-
-    content = (
-        "[SYSTEM: Active artifact context. "
-        + (
-            "Recent typed artifacts: " + "; ".join(handle_parts) + ". "
-            if handle_parts else
-            ""
-        )
-        + (
-            "Available artifact kinds: " + ", ".join(artifact_labels) + ". "
-            if artifact_labels else
-            ""
-        )
-        + (
-            "Available capabilities: "
-            + "; ".join(
-                cap.get("kind", "")
-                + (
-                    "[" + ", ".join(
-                        f"{k}={cap[k]}"
-                        for k in ("ref_type", "namespace", "bindings_hash")
-                        if cap.get(k)
-                    ) + "]"
-                    if any(cap.get(k) for k in ("ref_type", "namespace", "bindings_hash"))
-                    else ""
-                )
-                for cap in filtered_capability_labels[:max(1, max_handles)]
-                if isinstance(cap, dict)
-            )
-            + ". "
-            if filtered_capability_labels else
-            ""
-        )
-        + (
-            "Older tool payloads may be cleared from context; "
-            f"use {RUNTIME_ARTIFACT_READ_TOOL_NAME} with artifact_ids to reopen typed payloads when needed.]"
-        )
-    )
-    return _trim_text(content, max_chars)
 
 
 def _upsert_active_artifact_context_message(
@@ -2845,30 +1916,18 @@ def _upsert_active_artifact_context_message(
     max_chars: int,
     existing_index: int | None,
 ) -> tuple[int | None, str | None, bool]:
-    if not enabled:
-        return existing_index, None, False
-    content = _build_active_artifact_context_content(
+    return _agent_upsert_active_artifact_context_message(
+        messages,
         available_artifacts=available_artifacts,
         available_capabilities=available_capabilities,
         tool_result_metadata_by_id=tool_result_metadata_by_id,
+        enabled=enabled,
         max_handles=max_handles,
         max_chars=max_chars,
+        existing_index=existing_index,
+        runtime_artifact_read_tool_name=RUNTIME_ARTIFACT_READ_TOOL_NAME,
+        capability_state_snapshot=_capability_state_snapshot,
     )
-    if not content:
-        return existing_index, None, False
-    message = {"role": "user", "content": content}
-    if (
-        existing_index is not None
-        and 0 <= existing_index < len(messages)
-        and isinstance(messages[existing_index], dict)
-    ):
-        previous_content = str(messages[existing_index].get("content") or "")
-        if previous_content == content:
-            return existing_index, content, False
-        messages[existing_index] = message
-        return existing_index, content, True
-    messages.append(message)
-    return len(messages) - 1, content, True
 
 
 def _trim_text(value: str, max_chars: int) -> str:
@@ -2878,236 +1937,11 @@ def _trim_text(value: str, max_chars: int) -> str:
 
 
 def _short_requirement(req: CapabilityRequirement) -> str:
-    return req.short_label()
-
-
-def _has_meaningful_arg_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, Mapping):
-        return bool(value)
-    if isinstance(value, (list, tuple, set)):
-        return any(_has_meaningful_arg_value(item) for item in value)
-    return True
+    return _agent_short_requirement(req)
 
 
 def _contract_declares_no_artifact_prereqs(contract: dict[str, Any] | None) -> bool:
-    if not isinstance(contract, dict):
-        return False
-    raw = contract.get("artifact_prereqs")
-    return (
-        (isinstance(raw, str) and raw.strip().lower() == "none")
-        or bool(contract.get("artifact_prereqs_none"))
-        or bool(contract.get("self_contained"))
-    )
-
-
-def _normalize_arg_name_list(raw: Any) -> list[str]:
-    if not isinstance(raw, (list, tuple, set)):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        if not isinstance(item, str):
-            continue
-        name = item.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        out.append(name)
-    return out
-
-
-def _normalize_arg_equals_spec(raw: Any) -> dict[str, tuple[str, ...]]:
-    if not isinstance(raw, Mapping):
-        return {}
-    out: dict[str, tuple[str, ...]] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str):
-            continue
-        name = key.strip()
-        if not name:
-            continue
-        values: list[str] = []
-        if isinstance(value, (list, tuple, set)):
-            candidates = value
-        else:
-            candidates = [value]
-        seen: set[str] = set()
-        for item in candidates:
-            if item is None:
-                continue
-            normalized = str(item).strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            values.append(normalized)
-        if values:
-            out[name] = tuple(values)
-    return out
-
-
-def _normalize_handle_input_specs(raw: Any) -> list[dict[str, Any]]:
-    """Normalize declarative artifact-handle input specs."""
-    if not isinstance(raw, (list, tuple, set)):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, Mapping):
-            continue
-        arg = str(item.get("arg") or "").strip()
-        if not arg:
-            continue
-        inject_arg_raw = item.get("inject_arg")
-        inject_arg = (
-            str(inject_arg_raw).strip()
-            if isinstance(inject_arg_raw, str) and str(inject_arg_raw).strip()
-            else None
-        )
-        representation = str(item.get("representation") or "envelope").strip().lower()
-        if representation not in {"envelope", "payload"}:
-            representation = "envelope"
-        accepts = _normalize_capability_requirements(
-            item.get("accepts")
-            or item.get("accepts_capabilities")
-            or item.get("requires")
-        )
-        normalized.append(
-            {
-                "arg": arg,
-                "inject_arg": inject_arg,
-                "representation": representation,
-                "accepts": accepts,
-            }
-        )
-    return normalized
-
-
-def _normalize_handle_arg_values(raw: Any) -> list[str]:
-    """Normalize artifact handle args into a de-duplicated list of artifact_ids."""
-    if isinstance(raw, str):
-        stripped = raw.strip()
-        return [stripped] if stripped else []
-    if not isinstance(raw, (list, tuple, set)):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        artifact_id = str(item or "").strip()
-        if not artifact_id or artifact_id in seen:
-            continue
-        seen.add(artifact_id)
-        out.append(artifact_id)
-    return out
-
-
-def _handle_input_accepts_envelope(
-    spec: dict[str, Any],
-    envelope: dict[str, Any],
-    *,
-    fallback_bindings: dict[str, str | None] | None,
-) -> bool:
-    """Whether one stored artifact envelope satisfies a handle-input capability spec."""
-    accepts = spec.get("accepts") or []
-    if not isinstance(accepts, list) or not accepts:
-        return True
-    envelope_caps = _artifact_capabilities_from_envelope(
-        envelope,
-        fallback_bindings=fallback_bindings or {},
-    )
-    for required in accepts:
-        if not isinstance(required, CapabilityRequirement):
-            continue
-        if any(
-            _capability_requirement_matches(produced, required)
-            for produced in envelope_caps
-        ):
-            return True
-    return False
-
-
-def _validate_handle_input_specs(
-    *,
-    tool_name: str,
-    resolved_contract: dict[str, Any],
-    parsed_args: dict[str, Any] | None,
-    artifact_registry_by_id: dict[str, dict[str, Any]] | None,
-    available_bindings: dict[str, str | None] | None,
-    call_bindings: dict[str, str | None],
-    contract_mode: str | None,
-) -> ToolCallValidation | None:
-    """Validate declared artifact-handle args against the runtime artifact registry."""
-    if not isinstance(parsed_args, dict):
-        return None
-    handle_inputs = resolved_contract.get("handle_inputs") or []
-    if not isinstance(handle_inputs, list) or not handle_inputs:
-        return None
-
-    registry = artifact_registry_by_id or {}
-    for spec in handle_inputs:
-        if not isinstance(spec, dict):
-            continue
-        arg_name = str(spec.get("arg") or "").strip()
-        if not arg_name:
-            continue
-        requested_ids = _normalize_handle_arg_values(parsed_args.get(arg_name))
-        if not requested_ids:
-            continue
-
-        missing_ids: list[str] = []
-        capability_mismatch_ids: list[str] = []
-        for artifact_id in requested_ids:
-            envelope = registry.get(artifact_id)
-            if not isinstance(envelope, dict):
-                missing_ids.append(artifact_id)
-                continue
-            if not _handle_input_accepts_envelope(
-                spec,
-                envelope,
-                fallback_bindings=available_bindings,
-            ):
-                capability_mismatch_ids.append(artifact_id)
-
-        if missing_ids:
-            return ToolCallValidation(
-                is_valid=False,
-                reason=(
-                    f"{tool_name} requires known runtime artifact handles in {arg_name}; "
-                    f"missing {missing_ids}"
-                ),
-                error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
-                failure_phase="input_validation",
-                call_bindings=call_bindings,
-                missing_requirements=[{"artifact_id": artifact_id} for artifact_id in missing_ids],
-                contract_mode=contract_mode,
-            )
-
-        if capability_mismatch_ids:
-            accepts = spec.get("accepts") or []
-            missing_payload = [
-                req.to_dict()
-                for req in accepts
-                if isinstance(req, CapabilityRequirement)
-            ]
-            expected = (
-                ", ".join(_short_requirement(req) for req in accepts if isinstance(req, CapabilityRequirement))
-                or "declared artifact capabilities"
-            )
-            return ToolCallValidation(
-                is_valid=False,
-                reason=(
-                    f"{tool_name} requires {arg_name} handles compatible with {expected}; "
-                    f"mismatched {capability_mismatch_ids}"
-                ),
-                error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
-                failure_phase="input_validation",
-                call_bindings=call_bindings,
-                missing_requirements=missing_payload,
-                contract_mode=contract_mode,
-            )
-    return None
+    return _agent_contract_declares_no_artifact_prereqs(contract)
 
 
 def _apply_handle_input_injections(
@@ -3116,201 +1950,24 @@ def _apply_handle_input_injections(
     normalized_tool_contracts: dict[str, dict[str, Any]],
     artifact_registry_by_id: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Inject resolved artifact envelopes/payloads for declared handle-input args."""
-    tool_name = str(tc.get("function", {}).get("name", "")).strip()
-    contract = normalized_tool_contracts.get(tool_name)
-    parsed_args = _extract_tool_call_args(tc)
-    if not isinstance(contract, dict) or not isinstance(parsed_args, dict):
-        return tc, []
-    resolved_contract, _mode_name = _resolve_contract_spec(contract, parsed_args)
-    handle_inputs = resolved_contract.get("handle_inputs") or []
-    if not isinstance(handle_inputs, list) or not handle_inputs:
-        return tc, []
-
-    patched_args = dict(parsed_args)
-    injections: list[dict[str, Any]] = []
-    changed = False
-    for spec in handle_inputs:
-        if not isinstance(spec, dict):
-            continue
-        arg_name = str(spec.get("arg") or "").strip()
-        inject_arg = str(spec.get("inject_arg") or "").strip()
-        if not arg_name or not inject_arg:
-            continue
-        requested_ids = _normalize_handle_arg_values(parsed_args.get(arg_name))
-        if not requested_ids:
-            continue
-        resolved_values: list[Any] = []
-        representation = str(spec.get("representation") or "envelope").strip().lower()
-        for artifact_id in requested_ids:
-            envelope = artifact_registry_by_id.get(artifact_id)
-            if not isinstance(envelope, dict):
-                continue
-            value: Any = envelope if representation == "envelope" else envelope.get("payload")
-            try:
-                resolved_values.append(_json.loads(_json.dumps(value)))
-            except Exception:
-                resolved_values.append(value)
-        patched_args[inject_arg] = resolved_values
-        changed = True
-        injections.append(
-            {
-                "source_arg": arg_name,
-                "inject_arg": inject_arg,
-                "representation": representation,
-                "artifact_ids": requested_ids,
-                "resolved_count": len(resolved_values),
-            }
-        )
-
-    if not changed:
-        return tc, []
-    return _set_tool_call_args(tc, patched_args), injections
-
-
-def _normalize_contract_spec_fields(spec: dict[str, Any]) -> dict[str, Any]:
-    requires_all_caps = _normalize_capability_requirements(spec.get("requires_all"))
-    requires_any_caps = _normalize_capability_requirements(spec.get("requires_any"))
-    requires_all_caps.extend(
-        _normalize_capability_requirements(spec.get("requires_all_capabilities"))
+    return _agent_apply_handle_input_injections(
+        tc=tc,
+        normalized_tool_contracts=normalized_tool_contracts,
+        artifact_registry_by_id=artifact_registry_by_id,
+        extract_tool_call_args=_extract_tool_call_args,
+        set_tool_call_args=_set_tool_call_args,
     )
-    requires_any_caps.extend(
-        _normalize_capability_requirements(spec.get("requires_any_capabilities"))
-    )
-
-    produces_caps = _normalize_capability_requirements(spec.get("produces"))
-    produces_caps.extend(
-        _normalize_capability_requirements(spec.get("produces_capabilities"))
-    )
-
-    requires_all = {req.kind for req in requires_all_caps}
-    requires_any = {req.kind for req in requires_any_caps}
-    produces = {req.kind for req in produces_caps}
-
-    return {
-        "requires_all_artifacts": requires_all,
-        "requires_any_artifacts": requires_any,
-        "requires_all_capabilities": requires_all_caps,
-        "requires_any_capabilities": requires_any_caps,
-        "produces_artifacts": produces,
-        "produces_capabilities": produces_caps,
-        "artifact_prereqs": (
-            str(spec.get("artifact_prereqs", "")).strip().lower()
-            if isinstance(spec.get("artifact_prereqs"), str)
-            else None
-        ),
-        "artifact_prereqs_none": (
-            str(spec.get("artifact_prereqs", "")).strip().lower() == "none"
-        ),
-        "handle_inputs": _normalize_handle_input_specs(spec.get("handle_inputs")),
-    }
-
-
-def _normalize_contract_mode(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    normalized = _normalize_contract_spec_fields(raw)
-    name_raw = raw.get("name")
-    normalized["name"] = (
-        name_raw.strip()
-        if isinstance(name_raw, str) and name_raw.strip()
-        else None
-    )
-    normalized["when_args_present_any"] = _normalize_arg_name_list(raw.get("when_args_present_any"))
-    normalized["when_args_present_all"] = _normalize_arg_name_list(raw.get("when_args_present_all"))
-    normalized["when_arg_equals"] = _normalize_arg_equals_spec(raw.get("when_arg_equals"))
-    return normalized
-
-
-def _contract_mode_matches(mode: dict[str, Any], parsed_args: dict[str, Any] | None) -> bool:
-    if not isinstance(parsed_args, dict):
-        return False
-
-    present_all = mode.get("when_args_present_all") or []
-    if any(not _has_meaningful_arg_value(parsed_args.get(name)) for name in present_all):
-        return False
-
-    present_any = mode.get("when_args_present_any") or []
-    if present_any and not any(_has_meaningful_arg_value(parsed_args.get(name)) for name in present_any):
-        return False
-
-    arg_equals = mode.get("when_arg_equals") or {}
-    for name, allowed_values in arg_equals.items():
-        value = parsed_args.get(name)
-        normalized_value = str(value).strip() if value is not None else ""
-        if not normalized_value or normalized_value not in allowed_values:
-            return False
-
-    return bool(present_all or present_any or arg_equals)
-
-
-def _resolve_contract_spec(
-    contract: dict[str, Any] | None,
-    parsed_args: dict[str, Any] | None,
-) -> tuple[dict[str, Any], str | None]:
-    """Resolve arg-conditional contract mode; fall back to top-level spec."""
-    if not isinstance(contract, dict):
-        return {}, None
-
-    modes = contract.get("call_modes") or []
-    if isinstance(modes, list):
-        for idx, mode in enumerate(modes):
-            if not isinstance(mode, dict):
-                continue
-            if _contract_mode_matches(mode, parsed_args):
-                return mode, str(mode.get("name") or f"mode_{idx + 1}")
-
-    return contract, None
 
 
 def _tool_declares_no_artifact_prereqs(
     tool_name: str,
     contract: dict[str, Any] | None,
 ) -> bool:
-    """Artifact-prereq bypass is declarative only."""
-    del tool_name
-    if _contract_declares_no_artifact_prereqs(contract):
-        return True
-    if not isinstance(contract, dict):
-        return False
-    for mode in contract.get("call_modes") or []:
-        if not isinstance(mode, dict):
-            continue
-        has_conditions = bool(
-            mode.get("when_args_present_any")
-            or mode.get("when_args_present_all")
-            or mode.get("when_arg_equals")
-        )
-        if has_conditions:
-            continue
-        if _contract_declares_no_artifact_prereqs(mode):
-            return True
-    return False
+    return _agent_tool_declares_no_artifact_prereqs(tool_name, contract)
 
 
 def _normalize_tool_contracts(raw: Any) -> dict[str, dict[str, Any]]:
-    """Normalize raw tool contract payload into a predictable dict shape."""
-    if not isinstance(raw, dict):
-        return {}
-
-    normalized: dict[str, dict[str, Any]] = {}
-    for tool_name, spec in raw.items():
-        if not isinstance(tool_name, str) or not tool_name.strip():
-            continue
-        if not isinstance(spec, dict):
-            continue
-
-        normalized_spec = _normalize_contract_spec_fields(spec)
-        normalized_spec["is_control"] = bool(spec.get("is_control", False))
-        call_modes: list[dict[str, Any]] = []
-        for raw_mode in spec.get("call_modes") or []:
-            mode = _normalize_contract_mode(raw_mode)
-            if mode is not None:
-                call_modes.append(mode)
-        normalized_spec["call_modes"] = call_modes
-        normalized[tool_name.strip()] = normalized_spec
-
-    return normalized
+    return _shared_normalize_tool_contracts(raw)
 
 
 def _effective_contract_requirements(
@@ -3318,25 +1975,7 @@ def _effective_contract_requirements(
     contract: dict[str, Any],
     parsed_args: dict[str, Any] | None,
 ) -> tuple[set[str], set[str]]:
-    """Resolve dynamic per-call requirements for selected tools."""
-    del tool_name
-    resolved_contract, _mode_name = _resolve_contract_spec(contract, parsed_args)
-    requires_all = set(
-        resolved_contract.get("requires_all_artifacts")
-        or resolved_contract.get("requires_all")
-        or set()
-    )
-    requires_any = set(
-        resolved_contract.get("requires_any_artifacts")
-        or resolved_contract.get("requires_any")
-        or set()
-    )
-
-    declarative_no_prereqs = _contract_declares_no_artifact_prereqs(resolved_contract)
-    if declarative_no_prereqs:
-        return set(), set()
-
-    return requires_all, requires_any
+    return _agent_effective_contract_requirements(tool_name, contract, parsed_args)
 
 
 def _validate_tool_contract_call(
@@ -3349,126 +1988,17 @@ def _validate_tool_contract_call(
     available_bindings: dict[str, str | None] | None = None,
     artifact_registry_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> ToolCallValidation:
-    """Validate whether a tool call is composable given currently available artifacts."""
-    call_bindings = extract_bindings_from_tool_args(parsed_args)
-    capability_state = available_capabilities or {}
-    resolved_contract, resolved_mode_name = _resolve_contract_spec(contract, parsed_args)
-
-    if contract.get("is_control"):
-        return ToolCallValidation(
-            is_valid=True,
-            call_bindings=call_bindings,
-            contract_mode=resolved_mode_name,
-        )
-
-    if call_bindings:
-        bindings_ok, bindings_reason, _conflicts, normalized_call_bindings = check_binding_conflicts(
-            available_bindings=available_bindings,
-            proposed_bindings=call_bindings,
-        )
-        if not bindings_ok:
-            return ToolCallValidation(
-                is_valid=False,
-                reason=bindings_reason,
-                error_code=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
-                failure_phase="binding_validation",
-                call_bindings=normalized_call_bindings,
-                missing_requirements=[],
-                contract_mode=resolved_mode_name,
-            )
-
-    handle_validation = _validate_handle_input_specs(
+    return _agent_validate_tool_contract_call(
         tool_name=tool_name,
-        resolved_contract=resolved_contract,
+        contract=contract,
         parsed_args=parsed_args,
-        artifact_registry_by_id=artifact_registry_by_id,
+        available_artifacts=available_artifacts,
+        available_capabilities=available_capabilities,
         available_bindings=available_bindings,
-        call_bindings=call_bindings,
-        contract_mode=resolved_mode_name,
-    )
-    if handle_validation is not None:
-        return handle_validation
-
-    requires_all, requires_any = _effective_contract_requirements(
-        tool_name, contract, parsed_args,
-    )
-
-    missing_all = sorted(requires_all - available_artifacts)
-    if missing_all:
-        return ToolCallValidation(
-            is_valid=False,
-            reason=f"{tool_name} requires all of {sorted(requires_all)}; missing {missing_all}",
-            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
-            failure_phase="input_validation",
-            call_bindings=call_bindings,
-            missing_requirements=[{"kind": k} for k in missing_all],
-            contract_mode=resolved_mode_name,
-        )
-
-    if requires_any and not (requires_any & available_artifacts):
-        missing_any = sorted(requires_any)
-        return ToolCallValidation(
-            is_valid=False,
-            reason=f"{tool_name} requires one of {sorted(requires_any)}; available {sorted(available_artifacts)}",
-            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
-            failure_phase="input_validation",
-            call_bindings=call_bindings,
-            missing_requirements=[{"kind": k} for k in missing_any],
-            contract_mode=resolved_mode_name,
-        )
-
-    declarative_no_prereqs = _contract_declares_no_artifact_prereqs(resolved_contract)
-    skip_capability_requirements = declarative_no_prereqs
-    if skip_capability_requirements:
-        return ToolCallValidation(
-            is_valid=True,
-            call_bindings=call_bindings,
-            contract_mode=resolved_mode_name,
-        )
-
-    missing_capabilities: list[CapabilityRequirement] = []
-    for req in (resolved_contract.get("requires_all_capabilities") or []):
-        if isinstance(req, CapabilityRequirement) and not _capability_state_has(capability_state, req):
-            missing_capabilities.append(req)
-    if missing_capabilities:
-        missing_payload = [req.to_dict() for req in missing_capabilities]
-        return ToolCallValidation(
-            is_valid=False,
-            reason=(
-                f"{tool_name} missing required capabilities: "
-                + ", ".join(_short_requirement(req) for req in missing_capabilities)
-            ),
-            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
-            failure_phase="input_validation",
-            call_bindings=call_bindings,
-            missing_requirements=missing_payload,
-            contract_mode=resolved_mode_name,
-        )
-
-    requires_any_caps = [
-        req
-        for req in (resolved_contract.get("requires_any_capabilities") or [])
-        if isinstance(req, CapabilityRequirement)
-    ]
-    if requires_any_caps and not any(_capability_state_has(capability_state, req) for req in requires_any_caps):
-        missing_payload = [req.to_dict() for req in requires_any_caps]
-        return ToolCallValidation(
-            is_valid=False,
-            reason=(
-                f"{tool_name} requires one capability from: "
-                + ", ".join(_short_requirement(req) for req in requires_any_caps)
-            ),
-            error_code=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
-            failure_phase="input_validation",
-            call_bindings=call_bindings,
-            missing_requirements=missing_payload,
-            contract_mode=resolved_mode_name,
-        )
-
-    return ToolCallValidation(
-        is_valid=True,
-        call_bindings=call_bindings,
-        contract_mode=resolved_mode_name,
+        artifact_registry_by_id=artifact_registry_by_id,
+        event_code_missing_prerequisite=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+        event_code_missing_capability=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
+        event_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
     )
 
 
@@ -3482,103 +2012,18 @@ def _find_repair_tools_for_missing_requirements(
     available_bindings: dict[str, str | None] | None,
     max_repair_tools: int,
 ) -> list[str]:
-    """Suggest legal-now tools that can produce currently missing requirements."""
-    if max_repair_tools <= 0:
-        return []
-
-    required_caps: list[CapabilityRequirement] = []
-    for raw in missing_requirements or []:
-        req = _capability_requirement_from_raw(raw)
-        if req is not None:
-            required_caps.append(req)
-    if not required_caps:
-        return []
-
-    required_kinds: set[str] = {req.kind for req in required_caps}
-    candidates: list[tuple[tuple[int, int, int, int, int, int, str], str]] = []
-    for tool_name in sorted(normalized_tool_contracts):
-        if tool_name == current_tool_name:
-            continue
-        contract = normalized_tool_contracts.get(tool_name)
-        if not isinstance(contract, dict):
-            continue
-        if bool(contract.get("is_control")):
-            continue
-
-        produced_caps = _contract_output_capabilities(contract)
-        produced_kinds = _contract_outputs(contract)
-        can_repair = False
-        for req in required_caps:
-            for produced in produced_caps:
-                if _capability_requirement_matches(produced, req):
-                    can_repair = True
-                    break
-            if can_repair:
-                break
-            if req.kind in produced_kinds:
-                can_repair = True
-                break
-        if not can_repair:
-            continue
-
-        validation = _validate_tool_contract_call(
-            tool_name=tool_name,
-            contract=contract,
-            parsed_args=None,
-            available_artifacts=available_artifacts,
-            available_capabilities=available_capabilities,
-            available_bindings=available_bindings,
-        )
-        if validation.is_valid:
-            raw_requires_all = set(contract.get("requires_all_artifacts") or contract.get("requires_all") or set())
-            raw_requires_any = set(contract.get("requires_any_artifacts") or contract.get("requires_any") or set())
-
-            # Prefer tools that can bootstrap from QUERY_TEXT/search over tools
-            # that depend on the same missing artifact they are trying to repair.
-            exact_capability_match = 1
-            for req in required_caps:
-                if any(
-                    produced.kind == req.kind
-                    and (
-                        req.ref_type is None
-                        or produced.ref_type is None
-                        or produced.ref_type == req.ref_type
-                    )
-                    and (
-                        req.namespace is None
-                        or produced.namespace is None
-                        or produced.namespace == req.namespace
-                    )
-                    and (
-                        req.bindings_hash is None
-                        or produced.bindings_hash is None
-                        or produced.bindings_hash == req.bindings_hash
-                    )
-                    for produced in produced_caps
-                ):
-                    exact_capability_match = 0
-                    break
-
-            self_dependency_penalty = 1 if any(kind in raw_requires_all for kind in required_kinds) else 0
-            query_bootstrap_penalty = 0 if ("QUERY_TEXT" in raw_requires_all or "QUERY_TEXT" in raw_requires_any) else 1
-            search_penalty = 0 if "search" in tool_name else 1
-            aggregator_penalty = 1 if any(tok in tool_name for tok in ("aggregator", "score", "optimize")) else 0
-            prereq_penalty = len(raw_requires_all) + (1 if raw_requires_any else 0)
-            get_text_penalty = 1 if "get_text" in tool_name else 0
-
-            rank_key = (
-                self_dependency_penalty,
-                query_bootstrap_penalty,
-                search_penalty,
-                exact_capability_match,
-                aggregator_penalty,
-                prereq_penalty + get_text_penalty,
-                tool_name,
-            )
-            candidates.append((rank_key, tool_name))
-
-    candidates.sort(key=lambda item: item[0])
-    return [name for _, name in candidates[:max_repair_tools]]
+    return _agent_find_repair_tools_for_missing_requirements(
+        current_tool_name=current_tool_name,
+        missing_requirements=missing_requirements,
+        normalized_tool_contracts=normalized_tool_contracts,
+        available_artifacts=available_artifacts,
+        available_capabilities=available_capabilities,
+        available_bindings=available_bindings,
+        max_repair_tools=max_repair_tools,
+        event_code_missing_prerequisite=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+        event_code_missing_capability=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
+        event_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
+    )
 
 
 def _filter_tools_for_disclosure(
@@ -3592,161 +2037,65 @@ def _filter_tools_for_disclosure(
     max_missing_per_tool: int = DEFAULT_TOOL_DISCLOSURE_MAX_MISSING_PER_TOOL,
     max_repair_tools: int = DEFAULT_TOOL_DISCLOSURE_MAX_REPAIR_TOOLS,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-    """Return tools currently composable from artifact state + hidden reasons.
-
-    Unknown tools (no contract declared) are kept visible to avoid false negatives.
-    Control tools stay visible regardless of artifact state.
-    """
-    if not openai_tools:
-        return [], [], 0
-    if not normalized_tool_contracts:
-        return list(openai_tools), [], 0
-
-    visible: list[dict[str, Any]] = []
-    hidden_all: list[dict[str, Any]] = []
-    for tool_def in openai_tools:
-        fn = tool_def.get("function", {}) if isinstance(tool_def, dict) else {}
-        tool_name = str(fn.get("name", "")).strip()
-        if not tool_name:
-            visible.append(tool_def)
-            continue
-
-        contract = normalized_tool_contracts.get(tool_name)
-        if not isinstance(contract, dict):
-            visible.append(tool_def)
-            continue
-
-        # Keep explicit-ID/self-contained tools visible so disclosure does not
-        # create false negatives before arguments are known.
-        if _tool_declares_no_artifact_prereqs(tool_name, contract):
-            visible.append(tool_def)
-            continue
-
-        validation = _validate_tool_contract_call(
-            tool_name=tool_name,
-            contract=contract,
-            parsed_args=None,
-            available_artifacts=available_artifacts,
-            available_capabilities=available_capabilities,
-            available_bindings=available_bindings,
-        )
-        if validation.is_valid:
-            visible.append(tool_def)
-        else:
-            hidden_all.append({
-                "tool": tool_name,
-                "reason": validation.reason,
-                "missing_requirements": list(validation.missing_requirements or []),
-                "missing_count": len(validation.missing_requirements or []),
-            })
-
-    hidden_all.sort(key=lambda h: (int(h.get("missing_count", 0) or 0), str(h.get("tool", ""))))
-    hidden_total = len(hidden_all)
-
-    if max_missing_per_tool >= 0:
-        for item in hidden_all:
-            missing = item.get("missing_requirements") or []
-            if isinstance(missing, list):
-                item["missing_requirements"] = missing[:max_missing_per_tool]
-            item["missing_count"] = len(item.get("missing_requirements") or [])
-            item["repair_tools"] = _find_repair_tools_for_missing_requirements(
-                current_tool_name=str(item.get("tool", "")).strip(),
-                missing_requirements=list(item.get("missing_requirements") or []),
-                normalized_tool_contracts=normalized_tool_contracts,
-                available_artifacts=available_artifacts,
-                available_capabilities=available_capabilities,
-                available_bindings=available_bindings,
-                max_repair_tools=max_repair_tools,
-            )
-
-    if max_unavailable >= 0:
-        hidden_all = hidden_all[:max_unavailable]
-
-    return visible, hidden_all, hidden_total
+    return _agent_filter_tools_for_disclosure(
+        openai_tools=openai_tools,
+        normalized_tool_contracts=normalized_tool_contracts,
+        available_artifacts=available_artifacts,
+        available_capabilities=available_capabilities,
+        available_bindings=available_bindings,
+        max_unavailable=max_unavailable,
+        max_missing_per_tool=max_missing_per_tool,
+        max_repair_tools=max_repair_tools,
+        tool_declares_no_artifact_prereqs=_tool_declares_no_artifact_prereqs,
+        validate_tool_contract_call=_validate_tool_contract_call,
+        find_repair_tools_for_missing_requirements=_find_repair_tools_for_missing_requirements,
+    )
 
 
 def _contract_outputs(
     contract: dict[str, Any] | None,
     parsed_args: dict[str, Any] | None = None,
 ) -> set[str]:
-    """Return declared artifact outputs for a tool contract."""
-    resolved_contract, _mode_name = _resolve_contract_spec(contract, parsed_args)
-    if not isinstance(resolved_contract, dict):
-        return set()
-    return set(
-        resolved_contract.get("produces_artifacts")
-        or resolved_contract.get("produces")
-        or set()
-    )
+    return _agent_contract_outputs(contract, parsed_args)
 
 
 def _contract_output_capabilities(
     contract: dict[str, Any] | None,
     parsed_args: dict[str, Any] | None = None,
 ) -> list[CapabilityRequirement]:
-    resolved_contract, _mode_name = _resolve_contract_spec(contract, parsed_args)
-    if not isinstance(resolved_contract, dict):
-        return []
-    out = resolved_contract.get("produces_capabilities") or []
-    return [req for req in out if isinstance(req, CapabilityRequirement)]
+    return _agent_contract_output_capabilities(contract, parsed_args)
 
 
 def _is_control_tool_name(
     tool_name: str,
     normalized_tool_contracts: dict[str, dict[str, Any]],
 ) -> bool:
-    contract = normalized_tool_contracts.get(tool_name)
-    return bool(isinstance(contract, dict) and contract.get("is_control"))
+    return _agent_is_control_tool_name(tool_name, normalized_tool_contracts)
 
 
 def _disclosure_reason_from_entry(entry: dict[str, Any]) -> str:
-    repair_tools = entry.get("repair_tools")
-    repair_hint = ""
-    if isinstance(repair_tools, list):
-        names = [str(n).strip() for n in repair_tools if isinstance(n, str) and n.strip()]
-        if names:
-            repair_hint = f"; try {', '.join(names)}"
-
-    missing = entry.get("missing_requirements")
-    if isinstance(missing, list) and missing:
-        labels: list[str] = []
-        for item in missing:
-            req = _capability_requirement_from_raw(item)
-            if req is None:
-                continue
-            labels.append(_short_requirement(req))
-        if labels:
-            return "needs " + ", ".join(labels) + repair_hint
-    reason = str(entry.get("reason", "")).strip()
-    if reason:
-        return reason + repair_hint
-    return "missing prerequisites" + repair_hint
+    return _agent_disclosure_reason_from_entry(
+        entry,
+        capability_requirement_from_raw=_capability_requirement_from_raw,
+        short_requirement=_short_requirement,
+    )
 
 
 def _disclosure_message(hidden_entries: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for entry in hidden_entries:
-        tool = str(entry.get("tool", "")).strip() or "<unknown>"
-        reason = _trim_text(_disclosure_reason_from_entry(entry), DEFAULT_TOOL_DISCLOSURE_REASON_MAX_CHARS)
-        parts.append(f"{tool}: {reason}")
-    return "; ".join(parts)
+    return _agent_disclosure_message(
+        hidden_entries,
+        disclosure_reason_from_entry=_disclosure_reason_from_entry,
+        trim_text=_trim_text,
+        max_reason_chars=DEFAULT_TOOL_DISCLOSURE_REASON_MAX_CHARS,
+    )
 
 
 def _deficit_labels_from_hidden_entries(hidden_entries: list[dict[str, Any]]) -> list[str]:
-    """Canonical missing-artifact/capability labels from hidden tool requirements."""
-    labels: set[str] = set()
-    for entry in hidden_entries:
-        if not isinstance(entry, dict):
-            continue
-        missing = entry.get("missing_requirements")
-        if not isinstance(missing, list):
-            continue
-        for raw in missing:
-            req = _capability_requirement_from_raw(raw)
-            if req is None:
-                continue
-            labels.add(_short_requirement(req))
-    return sorted(labels)
+    return _agent_deficit_labels_from_hidden_entries(
+        hidden_entries,
+        capability_requirement_from_raw=_capability_requirement_from_raw,
+        short_requirement=_short_requirement,
+    )
 
 
 def _analyze_lane_closure(
@@ -3756,84 +2105,15 @@ def _analyze_lane_closure(
     initial_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]],
     available_bindings: dict[str, str | None] | None,
 ) -> dict[str, Any]:
-    """Advisory closure analysis for current lane (toolset + policies).
-
-    This intentionally ignores argument-level dynamics and provides best-effort
-    reachability from the declared initial state.
-    """
-    reachable_artifacts: set[str] = set(initial_artifacts)
-    reachable_capabilities: dict[str, set[tuple[str | None, str | None, str | None]]] = {
-        kind: set(entries)
-        for kind, entries in (initial_capabilities or {}).items()
-    }
-
-    max_iters = max(1, len(normalized_tool_contracts) * 2)
-    for _ in range(max_iters):
-        changed = False
-        for tool_name in sorted(normalized_tool_contracts):
-            contract = normalized_tool_contracts.get(tool_name)
-            if not isinstance(contract, dict):
-                continue
-            if bool(contract.get("is_control")):
-                continue
-            validation = _validate_tool_contract_call(
-                tool_name=tool_name,
-                contract=contract,
-                parsed_args=None,
-                available_artifacts=reachable_artifacts,
-                available_capabilities=reachable_capabilities,
-                available_bindings=available_bindings,
-            )
-            if not validation.is_valid:
-                continue
-            for kind in _contract_outputs(contract):
-                if kind not in reachable_artifacts:
-                    reachable_artifacts.add(kind)
-                    changed = True
-            for produced in _contract_output_capabilities(contract):
-                if _capability_state_add(
-                    reachable_capabilities,
-                    kind=produced.kind,
-                    ref_type=produced.ref_type,
-                    namespace=produced.namespace,
-                    bindings_hash=produced.bindings_hash,
-                ):
-                    changed = True
-        if not changed:
-            break
-
-    unresolved_tools: list[dict[str, Any]] = []
-    for tool_name in sorted(normalized_tool_contracts):
-        contract = normalized_tool_contracts.get(tool_name)
-        if not isinstance(contract, dict):
-            continue
-        if bool(contract.get("is_control")):
-            continue
-        validation = _validate_tool_contract_call(
-            tool_name=tool_name,
-            contract=contract,
-            parsed_args=None,
-            available_artifacts=reachable_artifacts,
-            available_capabilities=reachable_capabilities,
-            available_bindings=available_bindings,
-        )
-        if validation.is_valid:
-            continue
-        unresolved_tools.append(
-            {
-                "tool": tool_name,
-                "error_code": validation.error_code,
-                "missing_requirements": list(validation.missing_requirements or []),
-            }
-        )
-
-    return {
-        "lane_closed": len(unresolved_tools) == 0,
-        "reachable_artifacts": sorted(reachable_artifacts),
-        "reachable_capabilities": _capability_state_snapshot(reachable_capabilities),
-        "unresolved_tools": unresolved_tools,
-        "unresolved_tool_count": len(unresolved_tools),
-    }
+    return _agent_analyze_lane_closure(
+        normalized_tool_contracts=normalized_tool_contracts,
+        initial_artifacts=initial_artifacts,
+        initial_capabilities=initial_capabilities,
+        available_bindings=available_bindings,
+        event_code_missing_prerequisite=EVENT_CODE_TOOL_VALIDATION_MISSING_PREREQUISITE,
+        event_code_missing_capability=EVENT_CODE_TOOL_VALIDATION_MISSING_CAPABILITY,
+        event_code_binding_conflict=EVENT_CODE_TOOL_VALIDATION_BINDING_CONFLICT,
+    )
 
 
 def _is_retrieval_no_hits_result(
@@ -3866,92 +2146,6 @@ def _is_retrieval_no_hits_result(
         if isinstance(value, (int, float)):
             return int(value) == 0
     return False
-
-
-_PRIMARY_FAILURE_PRIORITY: tuple[str, ...] = (
-    "provider",
-    "composability",
-    "policy",
-    "retrieval",
-    "control_churn",
-    "reasoning",
-)
-
-_TERMINAL_FAILURE_EVENT_CODES: frozenset[str] = frozenset({
-    EVENT_CODE_PROVIDER_EMPTY,
-    EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED,
-    EVENT_CODE_FINALIZATION_CIRCUIT_BREAKER_OPEN,
-    EVENT_CODE_RETRIEVAL_STAGNATION,
-    EVENT_CODE_CONTROL_CHURN_THRESHOLD,
-    EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED,
-    EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED,
-})
-
-
-def _first_terminal_failure_event_code(failure_event_codes: list[str]) -> str | None:
-    """Return earliest terminal blocker event code in event order, if present."""
-    for code in failure_event_codes:
-        if code in _TERMINAL_FAILURE_EVENT_CODES:
-            return code
-    return None
-
-
-def _classify_failure_signals(
-    *,
-    failure_event_codes: list[str],
-    retrieval_no_hits_count: int,
-    control_loop_suppressed_calls: int,
-    force_final_reason: str | None,
-    submit_answer_succeeded: bool,
-) -> tuple[str, list[str]]:
-    """Deterministic primary/secondary failure classes from event codes + counters."""
-    classes: set[str] = set()
-
-    for code in failure_event_codes:
-        cls = _failure_class_for_event_code(code)
-        if cls is not None:
-            classes.add(cls)
-
-    if retrieval_no_hits_count > 0:
-        classes.add("retrieval")
-    if control_loop_suppressed_calls > 0:
-        classes.add("control_churn")
-    if force_final_reason is not None and not classes and not submit_answer_succeeded:
-        classes.add("reasoning")
-
-    ordered = [c for c in _PRIMARY_FAILURE_PRIORITY if c in classes]
-    if not ordered:
-        return "none", []
-    return ordered[0], ordered[1:]
-
-
-def _failure_class_for_event_code(code: str) -> str | None:
-    """Map event code to one stable failure class for rollups/classification."""
-    if code in {
-        EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION,
-        EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION,
-        EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL,
-    }:
-        # This event records a degraded success path (forced-answer acceptance
-        # after runtime exhaustion), not an incompletion/failure class.
-        return None
-    if code == EVENT_CODE_FINALIZATION_TOOL_CALL_DISALLOWED:
-        return "policy"
-    if code.startswith("REQUIRED_SUBMIT_"):
-        return "policy"
-    if code.startswith("PROVIDER_"):
-        return "provider"
-    if code.startswith("FINALIZATION_"):
-        return "provider"
-    if code.startswith("TOOL_VALIDATION_REJECTED_") or code == EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS:
-        return "composability"
-    if code.startswith("RETRIEVAL_"):
-        return "retrieval"
-    if code.startswith("CONTROL_CHURN_"):
-        return "control_churn"
-    if code.startswith("REASONING_"):
-        return "reasoning"
-    return None
 
 
 def _is_responses_api_raw_response(raw_response: Any) -> bool:
@@ -4514,7 +2708,7 @@ async def _agent_loop(
     adoption_profile = runtime_policy.adoption_profile
     adoption_profile_enforce = runtime_policy.adoption_profile_enforce
 
-    adoption_assessment = _assess_adoption_profile(
+    adoption_assessment = assess_adoption_profile(
         requested_profile=adoption_profile,
         enforce=adoption_profile_enforce,
         openai_tools=openai_tools,
@@ -4523,6 +2717,7 @@ async def _agent_loop(
         enforce_tool_contracts=enforce_tool_contracts,
         progressive_tool_disclosure=progressive_tool_disclosure,
         lane_closure_analysis=lane_closure_analysis,
+        tool_reasoning_field=TOOL_REASONING_FIELD,
     )
     if adoption_assessment.violations:
         violation_msg = (
@@ -6297,7 +4492,7 @@ async def _agent_loop(
         if accept_forced_answer_on_max_tool_calls and (_has_final_content or _has_fallback_guess):
             submit_forced_accept_on_budget_exhaustion = True
             submit_answer_succeeded = True
-            if _has_fallback_guess:
+            if _has_fallback_guess and fallback_submit_guess_value is not None:
                 normalized_forced_answer = fallback_submit_guess_value.strip()
             elif _has_final_content:
                 normalized_forced_answer = _normalize_forced_final_answer(final_content)
@@ -6728,3 +4923,37 @@ async def _acall_with_tools(
         raw_response=agent_result,
         warnings=agent_result.warnings,
     )
+
+
+async def acall_with_mcp_runtime(
+    model: str,
+    messages: list[dict[str, Any]],
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Run the optional MCP-backed tool runtime through an explicit adapter.
+
+    Core runtime code should call this adapter instead of depending on the
+    private ``_acall_with_mcp`` implementation directly. Tests that patch the
+    private function remain compatible because this adapter delegates at call
+    time.
+    """
+
+    return await _acall_with_mcp(model, messages, mcp_servers=mcp_servers, **kwargs)
+
+
+async def acall_with_python_tools_runtime(
+    model: str,
+    messages: list[dict[str, Any]],
+    python_tools: list[Any],
+    **kwargs: Any,
+) -> LLMCallResult:
+    """Run the optional direct Python-tool runtime through an explicit adapter.
+
+    Core runtime code should call this adapter instead of depending on the
+    private ``_acall_with_tools`` implementation directly. Tests that patch the
+    private function remain compatible because this adapter delegates at call
+    time.
+    """
+
+    return await _acall_with_tools(model, messages, python_tools=python_tools, **kwargs)

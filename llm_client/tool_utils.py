@@ -24,12 +24,13 @@ import logging
 import time
 from typing import Any, Callable, Optional, Union, get_args, get_origin, get_type_hints
 
-from llm_client.mcp_agent import (
+from llm_client.tool_runtime_common import (
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
-    _append_input_examples_to_description,
-    _normalize_tool_input_examples,
-    _truncate,
+    append_input_examples_to_description as _append_input_examples_to_description,
+    normalize_tool_contracts,
+    normalize_tool_input_examples as _normalize_tool_input_examples,
+    truncate_text as _truncate,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,245 @@ _TYPE_MAP: dict[type, str] = {
     float: "number",
     bool: "boolean",
 }
+
+
+def _tool_description_line(fn: Callable[..., Any]) -> str:
+    override_desc = getattr(fn, "__tool_description__", None)
+    if isinstance(override_desc, str) and override_desc.strip():
+        return override_desc.strip()
+    if fn.__doc__:
+        first_line = fn.__doc__.strip().split("\n")[0].strip()
+        if first_line:
+            return first_line
+    return ""
+
+
+def _tool_user_parameters(fn: Callable[..., Any]) -> list[inspect.Parameter]:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return []
+    params: list[inspect.Parameter] = []
+    for name, param in sig.parameters.items():
+        if name in ("self", "cls", TOOL_REASONING_FIELD):
+            continue
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            params.append(param)
+    return params
+
+
+def _is_complex_annotation(tp: Any) -> bool:
+    origin = get_origin(tp)
+    args = get_args(tp)
+    if origin in {list, dict, set, tuple}:
+        return True
+    if origin is Union:
+        non_none = [a for a in args if a is not type(None)]
+        return len(non_none) > 1 or any(_is_complex_annotation(a) for a in non_none)
+    return False
+
+
+def _tool_is_nontrivial(fn: Callable[..., Any]) -> tuple[bool, list[str]]:
+    try:
+        hints = get_type_hints(fn)
+    except Exception:
+        hints = {}
+    params = _tool_user_parameters(fn)
+    reasons: list[str] = []
+    if len(params) > 1:
+        reasons.append("multiple_parameters")
+    for param in params:
+        if param.default is not inspect.Parameter.empty:
+            reasons.append(f"optional_param:{param.name}")
+        hint = hints.get(param.name)
+        if hint is not None and _is_complex_annotation(hint):
+            reasons.append(f"complex_type:{param.name}")
+    return (bool(reasons), reasons)
+
+
+def lint_tool_callable(
+    fn: Callable[..., Any],
+    *,
+    contract: dict[str, Any] | None = None,
+    require_examples_for_nontrivial: bool = True,
+    require_contract_for_nontrivial: bool = True,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    tool_name = getattr(fn, "__name__", "<callable>")
+
+    try:
+        callable_to_openai_tool(fn)
+    except Exception as exc:
+        findings.append(
+            {
+                "tool_name": tool_name,
+                "severity": "error",
+                "code": "schema_generation_failed",
+                "message": str(exc),
+            }
+        )
+        return findings
+
+    description = _tool_description_line(fn)
+    if not description:
+        findings.append(
+            {
+                "tool_name": tool_name,
+                "severity": "warning",
+                "code": "missing_description",
+                "message": "tool is missing a one-line description or docstring summary",
+            }
+        )
+
+    normalized_examples = _normalize_tool_input_examples(
+        getattr(fn, "__tool_input_examples__", getattr(fn, "__tool_examples__", None))
+    )
+    is_nontrivial, nontrivial_reasons = _tool_is_nontrivial(fn)
+    if require_examples_for_nontrivial and is_nontrivial and not normalized_examples:
+        findings.append(
+            {
+                "tool_name": tool_name,
+                "severity": "warning",
+                "code": "missing_examples",
+                "message": "nontrivial tool is missing input examples",
+                "details": {"nontrivial_reasons": nontrivial_reasons},
+            }
+        )
+
+    if require_contract_for_nontrivial and is_nontrivial and contract is None:
+        findings.append(
+            {
+                "tool_name": tool_name,
+                "severity": "warning",
+                "code": "missing_contract",
+                "message": "nontrivial tool is missing declarative tool_contracts metadata",
+                "details": {"nontrivial_reasons": nontrivial_reasons},
+            }
+        )
+
+    if contract is not None:
+        try:
+            normalized = normalize_tool_contracts({tool_name: contract})
+            normalized_contract = normalized.get(tool_name) or {}
+            accepted_param_names = {param.name for param in _tool_user_parameters(fn)}
+            call_modes = normalized_contract.get("call_modes") or []
+            if call_modes:
+                for index, mode in enumerate(call_modes):
+                    has_selector = bool(
+                        mode.get("when_args_present_any")
+                        or mode.get("when_args_present_all")
+                        or mode.get("when_arg_equals")
+                    )
+                    if not has_selector:
+                        findings.append(
+                            {
+                                "tool_name": tool_name,
+                                "severity": "error",
+                                "code": "call_mode_missing_selector",
+                                "message": f"call_modes[{index}] must declare a matching selector",
+                            }
+                        )
+                    for handle_index, handle_spec in enumerate(mode.get("handle_inputs") or []):
+                        arg_name = str(handle_spec.get("arg") or "").strip()
+                        inject_arg = str(handle_spec.get("inject_arg") or "").strip()
+                        if arg_name and arg_name not in accepted_param_names:
+                            findings.append(
+                                {
+                                    "tool_name": tool_name,
+                                    "severity": "error",
+                                    "code": "handle_input_missing_arg",
+                                    "message": (
+                                        f"call_modes[{index}].handle_inputs[{handle_index}] "
+                                        f"arg={arg_name!r} is not accepted by the callable"
+                                    ),
+                                }
+                            )
+                        if inject_arg and inject_arg not in accepted_param_names:
+                            findings.append(
+                                {
+                                    "tool_name": tool_name,
+                                    "severity": "error",
+                                    "code": "handle_input_missing_inject_arg",
+                                    "message": (
+                                        f"call_modes[{index}].handle_inputs[{handle_index}] "
+                                        f"inject_arg={inject_arg!r} is not accepted by the callable"
+                                    ),
+                                }
+                            )
+            for handle_index, handle_spec in enumerate(normalized_contract.get("handle_inputs") or []):
+                arg_name = str(handle_spec.get("arg") or "").strip()
+                inject_arg = str(handle_spec.get("inject_arg") or "").strip()
+                if arg_name and arg_name not in accepted_param_names:
+                    findings.append(
+                        {
+                            "tool_name": tool_name,
+                            "severity": "error",
+                            "code": "handle_input_missing_arg",
+                            "message": (
+                                f"handle_inputs[{handle_index}] arg={arg_name!r} "
+                                "is not accepted by the callable"
+                            ),
+                        }
+                    )
+                if inject_arg and inject_arg not in accepted_param_names:
+                    findings.append(
+                        {
+                            "tool_name": tool_name,
+                            "severity": "error",
+                            "code": "handle_input_missing_inject_arg",
+                            "message": (
+                                f"handle_inputs[{handle_index}] inject_arg={inject_arg!r} "
+                                "is not accepted by the callable"
+                            ),
+                        }
+                    )
+        except Exception as exc:
+            findings.append(
+                {
+                    "tool_name": tool_name,
+                    "severity": "error",
+                    "code": "invalid_contract",
+                    "message": str(exc),
+                }
+            )
+
+    return findings
+
+
+def lint_tool_registry(
+    tools: list[Callable[..., Any]],
+    *,
+    tool_contracts: dict[str, Any] | None = None,
+    require_examples_for_nontrivial: bool = True,
+    require_contract_for_nontrivial: bool = True,
+) -> dict[str, Any]:
+    per_tool: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    for fn in tools:
+        tool_name = getattr(fn, "__name__", "<callable>")
+        tool_findings = lint_tool_callable(
+            fn,
+            contract=(tool_contracts or {}).get(tool_name),
+            require_examples_for_nontrivial=require_examples_for_nontrivial,
+            require_contract_for_nontrivial=require_contract_for_nontrivial,
+        )
+        per_tool.append({"tool_name": tool_name, "findings": tool_findings})
+        findings.extend(tool_findings)
+    n_errors = sum(1 for finding in findings if finding.get("severity") == "error")
+    n_warnings = sum(1 for finding in findings if finding.get("severity") == "warning")
+    return {
+        "n_tools": len(tools),
+        "n_findings": len(findings),
+        "n_errors": n_errors,
+        "n_warnings": n_warnings,
+        "passed": n_errors == 0,
+        "tools": per_tool,
+        "findings": findings,
+    }
 
 
 def _candidate_arg_aliases(key: str) -> list[str]:
@@ -371,6 +611,7 @@ async def execute_direct_tool_calls(
                 server="__direct__",
                 tool=tool_name,
                 arguments={},
+                tool_call_id=tc_id,
                 error=f"JSON parse error: {exc}",
             )
             tool_messages.append({
@@ -395,6 +636,7 @@ async def execute_direct_tool_calls(
             server="__direct__",
             tool=tool_name,
             arguments=arguments,
+            tool_call_id=tc_id,
             tool_reasoning=tool_reasoning,
         )
 
