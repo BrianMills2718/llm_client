@@ -10,15 +10,69 @@ caller-facing signatures.
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, Callable, NoReturn, TypeVar, cast
 
 from llm_client.client import AsyncCachePolicy, CachePolicy, Hooks, LLMCallResult, RetryPolicy
 from llm_client.config import ClientConfig
+from llm_client.errors import LLMCapabilityError
+from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
 _client: Any = import_module("llm_client.client")
+
+
+def _base_model_name(model: str) -> str:
+    """Return the provider-agnostic lowercase model name."""
+    return model.lower().rsplit("/", 1)[-1]
+
+
+def _is_gpt5_family_model(model: str) -> bool:
+    """Return whether a model belongs to the GPT-5 family."""
+    return _base_model_name(model).startswith("gpt-5")
+
+
+def _is_invalid_json_schema_error(error: Exception) -> bool:
+    """Return whether an exception indicates provider-side schema rejection."""
+    message = str(error).lower()
+    return "invalid_json_schema" in message or (
+        "invalid schema" in message and "json_schema" in message
+    )
+
+
+def _raise_if_unsupported_gpt5_structured_schema(
+    *,
+    model: str,
+    error: Exception,
+    caller: str,
+) -> None:
+    """Raise a typed capability error for unsupported GPT-5 structured schema paths.
+
+    GPT-5 family models can be selected for structured workloads, but some
+    direct/provider-specific JSON-schema transports reject the supplied schema at
+    request-validation time. When that happens, callers need a clear,
+    non-retryable capability failure rather than a vague provider error or a
+    fallback that obscures the real incompatibility.
+    """
+    if not _is_gpt5_family_model(model) or not _is_invalid_json_schema_error(error):
+        return
+    _raise_gpt5_structured_schema_capability_error(model=model, error=error, caller=caller)
+
+
+def _raise_gpt5_structured_schema_capability_error(
+    *,
+    model: str,
+    error: Exception,
+    caller: str,
+) -> NoReturn:
+    """Raise the canonical GPT-5 structured-schema compatibility error."""
+    raise LLMCapabilityError(
+        f"{caller}: provider rejected structured JSON-schema output for GPT-5-family model "
+        f"{model}. llm_client does not currently support this transport/schema combination "
+        "reliably. Use a different task/model, or change routing/provider strategy.",
+        original=error,
+    ) from error
 
 
 def _call_llm_structured_impl(
@@ -101,6 +155,7 @@ def _call_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,
@@ -217,8 +272,16 @@ def _call_llm_structured_impl(
             }
 
             def _invoke_responses_attempt(attempt: int) -> tuple[T, LLMCallResult]:
-                with _rate_limit.acquire(current_model):
-                    response = litellm.responses(**resp_kwargs)
+                try:
+                    with _rate_limit.acquire(current_model):
+                        response = litellm.responses(**resp_kwargs)
+                except Exception as exc:
+                    _raise_if_unsupported_gpt5_structured_schema(
+                        model=current_model,
+                        error=exc,
+                        caller="call_llm_structured",
+                    )
+                    raise
                 raw_content = getattr(response, "output_text", None) or ""
                 if not raw_content.strip():
                     raise ValueError("Empty content from LLM (responses API structured)")
@@ -368,6 +431,11 @@ def _call_llm_structured_impl(
                     )
                     return parsed, llm_result
                 except Exception as exc:
+                    _raise_if_unsupported_gpt5_structured_schema(
+                        model=current_model,
+                        error=exc,
+                        caller="call_llm_structured",
+                    )
                     if _is_schema_error(exc):
                         raise _NativeSchemaFallback(str(exc)) from exc
                     raise
@@ -620,6 +688,7 @@ async def _acall_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,
@@ -736,8 +805,16 @@ async def _acall_llm_structured_impl(
             }
 
             async def _invoke_responses_attempt(attempt: int) -> tuple[T, LLMCallResult]:
-                async with _rate_limit.aacquire(current_model):
-                    response = await litellm.aresponses(**resp_kwargs)
+                try:
+                    async with _rate_limit.aacquire(current_model):
+                        response = await litellm.aresponses(**resp_kwargs)
+                except Exception as exc:
+                    _raise_if_unsupported_gpt5_structured_schema(
+                        model=current_model,
+                        error=exc,
+                        caller="acall_llm_structured",
+                    )
+                    raise
                 raw_content = getattr(response, "output_text", None) or ""
                 if not raw_content.strip():
                     raise ValueError("Empty content from LLM (responses API structured)")
@@ -887,6 +964,11 @@ async def _acall_llm_structured_impl(
                     )
                     return parsed, llm_result
                 except Exception as exc:
+                    _raise_if_unsupported_gpt5_structured_schema(
+                        model=current_model,
+                        error=exc,
+                        caller="acall_llm_structured",
+                    )
                     if _is_schema_error(exc):
                         raise _NativeSchemaFallback(str(exc)) from exc
                     raise

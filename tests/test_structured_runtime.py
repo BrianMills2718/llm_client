@@ -11,6 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 from llm_client import LRUCache
+from llm_client.errors import LLMCapabilityError
 from llm_client.structured_runtime import _acall_llm_structured_impl, _call_llm_structured_impl
 
 
@@ -126,3 +127,55 @@ async def test_structured_runtime_async_preserves_cache_and_identity_contracts(
     assert meta2.resolved_model == "gpt-4"
     assert meta2.routing_trace is not None
     assert meta2.routing_trace["attempted_models"] == ["gpt-4"]
+
+
+@patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+@patch(
+    "llm_client.client.litellm.completion",
+    side_effect=RuntimeError(
+        "Invalid schema for response_format 'City': extra required key 'name' "
+        "(invalid_json_schema)"
+    ),
+)
+def test_structured_runtime_sync_raises_capability_error_for_gpt5_schema_rejection(
+    _mock_comp: MagicMock,
+    _mock_supports_schema: MagicMock,
+) -> None:
+    """Provider-side GPT-5 schema rejection should fail loudly as a capability error."""
+    messages = [{"role": "user", "content": "Name a city"}]
+
+    with pytest.raises(LLMCapabilityError, match="provider rejected structured JSON-schema output"):
+        _call_llm_structured_impl(
+            "openai/gpt-5-mini",
+            messages,
+            _City,
+            task="test",
+            trace_id="structured.runtime.sync.gpt5_schema",
+            max_budget=0,
+        )
+
+
+@pytest.mark.asyncio
+@patch(
+    "llm_client.client.litellm.aresponses",
+    new_callable=AsyncMock,
+    side_effect=RuntimeError(
+        "Invalid schema for response_format 'City': extra required key 'name' "
+        "(invalid_json_schema)"
+    ),
+)
+async def test_structured_runtime_async_raises_capability_error_for_gpt5_schema_rejection(
+    _mock_aresponses: AsyncMock,
+) -> None:
+    """Bare GPT-5 structured responses should surface schema rejection as capability errors."""
+    messages = [{"role": "user", "content": "Name a city"}]
+
+    with pytest.raises(LLMCapabilityError, match="provider rejected structured JSON-schema output"):
+        await _acall_llm_structured_impl(
+            "gpt-5-mini",
+            messages,
+            _City,
+            task="test",
+            trace_id="structured.runtime.async.gpt5_schema",
+            max_budget=0,
+        )

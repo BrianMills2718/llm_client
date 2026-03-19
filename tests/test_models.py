@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -522,7 +522,7 @@ class TestIoLogTaskField:
                 with patch("llm_client.io_log._enabled", True):
                     log_call(model="test-model", task="extraction")
 
-            log_file = Path(tmpdir) / "calls.jsonl"
+            log_file = Path(tmpdir) / f"calls_{date.today().isoformat()}.jsonl"
             assert log_file.exists()
             record = json.loads(log_file.read_text().strip())
             assert record["task"] == "extraction"
@@ -535,6 +535,6 @@ class TestIoLogTaskField:
                 with patch("llm_client.io_log._enabled", True):
                     log_call(model="test-model")
 
-            log_file = Path(tmpdir) / "calls.jsonl"
+            log_file = Path(tmpdir) / f"calls_{date.today().isoformat()}.jsonl"
             record = json.loads(log_file.read_text().strip())
             assert record["task"] is None

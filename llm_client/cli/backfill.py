@@ -41,18 +41,16 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         if not data_dir.is_dir():
             continue
 
-        calls_file = data_dir / "calls.jsonl"
-        if calls_file.exists():
+        for calls_file in io_log.glob_jsonl_files(data_dir, "calls"):
             count = io_log.import_jsonl(calls_file, table="llm_calls")
             if count:
-                print(f"  {project_dir.name}: {count} LLM calls imported")
+                print(f"  {project_dir.name}: {count} LLM calls imported from {calls_file.name}")
                 total_calls += count
 
-        emb_file = data_dir / "embeddings.jsonl"
-        if emb_file.exists():
+        for emb_file in io_log.glob_jsonl_files(data_dir, "embeddings"):
             count = io_log.import_jsonl(emb_file, table="embeddings")
             if count:
-                print(f"  {project_dir.name}: {count} embeddings imported")
+                print(f"  {project_dir.name}: {count} embeddings imported from {emb_file.name}")
                 total_emb += count
 
     print(f"\nDone: {total_calls} LLM calls + {total_emb} embeddings -> {db_path}")

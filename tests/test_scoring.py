@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -242,7 +243,7 @@ class TestAscoreOutput:
                 judge_model="gpt-5-nano",
             )
 
-        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
+        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / f"scores_{date.today().isoformat()}.jsonl"
         assert scores_file.exists()
         record = json.loads(scores_file.read_text().strip())
         assert record["rubric"] == "research_quality"
@@ -349,7 +350,7 @@ class TestLogScore:
             task="jsonl_score_test",
         )
 
-        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
+        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / f"scores_{date.today().isoformat()}.jsonl"
         assert scores_file.exists()
         record = json.loads(scores_file.read_text().strip())
         assert record["rubric"] == "test_rubric"
@@ -366,7 +367,7 @@ class TestLogScore:
         io_log._enabled = False
         io_log.log_score(rubric="x", method="y", overall_score=0.5, task="skip")
 
-        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / "scores.jsonl"
+        scores_file = tmp_path / "test_project" / "test_project_llm_client_data" / f"scores_{date.today().isoformat()}.jsonl"
         assert not scores_file.exists()
 
 

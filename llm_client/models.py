@@ -402,42 +402,48 @@ def _query_performance_jsonl(
     model: str | None = None,
     days: int = 30,
 ) -> list[dict[str, Any]]:
-    """Legacy JSONL-based performance query (fallback)."""
-    from llm_client.io_log import _log_dir
+    """Legacy JSONL-based performance query (fallback).
 
-    log_file = _log_dir() / "calls.jsonl"
-    if not log_file.is_file():
+    Reads from both legacy undated ``calls.jsonl`` and dated
+    ``calls_YYYY-MM-DD.jsonl`` files.
+    """
+    from llm_client.io_log import _log_dir, glob_jsonl_files
+
+    log_dir = _log_dir()
+    log_files = glob_jsonl_files(log_dir, "calls")
+    if not log_files:
         return []
 
     cutoff = datetime.now(timezone.utc).timestamp() - (days * 86400)
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
-    for line in log_file.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for log_file in log_files:
+        for line in log_file.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-        ts_str = record.get("timestamp", "")
-        try:
-            ts = datetime.fromisoformat(ts_str).timestamp()
-        except (ValueError, TypeError):
-            continue
-        if ts < cutoff:
-            continue
+            ts_str = record.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str).timestamp()
+            except (ValueError, TypeError):
+                continue
+            if ts < cutoff:
+                continue
 
-        rec_task = record.get("task") or "untagged"
-        rec_model = record.get("model", "unknown")
+            rec_task = record.get("task") or "untagged"
+            rec_model = record.get("model", "unknown")
 
-        if task is not None and rec_task != task:
-            continue
-        if model is not None and rec_model != model:
-            continue
+            if task is not None and rec_task != task:
+                continue
+            if model is not None and rec_model != model:
+                continue
 
-        key = (rec_task, rec_model)
-        groups.setdefault(key, []).append(record)
+            key = (rec_task, rec_model)
+            groups.setdefault(key, []).append(record)
 
     result = []
     for (grp_task, grp_model), records in sorted(groups.items()):

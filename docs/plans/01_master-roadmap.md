@@ -146,19 +146,32 @@ boundary blockers.
 **Execution rule:** do not start this program until Programs A and B are
 stable enough that package-boundary churn is low.
 
+### Program E: Simplification and Observability Modernization
+
+**Plan:** [06_simplification-and-observability.md](./06_simplification-and-observability.md)
+**Status:** In Progress
+
+**Success criteria:**
+
+- no module exceeds ~1,200 lines (soft) / 1,500 lines (hard)
+- each extracted module has a single clear responsibility
+- Langfuse callback available when configured, invisible when not
+- JSONL logs rotate by date or size
+- model registry inspectable via CLI
+
+**Evidence:** strategic review conducted 2026-03-18, confirming:
+
+- mega-file density is a maintainability risk (not redundancy with LiteLLM)
+- retry/fallback, structured output routing, budget enforcement are genuinely
+  additive — NOT redundant wrapper code
+- observability JSONL+SQLite will hit scaling wall; Langfuse callback is
+  complementary (not replacement)
+- MCP agent loop capabilities are unique and cannot be replaced by PydanticAI
+
 ---
 
 ## Current Default Next Step
 
-The roadmap programs are complete.
-
-New work should start only when it is backed by one of:
-
-1. a benchmark-backed model-ranking plan that justifies changing selection
-   behavior,
-2. a concrete new workflow use case that extends the proven LangGraph boundary
-   without collapsing it back into `task_graph`,
-3. a live new boundary leak found by bug work or downstream usage evidence.
-
-Until then, maintain the current substrate boundaries and avoid inventing new
-"cleanup" slices that are not anchored to fresh evidence.
+Program E (Simplification and Observability Modernization) is the active
+program. Execute phases 1A through 4 in order. Stop only for a real blocker
+or user redirect.

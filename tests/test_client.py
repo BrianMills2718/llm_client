@@ -117,6 +117,30 @@ class TestCallLLM:
         assert result.cost == 0.001
         assert result.model == "gpt-4"
 
+    @patch("llm_client.client.litellm.get_model_info", return_value={"max_output_tokens": 128000})
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_omitted_max_tokens_are_not_defaulted(
+        self,
+        mock_comp: MagicMock,
+        mock_cost: MagicMock,
+        mock_model_info: MagicMock,
+    ) -> None:
+        """Calls without explicit output caps should not invent provider-max ceilings."""
+        mock_comp.return_value = _mock_response()
+
+        call_llm(
+            "openrouter/openai/gpt-5-mini",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="test_no_default_max_tokens",
+            max_budget=0,
+        )
+
+        kwargs = mock_comp.call_args.kwargs
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
     @patch("llm_client.client.litellm.completion")
     def test_num_retries_not_passed_to_litellm(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
@@ -3781,6 +3805,36 @@ class TestGPT5StructuredOutput:
         assert "response_format" in call_kwargs
         assert call_kwargs["response_format"]["type"] == "json_schema"
         assert call_kwargs["response_format"]["json_schema"]["name"] == "Item"
+
+    @patch("llm_client.client.litellm.get_model_info", return_value={"max_output_tokens": 128000})
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client.litellm.completion")
+    def test_structured_native_schema_does_not_default_max_tokens(
+        self,
+        mock_completion: MagicMock,
+        mock_cost: MagicMock,
+        mock_model_info: MagicMock,
+    ) -> None:
+        """Structured calls should not inherit provider-max output ceilings by default."""
+
+        class Item(BaseModel):
+            name: str
+
+        mock_completion.return_value = _mock_response(content='{"name": "test"}')
+
+        result, meta = call_llm_structured(
+            "deepseek/deepseek-chat",
+            [{"role": "user", "content": "Extract"}],
+            response_model=Item,
+            task="test",
+            trace_id="test_native_schema_no_default_max_tokens",
+            max_budget=0,
+        )
+
+        assert result.name == "test"
+        call_kwargs = mock_completion.call_args.kwargs
+        assert "max_tokens" not in call_kwargs
+        assert "max_completion_tokens" not in call_kwargs
 
     @patch("llm_client.client.litellm.supports_response_schema", return_value=False)
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
