@@ -41,7 +41,7 @@ mkdir -p docs/adr
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [0001](../adr/0001-acceptance-gate-terminology.md) | Example decision | Accepted |
+| 0001 | Example decision | Accepted |
 
 ## Statuses
 

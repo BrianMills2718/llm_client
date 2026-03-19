@@ -102,7 +102,11 @@ python scripts/validate_plan.py --plan 28
 
 Both patterns remain valid until migration is complete. After migration, they become implementation details of this unified pattern.
 
-**Rationale:** See [META-ADR-0005](../adr/0005-hierarchical-context-compression.md) — the documentation graph is the routing layer for hierarchical context compression. Each documentation layer (glossary, ontology, domain model, ADRs, architecture docs) is a lossy compression of the codebase at a different zoom level. This graph determines which compression to inject for a given task.
+**Rationale:** Historical meta-process work described this as the routing layer
+for hierarchical context compression. Each documentation layer (glossary,
+ontology, domain model, ADRs, architecture docs) is a lossy compression of the
+codebase at a different zoom level, and the graph determines which compression
+to inject for a given task.
 
 ## Limitations
 

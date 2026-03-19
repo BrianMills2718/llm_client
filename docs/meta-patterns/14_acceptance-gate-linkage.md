@@ -3,7 +3,7 @@
 How to structure relationships between ADRs, acceptance gates, code, tests, and documentation for full traceability.
 
 > **Note:** This pattern uses the `acceptance_gates/` directory and `features.yaml` filename for historical reasons.
-> The authoritative term is "acceptance gate" - see [META-ADR-0001](../adr/0001-acceptance-gate-terminology.md).
+> The authoritative term in this document is "acceptance gate".
 >
 > **Status:** `features.yaml` as described here is not yet implemented. The project uses
 > individual `acceptance_gates/*.yaml` files (Pattern 13) and `scripts/relationships.yaml`
@@ -305,8 +305,8 @@ Resolution: Primary gate's ADRs apply. Both gates' tests must pass.
 
 ## Related Meta-Process ADRs
 
-- [META-ADR-0001: Acceptance Gate Terminology](../adr/0001-acceptance-gate-terminology.md) - Why "acceptance gate" not "feature"
-- [META-ADR-0004: Gate YAML Is Documentation](../adr/0004-gate-yaml-is-documentation.md) - YAML as single source
+- META-ADR-0001: Acceptance Gate Terminology - Why "acceptance gate" not "feature"
+- META-ADR-0004: Gate YAML Is Documentation - YAML as single source
 
 ## Origin
 

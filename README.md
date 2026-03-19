@@ -22,7 +22,8 @@ output, agent SDK routing, retries/fallbacks, and cross-project provenance.
 
 ## Release notes
 
-- Current version: `0.6.1`
+- Package metadata, including the current version, is declared in
+  `pyproject.toml`.
 - Latest changes are tracked in `CHANGELOG.md`.
 
 ## Install

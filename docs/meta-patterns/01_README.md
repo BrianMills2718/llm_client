@@ -1,8 +1,12 @@
 # Meta Patterns
 
+> Legacy meta-process notes retained for reference. The canonical
+> `llm_client` execution contract lives in `AGENTS.md` and `docs/plans/`.
+
 Reusable development process patterns. Each pattern solves a specific coordination or quality problem when working with AI coding assistants (Claude Code, etc.).
 
-> **New to meta-process?** Start with the [Getting Started Guide](../GETTING_STARTED.md) for a step-by-step onboarding path.
+> New to this subtree? Start with this README. These notes are reference
+> material, not the canonical control surface for `llm_client`.
 
 ## Core Patterns
 

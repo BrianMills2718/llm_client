@@ -12,7 +12,7 @@ Claude Code (and AI coding assistants generally) tends toward **big-bang develop
 
 **Acceptance gates force thin-slice development** by requiring functional capabilities to pass real E2E tests before being considered complete. This pattern exists to prevent the "fingers crossed" approach to integration.
 
-See [META-ADR-0002: Thin-Slice Enforcement](../adr/0002-thin-slice-enforcement.md) for the full rationale.
+Historical meta-process work referred to this as “Thin-Slice Enforcement.”
 
 ## Core Concept: Acceptance Gates Are E2E Checkpoints
 
@@ -40,7 +40,8 @@ Acceptance Gate: escrow
 - Plans can be "complete" while acceptance gate is still not passed
 - Gate passed = the REAL checkpoint
 
-See [META-ADR-0003: Plan-Gate Hierarchy](../adr/0003-plan-gate-hierarchy.md) for why E2E is at the gate level, not plan level.
+Historical meta-process work also separated plan-level progress from gate-level
+E2E proof.
 
 ### Why Real E2E Matters
 
@@ -79,7 +80,8 @@ An Acceptance Gate contains:
 
 **Tasks** operate ON Acceptance Gates. Plans become administrative tracking, not organizational structure.
 
-See [META-ADR-0001: Acceptance Gate Terminology](../adr/0001-acceptance-gate-terminology.md) for why we use "acceptance gate" not "feature".
+The term used here is "acceptance gate" rather than "feature" to keep the
+verification target explicit.
 
 ### The Lock-Before-Implement Principle
 
@@ -478,7 +480,8 @@ Every unit of work must prove it works end-to-end before declaring success.
 | `acceptance_gates/*.yaml` | Acceptance gate definitions (single source of truth) |
 | `scripts/check_locked_files.py` | Ensures locked files unchanged (manual tool) |
 
-See [META-ADR-0004: Gate YAML Is Documentation](../adr/0004-gate-yaml-is-documentation.md) for why gate definitions live in YAML, not separate markdown files.
+Historical meta-process work treated gate YAML as the primary documentation
+surface rather than separate markdown specs.
 
 ## Setup (New Project)
 
@@ -602,10 +605,10 @@ require_approval_for_lock: true
 
 ## Related Meta-Process ADRs
 
-- [META-ADR-0001: Acceptance Gate Terminology](../adr/0001-acceptance-gate-terminology.md) - Why "acceptance gate" not "feature"
-- [META-ADR-0002: Thin-Slice Enforcement](../adr/0002-thin-slice-enforcement.md) - Anti-big-bang goal
-- [META-ADR-0003: Plan-Gate Hierarchy](../adr/0003-plan-gate-hierarchy.md) - E2E at gate level
-- [META-ADR-0004: Gate YAML Is Documentation](../adr/0004-gate-yaml-is-documentation.md) - YAML as single source
+- META-ADR-0001: Acceptance Gate Terminology - Why "acceptance gate" not "feature"
+- META-ADR-0002: Thin-Slice Enforcement - Anti-big-bang goal
+- META-ADR-0003: Plan-Gate Hierarchy - E2E at gate level
+- META-ADR-0004: Gate YAML Is Documentation - YAML as single source
 
 ## Origin
 
@@ -614,4 +617,3 @@ Emerged from coordination problems with multiple Claude Code instances on [agent
 - AI making reasonable but wrong assumptions
 - Difficulty tracing requirements to code to tests
 - Human unable to validate code but able to validate requirements
-

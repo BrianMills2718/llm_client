@@ -4,7 +4,7 @@ Date: 2026-02-22
 Project: `/home/brian/projects/llm_client`
 Audience: external reviewer with no local context
 
-Superseded by: `docs/CHATGPT_REVIEW_STATUS_2026-02-23.md`
+Superseded by: `CHATGPT_REVIEW_STATUS_2026-02-23.md`
 
 ## 1) Scope completed in this pass
 This pass completed the requested hardening and documentation follow-through for provider/finalization reliability and Foundation contract safety.
