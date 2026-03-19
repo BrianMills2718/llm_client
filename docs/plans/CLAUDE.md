@@ -2,11 +2,15 @@
 
 Track all implementation work here.
 
-## Active Plans
+## Gap Summary
 
 | # | Name | Priority | Status | Blocks |
 |---|------|----------|--------|--------|
-| 1 | [Example Plan](01_example.md) | Medium | Planned | - |
+| 1 | [LLM Client Master Roadmap](01_master-roadmap.md) | Highest | ✅ Complete | - |
+| 2 | [Client Boundary Hardening Program](02_client-boundary-hardening.md) | High | ✅ Complete | - |
+| 3 | [Model Policy Modernization](03_model-policy-modernization.md) | High | ✅ Complete | - |
+| 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
+| 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
 
 ## Status Key
 

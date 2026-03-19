@@ -12,5 +12,12 @@ compatibility contracts in `llm_client`.
 - `0007-observability-contract-boundary.md`
 - `0008-task-graph-evaluation-contract-boundary.md`
 - `0009-long-thinking-background-polling.md`
+- `0010-cross-project-runtime-substrate.md`
+- `0011-prompt-assets-explicit-identity.md`
+- `0012-shared-data-plane-boundary.md`
+
+Related architecture docs:
+
+- `../ECOSYSTEM_UNCERTAINTIES.md`
 
 Status: active.

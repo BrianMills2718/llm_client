@@ -1,6 +1,24 @@
 # llm-client
 
-Thin wrapper around [litellm](https://github.com/BerriAI/litellm). Swap models by changing one string.
+`llm_client` is a runtime substrate and control plane for multi-agent LLM
+work. It uses [LiteLLM](https://github.com/BerriAI/litellm) for commodity
+provider transport, but its main value is the shared execution contract on top:
+mandatory call metadata, shared observability, prompt assets, structured
+output, agent SDK routing, retries/fallbacks, and cross-project provenance.
+
+## What it is
+
+- one public API for text, structured output, tools, streaming, batch, and embeddings
+- one shared observability layer for cost, traces, runs, items, and aggregates
+- one place to enforce `task=`, `trace_id=`, and `max_budget=` on project code
+- one place to render prompt assets and attach prompt provenance to runs
+- one place to route both provider APIs and agent SDK models
+
+## What it is not
+
+- not just a thin transport shim
+- not a requirement to use every optional subsystem
+- not a reason to hand-roll direct LiteLLM calls in project repos
 
 ## Release notes
 
@@ -10,33 +28,55 @@ Thin wrapper around [litellm](https://github.com/BerriAI/litellm). Swap models b
 ## Install
 
 ```bash
-pip install -e /path/to/llm_client            # basic
-pip install -e "/path/to/llm_client[structured]"  # + instructor for Pydantic extraction
+pip install -e ~/projects/llm_client
+pip install -e "~/projects/llm_client[structured]"  # + instructor for Pydantic extraction
+pip install -e "~/projects/llm_client[workflow]"    # + LangGraph for optional checkpoint/resume workflows
 ```
 
 ## Usage
 
+Every real project call should pass:
+
+- `task=`
+- `trace_id=`
+- `max_budget=`
+
+Prefer task-based model selection for normal project code. Use raw model IDs as
+explicit overrides or transport demos, not as the default integration pattern.
+
 ```python
-from llm_client import call_llm
+from llm_client import call_llm, get_model
 
-# OpenAI
-result = call_llm("gpt-4o", [{"role": "user", "content": "Hello"}])
+model = get_model("graph_building")
+result = call_llm(
+    model,
+    [{"role": "user", "content": "Summarize this note"}],
+    task="graph_building",
+    trace_id="readme/basic",
+    max_budget=1.00,
+)
 
-# Anthropic — just change the string
-result = call_llm("anthropic/claude-sonnet-4-5-20250929", [{"role": "user", "content": "Hello"}])
-
-# Google
-result = call_llm("gemini/gemini-2.0-flash", [{"role": "user", "content": "Hello"}])
-
-# Local Ollama
-result = call_llm("ollama/llama3", [{"role": "user", "content": "Hello"}])
-
-print(result.content)  # "Hi there!"
-print(result.cost)     # 0.0003
-print(result.usage)    # {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15}
+# Explicit raw-model override when you want to pin transport/provider behavior
+override_result = call_llm(
+    "anthropic/claude-sonnet-4-5-20250929",
+    [{"role": "user", "content": "Summarize this note"}],
+    task="readme/provider_override",
+    trace_id="readme/provider_override",
+    max_budget=1.00,
+)
 
 # Agent SDK models default to subscription accounting (no per-call API USD)
-agent_result = call_llm("claude-code", [{"role": "user", "content": "Refactor this"}], task="dev", trace_id="demo/agent", max_budget=0)
+agent_result = call_llm(
+    "claude-code",
+    [{"role": "user", "content": "Refactor this"}],
+    task="dev",
+    trace_id="readme/agent",
+    max_budget=0,
+)
+
+print(result.content)
+print(result.cost)
+print(result.usage)
 print(agent_result.cost)         # 0.0
 print(agent_result.billing_mode) # "subscription_included"
 ```
@@ -69,29 +109,44 @@ Resolve from the shared task registry instead:
 ```python
 from llm_client import (
     call_llm_structured,
+    resolve_model_chain,
     resolve_model_selection,
     strict_model_policy,
 )
 
-selection = resolve_model_selection("graph_building", strict_models=True)
+selection = resolve_model_chain(
+    "extraction",
+    fallback_tasks=["budget_extraction"],
+    strict_models=True,
+)
 
-with strict_model_policy(selection.strict_models):
+with strict_model_policy(selection.primary.strict_models):
     payload, meta = call_llm_structured(
-        selection.model,
+        selection.primary.model,
         messages,
         response_model=MySchema,
+        fallback_models=selection.fallback_models,
+        task="extraction",
+        trace_id="readme/extraction",
+        max_budget=2.00,
     )
 ```
 
 This gives you:
 - shared task-based defaults from `get_model(task)`
+- optional task-based fallback chains
 - one explicit escape hatch for benchmark overrides
 - deprecated-model blocking in strict lanes
+
+Task guidance:
+- `extraction`: highest-quality structured extraction, cost secondary
+- `budget_extraction`: cheaper structured extraction with a minimum quality floor
+- `graph_building`: lowest-cost structured graph-building default
 
 To audit a repo for raw model literals and direct-call bypasses:
 
 ```bash
-python /path/to/llm_client/scripts/check_model_policy.py /path/to/repo --strict
+python ~/projects/llm_client/scripts/check_model_policy.py /path/to/repo --strict
 ```
 
 ### Typed routing/config
@@ -105,8 +160,18 @@ cfg = ClientConfig(
     routing_policy="direct",              # or "openrouter"
 )
 
-result = call_llm("gpt-5-mini", messages, config=cfg)
+result = call_llm(
+    "gpt-5-mini",
+    messages,
+    config=cfg,
+    task="readme/typed_config",
+    trace_id="readme/typed_config",
+    max_budget=1.00,
+)
 ```
+
+Even with explicit `ClientConfig`, project code should still pass explicit
+`task`, `trace_id`, and `max_budget` at call sites.
 
 ### Long-thinking mode (`gpt-5.2-pro`)
 
@@ -119,6 +184,9 @@ result = call_llm(
     "gpt-5.2-pro",
     messages,
     reasoning_effort="xhigh",
+    task="readme/long_thinking",
+    trace_id="readme/long_thinking",
+    max_budget=5.00,
     background_timeout=900,        # optional, seconds (default 900)
     background_poll_interval=15,   # optional, seconds (default 15)
 )
@@ -168,6 +236,9 @@ sentiment, meta = call_llm_structured(
     "gpt-4o",
     [{"role": "user", "content": "I love this product!"}],
     response_model=Sentiment,
+    task="readme/sentiment",
+    trace_id="readme/sentiment",
+    max_budget=1.00,
 )
 print(sentiment.label)  # "positive"
 print(sentiment.score)  # 0.95
@@ -215,6 +286,15 @@ For code-generation/editing workflows that depend on workspace side effects,
 always set `execution_mode="workspace_agent"` to prevent accidental routing to
 chat-only models.
 
+For fully headless agent runs, `yolo_mode=True` is a convenience flag:
+
+- for `codex`, it defaults to `approval_policy="never"` and
+  `skip_git_repo_check=True`
+- for `claude-code`, it defaults to `permission_mode="bypassPermissions"`
+
+Explicit kwargs still override these defaults when you need a more specific
+setup.
+
 ### Codex process isolation (hang containment)
 
 For `codex` calls that occasionally become cancellation-unresponsive under long
@@ -225,6 +305,9 @@ result = call_llm(
     "codex/gpt-5",
     messages,
     execution_mode="workspace_agent",
+    task="readme/codex_isolation",
+    trace_id="readme/codex_isolation",
+    max_budget=5.00,
     codex_process_isolation=True,
     codex_process_start_method="fork",   # optional
     codex_process_grace_s=3.0,           # optional
@@ -260,6 +343,9 @@ result = call_llm(
     "codex",
     messages,
     execution_mode="workspace_agent",
+    task="readme/codex_transport",
+    trace_id="readme/codex_transport",
+    max_budget=5.00,
     codex_transport="auto",
     agent_hard_timeout=300,
     model_reasoning_effort="medium",
@@ -279,9 +365,11 @@ Codex reasoning effort note:
 
 ### Observability tags
 
-- `task`, `trace_id`, and `max_budget` are optional in normal local usage.
-- Missing values are auto-filled as `task="adhoc"`, `trace_id="auto/<caller>/<id>"`, and `max_budget=0` (unlimited).
-- Strict enforcement is enabled automatically in CI and benchmark/eval-style tasks, or explicitly with:
+- Pass `task`, `trace_id`, and `max_budget` on every project call.
+- Local non-strict adhoc use can still auto-fill these values when enforcement
+  is disabled, but project code, tests, and benchmarks should not rely on that.
+- Strict enforcement is enabled automatically in CI and benchmark/eval-style
+  tasks, or explicitly with:
 
 ```bash
 export LLM_CLIENT_REQUIRE_TAGS=1
@@ -305,7 +393,14 @@ tools = [{
     }
 }]
 
-result = call_llm_with_tools("gpt-4o", messages, tools)
+result = call_llm_with_tools(
+    "gpt-4o",
+    messages,
+    tools,
+    task="readme/tool_calling",
+    trace_id="readme/tool_calling",
+    max_budget=1.00,
+)
 if result.tool_calls:
     print(result.tool_calls[0]["function"]["name"])  # "get_weather"
 ```
@@ -319,6 +414,9 @@ tool-chain legality and expose only currently legal tools:
 result = await acall_llm(
     "openrouter/deepseek/deepseek-chat",
     messages,
+    task="readme/mcp_contracts",
+    trace_id="readme/mcp_contracts",
+    max_budget=5.00,
     mcp_servers={...},
     enforce_tool_contracts=True,
     progressive_tool_disclosure=True,
@@ -408,10 +506,14 @@ Notes:
   `chunk_artifact_ids`. The runtime resolves those handles from the active artifact
   registry and injects the matching typed artifact payloads into `chunk_artifacts`
   before executor dispatch.
-- Shared experiment helpers can normalize these outcome fields across runs/items:
+- Optional eval helpers can normalize these outcome fields across runs/items:
 
 ```python
-from llm_client import build_gate_signals, extract_agent_outcome, summarize_agent_outcomes
+from llm_client.experiment_eval import (
+    build_gate_signals,
+    extract_agent_outcome,
+    summarize_agent_outcomes,
+)
 
 outcome = extract_agent_outcome(item_result)
 summary = summarize_agent_outcomes(run_items)
@@ -483,6 +585,25 @@ Lint is designed for adoption gates:
 In strict adoption profiles, agent loops also surface these tool-quality issues as
 structured adoption-profile violations during setup.
 
+Shared CLI/CI entrypoints:
+
+```bash
+python -m llm_client tool-lint \
+  --module /path/to/tools.py \
+  --tool-list-var DIRECT_TOOLS \
+  --contracts-var TOOL_CONTRACTS \
+  --fail-on-warning
+
+python -m llm_client experiments --detail RUN_ID \
+  --require-adoption-profile strict \
+  --require-adoption-satisfied \
+  --adoption-gate-fail-exit-code 4
+```
+
+Stored experiment runs now auto-aggregate adoption-profile summary metrics, and
+`experiments --compare`/`--detail` surfaces render those summaries alongside the
+existing grounded/forced outcome metrics.
+
 When old tool payloads are cleared from active context, the compact stub now preserves
 typed artifact handles (`artifact_id`, `artifact_type`, and leading capability metadata) when available.
 The runtime-provided `runtime_artifact_read` tool can consume those preserved
@@ -494,14 +615,35 @@ The runtime-provided `runtime_artifact_read` tool can consume those preserved
 from llm_client import call_llm_batch, acall_llm_batch
 
 # Run multiple prompts concurrently (semaphore-based rate limiting)
-results = call_llm_batch("gpt-4o", [msgs1, msgs2, msgs3], max_concurrent=5)
+results = call_llm_batch(
+    "gpt-4o",
+    [msgs1, msgs2, msgs3],
+    max_concurrent=5,
+    task="readme/batch_sync",
+    trace_id="readme/batch_sync",
+    max_budget=2.00,
+)
 
 # Async version
-results = await acall_llm_batch("gpt-4o", messages_list, max_concurrent=10)
+results = await acall_llm_batch(
+    "gpt-4o",
+    messages_list,
+    max_concurrent=10,
+    task="readme/batch_async",
+    trace_id="readme/batch_async",
+    max_budget=2.00,
+)
 
 # Structured batch
 from llm_client import call_llm_structured_batch
-results = call_llm_structured_batch("gpt-4o", messages_list, response_model=Entity)
+results = call_llm_structured_batch(
+    "gpt-4o",
+    messages_list,
+    response_model=Entity,
+    task="readme/batch_structured",
+    trace_id="readme/batch_structured",
+    max_budget=2.00,
+)
 ```
 
 ### Async
@@ -509,9 +651,29 @@ results = call_llm_structured_batch("gpt-4o", messages_list, response_model=Enti
 ```python
 from llm_client import acall_llm, acall_llm_structured, acall_llm_with_tools
 
-result = await acall_llm("gpt-4o", messages)
-data, meta = await acall_llm_structured("gpt-4o", messages, response_model=Entity)
-result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
+result = await acall_llm(
+    "gpt-4o",
+    messages,
+    task="readme/async_text",
+    trace_id="readme/async_text",
+    max_budget=1.00,
+)
+data, meta = await acall_llm_structured(
+    "gpt-4o",
+    messages,
+    response_model=Entity,
+    task="readme/async_structured",
+    trace_id="readme/async_structured",
+    max_budget=1.00,
+)
+result = await acall_llm_with_tools(
+    "gpt-4o",
+    messages,
+    tools=[...],
+    task="readme/async_tools",
+    trace_id="readme/async_tools",
+    max_budget=1.00,
+)
 ```
 
 ### Streaming
@@ -520,20 +682,41 @@ result = await acall_llm_with_tools("gpt-4o", messages, tools=[...])
 from llm_client import stream_llm, astream_llm
 
 # Streaming with retry/fallback support
-stream = stream_llm("gpt-4o", messages, num_retries=2, fallback_models=["gpt-3.5-turbo"])
+stream = stream_llm(
+    "gpt-4o",
+    messages,
+    num_retries=2,
+    fallback_models=["gpt-3.5-turbo"],
+    task="readme/stream_sync",
+    trace_id="readme/stream_sync",
+    max_budget=1.00,
+)
 for chunk in stream:
     print(chunk, end="", flush=True)
 print(stream.result.usage)  # usage available after stream ends
 
 # Streaming with tools
 from llm_client import stream_llm_with_tools
-stream = stream_llm_with_tools("gpt-4o", messages, tools=[...])
+stream = stream_llm_with_tools(
+    "gpt-4o",
+    messages,
+    tools=[...],
+    task="readme/stream_tools",
+    trace_id="readme/stream_tools",
+    max_budget=1.00,
+)
 for chunk in stream:
     print(chunk, end="", flush=True)
 print(stream.result.tool_calls)
 
 # Async
-stream = await astream_llm("gpt-4o", messages)
+stream = await astream_llm(
+    "gpt-4o",
+    messages,
+    task="readme/stream_async",
+    trace_id="readme/stream_async",
+    max_budget=1.00,
+)
 async for chunk in stream:
     print(chunk, end="", flush=True)
 ```
@@ -544,6 +727,9 @@ async for chunk in stream:
 result = call_llm(
     "gpt-4o", messages,
     fallback_models=["gpt-3.5-turbo", "ollama/llama3"],
+    task="readme/fallbacks",
+    trace_id="readme/fallbacks",
+    max_budget=1.00,
     on_fallback=lambda failed, err, next_: print(f"{failed} failed, trying {next_}"),
 )
 ```
@@ -558,7 +744,14 @@ hooks = Hooks(
     after_call=lambda result: print(f"${result.cost:.4f}"),
     on_error=lambda err, attempt: print(f"Attempt {attempt} failed"),
 )
-result = call_llm("gpt-4o", messages, hooks=hooks)
+result = call_llm(
+    "gpt-4o",
+    messages,
+    hooks=hooks,
+    task="readme/hooks",
+    trace_id="readme/hooks",
+    max_budget=1.00,
+)
 ```
 
 ### Response caching
@@ -567,8 +760,22 @@ result = call_llm("gpt-4o", messages, hooks=hooks)
 from llm_client import LRUCache, call_llm
 
 cache = LRUCache(maxsize=128, ttl=3600)  # thread-safe, 1h TTL
-result = call_llm("gpt-4o", messages, cache=cache)  # calls LLM
-result = call_llm("gpt-4o", messages, cache=cache)  # returns cached
+result = call_llm(
+    "gpt-4o",
+    messages,
+    cache=cache,
+    task="readme/cache",
+    trace_id="readme/cache",
+    max_budget=1.00,
+)  # calls LLM
+result = call_llm(
+    "gpt-4o",
+    messages,
+    cache=cache,
+    task="readme/cache",
+    trace_id="readme/cache",
+    max_budget=1.00,
+)  # returns cached
 ```
 
 Cache hits are returned with:
@@ -609,6 +816,9 @@ result = call_llm(
     messages,
     agent_retry_safe=True,
     num_retries=2,
+    task="readme/agent_retry_safe",
+    trace_id="readme/agent_retry_safe",
+    max_budget=2.00,
 )
 ```
 
@@ -626,10 +836,25 @@ policy = RetryPolicy(
     on_retry=lambda a, err, d: print(f"Retry {a}"),
     should_retry=lambda err: True,              # fully custom retryability check
 )
-result = call_llm("gpt-4o", messages, retry=policy)
+result = call_llm(
+    "gpt-4o",
+    messages,
+    retry=policy,
+    task="readme/retry_policy",
+    trace_id="readme/retry_policy",
+    max_budget=1.00,
+)
 
 # Or quick one-offs with individual params
-result = call_llm("gpt-4o", messages, num_retries=5, retry_on=["custom"])
+result = call_llm(
+    "gpt-4o",
+    messages,
+    num_retries=5,
+    retry_on=["custom"],
+    task="readme/retry_one_off",
+    trace_id="readme/retry_one_off",
+    max_budget=1.00,
+)
 ```
 
 ## API
@@ -648,9 +873,9 @@ Fourteen functions (7 sync + 7 async):
 
 `LLMCallResult` fields: `.content`, `.usage`, `.cost`, `.marginal_cost`, `.cost_source`, `.billing_mode`, `.cache_hit`, `.model`, `.tool_calls`, `.finish_reason`, `.raw_response`
 
-`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `timeout`, `num_retries`, `reasoning_effort` (Claude models and `gpt-5.2-pro` long-thinking), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
+`call_llm`, `call_llm_structured`, `call_llm_with_tools` (and async variants) accept: `task`, `trace_id`, `max_budget`, `timeout`, `num_retries`, `reasoning_effort` (Claude models and `gpt-5.2-pro` long-thinking), `api_base`, `retry_on`, `on_retry`, `cache`, `retry` (RetryPolicy), `fallback_models`, `on_fallback`, `hooks` (Hooks), `execution_mode` (`text`/`structured`/`workspace_agent`/`workspace_tools`), plus any `**kwargs` passed through to `litellm.completion`.
 
-`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
+`stream_llm` / `astream_llm` (and `*_with_tools` variants) accept: `task`, `trace_id`, `max_budget`, `timeout`, `num_retries`, `reasoning_effort`, `api_base`, `retry`, `fallback_models`, `on_fallback`, `hooks`, plus `**kwargs`. No `cache` param (caching streams doesn't make sense).
 
 `*_batch` functions additionally accept: `max_concurrent` (5), `return_exceptions`, `on_item_complete`, `on_item_error`.
 
@@ -675,6 +900,8 @@ python -m llm_client adoption --run-id-prefix nightly_ --since 2026-02-20 --min-
 python -m llm_client experiments --detail RUN_ID --det-checks default
 python -m llm_client experiments --detail RUN_ID --review-rubric extraction_quality
 python -m llm_client experiments --detail RUN_ID --gate-policy '{"pass_if":{"avg_llm_em_gte":80}}' --gate-fail-exit-code
+python -m llm_client experiments --detail RUN_ID --require-adoption-profile strict --require-adoption-satisfied
+python -m llm_client tool-lint --module /path/to/tools.py --tool-list-var DIRECT_TOOLS --contracts-var TOOL_CONTRACTS --fail-on-warning
 ```
 
 `--detail` now supports:

@@ -1,0 +1,164 @@
+# Plan 01: LLM Client Master Roadmap
+
+**Status:** Complete
+**Type:** program
+**Priority:** Highest
+**Blocked By:** None
+**Blocks:** all slice-level execution clarity in this repo
+
+---
+
+## Gap
+
+**Current:** `llm_client` has multiple good plan documents, but they are split
+by subsystem. That makes it too easy for work to devolve into a loop of
+"complete one slice, report, ask what next" even when the next unblocked slice
+is already obvious from the existing plans.
+
+**Target:** one canonical roadmap states:
+
+1. the long-term programs,
+2. the success criteria for each program,
+3. the current order of execution,
+4. the rule that agents keep going until a program is done or a real blocker
+   appears.
+
+**Why:** the repo needs one control surface that answers "what next?" without
+re-planning from scratch after every passing slice.
+
+---
+
+## Canonical Execution Rule
+
+This roadmap is the default execution contract for work inside `llm_client`.
+
+Agents working in this repo must:
+
+1. anchor every implementation slice to this roadmap and one child plan,
+2. define pass/fail criteria before editing code,
+3. keep executing consecutive unblocked slices after each passing checkpoint,
+4. stop only for:
+   - a real blocker,
+   - a user-requested reprioritization,
+   - a high-leverage architecture decision that cannot be resolved from repo
+     context,
+5. update the roadmap and child plan when the next default slice changes.
+
+Passing one thin slice is not, by itself, a reason to stop.
+
+---
+
+## Repo-Level Definition Of Done
+
+The long-term `llm_client` program is done only when all of the following are
+true:
+
+1. `llm_client` is truthfully and consistently described as a runtime
+   substrate/control plane rather than a thin wrapper.
+2. Core substrate boundaries are explicit: call boundary, observability,
+   budgets, prompt identity, and agent SDK routing.
+3. Optional runtimes are isolated enough that core code does not depend on
+   their private entrypoints or private helper internals.
+4. Static model policy is auditable data and empirical model policy is a
+   separable overlay.
+5. Workflow ambition is held behind a separate LangGraph-backed layer rather
+   than grown inside `task_graph`.
+6. Eval/review helpers are either explicitly optional or moved behind a clearer
+   boundary.
+
+---
+
+## Program Order
+
+### Program A: Runtime Boundary Hardening
+
+**Plan:** [02_client-boundary-hardening.md](./02_client-boundary-hardening.md)  
+**Status:** Complete
+
+**Success criteria:**
+
+- `client.py` is materially smaller and no longer mixes unrelated concerns
+- public substrate APIs stay stable
+- optional agent/runtime code no longer leaks through private imports into core
+  runtime paths
+- package/docs/public surface reflect the real substrate boundary
+
+**Completed to date:**
+
+- pre-call, timeout, metadata, and result-finalization seams extracted
+- text and structured runtimes split out of `client.py`
+- public-surface audit and low-risk deprecation pilots completed
+- first optional-runtime isolation slices completed
+
+### Program B: Model Policy Modernization
+
+**Plan:** [03_model-policy-modernization.md](./03_model-policy-modernization.md)  
+**Status:** Complete
+
+**Success criteria:**
+
+- built-in registry/task policy is packaged data, not embedded literals
+- static policy and empirical overlay are explicit, separable layers
+- default behavior is parity-tested before any ranking changes
+- the role of `difficulty.py` is made explicit
+
+**Completed to date:**
+
+- packaged default model registry extracted and parity-tested
+- static candidate selection path made explicit before empirical demotion
+- performance overlay made explicit and inspectable without changing current
+  selection semantics
+- `difficulty.py` status clarified as a frozen compatibility-guidance layer for
+  `task_graph` and analyzer logic, not a second primary policy system
+
+### Program C: Workflow Layer Boundary
+
+**Plan:** [04_workflow-layer-boundary.md](./04_workflow-layer-boundary.md)  
+**Status:** Complete
+
+**Success criteria:**
+
+- durable workflow requirements are proven in a LangGraph-backed layer
+- `task_graph` does not absorb durable workflow features during substrate work
+
+**Execution rule:** do not start this program until Program A has no active
+boundary blockers.
+
+### Program D: Eval Boundary Cleanup
+
+**Plan:** [05_eval-boundary-cleanup.md](./05_eval-boundary-cleanup.md)  
+**Status:** Complete
+
+**Success criteria:**
+
+- shared observability remains in `llm_client`
+- eval helpers stop looking like equal peers of transport/runtime substrate
+
+**Completed to date:**
+
+- top-level eval-root re-exports were already deprecated in favor of module
+  namespaces
+- shared outcome/adoption summary bookkeeping now lives in
+  `llm_client.experiment_summary`
+- core observability no longer imports `llm_client.experiment_eval` just to
+  compute run summaries
+
+**Execution rule:** do not start this program until Programs A and B are
+stable enough that package-boundary churn is low.
+
+---
+
+## Current Default Next Step
+
+The roadmap programs are complete.
+
+New work should start only when it is backed by one of:
+
+1. a benchmark-backed model-ranking plan that justifies changing selection
+   behavior,
+2. a concrete new workflow use case that extends the proven LangGraph boundary
+   without collapsing it back into `task_graph`,
+3. a live new boundary leak found by bug work or downstream usage evidence.
+
+Until then, maintain the current substrate boundaries and avoid inventing new
+"cleanup" slices that are not anchored to fresh evidence.

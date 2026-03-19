@@ -15,7 +15,7 @@ Real work has structure: "collect data" before "build graph" before "extract bel
 1. **Dumb runner, smart coordinator.** The task graph runner is mechanical — parse, sort, dispatch, validate, log. OpenClaw (the LLM) does all reasoning about what to run and when. No AI in the runner itself.
 2. **External validation only.** Never trust agent self-reports. Validate via file checks, pytest, SQL queries, MCP tool calls.
 3. **Every run is an experiment.** Structured records with hypothesis, dimensions, outcome, learnings. The self-improvement loop reads these to optimize.
-4. **Cheapest model that works.** Difficulty tiers map tasks to models. Start conservative, auto-downgrade based on success data. Never auto-upgrade without human approval.
+4. **Model selection is advisory by default.** Difficulty tiers map tasks to a recommended model set. Start conservative, then down-tune automatically based on success data. Never auto-upgrade without human approval; explicit pinning is required when policy demands hard guarantees.
 5. **Fail loud.** No silent fallbacks in the runner. If validation fails, the task fails. If the DAG has cycles, it crashes. Quiet failures poison the experiment data.
 6. **Investigate before acting.** Agents must verify assumptions before executing. Task prompts can include investigation questions that must be answered first. (From meta-process Pattern #28: Question-Driven Planning.)
 7. **Lock specs before execution.** Task definition is frozen at dispatch time. The agent cannot weaken requirements to match a weak implementation. (From meta-process Pattern #13: Acceptance Gates.)
@@ -255,13 +255,18 @@ Written by the analyzer to `~/projects/data/task_graph/proposals.jsonl`:
 | 3 | Complex: multi-hop reasoning, synthesis, novel analysis, multi-tool composition | `anthropic/claude-sonnet-4-5-20250929` or `o4-mini` | $0.10/call |
 | 4 | Agent: multi-step autonomous tool use, MCP composition, investigation | `codex` or `claude-code` SDK | $1.00/task |
 
-The router extends llm_client's existing model registry. `get_model_for_difficulty(tier)` returns the cheapest available model at that capability level.
+The router extends `llm_client`'s existing model registry. `get_model_for_difficulty(tier)`
+returns a recommended model at that capability level, not a hard policy
+decision. This router exists as a compatibility layer for `task_graph` and the
+analyzer/model-floor loop; new project code outside that flow should prefer
+task-based selection through `get_model(task)` so model governance stays in one
+place.
 
 **Local model support**: Tier 0-1 tasks route to `ollama/llama-3.1-8b` or similar when available (Mac Mini). The model registry's `available_only=True` filter handles this — if ollama isn't running, falls back to the cheapest cloud model.
 
 **Routing rules**:
 - Task graph specifies `difficulty` per task (required field)
-- Router picks cheapest model at that tier
+- Router uses ordered candidates at that tier and emits a model-selection advisory when using auto-pick
 - Self-improvement loop can propose tier changes (down only — auto-applied; up — queued for human review)
 - Override: task graph can specify `model` directly to bypass the router
 

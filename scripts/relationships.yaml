@@ -17,6 +17,7 @@ couplings:
       - docs/adr/0003-warning-taxonomy.md
       - docs/adr/0004-result-model-semantics-migration.md
       - docs/adr/0009-long-thinking-background-polling.md
+      - docs/adr/0010-cross-project-runtime-substrate.md
     description: Core call path identity, routing, warning, and execution contracts.
     required_reading: true
 
@@ -28,6 +29,7 @@ couplings:
     docs:
       - docs/adr/0005-reason-code-registry-governance.md
       - docs/adr/0006-actor-id-issuance-policy.md
+      - docs/adr/0010-cross-project-runtime-substrate.md
     description: MCP validation reason-code and Foundation actor identity governance.
     required_reading: true
 
@@ -37,6 +39,8 @@ couplings:
     docs:
       - docs/adr/0003-warning-taxonomy.md
       - docs/adr/0007-observability-contract-boundary.md
+      - docs/adr/0010-cross-project-runtime-substrate.md
+      - docs/adr/0012-shared-data-plane-boundary.md
     description: Observability sink/query compatibility and warning emission surface.
     required_reading: true
 
@@ -45,5 +49,14 @@ couplings:
       - llm_client/experiment_eval.py
     docs:
       - docs/adr/0008-task-graph-evaluation-contract-boundary.md
+      - docs/adr/0010-cross-project-runtime-substrate.md
     description: Task-graph orchestration and evaluation lifecycle constraints.
+    required_reading: true
+
+  - sources:
+      - llm_client/prompts.py
+      - llm_client/prompts/*.yaml
+    docs:
+      - docs/adr/0011-prompt-assets-explicit-identity.md
+    description: Prompt asset identity, explicit rendering, and provenance constraints.
     required_reading: true
