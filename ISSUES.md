@@ -46,6 +46,36 @@ or dismissed.
 
 (Items that need a fix but don't have a plan yet.)
 
+### ISSUE-002: `workspace_agent` has no turn-level progress callback during execution
+
+**Observed:** 2026-03-19  
+**Status:** `confirmed`
+
+`workspace_agent` calls currently expose `conversation_trace` only after the
+agent call returns. During execution, callers have no turn-level progress
+signal, no callback hook, and no built-in way to distinguish "still making
+useful progress" from "stalled in the SDK/runtime return path" without
+external process inspection or cancellation.
+
+This showed up concretely in AC11 thesis experiments: agent-written workspaces
+could already contain correct code that passed hidden acceptance, but the
+awaiting caller still had no intermediate visibility while the agent loop was
+running. `max_turns` helps bound iteration count, but it does not solve the
+observability gap.
+
+**Why it matters:**
+- shared agent-runtime observability is a `llm_client` concern, not something
+  each downstream repo should reimplement
+- wall-clock timeouts are the wrong control for this class of problem
+- downstream systems need progress signals to log, detect stagnation, and
+  cancel intelligently
+
+**Likely fix directions:**
+- add an `on_turn` callback for `workspace_agent` dispatch
+- optionally expose a progress-stream/event hook with the same semantics
+- later consider wiring stagnation detection into the SDK-agent loop, not just
+  MCP/tool loops
+
 ---
 
 ## Resolved
