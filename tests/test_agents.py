@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel
 
 import llm_client.agents as agents_mod
+import llm_client.agents_codex as agents_codex_mod
 from llm_client import (
     Hooks,
     LLMCallResult,
@@ -510,6 +511,120 @@ class TestBuildAgentOptions:
             yolo_mode=True,
         )
         assert options.permission_mode == "bypassPermissions"
+
+
+class TestOnTurnCallback:
+    """Test on_turn callback fires during agent execution."""
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    @pytest.mark.asyncio
+    async def test_on_turn_fires_for_claude_agent(self) -> None:
+        """on_turn should fire once per AssistantMessage in a Claude agent call."""
+        events: list = []
+        result = await acall_llm(
+            "claude-code",
+            [{"role": "user", "content": "What is 2+2?"}],
+            task="test",
+            trace_id="test_on_turn_claude",
+            max_budget=0,
+            on_turn=lambda ev: events.append(ev),
+        )
+        assert isinstance(result, LLMCallResult)
+        assert len(events) == 1
+        ev = events[0]
+        from llm_client.data_types import TurnEvent
+        assert isinstance(ev, TurnEvent)
+        assert ev.turn >= 1
+        assert ev.elapsed_s >= 0.0
+        assert isinstance(ev.tool_calls, list)
+        assert isinstance(ev.text_preview, str)
+        assert len(ev.text_preview) <= 200
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    @pytest.mark.asyncio
+    async def test_on_turn_fires_per_assistant_message(self, monkeypatch) -> None:
+        """on_turn should fire once per AssistantMessage in multi-turn conversation."""
+        # mock-ok: need to test multi-turn callback firing without real SDK
+        async def _multi_turn_query(prompt, options=None):
+            yield _FakeAssistantMessage(content=[_FakeTextBlock(text="Step 1")])
+            yield _FakeAssistantMessage(content=[_FakeTextBlock(text="Step 2")])
+            yield _FakeAssistantMessage(content=[_FakeTextBlock(text="Step 3")])
+            yield _FakeResultMessage(
+                total_cost_usd=0.01,
+                usage={"input_tokens": 200, "output_tokens": 60},
+            )
+
+        fake_mod = _make_fake_sdk_module()
+        fake_mod.query = _multi_turn_query  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_mod)
+
+        events: list = []
+        result = await acall_llm(
+            "claude-code",
+            [{"role": "user", "content": "Multi-step task"}],
+            task="test",
+            trace_id="test_on_turn_multi",
+            max_budget=0,
+            on_turn=lambda ev: events.append(ev),
+        )
+        assert isinstance(result, LLMCallResult)
+        assert len(events) == 3
+        assert events[0].turn == 1
+        assert events[1].turn == 2
+        assert events[2].turn == 3
+        # Elapsed times should be non-decreasing
+        assert events[0].elapsed_s <= events[1].elapsed_s <= events[2].elapsed_s
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    @pytest.mark.asyncio
+    async def test_on_turn_none_does_not_fail(self) -> None:
+        """Passing on_turn=None (the default) should not change behavior."""
+        result = await acall_llm(
+            "claude-code",
+            [{"role": "user", "content": "What is 2+2?"}],
+            task="test",
+            trace_id="test_on_turn_none",
+            max_budget=0,
+        )
+        assert isinstance(result, LLMCallResult)
+        assert "4" in result.content
+
+    @pytest.mark.usefixtures("_mock_agent_sdk")
+    @pytest.mark.asyncio
+    async def test_on_turn_with_tool_calls(self, monkeypatch) -> None:
+        """on_turn should include tool call names when assistant uses tools."""
+        # mock-ok: need to test tool call extraction in on_turn without real SDK
+        async def _tool_query(prompt, options=None):
+            yield _FakeAssistantMessage(content=[
+                _FakeTextBlock(text="Let me check"),
+                _FakeToolUseBlock(id="t1", name="read_file", input={"path": "/tmp/x"}),
+            ])
+            yield _FakeAssistantMessage(content=[_FakeTextBlock(text="Done")])
+            yield _FakeResultMessage(
+                total_cost_usd=0.005,
+                usage={"input_tokens": 100, "output_tokens": 30},
+            )
+
+        fake_mod = _make_fake_sdk_module()
+        fake_mod.query = _tool_query  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_mod)
+
+        events: list = []
+        result = await acall_llm(
+            "claude-code",
+            [{"role": "user", "content": "Read a file"}],
+            task="test",
+            trace_id="test_on_turn_tools",
+            max_budget=0,
+            on_turn=lambda ev: events.append(ev),
+        )
+        assert isinstance(result, LLMCallResult)
+        assert len(events) == 2
+        # First turn should have the tool call
+        assert len(events[0].tool_calls) == 1
+        assert events[0].tool_calls[0]["name"] == "read_file"
+        # Second turn has no tools
+        assert len(events[1].tool_calls) == 0
 
 
 class TestAgentFallback:
@@ -1094,6 +1209,7 @@ class TestCodexCall:
             )
 
         monkeypatch.setattr(agents_mod, "_call_codex_in_isolated_process", _fake_isolated)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_in_isolated_process", _fake_isolated)
         result = call_llm(
             "codex",
             [{"role": "user", "content": "Hi"}],
@@ -1129,6 +1245,7 @@ class TestCodexCall:
 
         monkeypatch.setenv("LLM_CLIENT_CODEX_PROCESS_ISOLATION", "1")
         monkeypatch.setattr(agents_mod, "_call_codex_in_isolated_process", _fake_isolated)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_in_isolated_process", _fake_isolated)
         result = call_llm(
             "codex",
             [{"role": "user", "content": "Hi"}],
@@ -1161,6 +1278,7 @@ class TestCodexCall:
 
         monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
         monkeypatch.setattr(agents_mod, "_call_codex", _fake_call_codex)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex", _fake_call_codex)
         result = call_llm(
             "codex",
             [{"role": "user", "content": "Hi"}],
@@ -1219,7 +1337,9 @@ class TestCodexCall:
 
         monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
         monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _unexpected_sdk)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _unexpected_sdk)
         monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _fake_cli)
 
         result = call_llm(
             "codex",
@@ -1311,6 +1431,11 @@ class TestCodexStructured:
 
         monkeypatch.setattr(
             agents_mod,
+            "_call_codex_structured_in_isolated_process",
+            _fake_structured_isolated,
+        )
+        monkeypatch.setattr(
+            agents_codex_mod,
             "_call_codex_structured_in_isolated_process",
             _fake_structured_isolated,
         )
@@ -1536,7 +1661,9 @@ class TestCodexFallback:
             )
 
         monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _fake_inproc)
         monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _fake_cli)
 
         result = call_llm(
             "codex",
@@ -1580,7 +1707,9 @@ class TestCodexFallback:
             raise AssertionError("CLI fallback should not run for ValueError")
 
         monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _fake_inproc)
         monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _unexpected_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _unexpected_cli)
 
         with pytest.raises(Exception, match="bad adapter code"):
             call_llm(
@@ -1631,7 +1760,9 @@ class TestCodexFallback:
             )
 
         monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _fake_inproc)
         monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _fake_cli)
 
         result = call_llm(
             "codex",
@@ -1680,7 +1811,9 @@ class TestCodexFallback:
             )
 
         monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _unexpected_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _unexpected_inproc)
         monkeypatch.setattr(agents_mod, "_acall_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_via_cli", _fake_cli)
 
         result = await acall_llm(
             "codex",
