@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any
 
+from llm_client.cli import experiments_analytics as _analytics
+
 
 def _evaluate_adoption_gate(
     items: list[dict[str, Any]],
@@ -275,6 +277,9 @@ def cmd_experiments(args: argparse.Namespace) -> None:
 
     if getattr(args, "trace", None):
         _cmd_experiments_trace(args)
+        return
+
+    if _analytics.dispatch(args):
         return
 
     if getattr(args, "detail", None):
@@ -869,4 +874,5 @@ def register_parser(subparsers: Any) -> None:
         help="Exit code used when the adoption-profile gate fails for --detail",
     )
     parser.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
+    _analytics.register_args(parser)
     parser.set_defaults(handler=cmd_experiments)
