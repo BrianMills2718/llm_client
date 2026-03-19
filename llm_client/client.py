@@ -2259,11 +2259,15 @@ async def _aretrieve_background_response(
 
 
 def _apply_max_tokens(model: str, call_kwargs: dict[str, Any]) -> None:
-    """Auto-set max output tokens to model's max, or clamp caller's value.
+    """Clamp explicit output-token caps to the model maximum when present.
 
-    If no max_tokens/max_completion_tokens is set, defaults to the model's
-    maximum output tokens. If one is set, clamps it to the model's max to
-    prevent "value X but max is X-1" errors across providers.
+    The client does not invent output-token ceilings when callers omit them.
+    Defaulting to the provider maximum turns routine calls into accidental
+    high-cost requests, especially for structured-output workloads where a
+    large generated cap is not the same as a useful response. When callers do
+    supply an explicit cap, this helper only prevents provider-side
+    ``max_tokens > model_max`` validation errors.
+
     Silently skips if model info lookup fails (unknown/custom models).
     """
     try:
@@ -2291,8 +2295,7 @@ def _apply_max_tokens(model: str, call_kwargs: dict[str, Any]) -> None:
             )
             call_kwargs[token_key] = model_max
     else:
-        # Default to model's max
-        call_kwargs["max_completion_tokens"] = model_max
+        return
 
 
 def _prepare_call_kwargs(
@@ -2363,8 +2366,7 @@ def _prepare_call_kwargs(
         warning_sink=warning_sink,
     )
 
-    # Auto-set max_tokens to model's max if not specified, or clamp if too high.
-    # Prevents "65536 but max is 65535" errors across different models.
+    # Never invent output-token ceilings; only clamp explicit caller values.
     if not _is_responses_api_model(model):
         _apply_max_tokens(model, call_kwargs)
 
