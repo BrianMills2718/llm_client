@@ -18,11 +18,52 @@ Exit codes:
 
 import argparse
 import fnmatch
+import yaml
 import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+
+def load_yaml(path: Path):
+    """Load YAML from path and return dict-like object."""
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def resolve_couplings(config_path: Path) -> list[dict]:
+    """Load coupling definitions from legacy or unified config."""
+    data = load_yaml(config_path)
+
+    if isinstance(data, list):
+        return data
+
+    if not isinstance(data, dict):
+        return []
+
+    # New unified format: scripts/relationships.yaml
+    couplings = data.get("couplings")
+    if isinstance(couplings, list):
+        return couplings
+
+    # Legacy format: doc_coupling.yaml
+    legacy_couplings = data.get("couplings")
+    return legacy_couplings if isinstance(legacy_couplings, list) else []
+
+
+def resolve_config_path(config_arg: str) -> Path:
+    """Resolve default config path with legacy fallback."""
+    requested = Path(config_arg)
+
+    if requested.exists():
+        return requested
+
+    # Prefer unified file, but fallback to legacy when missing.
+    if requested.name == "relationships.yaml":
+        legacy = Path("scripts/doc_coupling.yaml")
+        if legacy.exists():
+            return legacy
+
+    return requested
 
 
 def get_changed_files(base_ref: str) -> set[str]:
@@ -65,9 +106,7 @@ def get_staged_files() -> set[str]:
 
 def load_couplings(config_path: Path) -> list[dict]:
     """Load coupling definitions from YAML."""
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
-    return data.get("couplings", [])
+    return resolve_couplings(config_path)
 
 
 def validate_config(couplings: list[dict]) -> list[str]:
@@ -171,6 +210,7 @@ def print_suggestions(changed_files: set[str], couplings: list[dict]) -> None:
 
 
 def main() -> int:
+    """CLI entry point. Parses args and checks that docs are updated when coupled source files change."""
     parser = argparse.ArgumentParser(description="Check doc-code coupling")
     parser.add_argument(
         "--base",
@@ -179,8 +219,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--config",
-        default="scripts/doc_coupling.yaml",
-        help="Path to coupling config (default: scripts/doc_coupling.yaml)",
+        default="scripts/relationships.yaml",
+        help="Path to coupling config (default: scripts/relationships.yaml)",
     )
     parser.add_argument(
         "--strict",
@@ -204,7 +244,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    config_path = Path(args.config)
+    config_path = resolve_config_path(args.config)
     if not config_path.exists():
         print(f"Config not found: {config_path}")
         return 1

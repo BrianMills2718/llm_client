@@ -12,6 +12,7 @@ Track all implementation work here.
 | 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
 | 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
+| 7 | [Governed Repo Contract Alignment](07_governed_repo_contract_alignment.md) | High | ✅ Complete | - |
 
 ## Status Key
 

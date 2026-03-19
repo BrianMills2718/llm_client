@@ -10,11 +10,15 @@ Utility scripts for development and CI. All scripts support `--help` for options
 | `scripts/meta/check_plan_blockers.py` | Validate blocked-plan dependencies |
 | `scripts/meta/complete_plan.py` | Mark plan complete |
 | `scripts/meta/sync_plan_status.py` | Sync plan status |
+| `scripts/meta/file_context.py` | Resolve required reading and doc/ADR context for repo files |
 | `scripts/meta/merge_pr.py` | Merge PRs via GitHub CLI |
 | `scripts/meta/parse_plan.py` | Parse plan metadata |
 | `scripts/meta/generate_quiz.py` | Generate comprehension quiz prompts |
+| `scripts/meta/hook_log.py` | Append structured JSONL entries for Claude hook activity |
+| `scripts/meta/validate_plan.py` | Validate plan references against the documentation graph |
 | `scripts/meta/check_required_reading.py` | Enforce required docs read before editing coupled source files |
 | `scripts/meta/validate_relationships.py` | Validate relationships/read-gate config integrity |
+| `scripts/check_markdown_links.py` | Validate local markdown links and anchors in governance docs |
 
 ## Common Commands
 
@@ -30,16 +34,25 @@ python scripts/meta/complete_plan.py --plan N           # Mark complete
 python scripts/meta/check_plan_blockers.py --strict
 
 # Required-reading gate check (used by .claude/hooks/gate-edit.sh)
-python scripts/meta/check_required_reading.py llm_client/client.py
+python scripts/check_required_reading.py llm_client/client.py
 
 # Relax gate temporarily without code changes
-LLM_CLIENT_READ_GATE_MODE=warn python scripts/meta/check_required_reading.py llm_client/client.py
+LLM_CLIENT_READ_GATE_MODE=warn python scripts/check_required_reading.py llm_client/client.py
 
 # Read-gate smoke tests (strict/warn/off behavior)
-pytest -q tests/test_required_reading_gate.py
+pytest -q tests/test_required_reading_gate.py tests/test_read_gate_hooks.py
 
 # Validate relationships config before CI
 python scripts/meta/validate_relationships.py --strict
+
+# Validate a plan against the documentation graph
+python scripts/meta/validate_plan.py --plan-file docs/plans/07_governed_repo_contract_alignment.md
+
+# Resolve required-reading context for a target file
+python scripts/meta/file_context.py llm_client/agents.py --json
+
+# Check governance-doc links before closing a slice
+python scripts/check_markdown_links.py CLAUDE.md docs/plans/CLAUDE.md scripts/CLAUDE.md
 ```
 
 ## Worktree Coordination Scripts (opt-in)
@@ -72,3 +85,4 @@ Required-reading gate controls:
 Current project default:
 - Coupled source files: `strict`
 - Uncoupled source files: `strict`
+- Hook decisions are logged to `.claude/hook_log.jsonl` for operator review.

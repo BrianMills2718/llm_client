@@ -19,9 +19,9 @@ meta_process:
     - \[Unplanned\]
   quality:
     doc_coupling:
-      enabled: false
-      strict: false
-      config_file: scripts/doc_coupling.yaml
+      enabled: true
+      strict: true
+      config_file: scripts/relationships.yaml
     required_reading:
       enabled: true
       mode: strict

@@ -8,5 +8,6 @@ build/
 .env
 .venv/
 .claude/active-work.yaml
+.claude/hook_log.jsonl
 .claude/sessions/
 adoption_gate.log
