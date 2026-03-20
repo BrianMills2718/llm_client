@@ -1,6 +1,6 @@
 # Plan 09: Lifecycle Heartbeat and Active Call Query
 
-**Status:** In Progress
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -125,12 +125,12 @@ or manual log diffing.
 
 ## Acceptance Criteria
 
-- [ ] ADR and plan indices are updated
-- [ ] Lifecycle schema accepts `heartbeat` and `stalled`
-- [ ] Public text/structured wrappers can emit heartbeats without changing provider behavior
-- [ ] `stalled` is emitted as a non-terminal observability event only
-- [ ] Shared observability can query currently active calls
-- [ ] `pytest -q tests/test_foundation.py tests/test_client.py tests/test_io_log.py -k 'lifecycle or active_llm_calls'` passes
+- [x] ADR and plan indices are updated
+- [x] Lifecycle schema accepts `heartbeat` and `stalled`
+- [x] Public text/structured wrappers can emit heartbeats without changing provider behavior
+- [x] `stalled` is emitted as a non-terminal observability event only
+- [x] Shared observability can query currently active calls
+- [x] `pytest -q tests/test_foundation.py tests/test_client.py tests/test_io_log.py -k 'lifecycle or active_llm_calls'` passes
 
 ---
 
@@ -138,3 +138,25 @@ or manual log diffing.
 
 - This slice intentionally does not add automatic cancellation.
 - Heartbeats mean "runtime still waiting", not "provider sent token progress".
+
+## Completion Evidence
+
+Verified 2026-03-19:
+
+```
+pytest -q tests/test_foundation.py tests/test_client.py tests/test_io_log.py -k 'lifecycle or active_llm_calls'
+# 12 passed
+
+pytest -q tests/test_foundation.py -k heartbeat
+# 1 passed (test_validate_foundation_event_llm_call_lifecycle_accepts_heartbeat_phase)
+
+pytest -q tests/test_client.py -k 'heartbeat or stalled'
+# 3 passed (heartbeat + stalled lifecycle emission for sync text, async text, sync structured)
+
+pytest -q tests/test_io_log.py -k active_llm_calls
+# 2 passed (active-call query returns latest non-terminal lifecycle state)
+```
+
+All six named tests from the Required Tests table pass. Plan 12 (Progress-Aware
+Idle Detection) extended this work with progress-aware signals and is also
+complete.

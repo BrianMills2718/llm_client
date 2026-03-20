@@ -1,7 +1,10 @@
 # ADR 0014: Emit Heartbeats and Non-Destructive Stall Markers for Long-Running Calls
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-03-19
+
+Related: Builds on ADR 0013 (lifecycle baseline). Refined by ADR 0016
+(progress-aware idle detection). See also ADR 0009 (background polling).
 
 ## Context
 

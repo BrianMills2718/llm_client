@@ -1,7 +1,11 @@
 # ADR 0016: Prefer Progress-Aware Idle Detection Over Wall-Clock Stall Inference
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-03-19
+
+Related: Builds on ADR 0013 (lifecycle baseline) and ADR 0014
+(heartbeats/stall markers). ADR 0009 (background polling) is one of the
+progress-observable paths instrumented by this decision.
 
 ## Context
 

@@ -1,7 +1,11 @@
 # ADR 0013: Provider Timeouts Are Not the Default Liveness Mechanism
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-03-19
+
+Related: Extended by ADR 0014 (heartbeats/stall markers) and ADR 0016
+(progress-aware idle detection). See also ADR 0009 (background polling for
+long-thinking models).
 
 ## Context
 
