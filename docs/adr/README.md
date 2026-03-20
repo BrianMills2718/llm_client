@@ -17,6 +17,7 @@ compatibility contracts in `llm_client`.
 - `0012-shared-data-plane-boundary.md`
 - `0013-provider-timeouts-are-not-the-default-liveness-mechanism.md`
 - `0014-emit-heartbeats-and-non-destructive-stall-markers-for-long-running-calls.md`
+- `0015-governed-repo-friction-telemetry-belongs-in-shared-observability.md`
 
 Related architecture docs:
 

@@ -15,6 +15,8 @@ Track all implementation work here.
 | 7 | [Governed Repo Contract Alignment](07_governed_repo_contract_alignment.md) | High | ✅ Complete | - |
 | 8 | [Call Liveness and Timeout Policy](08_call_liveness_and_timeout_policy.md) | High | ✅ Complete | - |
 | 9 | [Lifecycle Heartbeat and Active Call Query](09_lifecycle_heartbeat_and_active_call_query.md) | High | 🚧 In Progress | - |
+| 10 | [Governed Repo Friction Observability](10_governed_repo_friction_observability.md) | Highest | 📋 Planned | - |
+| 11 | [Context Injection Experiment Support](11_context_injection_experiment_support.md) | High | 📋 Planned | 10 |
 
 ## Status Key
 

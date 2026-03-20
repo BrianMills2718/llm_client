@@ -168,10 +168,50 @@ stable enough that package-boundary churn is low.
   complementary (not replacement)
 - MCP agent loop capabilities are unique and cannot be replaced by PydanticAI
 
+### Program F: Governed Repo Friction Observability
+
+**Plan:** [10_governed_repo_friction_observability.md](./10_governed_repo_friction_observability.md)
+**Status:** Planned
+
+**Success criteria:**
+
+- governed-repo hook/read-gate telemetry has one canonical shared home in
+  `llm_client`
+- repo-local `.claude/hook_log.jsonl` files can be ingested into shared
+  observability without changing repo-local hook behavior
+- operators can query cross-repo block/allow/error counts, top missing reads,
+  and repeated-friction files
+- malformed governed-repo telemetry fails loud instead of disappearing
+
+**Why now:** the active stack has enough governed repos installed to learn from
+real usage, but not yet enough shared telemetry to diagnose friction well.
+This program intentionally preempts further broad rollout until the shared
+observability seam exists.
+
+### Program G: Context Injection Experiment Support
+
+**Plan:** [11_context_injection_experiment_support.md](./11_context_injection_experiment_support.md)
+**Status:** Planned
+
+**Success criteria:**
+
+- governed-repo hook telemetry can be grouped by explicit experiment id and
+  variant
+- comparison reports can answer whether one context-injection variant reduces
+  repeated friction or improves downstream completion proxies
+- the ownership split is explicit: `llm_client` owns shared telemetry and
+  analysis seams, while external runners such as `prompt_eval` may execute the
+  experiments
+
+**Execution rule:** do not start this program until Program F has landed the
+shared governed-repo telemetry baseline.
+
 ---
 
 ## Current Default Next Step
 
-Program E (Simplification and Observability Modernization) is the active
-program. Execute phases 1A through 4 in order. Stop only for a real blocker
-or user redirect.
+Program F (Governed Repo Friction Observability) is the current default next
+step due to explicit user reprioritization around governed rollout telemetry.
+Implement Program F first, then Program G to resolve the `additionalContext`
+uncertainty with evidence. Resume Program E afterward unless the user redirects
+again.
