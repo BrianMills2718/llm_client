@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (Plan 12 adds shared lifecycle progress instrumentation and active-call state to the cross-project substrate)
+Last verified: 2026-03-19 (Plans 11-12 add governed-repo session/context telemetry and lifecycle state to the cross-project substrate)
 
 ## Context
 
@@ -42,6 +42,8 @@ existing libraries already solve well.
    backend rather than a separate repo-local analytics stack.
    Experiment-link fields and downstream-run joins for governed-repo telemetry
    are also part of this shared substrate rather than a second analysis system.
+   Session-quality signals and bounded context-emission metadata for
+   governed-repo telemetry are part of that same shared substrate.
 4. The shared experiment envelope belongs to `llm_client`, including fields such
    as `project`, `dataset`, `condition_id`, `scenario_id`, `phase`, `seed`,
    `replicate`, `metrics_schema`, `config`, `provenance`, and per-item

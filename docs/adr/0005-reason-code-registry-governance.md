@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (Plan 12 adds lifecycle progress metadata and no new `reason_code` values)
+Last verified: 2026-03-19 (Plans 11-12 add governed-repo session/context telemetry and lifecycle progress metadata without adding new `reason_code` values)
 
 ## Context
 
@@ -48,3 +48,6 @@ Negative:
 4. Experiment-link fields such as `experiment_id`, `variant_id`, and
    `downstream_run_id` are correlation metadata, not registered `reason_code`
    values.
+5. Governed-repo telemetry fields such as `reads_file`, `session_source`,
+   `session_quality`, `context_emitted`, and `context_bytes` are observability
+   metadata, not registered `reason_code` values.

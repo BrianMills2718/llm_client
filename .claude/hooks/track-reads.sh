@@ -42,11 +42,23 @@ log_read_event() {
     if [[ ! -f "$HOOK_LOG_SCRIPT" ]]; then
         return 0
     fi
-    python "$HOOK_LOG_SCRIPT" read \
-        --file-path "$REL_PATH" \
-        --reads-file "$READS_FILE" \
-        --reason "read observed" \
-        --log-file "$LOG_FILE" \
+    local -a command=(
+        python "$HOOK_LOG_SCRIPT" read
+        --file-path "$REL_PATH"
+        --reads-file "$READS_FILE"
+        --reason "read observed"
+        --log-file "$LOG_FILE"
+    )
+    if [[ -n "${HOOK_EXPERIMENT_ID:-}" ]]; then
+        command+=(--experiment-id "$HOOK_EXPERIMENT_ID")
+    fi
+    if [[ -n "${HOOK_VARIANT_ID:-}" ]]; then
+        command+=(--variant-id "$HOOK_VARIANT_ID")
+    fi
+    if [[ -n "${HOOK_DOWNSTREAM_RUN_ID:-}" ]]; then
+        command+=(--downstream-run-id "$HOOK_DOWNSTREAM_RUN_ID")
+    fi
+    "${command[@]}" \
         >/dev/null
 }
 
@@ -68,6 +80,9 @@ REL_PATH="$(normalize_repo_path "$FILE_PATH")"
 READS_FILE="$(resolve_data_path "${CLAUDE_SESSION_READS_FILE:-/tmp/.claude_session_reads}")"
 LOG_FILE="$(resolve_data_path "${CLAUDE_HOOK_LOG_FILE:-.claude/hook_log.jsonl}")"
 HOOK_LOG_SCRIPT="$REPO_ROOT/scripts/meta/hook_log.py"
+HOOK_EXPERIMENT_ID="${CLAUDE_HOOK_EXPERIMENT_ID:-}"
+HOOK_VARIANT_ID="${CLAUDE_HOOK_VARIANT_ID:-}"
+HOOK_DOWNSTREAM_RUN_ID="${CLAUDE_HOOK_DOWNSTREAM_RUN_ID:-}"
 
 # Append (dedup happens at check time)
 mkdir -p "$(dirname "$READS_FILE")"

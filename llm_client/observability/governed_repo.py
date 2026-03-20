@@ -38,6 +38,7 @@ class CanonicalHookLogRow(BaseModel):
     reads_completed: list[str] = Field(default_factory=list)
     missing_reads: list[str] = Field(default_factory=list)
     coupled_docs: list[str] = Field(default_factory=list)
+    context_emitted: bool | None = None
     context_bytes: int | None = Field(default=None, ge=0)
     experiment_id: str | None = None
     variant_id: str | None = None
@@ -128,11 +129,24 @@ def _infer_repo_name(log_path: Path) -> str:
     return repo_name
 
 
-def _session_source_for_row(row: CanonicalHookLogRow) -> str:
-    """Return the best available stable session source for one hook row."""
+def _resolve_session_identity(
+    *,
+    repo_name: str,
+    row: CanonicalHookLogRow,
+    event_identity: str,
+) -> tuple[str, str, str]:
+    """Return session source, session id, and session quality for one hook row."""
     if row.reads_file:
-        return f"reads_file:{row.reads_file}"
-    return f"synthetic:{row.hook}:{row.file_path}"
+        session_source = f"reads_file:{row.reads_file}"
+        session_quality = "stable"
+    elif row.downstream_run_id:
+        session_source = f"downstream_run:{row.downstream_run_id}"
+        session_quality = "stable"
+    else:
+        session_source = f"event_only:{_hash_suffix(event_identity, length=16)}"
+        session_quality = "degraded"
+    session_id = f"sess_govhook_{_hash_suffix(repo_name + '|' + session_source)}"
+    return session_source, session_id, session_quality
 
 
 def _build_event(
@@ -146,11 +160,9 @@ def _build_event(
 ) -> dict[str, Any]:
     """Translate one canonical hook-log row into a Foundation event payload."""
     event_timestamp = _normalize_timestamp(row.timestamp)
-    session_source = _session_source_for_row(row)
     resolved_experiment_id = row.experiment_id or experiment_id
     resolved_variant_id = row.variant_id or variant_id
     resolved_downstream_run_id = row.downstream_run_id or downstream_run_id
-    session_id = f"sess_govhook_{_hash_suffix(repo_name + '|' + session_source)}"
     run_identity = "|".join(
         value or "-"
         for value in (repo_name, resolved_experiment_id, resolved_variant_id)
@@ -161,6 +173,11 @@ def _build_event(
         for value in (repo_name, raw_line, resolved_experiment_id, resolved_variant_id, resolved_downstream_run_id)
     )
     event_id = f"evt_govhook_{_hash_suffix(event_identity)}"
+    session_source, session_id, session_quality = _resolve_session_identity(
+        repo_name=repo_name,
+        row=row,
+        event_identity=event_identity,
+    )
     event_payload = {
         "event_id": event_id,
         "event_type": "GovernedRepoHook",
@@ -198,8 +215,10 @@ def _build_event(
             "reads_completed": row.reads_completed,
             "missing_reads": row.missing_reads,
             "coupled_docs": row.coupled_docs,
+            "context_emitted": row.context_emitted,
             "context_bytes": row.context_bytes,
             "session_source": session_source,
+            "session_quality": session_quality,
             "experiment_id": resolved_experiment_id,
             "variant_id": resolved_variant_id,
             "downstream_run_id": resolved_downstream_run_id,
@@ -351,6 +370,29 @@ def _rank_session_counter(counter: Counter[str], *, limit: int) -> list[dict[str
     return [{"session_id": session_id, "count": count} for session_id, count in ranked]
 
 
+def _session_quality_for_payload(payload: dict[str, Any]) -> str:
+    """Return stable/degraded session quality, inferring from older rows when needed."""
+    quality = str(payload.get("session_quality") or "").strip()
+    if quality in {"stable", "degraded"}:
+        return quality
+    session_source = str(payload.get("session_source") or "").strip()
+    if session_source.startswith("reads_file:") or session_source.startswith("downstream_run:"):
+        return "stable"
+    return "degraded"
+
+
+def _session_group_key(
+    *,
+    payload: dict[str, Any],
+    fallback_index: int,
+) -> str:
+    """Return the best grouping key for recurrence metrics within one variant."""
+    session_source = str(payload.get("session_source") or "").strip()
+    if session_source:
+        return session_source
+    return f"event_only:{fallback_index}"
+
+
 def get_governed_repo_top_missing_reads(
     *,
     repo_name: str | None = None,
@@ -378,12 +420,16 @@ def get_governed_repo_friction_summary(
     hook_counts: Counter[str] = Counter()
     friction_file_counts: Counter[str] = Counter()
     session_friction_counts: Counter[str] = Counter()
+    session_quality_counts: Counter[str] = Counter()
     missing_read_counts: Counter[str] = Counter()
+    context_emitted_events = 0
+    context_bytes_total = 0
 
     for _, session_id, payload in rows:
         decision = str(payload.get("decision") or "").strip() or "unknown"
         hook_name = str(payload.get("hook_name") or "").strip() or "unknown"
         file_path = str(payload.get("file_path") or "").strip()
+        session_quality = _session_quality_for_payload(payload)
         missing_reads = [
             path.strip()
             for path in payload.get("missing_reads", [])
@@ -391,20 +437,31 @@ def get_governed_repo_friction_summary(
         ]
         decision_counts[decision] += 1
         hook_counts[hook_name] += 1
+        session_quality_counts[session_quality] += 1
+        if hook_name == "gate-edit" and payload.get("context_emitted") is True:
+            context_emitted_events += 1
+            context_bytes_total += int(payload.get("context_bytes") or 0)
         for path in missing_reads:
             missing_read_counts[path] += 1
         if decision in {"block", "error"} or missing_reads:
             if file_path:
                 friction_file_counts[file_path] += 1
-            if session_id:
+            if session_id and session_quality == "stable":
                 session_friction_counts[session_id] += 1
 
+    gate_events = hook_counts.get("gate-edit", 0)
     return {
         "repo_name": repo_name,
         "days": days,
         "total_events": len(rows),
         "decision_counts": dict(sorted(decision_counts.items())),
         "hook_counts": dict(sorted(hook_counts.items())),
+        "session_quality_counts": dict(sorted(session_quality_counts.items())),
+        "context_emitted_events": context_emitted_events,
+        "context_emitted_rate": (
+            float(context_emitted_events) / float(gate_events) if gate_events else 0.0
+        ),
+        "context_bytes_total": context_bytes_total,
         "top_missing_reads": _rank_counter(missing_read_counts, limit=limit),
         "top_friction_files": _rank_counter(friction_file_counts, limit=limit),
         "top_friction_sessions": _rank_session_counter(session_friction_counts, limit=limit),
@@ -467,20 +524,25 @@ def get_governed_repo_variant_comparison(
     for variant_id in sorted(by_variant):
         variant_rows = by_variant[variant_id]
         decision_counts: Counter[str] = Counter()
+        session_quality_counts: Counter[str] = Counter()
         gate_events = 0
         block_events = 0
         error_events = 0
         missing_read_events = 0
         repeated_block_events = 0
         repeated_missing_read_events = 0
-        blocked_files_seen: set[str] = set()
-        missing_reads_seen: set[str] = set()
+        context_emitted_events = 0
+        context_bytes_total = 0
+        blocked_files_seen_by_session: dict[str, set[str]] = {}
+        missing_reads_seen_by_session: dict[str, set[str]] = {}
         downstream_run_ids: set[str] = set()
 
-        for _, _, payload in variant_rows:
+        for index, (_, _, payload) in enumerate(variant_rows):
             decision = str(payload.get("decision") or "").strip() or "unknown"
             hook_name = str(payload.get("hook_name") or "").strip() or "unknown"
             file_path = str(payload.get("file_path") or "").strip()
+            session_quality = _session_quality_for_payload(payload)
+            session_key = _session_group_key(payload=payload, fallback_index=index)
             missing_reads = [
                 path.strip()
                 for path in payload.get("missing_reads", [])
@@ -488,9 +550,14 @@ def get_governed_repo_variant_comparison(
             ]
             if hook_name == "gate-edit":
                 gate_events += 1
+                if payload.get("context_emitted") is True:
+                    context_emitted_events += 1
+                    context_bytes_total += int(payload.get("context_bytes") or 0)
             decision_counts[decision] += 1
+            session_quality_counts[session_quality] += 1
             if decision == "block":
                 block_events += 1
+                blocked_files_seen = blocked_files_seen_by_session.setdefault(session_key, set())
                 if file_path in blocked_files_seen:
                     repeated_block_events += 1
                 elif file_path:
@@ -499,6 +566,7 @@ def get_governed_repo_variant_comparison(
                 error_events += 1
             if missing_reads:
                 missing_read_events += 1
+                missing_reads_seen = missing_reads_seen_by_session.setdefault(session_key, set())
                 if any(path in missing_reads_seen for path in missing_reads):
                     repeated_missing_read_events += 1
                 for path in missing_reads:
@@ -513,6 +581,7 @@ def get_governed_repo_variant_comparison(
                 "total_events": len(variant_rows),
                 "gate_events": gate_events,
                 "decision_counts": dict(sorted(decision_counts.items())),
+                "session_quality_counts": dict(sorted(session_quality_counts.items())),
                 "block_events": block_events,
                 "repeated_block_events": repeated_block_events,
                 "repeated_block_rate": (
@@ -529,6 +598,11 @@ def get_governed_repo_variant_comparison(
                 "hook_error_rate": (
                     float(error_events) / float(gate_events) if gate_events else 0.0
                 ),
+                "context_emitted_events": context_emitted_events,
+                "context_emitted_rate": (
+                    float(context_emitted_events) / float(gate_events) if gate_events else 0.0
+                ),
+                "context_bytes_total": context_bytes_total,
                 "downstream_runs": _summarize_linked_runs(downstream_run_ids),
             }
         )

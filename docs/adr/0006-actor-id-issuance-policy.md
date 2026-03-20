@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (Plan 12 lifecycle progress events continue to use canonical service namespace actor ids)
+Last verified: 2026-03-19 (Plans 11-12 keep governed-repo telemetry and lifecycle progress events on canonical service namespace actor ids)
 
 ## Context
 
@@ -31,6 +31,9 @@ consistency for decision/transition records.
 6. Experiment metadata attached to observability events does not change actor
    issuance semantics. `experiment_id`, `variant_id`, and linked downstream run
    ids are correlation fields, not actor namespaces.
+7. Governed-repo session/context telemetry fields such as `reads_file`,
+   `session_source`, `session_quality`, `context_emitted`, and `context_bytes`
+   are also correlation metadata and do not alter actor issuance semantics.
 
 ## Consequences
 

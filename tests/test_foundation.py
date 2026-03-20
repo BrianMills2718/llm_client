@@ -348,7 +348,9 @@ def test_validate_foundation_event_governed_repo_hook_shape() -> None:
             "missing_reads": ["docs/plans/08.md"],
             "coupled_docs": ["docs/plans/08.md"],
             "reads_file": ".claude/session_reads.txt",
+            "context_emitted": True,
             "session_source": "reads_file:.claude/session_reads.txt",
+            "session_quality": "stable",
             "context_bytes": 512,
         },
     }
@@ -356,6 +358,8 @@ def test_validate_foundation_event_governed_repo_hook_shape() -> None:
     assert validated["event_type"] == "GovernedRepoHook"
     assert validated["governed_repo_hook"]["decision"] == "block"
     assert validated["governed_repo_hook"]["missing_reads"] == ["docs/plans/08.md"]
+    assert validated["governed_repo_hook"]["context_emitted"] is True
+    assert validated["governed_repo_hook"]["session_quality"] == "stable"
 
 
 def test_validate_foundation_event_governed_repo_hook_experiment_shape() -> None:
@@ -396,7 +400,9 @@ def test_validate_foundation_event_governed_repo_hook_experiment_shape() -> None
             "missing_reads": [],
             "coupled_docs": [],
             "reads_file": ".claude/session_reads.txt",
+            "context_emitted": False,
             "session_source": "reads_file:.claude/session_reads.txt",
+            "session_quality": "stable",
             "experiment_id": "ctx-exp-1",
             "variant_id": "full-context",
             "downstream_run_id": "run_ctx_eval_1",
@@ -406,3 +412,5 @@ def test_validate_foundation_event_governed_repo_hook_experiment_shape() -> None
     assert validated["governed_repo_hook"]["experiment_id"] == "ctx-exp-1"
     assert validated["governed_repo_hook"]["variant_id"] == "full-context"
     assert validated["governed_repo_hook"]["downstream_run_id"] == "run_ctx_eval_1"
+    assert validated["governed_repo_hook"]["context_emitted"] is False
+    assert validated["governed_repo_hook"]["session_quality"] == "stable"

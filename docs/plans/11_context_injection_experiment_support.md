@@ -86,6 +86,9 @@ comparison, not guesswork or one-off manual anecdotes.
    execute the actual experiments.
 5. Verify the slice with deterministic synthetic experiments before any broad
    repo-wide `additionalContext` rollout decision.
+6. Ensure the shared reports do not overstate recurrence by collapsing
+   independent sessions into synthetic file-based sessions when the raw hook
+   rows lack a stable session key.
 
 ---
 
@@ -114,6 +117,8 @@ comparison, not guesswork or one-off manual anecdotes.
 - [x] Shared governed-repo telemetry can be grouped by explicit experiment id and variant
 - [x] Comparison reports expose repeated-friction and hook-error rates by variant
 - [x] Comparison reports can join hook telemetry to downstream run outcomes without a second backend
+- [x] Raw hook rows can preserve experiment metadata at the source when an experiment runner supplies it
+- [x] Shared reports distinguish stable versus degraded session identity and avoid file-path pseudo-sessions for recurrence metrics
 - [x] The ownership split between `llm_client` and external experiment runners is documented explicitly
 - [x] `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py` passes
 
@@ -131,6 +136,18 @@ comparison, not guesswork or one-off manual anecdotes.
   `downstream_run_id` either directly into imported hook rows or through import
   overrides. `llm_client` owns the shared storage and comparison semantics, not
   the experiment execution loop itself.
+- Follow-up hardening for this plan is allowed when it improves causal honesty:
+  source-stamped experiment metadata is preferred over importer-only overrides,
+  and repeated-friction metrics should use stable session identity whenever it
+  exists.
+
+**Post-completion hardening (2026-03-19):**
+
+- raw hook rows now carry `context_emitted` / `context_bytes` and optional
+  experiment metadata at the source
+- shared summaries now expose context-emission metrics and mark degraded
+  session identity explicitly instead of collapsing unrelated events into one
+  file-based pseudo-session
 
 ## Verification
 

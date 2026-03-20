@@ -44,16 +44,34 @@ resolve_data_path() {
 log_gate_decision() {
     local decision="$1"
     local reason="$2"
+    local context_emitted="$3"
+    local context_bytes="$4"
     if [[ ! -f "$HOOK_LOG_SCRIPT" ]]; then
         return 0
     fi
-    python "$HOOK_LOG_SCRIPT" gate \
-        --file-path "$REL_PATH" \
-        --tool-name "${TOOL_NAME:-unknown}" \
-        --decision "$decision" \
-        --reason "$reason" \
-        --reads-file "$READS_FILE" \
-        --log-file "$LOG_FILE" \
+    local -a command=(
+        python "$HOOK_LOG_SCRIPT" gate
+        --file-path "$REL_PATH"
+        --tool-name "${TOOL_NAME:-unknown}"
+        --decision "$decision"
+        --reason "$reason"
+        --reads-file "$READS_FILE"
+        --log-file "$LOG_FILE"
+        --context-bytes "$context_bytes"
+    )
+    if [[ "$context_emitted" == "1" ]]; then
+        command+=(--context-emitted)
+    fi
+    if [[ -n "${HOOK_EXPERIMENT_ID:-}" ]]; then
+        command+=(--experiment-id "$HOOK_EXPERIMENT_ID")
+    fi
+    if [[ -n "${HOOK_VARIANT_ID:-}" ]]; then
+        command+=(--variant-id "$HOOK_VARIANT_ID")
+    fi
+    if [[ -n "${HOOK_DOWNSTREAM_RUN_ID:-}" ]]; then
+        command+=(--downstream-run-id "$HOOK_DOWNSTREAM_RUN_ID")
+    fi
+    "${command[@]}" \
         >/dev/null
 }
 
@@ -67,32 +85,35 @@ LOG_FILE="$(resolve_data_path "${CLAUDE_HOOK_LOG_FILE:-.claude/hook_log.jsonl}")
 HOOK_LOG_SCRIPT="$REPO_ROOT/scripts/meta/hook_log.py"
 CHECK_SCRIPT="$REPO_ROOT/scripts/check_required_reading.py"
 REL_PATH="$(normalize_repo_path "$FILE_PATH")"
+HOOK_EXPERIMENT_ID="${CLAUDE_HOOK_EXPERIMENT_ID:-}"
+HOOK_VARIANT_ID="${CLAUDE_HOOK_VARIANT_ID:-}"
+HOOK_DOWNSTREAM_RUN_ID="${CLAUDE_HOOK_DOWNSTREAM_RUN_ID:-}"
 
 # Only gate Edit and Write
 if [[ "$TOOL_NAME" != "Edit" && "$TOOL_NAME" != "Write" ]]; then
-    log_gate_decision "skip" "non-edit tool"
+    log_gate_decision "skip" "non-edit tool" "0" "0"
     exit 0
 fi
 
 if [[ -z "$FILE_PATH" ]]; then
-    log_gate_decision "skip" "missing file path"
+    log_gate_decision "skip" "missing file path" "0" "0"
     exit 0
 fi
 
 # Only gate production source files
 if [[ "$FILE_PATH" != *"/llm_client/"* ]] && [[ "$FILE_PATH" != "llm_client/"* ]]; then
-    log_gate_decision "skip" "non-governed path"
+    log_gate_decision "skip" "non-governed path" "0" "0"
     exit 0
 fi
 
 # Bypass check
 if [[ "${SKIP_READ_GATE:-}" == "1" ]]; then
-    log_gate_decision "skip" "SKIP_READ_GATE=1"
+    log_gate_decision "skip" "SKIP_READ_GATE=1" "0" "0"
     exit 0
 fi
 
 if [[ ! -f "$CHECK_SCRIPT" ]]; then
-    log_gate_decision "block" "missing check_required_reading.py"
+    log_gate_decision "block" "missing check_required_reading.py" "0" "0"
     REASON_ESCAPED=$(printf '%s' "Required-read checker missing: scripts/check_required_reading.py" | jq -Rs .)
     cat << EOF
 {
@@ -110,7 +131,7 @@ CHECK_EXIT=$?
 set -e
 
 if [[ $CHECK_EXIT -ne 0 ]]; then
-    log_gate_decision "block" "required reading missing"
+    log_gate_decision "block" "required reading missing" "0" "0"
     # Escape for JSON output
     RESULT_ESCAPED=$(echo "$RESULT" | jq -Rs .)
 
@@ -123,10 +144,10 @@ EOF
     exit 2
 fi
 
-log_gate_decision "allow" "required reading satisfied"
-
 # All required reading done — output constraints as advisory context
 if [[ -n "$RESULT" ]]; then
+    CONTEXT_BYTES="$(printf '%s' "$RESULT" | wc -c | tr -d '[:space:]')"
+    log_gate_decision "allow" "required reading satisfied" "1" "$CONTEXT_BYTES"
     RESULT_ESCAPED=$(echo "$RESULT" | jq -Rs .)
     cat << EOF
 {
@@ -136,6 +157,8 @@ if [[ -n "$RESULT" ]]; then
   }
 }
 EOF
+else
+    log_gate_decision "allow" "required reading satisfied" "0" "0"
 fi
 
 exit 0

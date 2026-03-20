@@ -39,21 +39,27 @@ cross-project operational signal.
 3. The shared governed-repo telemetry contract must preserve, at minimum:
    - repo identity,
    - session identity when available,
+   - explicit indication when session identity is degraded or event-local rather
+     than stable,
    - hook name,
    - decision (`block`, `allow`, `read`, `error`, or equivalent),
    - target file path,
    - required/missing reads,
-   - bounded context metadata such as payload size or counts,
+   - bounded context metadata such as whether `additionalContext` was emitted
+     and how many bytes it carried,
    - trace/run linkage when available.
-4. The default shared telemetry path must be metadata-first. Full injected
+4. When governed-repo experiments set explicit experiment metadata, raw hook rows
+   should preserve `experiment_id`, `variant_id`, and `downstream_run_id` at the
+   source instead of relying only on importer-time overrides.
+5. The default shared telemetry path must be metadata-first. Full injected
    document contents are not persisted by default just because they passed
    through a hook.
-5. Importers and validators must fail loud on malformed governed-repo telemetry
+6. Importers and validators must fail loud on malformed governed-repo telemetry
    rather than silently dropping rows.
-6. `prompt_eval` may consume governed-repo telemetry to run controlled
+7. `prompt_eval` may consume governed-repo telemetry to run controlled
    experiments and comparative analysis, but it does not own the primary sink,
    schema, or storage contract.
-7. Query/report helpers for governed-repo friction belong in `llm_client`
+8. Query/report helpers for governed-repo friction belong in `llm_client`
    observability surfaces and any MCP/CLI interfaces built on top of them.
 
 ## Consequences
@@ -65,6 +71,8 @@ Positive:
 3. `prompt_eval` can focus on experiments without becoming a second
    observability backend.
 4. The governed rollout can be measured before it is expanded broadly.
+5. Session-level friction reports become more trustworthy because degraded
+   session identity is explicit instead of being silently fabricated.
 
 Negative:
 1. `llm_client` observability scope grows beyond pure LLM call telemetry.
@@ -84,3 +92,6 @@ Negative:
 4. Comparative experiment/report helpers must be able to group governed-repo
    telemetry by explicit experiment metadata without inventing a second
    observability store.
+5. When stable session identity is unavailable, shared telemetry must mark the
+   degradation explicitly and avoid cross-session recurrence metrics that depend
+   on fake session grouping.

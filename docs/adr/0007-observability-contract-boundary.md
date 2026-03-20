@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (Plan 12 extends lifecycle/query metadata within the existing observability contract boundary)
+Last verified: 2026-03-19 (Plans 11-12 extend governed-repo and lifecycle/query metadata within the existing observability contract boundary)
 
 ## Context
 
@@ -29,6 +29,9 @@ persisted, how compatibility is preserved, and where behavior should evolve.
 7. Experiment and variant comparison over governed-repo friction remains part
    of the canonical observability surface. External runners may stamp metadata,
    but they must not create a second primary query backend.
+8. When governed-repo telemetry lacks a stable session key, the canonical
+   observability surface must mark that degradation explicitly rather than
+   fabricating file-based pseudo-sessions.
 
 ## Consequences
 
@@ -52,3 +55,5 @@ Negative:
 5. Comparative governed-repo experiment queries must stay compatible with the
    shared observability backend rather than depending on a separate experiment
    store.
+6. Session-level governed-repo summaries must not silently aggregate degraded
+   event-local rows as if they were stable sessions.

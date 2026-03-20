@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (Plan 12 keeps lifecycle progress and active-call state in shared observability, not the data plane)
+Last verified: 2026-03-19 (Plans 11-12 keep governed-repo session/context telemetry and lifecycle state in shared observability, not the data plane)
 
 ## Context
 
@@ -35,6 +35,8 @@ We need a clear line between:
    layer; the raw repo-local hook log files do not.
    Experiment ids, variant ids, and linked downstream run ids for governed
    telemetry also belong in this metadata/control-plane layer.
+   Session-quality markers and bounded context-emission metadata for governed
+   telemetry belong there as well.
 3. The shared data plane should be a separate architectural layer that can host
    dataset registries, artifact registries, schema metadata, and storage
    adapters.

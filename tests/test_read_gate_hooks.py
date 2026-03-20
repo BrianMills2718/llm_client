@@ -29,12 +29,20 @@ REQUIRED_DOCS = [
 ]
 
 
-def _run_hook(script: Path, payload: dict[str, object], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_hook(
+    script: Path,
+    payload: dict[str, object],
+    tmp_path: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Execute one hook with isolated reads/log files."""
 
     env = os.environ.copy()
     env["CLAUDE_SESSION_READS_FILE"] = str(tmp_path / "session_reads.txt")
     env["CLAUDE_HOOK_LOG_FILE"] = str(tmp_path / "hook_log.jsonl")
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(script)],
         cwd=str(REPO_ROOT),
@@ -98,6 +106,9 @@ def test_gate_edit_blocks_and_logs_missing_required_reads(tmp_path: Path) -> Non
     assert entries[0]["file_path"] == TARGET_FILE
     assert entries[0]["required_reads"] == REQUIRED_DOCS
     assert entries[0]["reads_completed"] == []
+    assert entries[0]["reads_file"] == str((tmp_path / "session_reads.txt").resolve())
+    assert entries[0]["context_emitted"] is False
+    assert entries[0]["context_bytes"] == 0
 
 
 def test_gate_edit_allows_and_logs_after_required_reads(tmp_path: Path) -> None:
@@ -125,6 +136,9 @@ def test_gate_edit_allows_and_logs_after_required_reads(tmp_path: Path) -> None:
     assert entries[0]["required_reads"] == REQUIRED_DOCS
     assert entries[0]["reads_completed"] == REQUIRED_DOCS
     assert entries[0]["missing_reads"] == []
+    assert entries[0]["reads_file"] == str((tmp_path / "session_reads.txt").resolve())
+    assert entries[0]["context_emitted"] is False
+    assert entries[0]["context_bytes"] == 0
 
 
 def test_track_reads_records_session_file_and_log(tmp_path: Path) -> None:
@@ -137,6 +151,11 @@ def test_track_reads_records_session_file_and_log(tmp_path: Path) -> None:
             "tool_input": {"file_path": "CLAUDE.md"},
         },
         tmp_path,
+        extra_env={
+            "CLAUDE_HOOK_EXPERIMENT_ID": "ctx-exp-1",
+            "CLAUDE_HOOK_VARIANT_ID": "rich-context",
+            "CLAUDE_HOOK_DOWNSTREAM_RUN_ID": "run_ctx_eval_1",
+        },
     )
 
     assert result.returncode == 0
@@ -148,6 +167,10 @@ def test_track_reads_records_session_file_and_log(tmp_path: Path) -> None:
     assert entries[0]["hook"] == "track-reads"
     assert entries[0]["decision"] == "recorded"
     assert entries[0]["file_path"] == "CLAUDE.md"
+    assert entries[0]["reads_file"] == str((tmp_path / "session_reads.txt").resolve())
+    assert entries[0]["experiment_id"] == "ctx-exp-1"
+    assert entries[0]["variant_id"] == "rich-context"
+    assert entries[0]["downstream_run_id"] == "run_ctx_eval_1"
 
 
 def test_markdown_link_checker_passes_for_governance_entrypoints() -> None:

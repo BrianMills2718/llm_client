@@ -574,8 +574,10 @@ class GovernedRepoHookPayload(BaseModel):
     reads_completed: list[str] = Field(default_factory=list)
     missing_reads: list[str] = Field(default_factory=list)
     coupled_docs: list[str] = Field(default_factory=list)
+    context_emitted: bool | None = None
     context_bytes: int | None = Field(default=None, ge=0)
     session_source: str | None = None
+    session_quality: Literal["stable", "degraded"] | None = None
     experiment_id: str | None = None
     variant_id: str | None = None
     downstream_run_id: str | None = None
