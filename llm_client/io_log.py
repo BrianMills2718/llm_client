@@ -1476,6 +1476,24 @@ def get_trace_tree(
     return _get_trace_tree(trace_prefix, days=days)
 
 
+def get_active_llm_calls(
+    *,
+    project: str | None = None,
+    task: str | None = None,
+    trace_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Compatibility shim: delegate to observability.query.get_active_llm_calls."""
+    from llm_client.observability.query import get_active_llm_calls as _get_active_llm_calls
+
+    return _get_active_llm_calls(
+        project=project,
+        task=task,
+        trace_id=trace_id,
+        limit=limit,
+    )
+
+
 def get_background_mode_adoption(
     *,
     experiments_path: str | Path | None = None,

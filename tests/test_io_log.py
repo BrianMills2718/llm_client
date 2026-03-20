@@ -521,6 +521,211 @@ class TestGetTraceTree:
         assert t["task"] == "extraction"
 
 
+class TestGetActiveLLMCalls:
+    def _log_lifecycle_event(
+        self,
+        *,
+        phase: str,
+        call_id: str,
+        timestamp: str,
+        trace_id: str = "trace.active",
+        task: str = "test",
+        progress_observable: bool | None = None,
+        progress_source: str | None = None,
+        progress_event_count: int | None = None,
+        host_name: str | None = None,
+        process_id: int | None = None,
+        process_start_token: str | None = None,
+    ) -> None:
+        lifecycle_payload = {
+            "call_id": call_id,
+            "phase": phase,
+            "call_kind": "text",
+            "requested_model_id": "gpt-4",
+            "timeout_policy": "allow",
+            "elapsed_s": 5.0,
+        }
+        if progress_observable is not None:
+            lifecycle_payload["progress_observable"] = progress_observable
+        if progress_source is not None:
+            lifecycle_payload["progress_source"] = progress_source
+        if progress_event_count is not None:
+            lifecycle_payload["progress_event_count"] = progress_event_count
+        if host_name is not None:
+            lifecycle_payload["host_name"] = host_name
+        if process_id is not None:
+            lifecycle_payload["process_id"] = process_id
+        if process_start_token is not None:
+            lifecycle_payload["process_start_token"] = process_start_token
+        io_log.log_foundation_event(
+            caller="test",
+            task=task,
+            trace_id=trace_id,
+            event={
+                "event_id": f"evt_{call_id}_{phase}",
+                "event_type": "LLMCallLifecycle",
+                "timestamp": timestamp,
+                "run_id": "run_trace_active",
+                "session_id": f"sess_{call_id}",
+                "actor_id": "service:llm_client:call_runtime:1",
+                "operation": {"name": "call_llm", "version": None},
+                "inputs": {
+                    "artifact_ids": [],
+                    "params": {
+                        "task": task,
+                        "trace_id": trace_id,
+                        "call_kind": "text",
+                    },
+                    "bindings": {},
+                },
+                "outputs": {"artifact_ids": [], "payload_hashes": []},
+                "llm_call_lifecycle": lifecycle_payload,
+            },
+        )
+
+    def test_get_active_llm_calls_returns_latest_non_terminal_lifecycle_state(self, tmp_path):
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_active",
+            timestamp="2026-03-19T10:00:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_active",
+            timestamp="2026-03-19T10:00:10Z",
+        )
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_done",
+            timestamp="2026-03-19T10:01:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="completed",
+            call_id="llmcall_done",
+            timestamp="2026-03-19T10:01:05Z",
+        )
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_active"
+        assert active[0]["phase"] == "heartbeat"
+        assert active[0]["trace_id"] == "trace.active"
+
+    def test_get_active_llm_calls_reports_progress_metadata(self, tmp_path):
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:00Z",
+            progress_observable=True,
+            progress_event_count=0,
+        )
+        self._log_lifecycle_event(
+            phase="progress",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:05Z",
+            progress_observable=True,
+            progress_source="stream_chunk",
+            progress_event_count=1,
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:06Z",
+            progress_observable=True,
+            progress_source="stream_chunk",
+            progress_event_count=1,
+        )
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_opaque",
+            timestamp="2026-03-19T10:01:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="stalled",
+            call_id="llmcall_opaque",
+            timestamp="2026-03-19T10:01:10Z",
+        )
+
+        active = {record["call_id"]: record for record in io_log.get_active_llm_calls()}
+
+        streaming = active["llmcall_streaming"]
+        assert streaming["progress_observable"] is True
+        assert streaming["progress_source"] == "stream_chunk"
+        assert streaming["progress_event_count"] == 1
+        assert isinstance(streaming["last_progress_at"], str)
+        assert streaming["activity_state"] == "progressing"
+        assert isinstance(streaming["idle_for_s"], float)
+        assert streaming["idle_for_s"] >= 0.0
+
+        opaque = active["llmcall_opaque"]
+        assert opaque["progress_observable"] in (None, False)
+        assert opaque["activity_state"] == "waiting"
+        assert opaque["idle_for_s"] is None
+
+    def test_get_active_llm_calls_excludes_same_host_orphaned_processes(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_orphaned",
+            timestamp="2026-03-19T10:00:00Z",
+            host_name="test-host",
+            process_id=12345,
+            process_start_token="linux-proc-start:99",
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_alive",
+            timestamp="2026-03-19T10:00:05Z",
+            host_name="test-host",
+            process_id=54321,
+            process_start_token="linux-proc-start:100",
+            trace_id="trace.alive",
+        )
+
+        from llm_client.observability import query as query_module
+
+        monkeypatch.setattr(query_module, "_current_host_name", lambda: "test-host")
+
+        def _fake_status(*, host_name: object, process_id: object, process_start_token: object) -> bool | None:
+            if process_id == 12345:
+                return False
+            if process_id == 54321:
+                return True
+            return None
+
+        monkeypatch.setattr(query_module, "_same_host_process_status", _fake_status)
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_alive"
+        assert active[0]["process_alive"] is True
+
+    def test_get_active_llm_calls_keeps_records_when_process_liveness_is_unknown(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_unknown",
+            timestamp="2026-03-19T10:00:00Z",
+            host_name="other-host",
+            process_id=111,
+        )
+
+        from llm_client.observability import query as query_module
+
+        monkeypatch.setattr(query_module, "_current_host_name", lambda: "test-host")
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_unknown"
+        assert active[0]["process_alive"] is None
+
+
 class TestBackgroundModeAdoption:
     def test_summarizes_task_graph_experiment_dimensions(self, tmp_path):
         experiments = tmp_path / "experiments.jsonl"
