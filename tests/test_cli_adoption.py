@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 
-import llm_client
 import pytest
 from llm_client.cli.adoption import cmd_adoption, register_parser
 
@@ -30,7 +29,7 @@ def test_cmd_adoption_json_output(monkeypatch, capsys) -> None:
             "since": None,
         }
 
-    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    monkeypatch.setattr("llm_client.observability.query.get_background_mode_adoption", fake_summary)
     args = argparse.Namespace(
         experiments_path=None,
         since=None,
@@ -74,7 +73,7 @@ def test_cmd_adoption_table_output(monkeypatch, capsys) -> None:
             "since": None,
         }
 
-    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    monkeypatch.setattr("llm_client.observability.query.get_background_mode_adoption", fake_summary)
     args = argparse.Namespace(
         experiments_path=None,
         since=None,
@@ -188,7 +187,7 @@ def test_cmd_adoption_gate_fail_exits_nonzero(monkeypatch, capsys) -> None:
             "since": None,
         }
 
-    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    monkeypatch.setattr("llm_client.observability.query.get_background_mode_adoption", fake_summary)
     args = argparse.Namespace(
         experiments_path=None,
         since=None,
@@ -230,7 +229,7 @@ def test_cmd_adoption_gate_warn_only_does_not_exit(monkeypatch, capsys) -> None:
             "since": None,
         }
 
-    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    monkeypatch.setattr("llm_client.observability.query.get_background_mode_adoption", fake_summary)
     args = argparse.Namespace(
         experiments_path=None,
         since=None,
@@ -270,7 +269,7 @@ def test_cmd_adoption_gate_reports_missing_reasoning_dimension(monkeypatch, caps
             "since": None,
         }
 
-    monkeypatch.setattr(llm_client, "get_background_mode_adoption", fake_summary)
+    monkeypatch.setattr("llm_client.observability.query.get_background_mode_adoption", fake_summary)
     args = argparse.Namespace(
         experiments_path=None,
         since=None,

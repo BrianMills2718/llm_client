@@ -7,6 +7,8 @@ This module contains the concrete query logic that was previously in
 from __future__ import annotations
 
 import json
+import os
+import socket
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -182,6 +184,72 @@ def get_trace_tree(
     return result
 
 
+def _current_host_name() -> str | None:
+    """Return the current host name for same-host lifecycle filtering."""
+
+    try:
+        hostname = socket.gethostname().strip()
+    except Exception:
+        return None
+    return hostname or None
+
+
+def _linux_process_start_token(pid: int) -> str | None:
+    """Return the Linux procfs start token for one process when available."""
+
+    if pid <= 0:
+        return None
+    try:
+        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _, _, remainder = stat_text.partition(") ")
+    if not remainder:
+        return None
+    fields = remainder.split()
+    if len(fields) <= 19:
+        return None
+    start_ticks = fields[19].strip()
+    return f"linux-proc-start:{start_ticks}" if start_ticks else None
+
+
+def _same_host_process_status(
+    *,
+    host_name: Any,
+    process_id: Any,
+    process_start_token: Any,
+) -> bool | None:
+    """Return same-host process liveness for one lifecycle record.
+
+    Returns `True` when the originating process is definitely still alive,
+    `False` when it is definitely gone or no longer matches the original
+    process identity, and `None` when liveness cannot be determined honestly.
+    """
+
+    if not isinstance(host_name, str) or not host_name.strip():
+        return None
+    current_host = _current_host_name()
+    if current_host is None or host_name.strip() != current_host:
+        return None
+    if not isinstance(process_id, int) or process_id <= 0:
+        return None
+
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return None
+    except OSError:
+        return None
+
+    if isinstance(process_start_token, str) and process_start_token.strip():
+        current_token = _linux_process_start_token(process_id)
+        if current_token is not None and current_token != process_start_token.strip():
+            return False
+    return True
+
+
 def get_active_llm_calls(
     *,
     project: str | None = None,
@@ -194,7 +262,8 @@ def get_active_llm_calls(
     A call is considered active when its most recent Foundation
     ``LLMCallLifecycle`` event has phase ``started``, ``heartbeat``,
     ``progress``, or ``stalled``. Terminal ``completed`` and ``failed`` phases
-    are excluded.
+    are excluded. Same-host calls are also excluded when the recorded process
+    identity proves the originating process is gone.
     """
     db = _io_log._get_db()
     if db is None:
@@ -243,6 +312,9 @@ def get_active_llm_calls(
                 "resolved_model_id": lifecycle.get("resolved_model_id"),
                 "call_kind": lifecycle.get("call_kind"),
                 "prompt_ref": lifecycle.get("prompt_ref"),
+                "host_name": lifecycle.get("host_name"),
+                "process_id": lifecycle.get("process_id"),
+                "process_start_token": lifecycle.get("process_start_token"),
                 "timeout_policy": lifecycle.get("timeout_policy"),
                 "provider_timeout_s": lifecycle.get("provider_timeout_s"),
                 "heartbeat_interval_s": lifecycle.get("heartbeat_interval_s"),
@@ -264,6 +336,12 @@ def get_active_llm_calls(
         record["resolved_model_id"] = lifecycle.get("resolved_model_id", record["resolved_model_id"])
         record["call_kind"] = lifecycle.get("call_kind", record["call_kind"])
         record["prompt_ref"] = lifecycle.get("prompt_ref", record["prompt_ref"])
+        record["host_name"] = lifecycle.get("host_name", record["host_name"])
+        record["process_id"] = lifecycle.get("process_id", record["process_id"])
+        record["process_start_token"] = lifecycle.get(
+            "process_start_token",
+            record["process_start_token"],
+        )
         record["timeout_policy"] = lifecycle.get("timeout_policy", record["timeout_policy"])
         record["provider_timeout_s"] = lifecycle.get("provider_timeout_s", record["provider_timeout_s"])
         record["heartbeat_interval_s"] = lifecycle.get("heartbeat_interval_s", record["heartbeat_interval_s"])
@@ -291,7 +369,16 @@ def get_active_llm_calls(
         if record.get("phase") in {"started", "heartbeat", "progress", "stalled"}
     ]
     now = datetime.now(timezone.utc)
+    filtered_active: list[dict[str, Any]] = []
     for record in active:
+        process_alive = _same_host_process_status(
+            host_name=record.get("host_name"),
+            process_id=record.get("process_id"),
+            process_start_token=record.get("process_start_token"),
+        )
+        record["process_alive"] = process_alive
+        if process_alive is False:
+            continue
         progress_observable = bool(record.get("progress_observable"))
         last_progress_at = record.get("last_progress_at")
         last_progress_dt = _parse_iso_datetime(last_progress_at)
@@ -308,10 +395,11 @@ def get_active_llm_calls(
                 record["activity_state"] = "waiting"
         else:
             record["activity_state"] = "waiting"
-    active.sort(key=lambda record: str(record.get("last_event_at") or ""), reverse=True)
+        filtered_active.append(record)
+    filtered_active.sort(key=lambda record: str(record.get("last_event_at") or ""), reverse=True)
     if limit > 0:
-        return active[:limit]
-    return active
+        return filtered_active[:limit]
+    return filtered_active
 
 
 def import_governed_repo_hook_log(

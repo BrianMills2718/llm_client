@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (Plans 11-12 add governed-repo session/context telemetry and lifecycle state to the cross-project substrate)
+Last verified: 2026-03-20 (Plans 11-12 add governed-repo session/context telemetry and lifecycle state to the cross-project substrate)
 
 ## Context
 

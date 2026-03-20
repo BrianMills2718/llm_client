@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (Plans 11-12 keep governed-repo session/context telemetry and lifecycle state in shared observability, not the data plane)
+Last verified: 2026-03-20 (Plans 11-12 keep governed-repo session/context telemetry and lifecycle state in shared observability, not the data plane)
 
 ## Context
 

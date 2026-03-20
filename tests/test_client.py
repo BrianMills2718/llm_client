@@ -262,6 +262,8 @@ class TestCallLLM:
         assert started["event_type"] == "LLMCallLifecycle"
         assert started["llm_call_lifecycle"]["phase"] == "started"
         assert started["llm_call_lifecycle"]["requested_model_id"] == "gpt-4"
+        assert started["llm_call_lifecycle"]["process_id"] > 0
+        assert started["llm_call_lifecycle"]["host_name"]
         assert completed["llm_call_lifecycle"]["phase"] == "completed"
         assert completed["llm_call_lifecycle"]["resolved_model_id"] == "gpt-4"
         assert completed["llm_call_lifecycle"]["call_id"] == started["llm_call_lifecycle"]["call_id"]
@@ -3487,7 +3489,13 @@ class TestStreamLLM:
         mock_builder: MagicMock,
         mock_log_foundation_event: MagicMock,
     ) -> None:
-        """Streaming calls should emit progress-aware lifecycle updates from chunks."""
+        """Streaming calls should track all chunks but rate-limit progress events.
+
+        Progress events are throttled to at most one per heartbeat_interval_s.
+        With rapid chunks and a 15s default interval, only the first chunk
+        emits a progress event. The terminal (completed) event still carries
+        the full progress_event_count reflecting every chunk observed.
+        """
         chunks = _mock_stream_chunks(["Hello", " ", "world!"])
         mock_comp.return_value = iter(chunks)
 
@@ -3505,12 +3513,14 @@ class TestStreamLLM:
             for call in mock_log_foundation_event.call_args_list
         ]
         assert phases[0] == "started"
-        assert phases.count("progress") == 3
+        # Rate-limited: only the first chunk emits a progress event at default 15s interval
+        assert phases.count("progress") == 1
         assert phases[-1] == "completed"
         completed_event = mock_log_foundation_event.call_args_list[-1].kwargs["event"]
         lifecycle = completed_event["llm_call_lifecycle"]
         assert lifecycle["progress_observable"] is True
         assert lifecycle["progress_source"] == "stream_chunk"
+        # Internal counter reflects ALL chunks, not just emitted events
         assert lifecycle["progress_event_count"] == 3
 
     @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
@@ -3600,7 +3610,13 @@ class TestAstreamLLM:
         mock_builder: MagicMock,
         mock_log_foundation_event: MagicMock,
     ) -> None:
-        """Async streaming calls should emit progress-aware lifecycle updates from chunks."""
+        """Async streaming calls should track all chunks but rate-limit progress events.
+
+        Progress events are throttled to at most one per heartbeat_interval_s.
+        With rapid chunks and a 15s default interval, only the first chunk
+        emits a progress event. The terminal (completed) event still carries
+        the full progress_event_count reflecting every chunk observed.
+        """
         chunks = _mock_stream_chunks(["Hello", " ", "world!"])
 
         async def async_iter():
@@ -3626,12 +3642,14 @@ class TestAstreamLLM:
             for call in mock_log_foundation_event.call_args_list
         ]
         assert phases[0] == "started"
-        assert phases.count("progress") == 3
+        # Rate-limited: only the first chunk emits a progress event at default 15s interval
+        assert phases.count("progress") == 1
         assert phases[-1] == "completed"
         completed_event = mock_log_foundation_event.call_args_list[-1].kwargs["event"]
         lifecycle = completed_event["llm_call_lifecycle"]
         assert lifecycle["progress_observable"] is True
         assert lifecycle["progress_source"] == "stream_chunk"
+        # Internal counter reflects ALL chunks, not just emitted events
         assert lifecycle["progress_event_count"] == 3
 
     @pytest.mark.asyncio

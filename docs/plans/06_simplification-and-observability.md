@@ -57,6 +57,27 @@ confirmed against Langfuse feature set.
 
 ---
 
+## Current Checkpoint (2026-03-20)
+
+No implementation slices have landed yet. Plans 07-12 (governance, liveness,
+observability, progress-aware idle detection) were prioritized over
+decomposition because they delivered new capability, not just maintainability.
+
+Current file sizes (vs plan baselines):
+- `client.py`: 4,576 lines (plan baseline: 4,630)
+- `mcp_agent.py`: 3,335 lines (plan baseline: 4,959)
+- `agents.py`: 513 lines (plan baseline: 2,818 — reduced by Plan 02 extraction)
+
+`agents.py` is already well below the 1,000-line soft target. `mcp_agent.py`
+dropped ~1,600 lines from prior work. `client.py` is the remaining concern.
+
+**Decision:** Consciously deferred. Pick up when `client.py` or `mcp_agent.py`
+start causing merge conflicts or cognitive overhead in active plans, not as
+scheduled program work. The governance and observability infrastructure (Plans
+07-12) was higher leverage.
+
+---
+
 ## Files Affected
 
 > This section declares files touched by this plan. New slices must amend this

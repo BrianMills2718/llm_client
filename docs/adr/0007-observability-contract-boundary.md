@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (Plans 11-12 extend governed-repo and lifecycle/query metadata within the existing observability contract boundary)
+Last verified: 2026-03-20 (Plans 11-12 extend governed-repo and lifecycle/query metadata within the existing observability contract boundary)
 
 ## Context
 

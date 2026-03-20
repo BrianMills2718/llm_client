@@ -19,6 +19,7 @@ compatibility contracts in `llm_client`.
 - `0014-emit-heartbeats-and-non-destructive-stall-markers-for-long-running-calls.md`
 - `0015-governed-repo-friction-telemetry-belongs-in-shared-observability.md`
 - `0016-prefer-progress-aware-idle-detection-over-wall-clock-stall-inference.md`
+- `0017-exclude-same-host-orphaned-calls-from-the-active-call-query.md`
 
 Related architecture docs:
 

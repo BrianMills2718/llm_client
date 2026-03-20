@@ -100,7 +100,6 @@ _QUOTA_PATTERNS = [
     "billing",
     "insufficient",
     "exceeded your current",
-    "limit exceeded",
     "key limit",
     "plan and billing",
     "account deactivated",

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
-Last verified: 2026-03-19 (Plans 11-12 add governed-repo session/context telemetry and lifecycle progress metadata without introducing new warning categories)
+Last verified: 2026-03-20 (Plans 11-12 add governed-repo session/context telemetry and lifecycle progress metadata without introducing new warning categories)
 
 ## Context
 

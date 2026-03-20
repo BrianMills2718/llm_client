@@ -18,6 +18,7 @@ Track all implementation work here.
 | 10 | [Governed Repo Friction Observability](10_governed_repo_friction_observability.md) | Highest | ✅ Complete | - |
 | 11 | [Context Injection Experiment Support](11_context_injection_experiment_support.md) | High | ✅ Complete | - |
 | 12 | [Progress-Aware Idle Detection](12_progress_aware_idle_detection.md) | High | ✅ Complete | - |
+| 13 | [Same-Host Orphaned Call Reaping](13_same_host_orphaned_call_reaping.md) | High | ✅ Complete | - |
 
 ## Status Key
 

@@ -233,6 +233,9 @@ def test_validate_foundation_event_llm_call_lifecycle_shape() -> None:
             "provider_timeout_s": 60,
             "timeout_policy": "allow",
             "prompt_ref": "shared.test.prompt@1",
+            "host_name": "test-host",
+            "process_id": 12345,
+            "process_start_token": "linux-proc-start:42",
             "latency_s": 1.25,
         },
     }
@@ -240,6 +243,7 @@ def test_validate_foundation_event_llm_call_lifecycle_shape() -> None:
     assert validated["event_type"] == "LLMCallLifecycle"
     assert validated["llm_call_lifecycle"]["phase"] == "completed"
     assert validated["llm_call_lifecycle"]["timeout_policy"] == "allow"
+    assert validated["llm_call_lifecycle"]["process_id"] == 12345
 
 
 def test_validate_foundation_event_llm_call_lifecycle_accepts_heartbeat_phase() -> None:

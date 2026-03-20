@@ -47,6 +47,7 @@ import json as _json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -54,6 +55,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, NoReturn, Protocol, TypeVar
 
 import litellm
@@ -223,6 +225,7 @@ GEMINI_NATIVE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/model
 GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
     "max_tokens",
     "max_completion_tokens",
+    "metadata",
     "temperature",
     "top_p",
     "stop",
@@ -244,6 +247,45 @@ _LIFECYCLE_HEARTBEAT_INTERVAL_ENV = "LLM_CLIENT_LIFECYCLE_HEARTBEAT_INTERVAL_S"
 _LIFECYCLE_STALL_AFTER_ENV = "LLM_CLIENT_LIFECYCLE_STALL_AFTER_S"
 _DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S = 15.0
 _DEFAULT_LIFECYCLE_STALL_AFTER_S = 300.0
+
+
+def _process_host_name() -> str | None:
+    """Return the current host name for same-host lifecycle correlation."""
+
+    try:
+        hostname = socket.gethostname().strip()
+    except Exception:
+        return None
+    return hostname or None
+
+
+def _linux_process_start_token(pid: int) -> str | None:
+    """Return a Linux procfs start token for one process when available.
+
+    The token is the kernel start-tick value from ``/proc/<pid>/stat``. It is
+    stable for the life of the process and lets same-host queries distinguish a
+    reused PID from the original long-running call process.
+    """
+
+    if pid <= 0:
+        return None
+    try:
+        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _, _, remainder = stat_text.partition(") ")
+    if not remainder:
+        return None
+    fields = remainder.split()
+    if len(fields) <= 19:
+        return None
+    start_ticks = fields[19].strip()
+    return f"linux-proc-start:{start_ticks}" if start_ticks else None
+
+
+_PROCESS_HOST_NAME = _process_host_name()
+_PROCESS_ID = os.getpid()
+_PROCESS_START_TOKEN = _linux_process_start_token(_PROCESS_ID)
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -1377,6 +1419,9 @@ def _emit_llm_call_lifecycle_event(
                 "provider_timeout_s": provider_timeout_s if provider_timeout_s > 0 else None,
                 "timeout_policy": _timeout_policy_label(),
                 "prompt_ref": prompt_ref,
+                "host_name": _PROCESS_HOST_NAME,
+                "process_id": _PROCESS_ID if _PROCESS_ID > 0 else None,
+                "process_start_token": _PROCESS_START_TOKEN,
                 "progress_observable": progress_observable,
                 "progress_source": progress_source,
                 "progress_event_count": progress_event_count,
@@ -1430,6 +1475,7 @@ class _SyncLLMCallHeartbeatMonitor:
         self._progress_event_count = 0
         self._last_progress_at_monotonic: float | None = None
         self._stalled_emitted = False
+        self._last_progress_event_emitted_at: float | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -1459,7 +1505,13 @@ class _SyncLLMCallHeartbeatMonitor:
                 self._progress_source = default_source
 
     def mark_progress(self, *, source: str) -> None:
-        """Record one unit of observed progress and emit a progress lifecycle event."""
+        """Record one unit of observed progress, rate-limiting event emission.
+
+        Always updates the internal progress state (counter, timestamp, source)
+        so stall detection stays accurate. Only emits a Foundation lifecycle
+        event at most once per ``heartbeat_interval_s`` to avoid flooding
+        observers on high-frequency chunk streams.
+        """
         now = time.monotonic()
         with self._state_lock:
             self._progress_observable = True
@@ -1467,8 +1519,16 @@ class _SyncLLMCallHeartbeatMonitor:
             self._progress_event_count += 1
             self._last_progress_at_monotonic = now
             self._stalled_emitted = False
+            should_emit = (
+                self._last_progress_event_emitted_at is None
+                or self.heartbeat_interval_s <= 0
+                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
+            )
+            if should_emit:
+                self._last_progress_event_emitted_at = now
             snapshot = self._snapshot_locked()
-        self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
+        if should_emit:
+            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
 
     def snapshot(self) -> _LLMCallProgressSnapshot:
         """Return the current progress-observability state for this call."""
@@ -1622,6 +1682,7 @@ class _AsyncLLMCallHeartbeatMonitor:
         self._progress_event_count = 0
         self._last_progress_at_monotonic: float | None = None
         self._stalled_emitted = False
+        self._last_progress_event_emitted_at: float | None = None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -1639,7 +1700,10 @@ class _AsyncLLMCallHeartbeatMonitor:
         if self._task is None:
             return
         self._stop_event.set()
-        await self._task
+        try:
+            await self._task
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass  # Monitor cleanup race — stop_event set but wait_for already timed out
 
     def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
         """Declare that this async call path exposes truthful observable progress."""
@@ -1649,7 +1713,13 @@ class _AsyncLLMCallHeartbeatMonitor:
                 self._progress_source = default_source
 
     def mark_progress(self, *, source: str) -> None:
-        """Record one unit of observed progress and emit a progress lifecycle event."""
+        """Record one unit of observed progress, rate-limiting event emission.
+
+        Always updates the internal progress state (counter, timestamp, source)
+        so stall detection stays accurate. Only emits a Foundation lifecycle
+        event at most once per ``heartbeat_interval_s`` to avoid flooding
+        observers on high-frequency chunk streams.
+        """
         now = time.monotonic()
         with self._state_lock:
             self._progress_observable = True
@@ -1657,8 +1727,16 @@ class _AsyncLLMCallHeartbeatMonitor:
             self._progress_event_count += 1
             self._last_progress_at_monotonic = now
             self._stalled_emitted = False
+            should_emit = (
+                self._last_progress_event_emitted_at is None
+                or self.heartbeat_interval_s <= 0
+                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
+            )
+            if should_emit:
+                self._last_progress_event_emitted_at = now
             snapshot = self._snapshot_locked()
-        self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
+        if should_emit:
+            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
 
     def snapshot(self) -> _LLMCallProgressSnapshot:
         """Return the current progress-observability state for this call."""

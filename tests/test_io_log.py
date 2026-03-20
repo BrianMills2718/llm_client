@@ -533,6 +533,9 @@ class TestGetActiveLLMCalls:
         progress_observable: bool | None = None,
         progress_source: str | None = None,
         progress_event_count: int | None = None,
+        host_name: str | None = None,
+        process_id: int | None = None,
+        process_start_token: str | None = None,
     ) -> None:
         lifecycle_payload = {
             "call_id": call_id,
@@ -548,6 +551,12 @@ class TestGetActiveLLMCalls:
             lifecycle_payload["progress_source"] = progress_source
         if progress_event_count is not None:
             lifecycle_payload["progress_event_count"] = progress_event_count
+        if host_name is not None:
+            lifecycle_payload["host_name"] = host_name
+        if process_id is not None:
+            lifecycle_payload["process_id"] = process_id
+        if process_start_token is not None:
+            lifecycle_payload["process_start_token"] = process_start_token
         io_log.log_foundation_event(
             caller="test",
             task=task,
@@ -652,6 +661,61 @@ class TestGetActiveLLMCalls:
         assert opaque["progress_observable"] in (None, False)
         assert opaque["activity_state"] == "waiting"
         assert opaque["idle_for_s"] is None
+
+    def test_get_active_llm_calls_excludes_same_host_orphaned_processes(self, tmp_path, monkeypatch):
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_orphaned",
+            timestamp="2026-03-19T10:00:00Z",
+            host_name="test-host",
+            process_id=12345,
+            process_start_token="linux-proc-start:99",
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_alive",
+            timestamp="2026-03-19T10:00:05Z",
+            host_name="test-host",
+            process_id=54321,
+            process_start_token="linux-proc-start:100",
+            trace_id="trace.alive",
+        )
+
+        from llm_client.observability import query as query_module
+
+        monkeypatch.setattr(query_module, "_current_host_name", lambda: "test-host")
+
+        def _fake_status(*, host_name: object, process_id: object, process_start_token: object) -> bool | None:
+            if process_id == 12345:
+                return False
+            if process_id == 54321:
+                return True
+            return None
+
+        monkeypatch.setattr(query_module, "_same_host_process_status", _fake_status)
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_alive"
+        assert active[0]["process_alive"] is True
+
+    def test_get_active_llm_calls_keeps_records_when_process_liveness_is_unknown(self, tmp_path, monkeypatch):
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_unknown",
+            timestamp="2026-03-19T10:00:00Z",
+            host_name="other-host",
+            process_id=111,
+        )
+
+        from llm_client.observability import query as query_module
+
+        monkeypatch.setattr(query_module, "_current_host_name", lambda: "test-host")
+
+        active = io_log.get_active_llm_calls()
+        assert len(active) == 1
+        assert active[0]["call_id"] == "llmcall_unknown"
+        assert active[0]["process_alive"] is None
 
 
 class TestBackgroundModeAdoption:

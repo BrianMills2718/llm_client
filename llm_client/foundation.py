@@ -547,6 +547,9 @@ class LLMCallLifecyclePayload(BaseModel):
     provider_timeout_s: int | None = Field(default=None, ge=0)
     timeout_policy: Literal["allow", "ban"]
     prompt_ref: str | None = None
+    host_name: str | None = None
+    process_id: int | None = Field(default=None, ge=1)
+    process_start_token: str | None = None
     progress_observable: bool | None = None
     progress_source: str | None = None
     progress_event_count: int | None = Field(default=None, ge=0)

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (Plans 11-12 keep governed-repo telemetry and lifecycle progress events on canonical service namespace actor ids)
+Last verified: 2026-03-20 (Plans 11-12 keep governed-repo telemetry and lifecycle progress events on canonical service namespace actor ids)
 
 ## Context
 
