@@ -883,6 +883,7 @@ Fourteen functions (7 sync + 7 async):
 Timeout policy:
 - Set `LLM_CLIENT_TIMEOUT_POLICY=ban` to disable all per-call request timeouts globally (timeouts are normalized to disabled and omitted from provider calls).
 - Set `LLM_CLIENT_TIMEOUT_POLICY=allow` (default) to permit explicit `timeout` values.
+- For long-running work, use `get_active_llm_calls()` to distinguish waiting, progressing, and idle calls before treating them as hung.
 
 ## Experiment Observability
 
