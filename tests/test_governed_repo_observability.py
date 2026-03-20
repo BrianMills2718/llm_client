@@ -9,9 +9,11 @@ from pathlib import Path
 import pytest
 
 from llm_client import io_log
+from llm_client.observability.experiments import finish_run, start_run
 from llm_client.observability.query import (
     get_governed_repo_friction_summary,
     get_governed_repo_top_missing_reads,
+    get_governed_repo_variant_comparison,
     import_governed_repo_hook_log,
 )
 
@@ -247,3 +249,237 @@ def test_query_governed_repo_top_missing_reads_ranks_repeated_gaps(tmp_path: Pat
     ranked = get_governed_repo_top_missing_reads(repo_name="gap_repo", days=30, limit=10)
     assert ranked[0] == {"path": "CLAUDE.md", "count": 2}
     assert ranked[1] == {"path": "docs/plans/08.md", "count": 1}
+
+
+def test_import_hook_log_records_experiment_identity_and_variant(tmp_path: Path) -> None:
+    repo_root = tmp_path / "experiment_repo"
+    log_path = _write_hook_log(
+        repo_root,
+        [
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/experiment_repo/cli.py",
+                "decision": "block",
+                "decision_reason": "missing required reads",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": [],
+                "missing_reads": ["CLAUDE.md"],
+                "coupled_docs": [],
+            }
+        ],
+    )
+
+    assert (
+        import_governed_repo_hook_log(
+            log_path,
+            experiment_id="ctx-exp-1",
+            variant_id="rich-context",
+            downstream_run_id="run_ctx_eval_1",
+        )
+        == 1
+    )
+
+    row = io_log._get_db().execute(
+        "SELECT trace_id, payload FROM foundation_events ORDER BY timestamp ASC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "governed_repo/experiment_repo/ctx-exp-1/rich-context"
+    payload = json.loads(row[1])
+    hook_payload = payload["governed_repo_hook"]
+    assert hook_payload["experiment_id"] == "ctx-exp-1"
+    assert hook_payload["variant_id"] == "rich-context"
+    assert hook_payload["downstream_run_id"] == "run_ctx_eval_1"
+
+
+def test_query_governed_repo_variant_comparison_summarizes_friction_metrics(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "variant_repo"
+    short_log_path = _write_hook_log(
+        repo_root,
+        [
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/variant_repo/a.py",
+                "decision": "block",
+                "decision_reason": "missing required reads",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": [],
+                "missing_reads": ["CLAUDE.md"],
+                "coupled_docs": [],
+            },
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(1),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/variant_repo/a.py",
+                "decision": "block",
+                "decision_reason": "missing required reads",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": [],
+                "missing_reads": ["CLAUDE.md"],
+                "coupled_docs": [],
+            },
+        ],
+    )
+    rich_log_path = _write_hook_log(
+        tmp_path / "variant_repo_rich",
+        [
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(2),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/variant_repo/b.py",
+                "decision": "allow",
+                "decision_reason": "requirements satisfied",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": ["CLAUDE.md"],
+                "missing_reads": [],
+                "coupled_docs": [],
+            },
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(3),
+                "hook": "gate-edit",
+                "tool_name": "Write",
+                "file_path": "src/variant_repo/c.py",
+                "decision": "error",
+                "decision_reason": "hook failure",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": [],
+                "missing_reads": ["docs/plans/08.md"],
+                "coupled_docs": [],
+            },
+        ],
+    )
+
+    assert import_governed_repo_hook_log(
+        short_log_path,
+        repo_name="variant_repo",
+        experiment_id="ctx-exp-compare",
+        variant_id="short-context",
+    ) == 2
+    assert import_governed_repo_hook_log(
+        rich_log_path,
+        repo_name="variant_repo",
+        experiment_id="ctx-exp-compare",
+        variant_id="rich-context",
+    ) == 2
+
+    comparison = get_governed_repo_variant_comparison(
+        experiment_id="ctx-exp-compare",
+        repo_name="variant_repo",
+        days=30,
+    )
+    by_variant = {entry["variant_id"]: entry for entry in comparison["variants"]}
+
+    short_summary = by_variant["short-context"]
+    assert short_summary["block_events"] == 2
+    assert short_summary["repeated_block_events"] == 1
+    assert short_summary["repeated_block_rate"] == 0.5
+    assert short_summary["repeated_missing_read_events"] == 1
+    assert short_summary["repeated_missing_read_rate"] == 0.5
+    assert short_summary["hook_error_rate"] == 0.0
+
+    rich_summary = by_variant["rich-context"]
+    assert rich_summary["block_events"] == 0
+    assert rich_summary["hook_error_events"] == 1
+    assert rich_summary["hook_error_rate"] == 0.5
+    assert rich_summary["repeated_missing_read_rate"] == 0.0
+
+
+def test_query_governed_repo_variant_comparison_joins_downstream_run_outcomes(
+    tmp_path: Path,
+) -> None:
+    completed_run_id = start_run(
+        dataset="ctx-exp",
+        model="gpt-test",
+        task="experiment",
+        allow_missing_agent_spec=True,
+        missing_agent_spec_reason="synthetic Plan 11 observability test",
+    )
+    finish_run(run_id=completed_run_id, status="completed")
+    failed_run_id = start_run(
+        dataset="ctx-exp",
+        model="gpt-test",
+        task="experiment",
+        allow_missing_agent_spec=True,
+        missing_agent_spec_reason="synthetic Plan 11 observability test",
+    )
+    finish_run(run_id=failed_run_id, status="failed")
+
+    repo_root = tmp_path / "outcome_repo"
+    control_log_path = _write_hook_log(
+        repo_root,
+        [
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/outcome_repo/a.py",
+                "decision": "allow",
+                "decision_reason": "requirements satisfied",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": ["CLAUDE.md"],
+                "missing_reads": [],
+                "coupled_docs": [],
+            }
+        ],
+    )
+    variant_log_path = _write_hook_log(
+        tmp_path / "outcome_repo_variant",
+        [
+            {
+                "schema_version": 1,
+                "timestamp": _timestamp(1),
+                "hook": "gate-edit",
+                "tool_name": "Edit",
+                "file_path": "src/outcome_repo/b.py",
+                "decision": "block",
+                "decision_reason": "missing required reads",
+                "required_reads": ["CLAUDE.md"],
+                "reads_completed": [],
+                "missing_reads": ["CLAUDE.md"],
+                "coupled_docs": [],
+            }
+        ],
+    )
+
+    assert import_governed_repo_hook_log(
+        control_log_path,
+        repo_name="outcome_repo",
+        experiment_id="ctx-exp-outcomes",
+        variant_id="control",
+        downstream_run_id=completed_run_id,
+    ) == 1
+    assert import_governed_repo_hook_log(
+        variant_log_path,
+        repo_name="outcome_repo",
+        experiment_id="ctx-exp-outcomes",
+        variant_id="variant",
+        downstream_run_id=failed_run_id,
+    ) == 1
+
+    comparison = get_governed_repo_variant_comparison(
+        experiment_id="ctx-exp-outcomes",
+        repo_name="outcome_repo",
+        days=30,
+    )
+    by_variant = {entry["variant_id"]: entry for entry in comparison["variants"]}
+
+    assert by_variant["control"]["downstream_runs"]["completed_runs"] == 1
+    assert by_variant["control"]["downstream_runs"]["terminal_runs"] == 1
+    assert by_variant["control"]["downstream_runs"]["status_counts"] == {"completed": 1}
+
+    assert by_variant["variant"]["downstream_runs"]["completed_runs"] == 0
+    assert by_variant["variant"]["downstream_runs"]["terminal_runs"] == 1
+    assert by_variant["variant"]["downstream_runs"]["status_counts"] == {"failed": 1}

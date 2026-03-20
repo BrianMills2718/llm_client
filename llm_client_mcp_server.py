@@ -281,6 +281,32 @@ def query_governed_repo_friction(
     return json.dumps(summary, indent=2)
 
 
+@mcp.tool()
+def query_governed_repo_variant_comparison(
+    experiment_id: str,
+    repo_name: str | None = None,
+    days: int = 7,
+) -> str:
+    """Compare governed-repo friction metrics across experiment variants.
+
+    Args:
+        experiment_id: Explicit experiment identifier shared by the imported
+            hook telemetry under comparison.
+        repo_name: Optional repo/project filter.
+        days: Look-back window in days.
+
+    Returns:
+        JSON report with per-variant repeated-block, repeated-missing-read,
+        hook-error, and downstream-run outcome summaries.
+    """
+    summary = llm_client.get_governed_repo_variant_comparison(
+        experiment_id=experiment_id,
+        repo_name=repo_name,
+        days=days,
+    )
+    return json.dumps(summary, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # Performance Analytics
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (governed-repo friction telemetry now imports into the shared substrate)
+Last verified: 2026-03-19 (governed-repo friction telemetry and variant-comparison metadata now import into the shared substrate)
 
 ## Context
 
@@ -40,6 +40,8 @@ existing libraries already solve well.
    backend may evolve later without changing this ownership boundary.
    Imported governed-repo hook telemetry is part of this shared observability
    backend rather than a separate repo-local analytics stack.
+   Experiment-link fields and downstream-run joins for governed-repo telemetry
+   are also part of this shared substrate rather than a second analysis system.
 4. The shared experiment envelope belongs to `llm_client`, including fields such
    as `project`, `dataset`, `condition_id`, `scenario_id`, `phase`, `seed`,
    `replicate`, `metrics_schema`, `config`, `provenance`, and per-item

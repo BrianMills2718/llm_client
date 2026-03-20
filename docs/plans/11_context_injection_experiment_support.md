@@ -1,6 +1,6 @@
 # Plan 11: Context Injection Experiment Support
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -55,8 +55,10 @@ comparison, not guesswork or one-off manual anecdotes.
 - `docs/plans/01_master-roadmap.md` (modify)
 - `docs/plans/11_context_injection_experiment_support.md` (create)
 - `docs/plans/CLAUDE.md` (modify)
+- `llm_client/__init__.py` (modify)
 - `llm_client/foundation.py` (modify)
-- `llm_client/observability/experiments.py` (modify)
+- `llm_client/io_log.py` (modify)
+- `llm_client/observability/__init__.py` (modify)
 - `llm_client/observability/governed_repo.py` (modify)
 - `llm_client/observability/query.py` (modify)
 - `llm_client_mcp_server.py` (modify)
@@ -109,11 +111,11 @@ comparison, not guesswork or one-off manual anecdotes.
 
 ## Acceptance Criteria
 
-- [ ] Shared governed-repo telemetry can be grouped by explicit experiment id and variant
-- [ ] Comparison reports expose repeated-friction and hook-error rates by variant
-- [ ] Comparison reports can join hook telemetry to downstream run outcomes without a second backend
-- [ ] The ownership split between `llm_client` and external experiment runners is documented explicitly
-- [ ] `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py` passes
+- [x] Shared governed-repo telemetry can be grouped by explicit experiment id and variant
+- [x] Comparison reports expose repeated-friction and hook-error rates by variant
+- [x] Comparison reports can join hook telemetry to downstream run outcomes without a second backend
+- [x] The ownership split between `llm_client` and external experiment runners is documented explicitly
+- [x] `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py` passes
 
 ---
 
@@ -125,3 +127,13 @@ comparison, not guesswork or one-off manual anecdotes.
 - The first intended consumer is the unresolved `additionalContext` question in
   `project-meta` Plan 08, but the telemetry contract should be general enough
   for later governed-repo friction studies.
+- Experiment runners may stamp `experiment_id`, `variant_id`, and
+  `downstream_run_id` either directly into imported hook rows or through import
+  overrides. `llm_client` owns the shared storage and comparison semantics, not
+  the experiment execution loop itself.
+
+## Verification
+
+- `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py`
+- `pytest -q tests/test_observability_defaults.py`
+- `python -m py_compile llm_client/observability/governed_repo.py llm_client/observability/query.py llm_client/io_log.py llm_client/foundation.py llm_client_mcp_server.py`

@@ -320,3 +320,53 @@ def test_validate_foundation_event_governed_repo_hook_shape() -> None:
     assert validated["event_type"] == "GovernedRepoHook"
     assert validated["governed_repo_hook"]["decision"] == "block"
     assert validated["governed_repo_hook"]["missing_reads"] == ["docs/plans/08.md"]
+
+
+def test_validate_foundation_event_governed_repo_hook_experiment_shape() -> None:
+    payload = {
+        "event_id": "evt_govhook_test_variant",
+        "event_type": "GovernedRepoHook",
+        "timestamp": "2026-03-19T00:00:00+00:00",
+        "run_id": "run_governed_repo_variant",
+        "session_id": "sess_govhook_variant",
+        "actor_id": "service:llm_client:governed_repo_importer:1",
+        "operation": {
+            "name": "import_governed_repo_hook_log",
+            "version": "1.0.0",
+        },
+        "inputs": {
+            "artifact_ids": [],
+            "params": {
+                "repo_name": "project-meta",
+                "hook": "gate-edit",
+                "schema_version": 1,
+                "file_path": "scripts/meta/file_context.py",
+                "experiment_id": "ctx-exp-1",
+                "variant_id": "full-context",
+                "downstream_run_id": "run_ctx_eval_1",
+            },
+            "bindings": {},
+        },
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "governed_repo_hook": {
+            "repo_name": "project-meta",
+            "hook_name": "gate-edit",
+            "decision": "allow",
+            "file_path": "scripts/meta/file_context.py",
+            "tool_name": "Edit",
+            "decision_reason": "requirements satisfied",
+            "required_reads": ["CLAUDE.md"],
+            "reads_completed": ["CLAUDE.md"],
+            "missing_reads": [],
+            "coupled_docs": [],
+            "reads_file": ".claude/session_reads.txt",
+            "session_source": "reads_file:.claude/session_reads.txt",
+            "experiment_id": "ctx-exp-1",
+            "variant_id": "full-context",
+            "downstream_run_id": "run_ctx_eval_1",
+        },
+    }
+    validated = validate_foundation_event(payload)
+    assert validated["governed_repo_hook"]["experiment_id"] == "ctx-exp-1"
+    assert validated["governed_repo_hook"]["variant_id"] == "full-context"
+    assert validated["governed_repo_hook"]["downstream_run_id"] == "run_ctx_eval_1"

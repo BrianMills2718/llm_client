@@ -26,6 +26,9 @@ persisted, how compatibility is preserved, and where behavior should evolve.
    `llm_client`.
 6. Any breaking changes to observability payload shape or sink behavior require
    a dedicated ADR update.
+7. Experiment and variant comparison over governed-repo friction remains part
+   of the canonical observability surface. External runners may stamp metadata,
+   but they must not create a second primary query backend.
 
 ## Consequences
 
@@ -46,3 +49,6 @@ Negative:
 4. Compatibility tests must verify that governed-repo hook telemetry imported
    through `io_log.py` and `llm_client.observability.*` remains queryable
    through the canonical observability surface.
+5. Comparative governed-repo experiment queries must stay compatible with the
+   shared observability backend rather than depending on a separate experiment
+   store.

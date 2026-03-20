@@ -41,6 +41,7 @@ class CanonicalHookLogRow(BaseModel):
     context_bytes: int | None = Field(default=None, ge=0)
     experiment_id: str | None = None
     variant_id: str | None = None
+    downstream_run_id: str | None = None
 
     @field_validator(
         "timestamp",
@@ -52,6 +53,7 @@ class CanonicalHookLogRow(BaseModel):
         "reads_file",
         "experiment_id",
         "variant_id",
+        "downstream_run_id",
         mode="before",
     )
     @classmethod
@@ -138,13 +140,27 @@ def _build_event(
     repo_name: str,
     row: CanonicalHookLogRow,
     raw_line: str,
+    experiment_id: str | None = None,
+    variant_id: str | None = None,
+    downstream_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Translate one canonical hook-log row into a Foundation event payload."""
     event_timestamp = _normalize_timestamp(row.timestamp)
     session_source = _session_source_for_row(row)
+    resolved_experiment_id = row.experiment_id or experiment_id
+    resolved_variant_id = row.variant_id or variant_id
+    resolved_downstream_run_id = row.downstream_run_id or downstream_run_id
     session_id = f"sess_govhook_{_hash_suffix(repo_name + '|' + session_source)}"
-    run_id = f"run_governed_repo_{_hash_suffix(repo_name, length=16)}"
-    event_id = f"evt_govhook_{_hash_suffix(repo_name + '|' + raw_line)}"
+    run_identity = "|".join(
+        value or "-"
+        for value in (repo_name, resolved_experiment_id, resolved_variant_id)
+    )
+    run_id = f"run_governed_repo_{_hash_suffix(run_identity, length=16)}"
+    event_identity = "|".join(
+        value or "-"
+        for value in (repo_name, raw_line, resolved_experiment_id, resolved_variant_id, resolved_downstream_run_id)
+    )
+    event_id = f"evt_govhook_{_hash_suffix(event_identity)}"
     event_payload = {
         "event_id": event_id,
         "event_type": "GovernedRepoHook",
@@ -163,6 +179,9 @@ def _build_event(
                 "hook": row.hook,
                 "schema_version": row.schema_version,
                 "file_path": row.file_path,
+                "experiment_id": resolved_experiment_id,
+                "variant_id": resolved_variant_id,
+                "downstream_run_id": resolved_downstream_run_id,
             },
             "bindings": {},
         },
@@ -181,8 +200,9 @@ def _build_event(
             "coupled_docs": row.coupled_docs,
             "context_bytes": row.context_bytes,
             "session_source": session_source,
-            "experiment_id": row.experiment_id,
-            "variant_id": row.variant_id,
+            "experiment_id": resolved_experiment_id,
+            "variant_id": resolved_variant_id,
+            "downstream_run_id": resolved_downstream_run_id,
         },
     }
     return validate_foundation_event(event_payload)
@@ -212,6 +232,9 @@ def import_governed_repo_hook_log(
     log_path: str | Path,
     *,
     repo_name: str | None = None,
+    experiment_id: str | None = None,
+    variant_id: str | None = None,
+    downstream_run_id: str | None = None,
 ) -> int:
     """Import canonical governed-repo hook logs into shared Foundation observability.
 
@@ -226,13 +249,25 @@ def import_governed_repo_hook_log(
     rows = _iter_import_rows(resolved_path)
     imported = 0
     for _, raw_line, row in rows:
-        event = _build_event(repo_name=resolved_repo_name, row=row, raw_line=raw_line)
+        event = _build_event(
+            repo_name=resolved_repo_name,
+            row=row,
+            raw_line=raw_line,
+            experiment_id=experiment_id,
+            variant_id=variant_id,
+            downstream_run_id=downstream_run_id,
+        )
+        trace_parts = ["governed_repo", resolved_repo_name]
+        if experiment_id or row.experiment_id:
+            trace_parts.append(str(row.experiment_id or experiment_id))
+        if variant_id or row.variant_id:
+            trace_parts.append(str(row.variant_id or variant_id))
         try:
             _io_log._write_foundation_event_to_db(
                 timestamp=str(event["timestamp"]),
                 project=resolved_repo_name,
                 run_id=str(event["run_id"]),
-                trace_id=f"governed_repo/{resolved_repo_name}",
+                trace_id="/".join(trace_parts),
                 event_id=str(event["event_id"]),
                 event_type=str(event["event_type"]),
                 payload=event,
@@ -281,6 +316,23 @@ def _load_governed_repo_rows(
             continue
         results.append((str(timestamp), str(payload.get("session_id") or ""), hook_payload))
     return results
+
+
+def _load_variant_rows(
+    *,
+    experiment_id: str,
+    repo_name: str | None,
+    days: int,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Return governed-repo rows that belong to one explicit experiment id."""
+    rows = _load_governed_repo_rows(repo_name=repo_name, days=days)
+    filtered: list[tuple[str, str, dict[str, Any]]] = []
+    for timestamp, session_id, payload in rows:
+        if str(payload.get("experiment_id") or "").strip() != experiment_id:
+            continue
+        filtered.append((timestamp, session_id, payload))
+    filtered.sort(key=lambda item: item[0])
+    return filtered
 
 
 def _rank_counter(counter: Counter[str], *, limit: int) -> list[dict[str, Any]]:
@@ -359,8 +411,140 @@ def get_governed_repo_friction_summary(
     }
 
 
+def _summarize_linked_runs(run_ids: set[str]) -> dict[str, Any]:
+    """Summarize downstream experiment runs linked from governed hook events."""
+    from llm_client.observability.experiments import get_run
+
+    status_counts: Counter[str] = Counter()
+    terminal_runs = 0
+    completed_runs = 0
+    linked = 0
+    missing_runs = 0
+
+    for run_id in sorted(run_ids):
+        linked += 1
+        run = get_run(run_id)
+        if run is None:
+            missing_runs += 1
+            status_counts["missing"] += 1
+            continue
+        status = str(run.get("status") or "unknown")
+        status_counts[status] += 1
+        if status == "completed":
+            completed_runs += 1
+        if status not in {"running", "queued", "pending"}:
+            terminal_runs += 1
+
+    return {
+        "linked_runs": linked,
+        "missing_runs": missing_runs,
+        "terminal_runs": terminal_runs,
+        "completed_runs": completed_runs,
+        "terminal_run_rate": (float(terminal_runs) / float(linked)) if linked else 0.0,
+        "completed_run_rate": (float(completed_runs) / float(linked)) if linked else 0.0,
+        "status_counts": dict(sorted(status_counts.items())),
+    }
+
+
+def get_governed_repo_variant_comparison(
+    *,
+    experiment_id: str,
+    repo_name: str | None = None,
+    days: int = 7,
+) -> dict[str, Any]:
+    """Compare governed-repo friction behavior across experiment variants."""
+    if not experiment_id.strip():
+        raise ValueError("experiment_id must be non-empty")
+
+    rows = _load_variant_rows(experiment_id=experiment_id.strip(), repo_name=repo_name, days=days)
+    by_variant: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+    for row in rows:
+        payload = row[2]
+        variant_id = str(payload.get("variant_id") or "__unlabeled__").strip() or "__unlabeled__"
+        by_variant.setdefault(variant_id, []).append(row)
+
+    variants: list[dict[str, Any]] = []
+    for variant_id in sorted(by_variant):
+        variant_rows = by_variant[variant_id]
+        decision_counts: Counter[str] = Counter()
+        gate_events = 0
+        block_events = 0
+        error_events = 0
+        missing_read_events = 0
+        repeated_block_events = 0
+        repeated_missing_read_events = 0
+        blocked_files_seen: set[str] = set()
+        missing_reads_seen: set[str] = set()
+        downstream_run_ids: set[str] = set()
+
+        for _, _, payload in variant_rows:
+            decision = str(payload.get("decision") or "").strip() or "unknown"
+            hook_name = str(payload.get("hook_name") or "").strip() or "unknown"
+            file_path = str(payload.get("file_path") or "").strip()
+            missing_reads = [
+                path.strip()
+                for path in payload.get("missing_reads", [])
+                if isinstance(path, str) and path.strip()
+            ]
+            if hook_name == "gate-edit":
+                gate_events += 1
+            decision_counts[decision] += 1
+            if decision == "block":
+                block_events += 1
+                if file_path in blocked_files_seen:
+                    repeated_block_events += 1
+                elif file_path:
+                    blocked_files_seen.add(file_path)
+            if decision == "error":
+                error_events += 1
+            if missing_reads:
+                missing_read_events += 1
+                if any(path in missing_reads_seen for path in missing_reads):
+                    repeated_missing_read_events += 1
+                for path in missing_reads:
+                    missing_reads_seen.add(path)
+            downstream_run_id_value = str(payload.get("downstream_run_id") or "").strip()
+            if downstream_run_id_value:
+                downstream_run_ids.add(downstream_run_id_value)
+
+        variants.append(
+            {
+                "variant_id": variant_id,
+                "total_events": len(variant_rows),
+                "gate_events": gate_events,
+                "decision_counts": dict(sorted(decision_counts.items())),
+                "block_events": block_events,
+                "repeated_block_events": repeated_block_events,
+                "repeated_block_rate": (
+                    float(repeated_block_events) / float(block_events) if block_events else 0.0
+                ),
+                "missing_read_events": missing_read_events,
+                "repeated_missing_read_events": repeated_missing_read_events,
+                "repeated_missing_read_rate": (
+                    float(repeated_missing_read_events) / float(missing_read_events)
+                    if missing_read_events
+                    else 0.0
+                ),
+                "hook_error_events": error_events,
+                "hook_error_rate": (
+                    float(error_events) / float(gate_events) if gate_events else 0.0
+                ),
+                "downstream_runs": _summarize_linked_runs(downstream_run_ids),
+            }
+        )
+
+    return {
+        "experiment_id": experiment_id.strip(),
+        "repo_name": repo_name,
+        "days": days,
+        "variant_count": len(variants),
+        "variants": variants,
+    }
+
+
 __all__ = [
     "get_governed_repo_friction_summary",
     "get_governed_repo_top_missing_reads",
+    "get_governed_repo_variant_comparison",
     "import_governed_repo_hook_log",
 ]

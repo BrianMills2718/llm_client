@@ -284,13 +284,22 @@ def import_governed_repo_hook_log(
     log_path: str | Path,
     *,
     repo_name: str | None = None,
+    experiment_id: str | None = None,
+    variant_id: str | None = None,
+    downstream_run_id: str | None = None,
 ) -> int:
     """Import canonical governed-repo hook logs into shared observability."""
     from llm_client.observability.governed_repo import (
         import_governed_repo_hook_log as _import_governed_repo_hook_log,
     )
 
-    return _import_governed_repo_hook_log(log_path, repo_name=repo_name)
+    return _import_governed_repo_hook_log(
+        log_path,
+        repo_name=repo_name,
+        experiment_id=experiment_id,
+        variant_id=variant_id,
+        downstream_run_id=downstream_run_id,
+    )
 
 
 def get_governed_repo_friction_summary(
@@ -319,6 +328,24 @@ def get_governed_repo_top_missing_reads(
     )
 
     return _get_governed_repo_top_missing_reads(repo_name=repo_name, days=days, limit=limit)
+
+
+def get_governed_repo_variant_comparison(
+    *,
+    experiment_id: str,
+    repo_name: str | None = None,
+    days: int = 7,
+) -> dict[str, Any]:
+    """Compare governed-repo friction metrics across experiment variants."""
+    from llm_client.observability.governed_repo import (
+        get_governed_repo_variant_comparison as _get_governed_repo_variant_comparison,
+    )
+
+    return _get_governed_repo_variant_comparison(
+        experiment_id=experiment_id,
+        repo_name=repo_name,
+        days=days,
+    )
 
 
 def import_jsonl(path: str | Path, *, table: str = "llm_calls") -> int:

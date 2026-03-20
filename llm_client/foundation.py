@@ -569,6 +569,7 @@ class GovernedRepoHookPayload(BaseModel):
     session_source: str | None = None
     experiment_id: str | None = None
     variant_id: str | None = None
+    downstream_run_id: str | None = None
 
 
 class DecisionPayload(BaseModel):

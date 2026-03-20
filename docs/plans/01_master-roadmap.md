@@ -191,7 +191,7 @@ observability seam exists.
 ### Program G: Context Injection Experiment Support
 
 **Plan:** [11_context_injection_experiment_support.md](./11_context_injection_experiment_support.md)
-**Status:** Planned
+**Status:** Complete
 
 **Success criteria:**
 
@@ -210,8 +210,7 @@ shared governed-repo telemetry baseline.
 
 ## Current Default Next Step
 
-Program G (Context Injection Experiment Support) is the current default next
-step. Program F landed the shared governed-repo telemetry baseline, so the
-highest-leverage remaining uncertainty is whether `additionalContext` variants
-materially reduce repeated friction. Resume Program E afterward unless the user
-redirects again.
+Program G (Context Injection Experiment Support) is complete. The governed-repo
+telemetry layer can now group hook events by experiment and variant, compare
+friction metrics, and join linked downstream run outcomes without a second
+backend. Resume Program E afterward unless the user redirects again.

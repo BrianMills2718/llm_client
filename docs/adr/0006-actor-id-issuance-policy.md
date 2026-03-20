@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (governed-repo importer uses canonical service namespace actor ids)
+Last verified: 2026-03-19 (governed-repo importer and experiment-linked imports use canonical service namespace actor ids)
 
 ## Context
 
@@ -28,6 +28,9 @@ consistency for decision/transition records.
      privileged event classes.
 5. Decision and transition-style events must always include a server-issued
    `actor_id` in one of the canonical namespaces.
+6. Experiment metadata attached to observability events does not change actor
+   issuance semantics. `experiment_id`, `variant_id`, and linked downstream run
+   ids are correlation fields, not actor namespaces.
 
 ## Consequences
 
