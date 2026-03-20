@@ -2,6 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
+Last verified: 2026-03-19
 
 ## Context
 
@@ -19,7 +20,11 @@ persisted, how compatibility is preserved, and where behavior should evolve.
    - no requirement to persist full raw content in default paths.
 4. Warning and routing-related diagnostics emitted into observability surfaces
    must remain aligned with the warning taxonomy contract in ADR 0003.
-5. Any breaking changes to observability payload shape or sink behavior require
+5. Repo-local governed-repo hook logs such as `.claude/hook_log.jsonl` are edge
+   buffers, not separate primary observability systems. When imported, they
+   become canonical Foundation-backed observability records owned by
+   `llm_client`.
+6. Any breaking changes to observability payload shape or sink behavior require
    a dedicated ADR update.
 
 ## Consequences
@@ -38,3 +43,6 @@ Negative:
 1. Compatibility tests must cover `io_log` delegated behavior.
 2. Observability tests must verify default-safe persistence behavior.
 3. Warning/diagnostic emission must remain category-consistent with ADR 0003.
+4. Compatibility tests must verify that governed-repo hook telemetry imported
+   through `io_log.py` and `llm_client.observability.*` remains queryable
+   through the canonical observability surface.

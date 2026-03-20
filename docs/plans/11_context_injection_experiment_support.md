@@ -3,7 +3,7 @@
 **Status:** Planned
 **Type:** implementation
 **Priority:** High
-**Blocked By:** Plan 10
+**Blocked By:** None
 **Blocks:** evidence-based resolution of `additionalContext` rollout policy
 
 ---

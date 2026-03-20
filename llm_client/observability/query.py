@@ -280,6 +280,47 @@ def get_active_llm_calls(
     return active
 
 
+def import_governed_repo_hook_log(
+    log_path: str | Path,
+    *,
+    repo_name: str | None = None,
+) -> int:
+    """Import canonical governed-repo hook logs into shared observability."""
+    from llm_client.observability.governed_repo import (
+        import_governed_repo_hook_log as _import_governed_repo_hook_log,
+    )
+
+    return _import_governed_repo_hook_log(log_path, repo_name=repo_name)
+
+
+def get_governed_repo_friction_summary(
+    *,
+    repo_name: str | None = None,
+    days: int = 7,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Return a cross-repo summary of governed hook friction."""
+    from llm_client.observability.governed_repo import (
+        get_governed_repo_friction_summary as _get_governed_repo_friction_summary,
+    )
+
+    return _get_governed_repo_friction_summary(repo_name=repo_name, days=days, limit=limit)
+
+
+def get_governed_repo_top_missing_reads(
+    *,
+    repo_name: str | None = None,
+    days: int = 7,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Rank the most frequently missed governed-doc reads."""
+    from llm_client.observability.governed_repo import (
+        get_governed_repo_top_missing_reads as _get_governed_repo_top_missing_reads,
+    )
+
+    return _get_governed_repo_top_missing_reads(repo_name=repo_name, days=days, limit=limit)
+
+
 def import_jsonl(path: str | Path, *, table: str = "llm_calls") -> int:
     return _io_log.import_jsonl(path, table=table)
 

@@ -275,3 +275,48 @@ def test_validate_foundation_event_llm_call_lifecycle_accepts_heartbeat_phase() 
     validated = validate_foundation_event(payload)
     assert validated["llm_call_lifecycle"]["phase"] == "heartbeat"
     assert validated["llm_call_lifecycle"]["elapsed_s"] == 5.0
+
+
+def test_validate_foundation_event_governed_repo_hook_shape() -> None:
+    payload = {
+        "event_id": "evt_govhook_test_1",
+        "event_type": "GovernedRepoHook",
+        "timestamp": "2026-03-19T00:00:00+00:00",
+        "run_id": "run_governed_repo_test",
+        "session_id": "sess_govhook_test",
+        "actor_id": "service:llm_client:governed_repo_importer:1",
+        "operation": {
+            "name": "import_governed_repo_hook_log",
+            "version": "1.0.0",
+        },
+        "inputs": {
+            "artifact_ids": [],
+            "params": {
+                "repo_name": "project-meta",
+                "hook": "gate-edit",
+                "schema_version": 1,
+                "file_path": "scripts/meta/file_context.py",
+            },
+            "bindings": {},
+        },
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "governed_repo_hook": {
+            "repo_name": "project-meta",
+            "hook_name": "gate-edit",
+            "decision": "block",
+            "file_path": "scripts/meta/file_context.py",
+            "tool_name": "Edit",
+            "decision_reason": "missing required reads",
+            "required_reads": ["CLAUDE.md", "docs/plans/08.md"],
+            "reads_completed": ["CLAUDE.md"],
+            "missing_reads": ["docs/plans/08.md"],
+            "coupled_docs": ["docs/plans/08.md"],
+            "reads_file": ".claude/session_reads.txt",
+            "session_source": "reads_file:.claude/session_reads.txt",
+            "context_bytes": 512,
+        },
+    }
+    validated = validate_foundation_event(payload)
+    assert validated["event_type"] == "GovernedRepoHook"
+    assert validated["governed_repo_hook"]["decision"] == "block"
+    assert validated["governed_repo_hook"]["missing_reads"] == ["docs/plans/08.md"]

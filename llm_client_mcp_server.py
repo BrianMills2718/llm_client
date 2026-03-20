@@ -255,6 +255,32 @@ def get_trace_tree(
     }, indent=2)
 
 
+@mcp.tool()
+def query_governed_repo_friction(
+    repo_name: str | None = None,
+    days: int = 7,
+    limit: int = 10,
+) -> str:
+    """Summarize governed-repo read-gate friction from shared observability.
+
+    Args:
+        repo_name: Optional repo/project filter. When omitted, summarize every
+            imported governed repo together.
+        days: Look-back window in days.
+        limit: Max ranked entries for missing reads, friction files, and sessions.
+
+    Returns:
+        JSON summary with decision counts, hook counts, top missing reads, top
+        friction files, and top friction sessions.
+    """
+    summary = llm_client.get_governed_repo_friction_summary(
+        repo_name=repo_name,
+        days=days,
+        limit=limit,
+    )
+    return json.dumps(summary, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # Performance Analytics
 # ---------------------------------------------------------------------------

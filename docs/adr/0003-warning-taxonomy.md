@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (governed-repo friction telemetry adds query surfaces only; no new warning categories)
 
 ## Context
 

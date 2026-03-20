@@ -87,5 +87,13 @@ def log_foundation_event(
     caller: str = "foundation",
     task: str | None = None,
     trace_id: str | None = None,
+    project: str | None = None,
 ) -> None:
-    _io_log.log_foundation_event(event=event, caller=caller, task=task, trace_id=trace_id)
+    """Append one validated Foundation event into shared observability."""
+    _io_log.log_foundation_event(
+        event=event,
+        caller=caller,
+        task=task,
+        trace_id=trace_id,
+        project=project,
+    )

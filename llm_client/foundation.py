@@ -492,6 +492,7 @@ class FoundationEventBase(BaseModel):
         "ArtifactCreated",
         "LLMCalled",
         "LLMCallLifecycle",
+        "GovernedRepoHook",
         "DecisionMade",
         "RuleRegistered",
         "ConfigChanged",
@@ -548,6 +549,28 @@ class LLMCallLifecyclePayload(BaseModel):
     error_message: str | None = None
 
 
+class GovernedRepoHookPayload(BaseModel):
+    """Normalized governed-repo hook telemetry emitted by the read-gate chain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_name: str = Field(min_length=1)
+    hook_name: str = Field(min_length=1)
+    decision: str = Field(min_length=1)
+    file_path: str = Field(min_length=1)
+    tool_name: str | None = None
+    decision_reason: str | None = None
+    reads_file: str | None = None
+    required_reads: list[str] = Field(default_factory=list)
+    reads_completed: list[str] = Field(default_factory=list)
+    missing_reads: list[str] = Field(default_factory=list)
+    coupled_docs: list[str] = Field(default_factory=list)
+    context_bytes: int | None = Field(default=None, ge=0)
+    session_source: str | None = None
+    experiment_id: str | None = None
+    variant_id: str | None = None
+
+
 class DecisionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision_id: str = Field(min_length=1)
@@ -590,6 +613,13 @@ class LLMCallLifecycleEvent(FoundationEventBase):
     llm_call_lifecycle: LLMCallLifecyclePayload
 
 
+class GovernedRepoHookEvent(FoundationEventBase):
+    """Foundation event for imported governed-repo hook/read-gate telemetry."""
+
+    event_type: Literal["GovernedRepoHook"]
+    governed_repo_hook: GovernedRepoHookPayload
+
+
 class DecisionMadeEvent(FoundationEventBase):
     event_type: Literal["DecisionMade"]
     decision: DecisionPayload
@@ -614,6 +644,7 @@ FoundationEvent = Annotated[
     | ArtifactCreatedEvent
     | LLMCalledEvent
     | LLMCallLifecycleEvent
+    | GovernedRepoHookEvent
     | DecisionMadeEvent
     | RuleRegisteredEvent
     | ConfigChangedEvent

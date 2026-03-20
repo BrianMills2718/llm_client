@@ -171,7 +171,7 @@ stable enough that package-boundary churn is low.
 ### Program F: Governed Repo Friction Observability
 
 **Plan:** [10_governed_repo_friction_observability.md](./10_governed_repo_friction_observability.md)
-**Status:** Planned
+**Status:** Complete
 
 **Success criteria:**
 
@@ -210,8 +210,8 @@ shared governed-repo telemetry baseline.
 
 ## Current Default Next Step
 
-Program F (Governed Repo Friction Observability) is the current default next
-step due to explicit user reprioritization around governed rollout telemetry.
-Implement Program F first, then Program G to resolve the `additionalContext`
-uncertainty with evidence. Resume Program E afterward unless the user redirects
-again.
+Program G (Context Injection Experiment Support) is the current default next
+step. Program F landed the shared governed-repo telemetry baseline, so the
+highest-leverage remaining uncertainty is whether `additionalContext` variants
+materially reduce repeated friction. Resume Program E afterward unless the user
+redirects again.

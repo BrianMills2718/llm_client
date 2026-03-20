@@ -1,6 +1,6 @@
 # Plan 10: Governed Repo Friction Observability
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** Highest
 **Blocked By:** None
@@ -65,8 +65,11 @@ friction belongs there too.
 - `docs/plans/CLAUDE.md` (modify)
 - `llm_client/foundation.py` (modify)
 - `llm_client/io_log.py` (modify)
+- `llm_client/observability/__init__.py` (modify)
+- `llm_client/observability/events.py` (modify)
 - `llm_client/observability/governed_repo.py` (create)
 - `llm_client/observability/query.py` (modify)
+- `llm_client/__init__.py` (modify)
 - `llm_client_mcp_server.py` (modify)
 - `tests/test_foundation.py` (modify)
 - `tests/test_governed_repo_observability.py` (create)
@@ -117,13 +120,13 @@ friction belongs there too.
 
 ## Acceptance Criteria
 
-- [ ] ADR 0015 documents `llm_client` as the canonical governed-repo telemetry owner
-- [ ] Shared governed-repo telemetry schema exists and validates deterministically
-- [ ] Repo-local canonical hook logs can be imported into shared observability
-- [ ] Malformed hook rows fail loud instead of being silently skipped
-- [ ] Query/report helpers can answer block/allow/error counts by repo
-- [ ] Query/report helpers can rank top missing reads and repeated-friction files
-- [ ] `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py tests/test_observability_defaults.py` passes
+- [x] ADR 0015 documents `llm_client` as the canonical governed-repo telemetry owner
+- [x] Shared governed-repo telemetry schema exists and validates deterministically
+- [x] Repo-local canonical hook logs can be imported into shared observability
+- [x] Malformed hook rows fail loud instead of being silently skipped
+- [x] Query/report helpers can answer block/allow/error counts by repo
+- [x] Query/report helpers can rank top missing reads and repeated-friction files
+- [x] `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py tests/test_observability_defaults.py` passes
 
 ---
 
@@ -135,3 +138,9 @@ friction belongs there too.
   evidence and diagnosis before scaling the pattern further.
 - Comparative `additionalContext` experiments are intentionally split into Plan
   11 so the base telemetry contract lands first.
+
+## Verification
+
+- `pytest -q tests/test_foundation.py tests/test_governed_repo_observability.py tests/test_io_log.py`
+- `pytest -q tests/test_observability_defaults.py`
+- `python -m py_compile llm_client/observability/governed_repo.py llm_client/observability/query.py llm_client/io_log.py llm_client/foundation.py llm_client_mcp_server.py`

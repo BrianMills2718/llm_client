@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (governed-repo importer uses canonical service namespace actor ids)
 
 ## Context
 
@@ -21,6 +21,7 @@ consistency for decision/transition records.
 3. Canonical shape:
    - `<prefix><component>[:<scope>[:<version>]]`
    - example: `agent:mcp_loop:default:1`
+   - example: `service:llm_client:governed_repo_importer:1`
 4. Trust boundary:
    - server/runtime issuance is authoritative,
    - untrusted external values must not be passed through unchanged for

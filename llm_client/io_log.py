@@ -196,8 +196,9 @@ def _get_project() -> str:
     return Path.cwd().name
 
 
-def _log_dir() -> Path:
-    return _data_root / _get_project() / f"{_get_project()}_llm_client_data"
+def _log_dir(*, project: str | None = None) -> Path:
+    resolved_project = project or _get_project()
+    return _data_root / resolved_project / f"{resolved_project}_llm_client_data"
 
 
 def configure(
@@ -833,6 +834,7 @@ def log_foundation_event(
     caller: str = "foundation",
     task: str | None = None,
     trace_id: str | None = None,
+    project: str | None = None,
 ) -> None:
     """Append one FOUNDATION event record. Never raises by default."""
     if not _enabled:
@@ -846,7 +848,8 @@ def log_foundation_event(
         event_id = str(normalized_event.get("event_id") or "")
         event_type = str(normalized_event.get("event_type") or "")
 
-        d = _log_dir()
+        resolved_project = project or _get_project()
+        d = _log_dir(project=resolved_project)
         d.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": timestamp,
@@ -862,6 +865,7 @@ def log_foundation_event(
 
         _write_foundation_event_to_db(
             timestamp=timestamp,
+            project=resolved_project,
             run_id=run_id or None,
             trace_id=trace_id,
             event_id=event_id or None,
@@ -1222,6 +1226,7 @@ def _write_embedding_to_db(
 def _write_foundation_event_to_db(
     *,
     timestamp: str,
+    project: str | None,
     run_id: str | None,
     trace_id: str | None,
     event_id: str | None,
@@ -1229,6 +1234,7 @@ def _write_foundation_event_to_db(
     payload: dict[str, Any],
     caller: str,
     task: str | None,
+    raise_on_error: bool = False,
 ) -> None:
     """Insert a foundation event into SQLite. Never raises."""
     try:
@@ -1239,7 +1245,7 @@ def _write_foundation_event_to_db(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp,
-                _get_project(),
+                project or _get_project(),
                 run_id,
                 trace_id,
                 event_id,
@@ -1251,6 +1257,8 @@ def _write_foundation_event_to_db(
         )
         db.commit()
     except Exception:
+        if raise_on_error:
+            raise
         logger.debug("io_log._write_foundation_event_to_db failed", exc_info=True)
 
 
@@ -1492,6 +1500,47 @@ def get_active_llm_calls(
         trace_id=trace_id,
         limit=limit,
     )
+
+
+def import_governed_repo_hook_log(
+    log_path: str | Path,
+    *,
+    repo_name: str | None = None,
+) -> int:
+    """Compatibility shim: delegate to observability.query.import_governed_repo_hook_log."""
+    from llm_client.observability.query import (
+        import_governed_repo_hook_log as _import_governed_repo_hook_log,
+    )
+
+    return _import_governed_repo_hook_log(log_path, repo_name=repo_name)
+
+
+def get_governed_repo_friction_summary(
+    *,
+    repo_name: str | None = None,
+    days: int = 7,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Compatibility shim: delegate to observability.query.get_governed_repo_friction_summary."""
+    from llm_client.observability.query import (
+        get_governed_repo_friction_summary as _get_governed_repo_friction_summary,
+    )
+
+    return _get_governed_repo_friction_summary(repo_name=repo_name, days=days, limit=limit)
+
+
+def get_governed_repo_top_missing_reads(
+    *,
+    repo_name: str | None = None,
+    days: int = 7,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Compatibility shim: delegate to observability.query.get_governed_repo_top_missing_reads."""
+    from llm_client.observability.query import (
+        get_governed_repo_top_missing_reads as _get_governed_repo_top_missing_reads,
+    )
+
+    return _get_governed_repo_top_missing_reads(repo_name=repo_name, days=days, limit=limit)
 
 
 def get_background_mode_adoption(

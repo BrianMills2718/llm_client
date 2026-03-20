@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (repo-local governed hook logs remain edge buffers, not shared data-plane assets)
 
 ## Context
 
@@ -31,6 +31,8 @@ We need a clear line between:
    - run metadata,
    - scoring records,
    - provenance links to datasets and artifacts.
+   Imported governed-repo hook telemetry belongs in this metadata/control-plane
+   layer; the raw repo-local hook log files do not.
 3. The shared data plane should be a separate architectural layer that can host
    dataset registries, artifact registries, schema metadata, and storage
    adapters.

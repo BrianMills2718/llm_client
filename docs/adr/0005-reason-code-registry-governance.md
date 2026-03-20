@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (governed-repo hook telemetry imports add no new `reason_code` values)
 
 ## Context
 
@@ -42,3 +42,6 @@ Negative:
    - ADR update,
    - targeted test coverage,
    - changelog/release note entry.
+3. Governed-repo hook telemetry may carry free-form `decision_reason` strings,
+   but it must not introduce new registered `reason_code` values without an ADR
+   update.
