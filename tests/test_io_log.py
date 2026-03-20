@@ -530,7 +530,24 @@ class TestGetActiveLLMCalls:
         timestamp: str,
         trace_id: str = "trace.active",
         task: str = "test",
+        progress_observable: bool | None = None,
+        progress_source: str | None = None,
+        progress_event_count: int | None = None,
     ) -> None:
+        lifecycle_payload = {
+            "call_id": call_id,
+            "phase": phase,
+            "call_kind": "text",
+            "requested_model_id": "gpt-4",
+            "timeout_policy": "allow",
+            "elapsed_s": 5.0,
+        }
+        if progress_observable is not None:
+            lifecycle_payload["progress_observable"] = progress_observable
+        if progress_source is not None:
+            lifecycle_payload["progress_source"] = progress_source
+        if progress_event_count is not None:
+            lifecycle_payload["progress_event_count"] = progress_event_count
         io_log.log_foundation_event(
             caller="test",
             task=task,
@@ -553,14 +570,7 @@ class TestGetActiveLLMCalls:
                     "bindings": {},
                 },
                 "outputs": {"artifact_ids": [], "payload_hashes": []},
-                "llm_call_lifecycle": {
-                    "call_id": call_id,
-                    "phase": phase,
-                    "call_kind": "text",
-                    "requested_model_id": "gpt-4",
-                    "timeout_policy": "allow",
-                    "elapsed_s": 5.0,
-                },
+                "llm_call_lifecycle": lifecycle_payload,
             },
         )
 
@@ -591,6 +601,57 @@ class TestGetActiveLLMCalls:
         assert active[0]["call_id"] == "llmcall_active"
         assert active[0]["phase"] == "heartbeat"
         assert active[0]["trace_id"] == "trace.active"
+
+    def test_get_active_llm_calls_reports_progress_metadata(self, tmp_path):
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:00Z",
+            progress_observable=True,
+            progress_event_count=0,
+        )
+        self._log_lifecycle_event(
+            phase="progress",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:05Z",
+            progress_observable=True,
+            progress_source="stream_chunk",
+            progress_event_count=1,
+        )
+        self._log_lifecycle_event(
+            phase="heartbeat",
+            call_id="llmcall_streaming",
+            timestamp="2026-03-19T10:00:06Z",
+            progress_observable=True,
+            progress_source="stream_chunk",
+            progress_event_count=1,
+        )
+        self._log_lifecycle_event(
+            phase="started",
+            call_id="llmcall_opaque",
+            timestamp="2026-03-19T10:01:00Z",
+        )
+        self._log_lifecycle_event(
+            phase="stalled",
+            call_id="llmcall_opaque",
+            timestamp="2026-03-19T10:01:10Z",
+        )
+
+        active = {record["call_id"]: record for record in io_log.get_active_llm_calls()}
+
+        streaming = active["llmcall_streaming"]
+        assert streaming["progress_observable"] is True
+        assert streaming["progress_source"] == "stream_chunk"
+        assert streaming["progress_event_count"] == 1
+        assert isinstance(streaming["last_progress_at"], str)
+        assert streaming["activity_state"] == "progressing"
+        assert isinstance(streaming["idle_for_s"], float)
+        assert streaming["idle_for_s"] >= 0.0
+
+        opaque = active["llmcall_opaque"]
+        assert opaque["progress_observable"] in (None, False)
+        assert opaque["activity_state"] == "waiting"
+        assert opaque["idle_for_s"] is None
 
 
 class TestBackgroundModeAdoption:

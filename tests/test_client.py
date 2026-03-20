@@ -1960,6 +1960,52 @@ class TestResponsesAPIRouting:
         assert poll_args.kwargs["poll_interval"] == 7
         assert poll_args.kwargs["request_timeout"] == 60
 
+    @patch("llm_client.client.time.sleep", return_value=None)
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
+    @patch("llm_client.client._retrieve_background_response")
+    @patch("llm_client.client.litellm.responses")
+    def test_background_polling_updates_progress_state_from_successful_polls(
+        self,
+        mock_resp: MagicMock,
+        mock_retrieve: MagicMock,
+        mock_cost: MagicMock,
+        mock_log_foundation_event: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        """Background polling should emit progress updates from successful polls."""
+        initial = _mock_responses_api_response(output_text="", status="in_progress")
+        initial.id = "resp_sync_progress"
+        poll_in_progress = _mock_responses_api_response(output_text="", status="in_progress")
+        completed = _mock_responses_api_response(output_text="done", status="completed")
+        mock_resp.return_value = initial
+        mock_retrieve.side_effect = [poll_in_progress, completed]
+
+        result = call_llm(
+            "gpt-5.2-pro",
+            [{"role": "user", "content": "Deep review"}],
+            reasoning_effort="xhigh",
+            background_timeout=30,
+            background_poll_interval=1,
+            task="test",
+            trace_id="trace.lifecycle.background.progress",
+            max_budget=0,
+        )
+
+        assert result.content == "done"
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert phases.count("progress") == 2
+        assert phases[-1] == "completed"
+        completed_event = mock_log_foundation_event.call_args_list[-1].kwargs["event"]
+        lifecycle = completed_event["llm_call_lifecycle"]
+        assert lifecycle["progress_observable"] is True
+        assert lifecycle["progress_source"] == "background_poll"
+        assert lifecycle["progress_event_count"] == 2
+
     @patch("llm_client.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.client.litellm.responses")
     def test_gpt5_strips_temperature(self, mock_resp: MagicMock, mock_cost: MagicMock) -> None:
@@ -3432,6 +3478,41 @@ class TestStreamLLM:
         collected = list(stream)
         assert collected == ["Hello", " ", "world!"]
 
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.completion")
+    def test_stream_llm_updates_progress_state_from_chunks(
+        self,
+        mock_comp: MagicMock,
+        mock_builder: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Streaming calls should emit progress-aware lifecycle updates from chunks."""
+        chunks = _mock_stream_chunks(["Hello", " ", "world!"])
+        mock_comp.return_value = iter(chunks)
+
+        stream = stream_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="trace.lifecycle.stream.progress",
+            max_budget=0,
+        )
+        assert list(stream) == ["Hello", " ", "world!"]
+
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert phases.count("progress") == 3
+        assert phases[-1] == "completed"
+        completed_event = mock_log_foundation_event.call_args_list[-1].kwargs["event"]
+        lifecycle = completed_event["llm_call_lifecycle"]
+        assert lifecycle["progress_observable"] is True
+        assert lifecycle["progress_source"] == "stream_chunk"
+        assert lifecycle["progress_event_count"] == 3
+
     @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
     @patch("llm_client.client.litellm.completion")
     def test_result_available_after_iteration(self, mock_comp: MagicMock, mock_builder: MagicMock) -> None:
@@ -3508,6 +3589,50 @@ class TestStreamLLM:
 
 class TestAstreamLLM:
     """Tests for astream_llm."""
+
+    @pytest.mark.asyncio
+    @patch("llm_client.client._io_log.log_foundation_event")
+    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.client.litellm.acompletion")
+    async def test_astream_llm_updates_progress_state_from_chunks(
+        self,
+        mock_acomp: MagicMock,
+        mock_builder: MagicMock,
+        mock_log_foundation_event: MagicMock,
+    ) -> None:
+        """Async streaming calls should emit progress-aware lifecycle updates from chunks."""
+        chunks = _mock_stream_chunks(["Hello", " ", "world!"])
+
+        async def async_iter():
+            for c in chunks:
+                yield c
+
+        mock_acomp.return_value = async_iter()
+
+        stream = await astream_llm(
+            "gpt-4",
+            [{"role": "user", "content": "Hi"}],
+            task="test",
+            trace_id="trace.lifecycle.astream.progress",
+            max_budget=0,
+        )
+        collected = []
+        async for chunk in stream:
+            collected.append(chunk)
+        assert collected == ["Hello", " ", "world!"]
+
+        phases = [
+            call.kwargs["event"]["llm_call_lifecycle"]["phase"]
+            for call in mock_log_foundation_event.call_args_list
+        ]
+        assert phases[0] == "started"
+        assert phases.count("progress") == 3
+        assert phases[-1] == "completed"
+        completed_event = mock_log_foundation_event.call_args_list[-1].kwargs["event"]
+        lifecycle = completed_event["llm_call_lifecycle"]
+        assert lifecycle["progress_observable"] is True
+        assert lifecycle["progress_source"] == "stream_chunk"
+        assert lifecycle["progress_event_count"] == 3
 
     @pytest.mark.asyncio
     @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (governed-repo hook telemetry imports and experiment metadata add no new `reason_code` values)
+Last verified: 2026-03-19 (Plan 12 adds lifecycle progress metadata and no new `reason_code` values)
 
 ## Context
 

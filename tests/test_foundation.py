@@ -277,6 +277,42 @@ def test_validate_foundation_event_llm_call_lifecycle_accepts_heartbeat_phase() 
     assert validated["llm_call_lifecycle"]["elapsed_s"] == 5.0
 
 
+def test_validate_foundation_event_llm_call_lifecycle_accepts_progress_phase() -> None:
+    payload = {
+        "event_id": "evt_llm_lifecycle_progress",
+        "event_type": "LLMCallLifecycle",
+        "timestamp": "2026-03-19T00:00:08Z",
+        "run_id": "run_test",
+        "session_id": "sess_test",
+        "actor_id": "service:llm_client:call_runtime:1",
+        "operation": {"name": "stream_llm", "version": None},
+        "inputs": {
+            "artifact_ids": [],
+            "params": {
+                "task": "test",
+                "trace_id": "trace.lifecycle",
+                "call_kind": "text",
+            },
+            "bindings": {},
+        },
+        "outputs": {"artifact_ids": [], "payload_hashes": []},
+        "llm_call_lifecycle": {
+            "call_id": "llmcall_test_progress",
+            "phase": "progress",
+            "call_kind": "text",
+            "requested_model_id": "gpt-4",
+            "timeout_policy": "allow",
+            "progress_observable": True,
+            "progress_source": "stream_chunk",
+            "progress_event_count": 2,
+            "elapsed_s": 1.5,
+        },
+    }
+    validated = validate_foundation_event(payload)
+    assert validated["llm_call_lifecycle"]["phase"] == "progress"
+    assert validated["llm_call_lifecycle"]["progress_event_count"] == 2
+
+
 def test_validate_foundation_event_governed_repo_hook_shape() -> None:
     payload = {
         "event_id": "evt_govhook_test_1",

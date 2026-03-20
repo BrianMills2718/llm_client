@@ -11,7 +11,15 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any, Callable, cast
 
-from llm_client.client import AsyncCachePolicy, CachePolicy, ExecutionMode, Hooks, LLMCallResult, RetryPolicy
+from llm_client.client import (
+    AsyncCachePolicy,
+    CachePolicy,
+    ExecutionMode,
+    Hooks,
+    LLMCallResult,
+    RetryPolicy,
+    _LLMCallProgressReporter,
+)
 from llm_client.config import ClientConfig
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 
@@ -37,6 +45,7 @@ def _call_llm_impl(
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
     config: ClientConfig | None = None,
+    _lifecycle_monitor: _LLMCallProgressReporter | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run the synchronous text-call runtime behind ``client.call_llm``."""
@@ -402,6 +411,7 @@ def _call_llm_impl(
                     api_base=current_api_base,
                     request_timeout=(timeout if timeout > 0 else None),
                     model_kwargs=model_kwargs,
+                    lifecycle_monitor=_lifecycle_monitor,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:
@@ -521,6 +531,7 @@ async def _acall_llm_impl(
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
     config: ClientConfig | None = None,
+    _lifecycle_monitor: _LLMCallProgressReporter | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run the asynchronous text-call runtime behind ``client.acall_llm``."""
@@ -884,6 +895,7 @@ async def _acall_llm_impl(
                     api_base=current_api_base,
                     request_timeout=(timeout if timeout > 0 else None),
                     model_kwargs=model_kwargs,
+                    lifecycle_monitor=_lifecycle_monitor,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             elif use_gemini_native:

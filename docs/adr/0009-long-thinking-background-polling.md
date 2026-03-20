@@ -1,8 +1,12 @@
 # ADR 0009: Long-Thinking Responses Background Polling
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-02-23
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (Plan 12 adds progress-aware lifecycle instrumentation to successful background polls)
+
+Note: ADR 0016 and Plan 12 instrument this polling path with progress-aware
+lifecycle events. Successful polls and status transitions now emit `"progress"`
+events, enabling truthful idle detection on background-polled calls.
 
 ## Context
 

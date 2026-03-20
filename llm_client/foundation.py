@@ -529,18 +529,27 @@ class LLMCalledPayload(BaseModel):
 
 
 class LLMCallLifecyclePayload(BaseModel):
-    """Lifecycle state for one public non-streaming LLM call."""
+    """Lifecycle state for one public LLM call.
+
+    This payload distinguishes plain liveness from explicit observed progress.
+    `heartbeat` means the client runtime is still waiting. `progress` is only
+    emitted on paths where the runtime can truthfully observe forward motion,
+    such as stream chunks or successful background polls.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     call_id: str = Field(pattern=r"^llmcall_[A-Za-z0-9._:-]+$")
-    phase: Literal["started", "heartbeat", "stalled", "completed", "failed"]
+    phase: Literal["started", "heartbeat", "progress", "stalled", "completed", "failed"]
     call_kind: Literal["text", "structured"]
     requested_model_id: str = Field(min_length=1)
     resolved_model_id: str | None = None
     provider_timeout_s: int | None = Field(default=None, ge=0)
     timeout_policy: Literal["allow", "ban"]
     prompt_ref: str | None = None
+    progress_observable: bool | None = None
+    progress_source: str | None = None
+    progress_event_count: int | None = Field(default=None, ge=0)
     elapsed_s: float | None = Field(default=None, ge=0)
     latency_s: float | None = Field(default=None, ge=0)
     heartbeat_interval_s: float | None = Field(default=None, ge=0)

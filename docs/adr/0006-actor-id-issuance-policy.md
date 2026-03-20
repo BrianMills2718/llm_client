@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19 (governed-repo importer and experiment-linked imports use canonical service namespace actor ids)
+Last verified: 2026-03-19 (Plan 12 lifecycle progress events continue to use canonical service namespace actor ids)
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (repo-local governed hook logs remain edge buffers; experiment-link metadata stays in shared observability, not the data plane)
+Last verified: 2026-03-19 (Plan 12 keeps lifecycle progress and active-call state in shared observability, not the data plane)
 
 ## Context
 

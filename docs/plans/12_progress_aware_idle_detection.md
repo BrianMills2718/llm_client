@@ -1,6 +1,6 @@
 # Plan 12: Progress-Aware Idle Detection
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -41,19 +41,17 @@ the right place to classify it as idle/stalled.
 
 ## Files Expected To Change
 
-- `docs/adr/README.md` (modify)
-- `docs/plans/12_progress_aware_idle_detection.md` (create)
+- `docs/plans/12_progress_aware_idle_detection.md` (modify)
 - `docs/plans/CLAUDE.md` (modify)
 - `llm_client/foundation.py` (modify)
 - `llm_client/client.py` (modify)
 - `llm_client/stream_runtime.py` (modify)
 - `llm_client/streaming.py` (modify)
 - `llm_client/observability/query.py` (modify)
-- `llm_client/io_log.py` (modify if compatibility shim needs extension)
+- `llm_client/text_runtime.py` (modify)
 - `tests/test_foundation.py` (modify)
 - `tests/test_client.py` (modify)
 - `tests/test_io_log.py` (modify)
-- `tests/test_gpt5_background_polling.py` or equivalent polling coverage file (modify if present)
 
 ---
 
@@ -61,37 +59,56 @@ the right place to classify it as idle/stalled.
 
 ### Step 1: Extend the lifecycle contract truthfully
 
-- add additive lifecycle progress metadata and/or events
-- keep `heartbeat` as "still waiting"
-- define how active-call queries compute:
-  - `progress_observable`
+- Add a new lifecycle phase: `"progress"`.
+- Add optional lifecycle payload fields:
+  - `progress_observable: bool | None`
+  - `progress_source: str | None`
+  - `progress_event_count: int | None`
+- Keep `heartbeat` as "still waiting".
+- Let the active-call query derive:
   - `last_progress_at`
   - `idle_for_s`
+  - `activity_state`
 
 ### Step 2: Instrument streaming progress
 
-- emit progress-aware lifecycle signals when stream chunks/tool deltas arrive
-- reset idle tracking on each observed progress event
+- Start streaming lifecycle tracking lazily on first stream consumption.
+- Emit `"started"` with `progress_observable=True`.
+- Emit `"progress"` on every observed stream chunk.
+- Use `progress_source="stream_chunk"`.
+- Only treat a stream as progress-aware stalled after at least one chunk has
+  been observed.
 
 ### Step 3: Instrument background-polled Responses progress
 
-- emit progress-aware lifecycle signals for successful polls and meaningful
-  status transitions
-- allow progress-aware idle detection on this path
+- When a Responses call enters background polling, switch the monitor to
+  `progress_observable=True`.
+- Emit `"progress"` on each successful background poll response, including the
+  terminal completion poll.
+- Use `progress_source="background_poll"`.
+- Let progress-aware stall detection for this path key off the time since the
+  last successful poll.
 
 ### Step 4: Keep opaque calls honest
 
-- non-streaming opaque text/structured calls continue to emit liveness
-  heartbeats
-- do not classify them as progress-aware stalled unless a real progress signal
-  is introduced
+- Non-streaming opaque text/structured calls continue to emit liveness
+  `"heartbeat"` events only.
+- Do not emit `"progress"` for those paths.
+- Do not classify them as progress-aware stalled in the active-call query.
 
 ### Step 5: Upgrade the query/report surface
 
-- active-call queries distinguish:
-  - waiting
-  - progressing
-  - idle/stalled-on-progress-aware-path
+- `get_active_llm_calls()` returns per-call metadata including:
+  - `progress_observable`
+  - `progress_source`
+  - `progress_event_count`
+  - `last_progress_at`
+  - `idle_for_s`
+  - `activity_state`
+- Callers can distinguish:
+  - `waiting`
+  - `progressing`
+  - `idle`
 
 ---
 
@@ -102,6 +119,7 @@ the right place to classify it as idle/stalled.
 | Test File | Test Function | What It Verifies |
 |-----------|---------------|------------------|
 | `tests/test_client.py` | `test_stream_llm_updates_progress_state_from_chunks` | Streaming calls emit progress-aware lifecycle updates when chunks arrive |
+| `tests/test_client.py` | `test_astream_llm_updates_progress_state_from_chunks` | Async streaming calls emit progress-aware lifecycle updates when chunks arrive |
 | `tests/test_client.py` | `test_background_polling_updates_progress_state_from_successful_polls` | Background-polled calls advance progress state on successful poll activity |
 | `tests/test_io_log.py` | `test_get_active_llm_calls_reports_progress_metadata` | Query layer exposes progress-observable state, last progress, and idle duration |
 
@@ -117,15 +135,32 @@ the right place to classify it as idle/stalled.
 
 ## Acceptance Criteria
 
-- [ ] Lifecycle contract distinguishes liveness from progress
-- [ ] Streaming calls emit real progress-aware updates
-- [ ] Background-polled Responses calls emit real progress-aware updates
-- [ ] Active-call query surface reports progress-aware idle state
-- [ ] Opaque non-streaming structured calls are not mislabeled as
+- [x] Lifecycle contract distinguishes liveness from progress
+- [x] Streaming calls emit real progress-aware updates
+- [x] Background-polled Responses calls emit real progress-aware updates
+- [x] Active-call query surface reports progress-aware idle state
+- [x] Opaque non-streaming structured calls are not mislabeled as
       progress-aware stalled
-- [ ] Focused lifecycle/progress tests pass
+- [x] Focused lifecycle/progress tests pass
+
+## Completion Evidence
+
+- `pytest -q tests/test_foundation.py -k lifecycle`
+- `pytest -q tests/test_client.py -k 'lifecycle or background_polling_updates_progress_state_from_successful_polls or stream_llm_updates_progress_state_from_chunks or astream_llm_updates_progress_state_from_chunks'`
+- `pytest -q tests/test_io_log.py -k 'get_active_llm_calls'`
+- `mypy --follow-imports=silent llm_client/foundation.py llm_client/client.py llm_client/text_runtime.py llm_client/stream_runtime.py llm_client/streaming.py llm_client/observability/query.py`
 
 ---
+
+## Design Notes
+
+- **New phase `"progress"`:** Distinct from `"heartbeat"` to preserve the
+  semantic contract. Heartbeat means "still waiting". Progress means
+  "demonstrably moving forward".
+- **Background polling starts opaque:** the public wrapper does not know in
+  advance whether a Responses call will require background polling, so
+  `progress_observable` becomes true only once the runtime actually enters the
+  polling path.
 
 ## Risks / Assumptions
 

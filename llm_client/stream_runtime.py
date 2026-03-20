@@ -37,14 +37,20 @@ def stream_llm_impl(
     _client._check_model_deprecation(model)
     cfg = config or _client.ClientConfig.from_env()
     timeout = _client._normalize_timeout(timeout, caller="stream_llm")
+    effective_provider_timeout = _client._provider_timeout_for_lifecycle(timeout)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
     prompt_ref = _client._normalize_prompt_ref(kwargs.pop("prompt_ref", None))
+    heartbeat_interval_s, stall_after_s = _client._resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=kwargs.pop("lifecycle_stall_after_s", None),
+    )
     task, trace_id, max_budget, _entry_warnings = _client._require_tags(
         task, trace_id, max_budget, caller="stream_llm",
     )
     _client._check_budget(trace_id, max_budget)
+    call_id = _client._new_llm_call_lifecycle_id()
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     if _client._is_agent_model(model):
         from llm_client.agents import _route_stream
@@ -107,6 +113,11 @@ def stream_llm_impl(
                     effective_api_base=current_api_base,
                     routing_policy=routing_policy,
                 ),
+                lifecycle_call_id=call_id,
+                lifecycle_caller="stream_llm",
+                provider_timeout_s=effective_provider_timeout,
+                heartbeat_interval_s=heartbeat_interval_s,
+                stall_after_s=stall_after_s,
                 ),
             )
 
@@ -180,14 +191,20 @@ async def astream_llm_impl(
     _client._check_model_deprecation(model)
     cfg = config or _client.ClientConfig.from_env()
     timeout = _client._normalize_timeout(timeout, caller="astream_llm")
+    effective_provider_timeout = _client._provider_timeout_for_lifecycle(timeout)
     task = kwargs.pop("task", None)
     trace_id = kwargs.pop("trace_id", None)
     max_budget: float | None = kwargs.pop("max_budget", None)
     prompt_ref = _client._normalize_prompt_ref(kwargs.pop("prompt_ref", None))
+    heartbeat_interval_s, stall_after_s = _client._resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=kwargs.pop("lifecycle_stall_after_s", None),
+    )
     task, trace_id, max_budget, _entry_warnings = _client._require_tags(
         task, trace_id, max_budget, caller="astream_llm",
     )
     _client._check_budget(trace_id, max_budget)
+    call_id = _client._new_llm_call_lifecycle_id()
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     if _client._is_agent_model(model):
         from llm_client.agents import _route_astream
@@ -250,6 +267,11 @@ async def astream_llm_impl(
                     effective_api_base=current_api_base,
                     routing_policy=routing_policy,
                 ),
+                lifecycle_call_id=call_id,
+                lifecycle_caller="astream_llm",
+                provider_timeout_s=effective_provider_timeout,
+                heartbeat_interval_s=heartbeat_interval_s,
+                stall_after_s=stall_after_s,
                 ),
             )
 

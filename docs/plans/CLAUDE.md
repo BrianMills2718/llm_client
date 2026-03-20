@@ -14,10 +14,10 @@ Track all implementation work here.
 | 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
 | 7 | [Governed Repo Contract Alignment](07_governed_repo_contract_alignment.md) | High | ✅ Complete | - |
 | 8 | [Call Liveness and Timeout Policy](08_call_liveness_and_timeout_policy.md) | High | ✅ Complete | - |
-| 9 | [Lifecycle Heartbeat and Active Call Query](09_lifecycle_heartbeat_and_active_call_query.md) | High | 🚧 In Progress | - |
+| 9 | [Lifecycle Heartbeat and Active Call Query](09_lifecycle_heartbeat_and_active_call_query.md) | High | ✅ Complete | - |
 | 10 | [Governed Repo Friction Observability](10_governed_repo_friction_observability.md) | Highest | ✅ Complete | - |
 | 11 | [Context Injection Experiment Support](11_context_injection_experiment_support.md) | High | ✅ Complete | - |
-| 12 | [Progress-Aware Idle Detection](12_progress_aware_idle_detection.md) | High | 📋 Planned | - |
+| 12 | [Progress-Aware Idle Detection](12_progress_aware_idle_detection.md) | High | ✅ Complete | - |
 
 ## Status Key
 

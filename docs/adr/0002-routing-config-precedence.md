@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (Plan 12 adds progress-aware lifecycle instrumentation without changing routing/config precedence)
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-03-19
+Last verified: 2026-03-19 (Plan 12 extends lifecycle/query metadata within the existing observability contract boundary)
 
 ## Context
 

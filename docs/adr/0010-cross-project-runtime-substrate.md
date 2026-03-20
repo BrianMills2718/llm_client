@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-03-17
-Last verified: 2026-03-19 (governed-repo friction telemetry and variant-comparison metadata now import into the shared substrate)
+Last verified: 2026-03-19 (Plan 12 adds shared lifecycle progress instrumentation and active-call state to the cross-project substrate)
 
 ## Context
 

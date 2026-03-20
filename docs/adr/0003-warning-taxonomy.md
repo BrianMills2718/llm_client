@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Date: 2026-02-22
-Last verified: 2026-03-19 (governed-repo friction telemetry and experiment comparison queries add no new warning categories)
+Last verified: 2026-03-19 (Plan 12 adds lifecycle progress metadata and active-call query state without introducing new warning categories)
 
 ## Context
 

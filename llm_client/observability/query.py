@@ -192,8 +192,9 @@ def get_active_llm_calls(
     """Return the latest known non-terminal lifecycle state for active public calls.
 
     A call is considered active when its most recent Foundation
-    ``LLMCallLifecycle`` event has phase ``started``, ``heartbeat``, or
-    ``stalled``. Terminal ``completed`` and ``failed`` phases are excluded.
+    ``LLMCallLifecycle`` event has phase ``started``, ``heartbeat``,
+    ``progress``, or ``stalled``. Terminal ``completed`` and ``failed`` phases
+    are excluded.
     """
     db = _io_log._get_db()
     if db is None:
@@ -253,6 +254,10 @@ def get_active_llm_calls(
                 "phase": lifecycle.get("phase"),
                 "elapsed_s": lifecycle.get("elapsed_s"),
                 "latency_s": lifecycle.get("latency_s"),
+                "progress_observable": lifecycle.get("progress_observable"),
+                "progress_source": lifecycle.get("progress_source"),
+                "progress_event_count": lifecycle.get("progress_event_count"),
+                "last_progress_at": None,
             },
         )
         record["requested_model_id"] = lifecycle.get("requested_model_id", record["requested_model_id"])
@@ -269,11 +274,40 @@ def get_active_llm_calls(
         record["phase"] = lifecycle.get("phase", record["phase"])
         record["elapsed_s"] = lifecycle.get("elapsed_s", record["elapsed_s"])
         record["latency_s"] = lifecycle.get("latency_s", record["latency_s"])
+        progress_observable = lifecycle.get("progress_observable")
+        if isinstance(progress_observable, bool):
+            record["progress_observable"] = progress_observable
+        progress_source = lifecycle.get("progress_source")
+        if isinstance(progress_source, str) and progress_source.strip():
+            record["progress_source"] = progress_source
+        progress_event_count = lifecycle.get("progress_event_count")
+        if isinstance(progress_event_count, int) and progress_event_count >= 0:
+            record["progress_event_count"] = progress_event_count
+        if lifecycle.get("phase") == "progress":
+            record["last_progress_at"] = timestamp
 
     active = [
         record for record in by_call_id.values()
-        if record.get("phase") in {"started", "heartbeat", "stalled"}
+        if record.get("phase") in {"started", "heartbeat", "progress", "stalled"}
     ]
+    now = datetime.now(timezone.utc)
+    for record in active:
+        progress_observable = bool(record.get("progress_observable"))
+        last_progress_at = record.get("last_progress_at")
+        last_progress_dt = _parse_iso_datetime(last_progress_at)
+        idle_for_s: float | None = None
+        if progress_observable and last_progress_dt is not None:
+            idle_for_s = max((now - last_progress_dt).total_seconds(), 0.0)
+        record["idle_for_s"] = idle_for_s
+        if progress_observable:
+            if record.get("phase") == "stalled" and last_progress_dt is not None:
+                record["activity_state"] = "idle"
+            elif last_progress_dt is not None:
+                record["activity_state"] = "progressing"
+            else:
+                record["activity_state"] = "waiting"
+        else:
+            record["activity_state"] = "waiting"
     active.sort(key=lambda record: str(record.get("last_event_at") or ""), reverse=True)
     if limit > 0:
         return active[:limit]
