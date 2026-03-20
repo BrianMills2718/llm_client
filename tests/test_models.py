@@ -55,6 +55,13 @@ class TestGetModel:
         # cost, which excludes grok-4.1-fast (intel=39) and picks deepseek-chat.
         assert model == "openrouter/deepseek/deepseek-chat"
 
+    def test_fast_extraction_prefers_fastest_structured_model_over_static_candidates(self):
+        model = get_model("fast_extraction", available_only=False, use_performance=False)
+        # fast_extraction requires structured_output + intel>=35, then prefers
+        # speed before intelligence/cost. gemini-3-flash-preview is the fastest
+        # model that clears that quality floor.
+        assert model == "gemini/gemini-3-flash-preview"
+
     def test_graph_building_returns_cheapest_structured(self):
         model = get_model("graph_building", available_only=False)
         # cheapest with structured_output and intel>=30:
