@@ -9,6 +9,7 @@ read these first:
 2. [docs/plans/01_master-roadmap.md](docs/plans/01_master-roadmap.md)
 3. [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md)
 4. [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+5. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)
 
 Short version:
 

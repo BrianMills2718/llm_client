@@ -1,0 +1,6 @@
+version: 1
+success_criteria:
+  - type: file_exists
+    path: README.md
+  - type: file_exists
+    path: docs/API_REFERENCE.md
