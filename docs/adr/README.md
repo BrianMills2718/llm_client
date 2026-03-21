@@ -15,6 +15,7 @@ compatibility contracts in `llm_client`.
 - `0010-cross-project-runtime-substrate.md`
 - `0011-prompt-assets-explicit-identity.md`
 - `0012-shared-data-plane-boundary.md`
+- `0013-local-provider-parity-boundary.md`
 
 Related architecture docs:
 

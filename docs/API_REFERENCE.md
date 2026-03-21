@@ -73,6 +73,16 @@ For boundary rationale, see:
 - [docs/plans/02_client-boundary-hardening.md](plans/02_client-boundary-hardening.md)
 - [docs/plans/04_workflow-layer-boundary.md](plans/04_workflow-layer-boundary.md)
 
+## Local Provider Contract
+
+Local execution is part of the shared runtime boundary, not an ad hoc escape
+hatch.
+
+Reference docs:
+
+- [docs/LOCAL_MODEL_PARITY_V0.md](LOCAL_MODEL_PARITY_V0.md)
+- [docs/adr/0013-local-provider-parity-boundary.md](adr/0013-local-provider-parity-boundary.md)
+
 ## Prompt Assets
 
 Prompt assets are explicit data with identity and lineage.

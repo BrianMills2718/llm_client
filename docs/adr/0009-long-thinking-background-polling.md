@@ -1,7 +1,8 @@
 # ADR 0009: Long-Thinking Responses Background Polling
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-02-23
+Last verified: 2026-03-21
 
 ## Context
 

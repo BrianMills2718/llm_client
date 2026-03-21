@@ -1,7 +1,8 @@
 # ADR 0010: Cross-Project Runtime and Observability Substrate
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-03-17
+Last verified: 2026-03-21
 
 ## Context
 

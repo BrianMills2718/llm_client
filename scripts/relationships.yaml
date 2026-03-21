@@ -60,3 +60,21 @@ couplings:
       - docs/adr/0011-prompt-assets-explicit-identity.md
     description: Prompt asset identity, explicit rendering, and provenance constraints.
     required_reading: true
+
+  - sources:
+      - llm_client/client.py
+      - llm_client/config.py
+      - llm_client/difficulty.py
+      - llm_client/embedding_runtime.py
+      - llm_client/model_selection.py
+      - llm_client/models.py
+      - llm_client/routing.py
+      - llm_client/stream_runtime.py
+      - llm_client/structured_runtime.py
+    docs:
+      - docs/adr/0010-cross-project-runtime-substrate.md
+      - docs/adr/0013-local-provider-parity-boundary.md
+      - docs/API_REFERENCE.md
+      - docs/LOCAL_MODEL_PARITY_V0.md
+    description: Local-provider execution, capability-parity, and locality-policy contract.
+    required_reading: true
