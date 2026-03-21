@@ -1,5 +1,7 @@
 # API Reference
 
+<!-- Last verified: 2026-03-21 -->
+
 This document is the stable entry point into the `llm_client` API surface.
 It is an index, not a second full README.
 

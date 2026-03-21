@@ -1,5 +1,7 @@
 # Local Model Parity v0
 
+<!-- Last verified: 2026-03-21 -->
+
 This document is the concrete design for first-class local-provider support in
 `llm_client`.
 
