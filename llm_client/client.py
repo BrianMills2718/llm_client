@@ -2525,9 +2525,17 @@ def _prepare_call_kwargs(
     kwargs: dict[str, Any],
     warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build kwargs dict shared by call_llm and acall_llm."""
+    """Build kwargs dict shared by call_llm and acall_llm.
+
+    Strips underscore-prefixed keys (llm_client-private runtime objects like
+    _lifecycle_monitor) before building the provider payload. LiteLLM forwards
+    arbitrary kwargs into the HTTP request, so non-serializable objects cause
+    'not JSON serializable' errors if leaked through.
+    """
     raw_kwargs = dict(kwargs)
     policy = _resolve_unsupported_param_policy(raw_kwargs.pop("unsupported_param_policy", None))
+    # Strip llm_client-private runtime kwargs before provider dispatch
+    provider_kwargs = {k: v for k, v in raw_kwargs.items() if not k.startswith("_")}
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -2535,7 +2543,7 @@ def _prepare_call_kwargs(
         # all retries with jittered backoff. Passing it to litellm causes
         # double retry (litellm retries HTTP errors internally, then our
         # loop retries the same errors again).
-        **raw_kwargs,
+        **provider_kwargs,
     }
     if timeout > 0:
         call_kwargs["timeout"] = timeout
