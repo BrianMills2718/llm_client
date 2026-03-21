@@ -2525,8 +2525,19 @@ def _prepare_call_kwargs(
     kwargs: dict[str, Any],
     warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build kwargs dict shared by call_llm and acall_llm."""
-    raw_kwargs = dict(kwargs)
+    """Build provider kwargs shared by call_llm and acall_llm.
+
+    Public wrappers may attach underscore-prefixed llm_client control objects
+    such as lifecycle monitors for runtime-only use. Provider transports must
+    never see those values because LiteLLM forwards arbitrary kwargs into the
+    downstream request payload, where non-JSON-serializable objects fail
+    loudly before the model call starts.
+    """
+    raw_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if not key.startswith("_")
+    }
     policy = _resolve_unsupported_param_policy(raw_kwargs.pop("unsupported_param_policy", None))
     call_kwargs: dict[str, Any] = {
         "model": model,
