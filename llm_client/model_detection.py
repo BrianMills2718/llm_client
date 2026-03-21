@@ -10,7 +10,6 @@ This module depends on config and routing but must not import from client.py.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -18,8 +17,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-GEMINI_NATIVE_MODE_ENV = "LLM_CLIENT_GEMINI_NATIVE_MODE"
 
 _RESPONSES_API_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-pro"}
 
@@ -90,28 +87,6 @@ def _is_image_generation_model(model: str) -> bool:
 def _is_gemini_model(model: str) -> bool:
     """Check if model targets Google's Gemini API namespace."""
     return model.lower().startswith("gemini/")
-
-
-def _gemini_native_mode_enabled() -> bool:
-    """Whether native Gemini REST path is enabled via env flag."""
-    raw = os.environ.get(GEMINI_NATIVE_MODE_ENV, "off").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off", ""}:
-        return False
-    logger.warning(
-        "Invalid %s=%r; expected on/off boolean. Defaulting to off.",
-        GEMINI_NATIVE_MODE_ENV,
-        raw,
-    )
-    return False
-
-
-def _gemini_model_name(model: str) -> str:
-    """Return raw Gemini model id without provider prefix."""
-    if not _is_gemini_model(model):
-        return model
-    return model.split("/", 1)[1]
 
 
 # ---------------------------------------------------------------------------

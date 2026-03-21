@@ -62,7 +62,6 @@ def _call_llm_impl(
     _is_responses_api_model = _client._is_responses_api_model
     _background_mode_for_model = _client._background_mode_for_model
     _resolve_api_base_for_model = _client._resolve_api_base_for_model
-    _should_use_gemini_native = _client._should_use_gemini_native
     _prepare_responses_kwargs = _client._prepare_responses_kwargs
     _prepare_call_kwargs = _client._prepare_call_kwargs
     _cache_key = _client._cache_key
@@ -72,8 +71,6 @@ def _call_llm_impl(
     exponential_backoff = _client.exponential_backoff
     _maybe_poll_background_response = _client._maybe_poll_background_response
     _build_result_from_responses = _client._build_result_from_responses
-    _call_gemini_native = _client._call_gemini_native
-    _build_result_from_gemini_native = _client._build_result_from_gemini_native
     _build_result_from_response = _client._build_result_from_response
     _check_retryable = _client._check_retryable
     _compute_retry_delay = _client._compute_retry_delay
@@ -301,16 +298,6 @@ def _call_llm_impl(
             reasoning_effort=reasoning_effort,
         )
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        use_gemini_native = (
-            not is_agent
-            and not use_responses
-            and _should_use_gemini_native(
-                current_model,
-                api_base=current_api_base,
-                kwargs=model_kwargs,
-                warning_sink=_warnings,
-            )
-        )
 
         if is_agent:
             pass
@@ -323,8 +310,6 @@ def _call_llm_impl(
                 kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
-        elif use_gemini_native:
-            pass
         else:
             call_kwargs = _prepare_call_kwargs(
                 current_model, messages,
@@ -404,15 +389,6 @@ def _call_llm_impl(
                     model_kwargs=model_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
-            elif use_gemini_native:
-                with _rate_limit.acquire(current_model):
-                    response = _call_gemini_native(
-                        current_model,
-                        messages,
-                        timeout=timeout,
-                        kwargs=model_kwargs,
-                    )
-                result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
             else:
                 with _rate_limit.acquire(current_model):
                     response = litellm.completion(**call_kwargs)
@@ -546,7 +522,6 @@ async def _acall_llm_impl(
     _is_responses_api_model = _client._is_responses_api_model
     _background_mode_for_model = _client._background_mode_for_model
     _resolve_api_base_for_model = _client._resolve_api_base_for_model
-    _should_use_gemini_native = _client._should_use_gemini_native
     _prepare_responses_kwargs = _client._prepare_responses_kwargs
     _prepare_call_kwargs = _client._prepare_call_kwargs
     _cache_key = _client._cache_key
@@ -558,8 +533,6 @@ async def _acall_llm_impl(
     exponential_backoff = _client.exponential_backoff
     _maybe_apoll_background_response = _client._maybe_apoll_background_response
     _build_result_from_responses = _client._build_result_from_responses
-    _acall_gemini_native = _client._acall_gemini_native
-    _build_result_from_gemini_native = _client._build_result_from_gemini_native
     _build_result_from_response = _client._build_result_from_response
     _check_retryable = _client._check_retryable
     _compute_retry_delay = _client._compute_retry_delay
@@ -783,16 +756,6 @@ async def _acall_llm_impl(
             reasoning_effort=reasoning_effort,
         )
         current_api_base = _resolve_api_base_for_model(current_model, api_base, cfg)
-        use_gemini_native = (
-            not is_agent
-            and not use_responses
-            and _should_use_gemini_native(
-                current_model,
-                api_base=current_api_base,
-                kwargs=model_kwargs,
-                warning_sink=_warnings,
-            )
-        )
 
         if is_agent:
             pass
@@ -805,8 +768,6 @@ async def _acall_llm_impl(
                 kwargs=model_kwargs,
                 warning_sink=_warnings,
             )
-        elif use_gemini_native:
-            pass
         else:
             call_kwargs = _prepare_call_kwargs(
                 current_model, messages,
@@ -886,15 +847,6 @@ async def _acall_llm_impl(
                     model_kwargs=model_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
-            elif use_gemini_native:
-                async with _rate_limit.aacquire(current_model):
-                    response = await _acall_gemini_native(
-                        current_model,
-                        messages,
-                        timeout=timeout,
-                        kwargs=model_kwargs,
-                    )
-                result = _build_result_from_gemini_native(response, current_model, warnings=_warnings)
             else:
                 async with _rate_limit.aacquire(current_model):
                     response = await litellm.acompletion(**call_kwargs)

@@ -124,13 +124,6 @@ def warning_record_from_message(message: str) -> dict[str, Any] | None:
             message=text,
             remediation="Enable agent_retry_safe only for read-only/idempotent agent runs.",
         )
-    if text.startswith("GEMINI_NATIVE_SKIP:"):
-        return warning_record(
-            code="LLMC_WARN_GEMINI_NATIVE_SKIP",
-            category="UserWarning",
-            message=text,
-            remediation="Adjust kwargs or api_base to use native Gemini path.",
-        )
     if text.startswith("TOOL_DISCLOSURE:"):
         return warning_record(
             code="LLMC_WARN_TOOL_DISCLOSURE",

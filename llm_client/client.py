@@ -47,11 +47,14 @@ import json as _json
 import logging
 import os
 import re
+import socket
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
-from typing import Any, Callable, Iterable, Literal, NoReturn, TypeVar
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterable, Literal, NoReturn, Protocol, TypeVar
 
 import litellm
 from pydantic import BaseModel
@@ -75,6 +78,12 @@ from llm_client.result_finalization import (
 )
 from llm_client.timeout_policy import (
     normalize_timeout as _normalize_timeout,
+    timeout_policy_label as _timeout_policy_label,
+)
+from llm_client.foundation import (
+    coerce_run_id as _coerce_foundation_run_id,
+    new_event_id as _new_foundation_event_id,
+    now_iso as _foundation_now_iso,
 )
 from llm_client.routing import (
     CallRequest,
@@ -90,6 +99,7 @@ from llm_client.execution_kernel import (
 )
 
 from llm_client.errors import (
+    LLMError,
     LLMCapabilityError,
     LLMConfigurationError,
     LLMEmptyResponseError,
@@ -156,8 +166,6 @@ from llm_client.streaming import (  # noqa: F401
 # Re-export model detection utilities for backward compatibility.
 from llm_client.model_detection import (  # noqa: F401
     _base_model_name,
-    _gemini_model_name,
-    _gemini_native_mode_enabled,
     _is_claude_model,
     _is_gemini_model,
     _is_image_generation_model,
@@ -180,6 +188,26 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+
+@dataclass(frozen=True)
+class _LLMCallProgressSnapshot:
+    """Capture truthful progress-observability state for one in-flight call."""
+
+    progress_observable: bool
+    progress_source: str | None
+    progress_event_count: int
+    last_progress_at_monotonic: float | None
+
+
+class _LLMCallProgressReporter(Protocol):
+    """Minimal contract for lifecycles that can observe real call progress."""
+
+    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
+        """Declare that the call path exposes truthful progress signals."""
+
+    def mark_progress(self, *, source: str) -> None:
+        """Record one observed unit of forward progress for the in-flight call."""
+
 # Silence litellm's noisy default logging
 litellm.suppress_debug_info = True
 
@@ -188,18 +216,6 @@ from llm_client.langfuse_callbacks import configure_langfuse_callbacks, inject_m
 
 configure_langfuse_callbacks()
 
-from llm_client.model_detection import GEMINI_NATIVE_MODE_ENV  # noqa: F811
-GEMINI_NATIVE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_NATIVE_SUPPORTED_KWARGS: frozenset[str] = frozenset({
-    "max_tokens",
-    "max_completion_tokens",
-    "temperature",
-    "top_p",
-    "stop",
-    "tools",
-    "tool_choice",
-    "thinking",
-})
 # Re-export OpenRouter constants from their canonical home.
 from llm_client.openrouter import (  # noqa: F811
     OPENROUTER_API_BASE_ENV,
@@ -209,6 +225,45 @@ from llm_client.openrouter import (  # noqa: F811
     OPENROUTER_ROUTING_ENV,
 )
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
+_LLM_CALL_RUNTIME_ACTOR_ID = "service:llm_client:call_runtime:1"
+_LIFECYCLE_HEARTBEAT_INTERVAL_ENV = "LLM_CLIENT_LIFECYCLE_HEARTBEAT_INTERVAL_S"
+_LIFECYCLE_STALL_AFTER_ENV = "LLM_CLIENT_LIFECYCLE_STALL_AFTER_S"
+_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S = 15.0
+_DEFAULT_LIFECYCLE_STALL_AFTER_S = 300.0
+
+
+def _process_host_name() -> str | None:
+    """Return the current host name for same-host lifecycle correlation."""
+
+    try:
+        hostname = socket.gethostname().strip()
+    except Exception:
+        return None
+    return hostname or None
+
+
+def _linux_process_start_token(pid: int) -> str | None:
+    """Return a Linux procfs start token for one process when available."""
+
+    if pid <= 0:
+        return None
+    try:
+        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _, _, remainder = stat_text.partition(") ")
+    if not remainder:
+        return None
+    fields = remainder.split()
+    if len(fields) <= 19:
+        return None
+    start_ticks = fields[19].strip()
+    return f"linux-proc-start:{start_ticks}" if start_ticks else None
+
+
+_PROCESS_HOST_NAME = _process_host_name()
+_PROCESS_ID = os.getpid()
+_PROCESS_START_TOKEN = _linux_process_start_token(_PROCESS_ID)
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -483,23 +538,6 @@ def _as_text_content(content: Any) -> str:
     return str(content)
 
 
-def _safe_json_object(value: Any) -> dict[str, Any]:
-    """Parse JSON-ish values into dicts for Gemini function args/response."""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = _json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-            return {"value": parsed}
-        except Exception:
-            return {"value": value}
-    if value is None:
-        return {}
-    return {"value": value}
-
-
 def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
     """Clean a JSON schema for Gemini compatibility.
 
@@ -507,6 +545,8 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
     features: additionalProperties, strict, $defs/$ref, anyOf with null (use
     nullable instead), and title fields. This recursively strips unsupported
     fields and converts anyOf-with-null to nullable.
+
+    Used by both the litellm Gemini path (via mcp_agent) and structured output.
     """
     import copy
     schema = copy.deepcopy(schema)
@@ -560,432 +600,6 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
 
     _clean(schema)
     return schema
-
-
-def _convert_tools_for_gemini_native(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI tool schema to Gemini functionDeclarations format."""
-    declarations: list[dict[str, Any]] = []
-    for tool in tools:
-        fn = tool.get("function")
-        if not isinstance(fn, dict):
-            continue
-        name = str(fn.get("name", "")).strip()
-        if not name:
-            continue
-        decl: dict[str, Any] = {"name": name}
-        description = fn.get("description")
-        if isinstance(description, str) and description.strip():
-            decl["description"] = description
-        parameters = fn.get("parameters")
-        if isinstance(parameters, dict):
-            decl["parameters"] = _clean_schema_for_gemini(parameters)
-        declarations.append(decl)
-    if not declarations:
-        return []
-    return [{"functionDeclarations": declarations}]
-
-
-def _convert_tool_choice_for_gemini_native(tool_choice: Any) -> dict[str, Any] | None:
-    """Convert OpenAI tool_choice to Gemini toolConfig when possible."""
-    if tool_choice is None:
-        return None
-    if isinstance(tool_choice, str):
-        choice = tool_choice.strip().lower()
-        if choice in {"auto", ""}:
-            return None
-        if choice == "none":
-            return {"functionCallingConfig": {"mode": "NONE"}}
-        if choice in {"required", "any"}:
-            return {"functionCallingConfig": {"mode": "ANY"}}
-        return None
-    if isinstance(tool_choice, dict):
-        fn = tool_choice.get("function")
-        if isinstance(fn, dict):
-            name = str(fn.get("name", "")).strip()
-            if name:
-                return {
-                    "functionCallingConfig": {
-                        "mode": "ANY",
-                        "allowedFunctionNames": [name],
-                    },
-                }
-    return None
-
-
-def _build_gemini_native_payload(
-    model: str,
-    messages: list[dict[str, Any]],
-    kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """Translate OpenAI-style messages/tools kwargs into Gemini REST payload."""
-    system_lines: list[str] = []
-    contents: list[dict[str, Any]] = []
-    tool_call_name_by_id: dict[str, str] = {}
-
-    for msg in messages:
-        role = str(msg.get("role", "")).strip().lower()
-        if role == "system":
-            text = _as_text_content(msg.get("content"))
-            if text.strip():
-                system_lines.append(text.strip())
-            continue
-
-        if role == "assistant":
-            parts: list[dict[str, Any]] = []
-            text = _as_text_content(msg.get("content"))
-            if text.strip():
-                parts.append({"text": text})
-
-            raw_tool_calls = msg.get("tool_calls")
-            if isinstance(raw_tool_calls, list):
-                for idx, tc in enumerate(raw_tool_calls):
-                    if not isinstance(tc, dict):
-                        continue
-                    fn = tc.get("function")
-                    if not isinstance(fn, dict):
-                        continue
-                    name = str(fn.get("name", "")).strip()
-                    if not name:
-                        continue
-                    args = _safe_json_object(fn.get("arguments"))
-                    tc_id = str(tc.get("id", "")).strip() or f"call_{len(tool_call_name_by_id) + idx + 1}"
-                    tool_call_name_by_id[tc_id] = name
-                    parts.append({"functionCall": {"name": name, "args": args}})
-
-            if parts:
-                contents.append({"role": "model", "parts": parts})
-            continue
-
-        if role == "tool":
-            tool_call_id = str(msg.get("tool_call_id", "")).strip()
-            tool_name = str(msg.get("name", "")).strip() or tool_call_name_by_id.get(tool_call_id, "tool_response")
-            response_obj = _safe_json_object(msg.get("content"))
-            contents.append({
-                "role": "user",
-                "parts": [{
-                    "functionResponse": {
-                        "name": tool_name,
-                        "response": response_obj,
-                    },
-                }],
-            })
-            continue
-
-        # Default: user/unknown roles become user text turns.
-        text = _as_text_content(msg.get("content"))
-        if text.strip():
-            contents.append({"role": "user", "parts": [{"text": text}]})
-
-    if not contents:
-        # Gemini requires at least one content turn.
-        contents = [{"role": "user", "parts": [{"text": ""}]}]
-
-    payload: dict[str, Any] = {"contents": contents}
-    if system_lines:
-        payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_lines)}]}
-
-    tools = kwargs.get("tools")
-    if isinstance(tools, list):
-        gemini_tools = _convert_tools_for_gemini_native(tools)
-        if gemini_tools:
-            payload["tools"] = gemini_tools
-
-    tool_config = _convert_tool_choice_for_gemini_native(kwargs.get("tool_choice"))
-    if tool_config:
-        payload["toolConfig"] = tool_config
-
-    generation_config: dict[str, Any] = {}
-    if "temperature" in kwargs:
-        generation_config["temperature"] = kwargs["temperature"]
-    if "top_p" in kwargs:
-        generation_config["topP"] = kwargs["top_p"]
-    max_tokens = kwargs.get("max_completion_tokens", kwargs.get("max_tokens"))
-    if max_tokens is not None:
-        generation_config["maxOutputTokens"] = int(max_tokens)
-    stop = kwargs.get("stop")
-    if stop is not None:
-        if isinstance(stop, str):
-            generation_config["stopSequences"] = [stop]
-        elif isinstance(stop, list):
-            generation_config["stopSequences"] = [s for s in stop if isinstance(s, str)]
-
-    thinking = kwargs.get("thinking")
-    if isinstance(thinking, dict):
-        budget = thinking.get("budget_tokens", thinking.get("thinkingBudget"))
-        if budget is not None:
-            generation_config["thinkingConfig"] = {"thinkingBudget": int(budget)}
-    elif _is_thinking_model(model):
-        # Match default llm_client behavior: disable thinking budget unless explicitly set.
-        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
-
-    if generation_config:
-        payload["generationConfig"] = generation_config
-
-    return payload
-
-
-def _gemini_native_unsupported_kwargs(kwargs: dict[str, Any]) -> list[str]:
-    """Return sorted kwargs that native Gemini path does not currently support."""
-    return sorted(k for k in kwargs.keys() if k not in GEMINI_NATIVE_SUPPORTED_KWARGS)
-
-
-def _should_use_gemini_native(
-    model: str,
-    *,
-    api_base: str | None,
-    kwargs: dict[str, Any],
-    warning_sink: list[str] | None = None,
-) -> bool:
-    """Determine if call should route through native Gemini REST path."""
-    if not _is_gemini_model(model):
-        return False
-    if not _gemini_native_mode_enabled():
-        return False
-    if api_base is not None:
-        msg = (
-            f"GEMINI_NATIVE_SKIP: api_base provided for {model}; "
-            "using litellm completion route"
-        )
-        logger.info(msg)
-        if warning_sink is not None:
-            warning_sink.append(msg)
-        return False
-    unsupported = _gemini_native_unsupported_kwargs(kwargs)
-    if unsupported:
-        msg = (
-            f"GEMINI_NATIVE_SKIP: unsupported kwargs for {model}: "
-            + ", ".join(unsupported)
-        )
-        logger.info(msg)
-        if warning_sink is not None:
-            warning_sink.append(msg)
-        return False
-    return True
-
-
-def _gemini_native_usage(response: dict[str, Any]) -> dict[str, Any]:
-    """Normalize Gemini usageMetadata into llm_client usage schema."""
-    raw = response.get("usageMetadata", {}) if isinstance(response, dict) else {}
-    if not isinstance(raw, dict):
-        raw = {}
-
-    prompt_tokens = int(raw.get("promptTokenCount", raw.get("inputTokenCount", 0)) or 0)
-    completion_tokens = int(raw.get("candidatesTokenCount", raw.get("outputTokenCount", 0)) or 0)
-    total_tokens = int(raw.get("totalTokenCount", prompt_tokens + completion_tokens) or 0)
-    cached_tokens = int(raw.get("cachedContentTokenCount", 0) or 0)
-
-    return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "prompt_tokens_details": {"cached_tokens": cached_tokens},
-        "cache_creation_input_tokens": 0,
-    }
-
-
-def _build_result_from_gemini_native(
-    response: dict[str, Any],
-    model: str,
-    warnings: list[str] | None = None,
-) -> LLMCallResult:
-    """Build ``LLMCallResult`` from native Gemini REST response payload."""
-    candidates = response.get("candidates") if isinstance(response, dict) else None
-    if not isinstance(candidates, list) or not candidates:
-        _raise_empty_response(
-            provider="gemini_native",
-            classification="provider_empty_candidates",
-            retryable=True,
-            diagnostics={
-                "model": model,
-                "has_candidates": isinstance(candidates, list),
-                "candidate_count": len(candidates) if isinstance(candidates, list) else 0,
-                "has_prompt_feedback": isinstance(response.get("promptFeedback"), dict),
-            },
-        )
-
-    first = candidates[0] if isinstance(candidates[0], dict) else {}
-    finish_raw = str(first.get("finishReason", "")).strip()
-    finish_reason = finish_raw.lower()
-    content_obj = first.get("content")
-    parts = content_obj.get("parts", []) if isinstance(content_obj, dict) else []
-    prompt_feedback = response.get("promptFeedback", {}) if isinstance(response, dict) else {}
-    block_reason = ""
-    block_reason_message = ""
-    if isinstance(prompt_feedback, dict):
-        block_reason = str(prompt_feedback.get("blockReason", "")).strip()
-        block_reason_message = str(prompt_feedback.get("blockReasonMessage", "")).strip()
-
-    text_segments: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    blocked_safety_categories: list[str] = []
-    for idx, part in enumerate(parts):
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text")
-        if isinstance(text, str) and text:
-            text_segments.append(text)
-        fn_call = part.get("functionCall")
-        if isinstance(fn_call, dict):
-            name = str(fn_call.get("name", "")).strip()
-            if not name:
-                continue
-            args = fn_call.get("args", {})
-            args_json = args if isinstance(args, str) else _json.dumps(args)
-            tool_calls.append({
-                "id": f"gemini_fn_{idx}",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": args_json,
-                },
-            })
-    safety_ratings = first.get("safetyRatings")
-    if isinstance(safety_ratings, list):
-        for sr in safety_ratings:
-            if not isinstance(sr, dict):
-                continue
-            if sr.get("blocked") is True:
-                category = str(sr.get("category", "unknown")).strip() or "unknown"
-                blocked_safety_categories.append(category)
-
-    content = "".join(text_segments).strip()
-    if finish_reason in {"max_tokens", "max_output_tokens"} and not tool_calls:
-        raise RuntimeError(
-            f"LLM response truncated ({len(content)} chars). "
-            "Increase max_tokens or simplify the prompt."
-        )
-
-    if not content and not tool_calls:
-        diagnostics = {
-            "model": model,
-            "finish_reason": finish_raw or "unknown",
-            "prompt_block_reason": block_reason or None,
-            "prompt_block_reason_message": block_reason_message or None,
-            "blocked_safety_categories": blocked_safety_categories,
-            "candidate_count": len(candidates),
-            "parts_count": len(parts),
-        }
-        if (
-            block_reason
-            or blocked_safety_categories
-            or finish_reason in _EMPTY_POLICY_FINISH_REASONS
-        ):
-            _raise_empty_response(
-                provider="gemini_native",
-                classification="provider_policy_block",
-                retryable=False,
-                diagnostics=diagnostics,
-            )
-        if finish_reason in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
-            _raise_empty_response(
-                provider="gemini_native",
-                classification="provider_tool_protocol",
-                retryable=False,
-                diagnostics=diagnostics,
-            )
-        _raise_empty_response(
-            provider="gemini_native",
-            classification="provider_empty_unknown",
-            retryable=True,
-            diagnostics=diagnostics,
-        )
-
-    usage = _gemini_native_usage(response)
-    total = int(usage.get("total_tokens", 0) or 0)
-    cost = total * FALLBACK_COST_FLOOR_USD_PER_TOKEN
-    result_finish = "tool_calls" if tool_calls else (finish_reason or "stop")
-
-    return LLMCallResult(
-        content=content,
-        usage=usage,
-        cost=cost,
-        model=model,
-        resolved_model=model,
-        tool_calls=tool_calls,
-        finish_reason=result_finish,
-        raw_response=response,
-        warnings=warnings or [],
-        cost_source="fallback_estimate",
-    )
-
-
-def _call_gemini_native(
-    model: str,
-    messages: list[dict[str, Any]],
-    *,
-    timeout: int,
-    kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """Direct Gemini REST call (bypasses OpenAI-compat translation layers)."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is required for native Gemini mode")
-
-    gemini_model = _gemini_model_name(model)
-    url = GEMINI_NATIVE_ENDPOINT.format(model=urllib.parse.quote(gemini_model, safe=".-_"))
-    payload = _build_gemini_native_payload(model, messages, kwargs)
-    body = _json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
-    )
-
-    try:
-        if timeout > 0:
-            resp_ctx = urllib.request.urlopen(req, timeout=timeout)
-        else:
-            resp_ctx = urllib.request.urlopen(req)
-        with resp_ctx as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        message = f"Gemini native HTTP {e.code}: {err_body[:500]}"
-        if e.code in {429, 500, 502, 503, 504}:
-            raise ValueError(message)
-        raise RuntimeError(message)
-    except urllib.error.URLError as e:
-        raise ValueError(f"Gemini native network error: {e}") from e
-
-    try:
-        parsed = _json.loads(raw)
-    except Exception as e:
-        raise ValueError("Gemini native returned invalid JSON") from e
-
-    if isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
-        err = parsed["error"]
-        code = int(err.get("code", 0) or 0)
-        status = str(err.get("status", "")).strip()
-        msg = str(err.get("message", "")).strip()
-        rendered = f"Gemini native API error {code} {status}: {msg}".strip()
-        if code in {429, 500, 502, 503, 504} or ("rate" in msg.lower() and "limit" in msg.lower()):
-            raise ValueError(rendered)
-        raise RuntimeError(rendered)
-
-    if not isinstance(parsed, dict):
-        raise ValueError("Gemini native returned non-object JSON payload")
-    return parsed
-
-
-async def _acall_gemini_native(
-    model: str,
-    messages: list[dict[str, Any]],
-    *,
-    timeout: int,
-    kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """Async wrapper around native Gemini REST call."""
-    return await asyncio.to_thread(
-        _call_gemini_native,
-        model,
-        messages,
-        timeout=timeout,
-        kwargs=kwargs,
-    )
 
 
 def _build_model_chain(
@@ -1190,6 +804,602 @@ def _log_call_event(
         trace_id=trace_id,
         prompt_ref=prompt_ref,
     )
+
+
+def _new_llm_call_lifecycle_id() -> str:
+    """Return a stable correlation id shared across lifecycle events for one call."""
+
+    return f"llmcall_{uuid.uuid4().hex}"
+
+
+def _llm_call_lifecycle_session_id(call_id: str) -> str:
+    """Derive a deterministic Foundation session id for one public call lifecycle."""
+
+    suffix = call_id.removeprefix("llmcall_")
+    return f"sess_{suffix}"
+
+
+def _llm_lifecycle_error_message(error: Exception) -> str:
+    """Return a non-empty error message for lifecycle failure records."""
+
+    if isinstance(error, LLMError) and error.original is not None:
+        error = error.original
+    message = str(error).strip()
+    if message:
+        return message
+    return error.__class__.__name__
+
+
+def _llm_lifecycle_error_type(error: Exception) -> str:
+    """Return the most informative error type for lifecycle failure records."""
+
+    if isinstance(error, LLMError) and error.original is not None:
+        return error.original.__class__.__name__
+    return error.__class__.__name__
+
+
+def _provider_timeout_for_lifecycle(timeout: Any) -> int:
+    """Compute the effective provider-timeout value for lifecycle observability."""
+
+    if _timeout_policy_label() == "ban":
+        return 0
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
+
+
+def _normalize_lifecycle_seconds(value: Any, *, default: float) -> float:
+    """Normalize lifecycle heartbeat/stall thresholds from caller or env values."""
+
+    if value is None:
+        return max(default, 0.0)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed <= 0:
+        return 0.0
+    return parsed
+
+
+def _resolve_lifecycle_monitoring_settings(
+    *,
+    heartbeat_interval: Any,
+    stall_after: Any,
+) -> tuple[float, float]:
+    """Resolve public liveness settings without forwarding them to providers."""
+
+    heartbeat_default = _normalize_lifecycle_seconds(
+        os.environ.get(
+            _LIFECYCLE_HEARTBEAT_INTERVAL_ENV,
+            _DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S,
+        ),
+        default=_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S,
+    )
+    stall_default = _normalize_lifecycle_seconds(
+        os.environ.get(_LIFECYCLE_STALL_AFTER_ENV, _DEFAULT_LIFECYCLE_STALL_AFTER_S),
+        default=_DEFAULT_LIFECYCLE_STALL_AFTER_S,
+    )
+    resolved_heartbeat = _normalize_lifecycle_seconds(
+        heartbeat_interval,
+        default=heartbeat_default,
+    )
+    resolved_stall = _normalize_lifecycle_seconds(
+        stall_after,
+        default=stall_default,
+    )
+    return resolved_heartbeat, resolved_stall
+
+
+def _emit_llm_call_lifecycle_event(
+    *,
+    call_id: str,
+    phase: Literal["started", "heartbeat", "progress", "stalled", "completed", "failed"],
+    call_kind: Literal["text", "structured"],
+    caller: str,
+    task: str,
+    trace_id: str,
+    requested_model: str,
+    provider_timeout_s: int,
+    prompt_ref: str | None,
+    resolved_model: str | None = None,
+    latency_s: float | None = None,
+    elapsed_s: float | None = None,
+    heartbeat_interval_s: float | None = None,
+    stall_after_s: float | None = None,
+    progress_observable: bool | None = None,
+    progress_source: str | None = None,
+    progress_event_count: int | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Emit a Foundation-backed lifecycle event for one public LLM call."""
+
+    params: dict[str, Any] = {
+        "task": task,
+        "trace_id": trace_id,
+        "call_kind": call_kind,
+    }
+    if prompt_ref is not None:
+        params["prompt_ref"] = prompt_ref
+    if resolved_model is not None:
+        params["resolved_model"] = resolved_model
+
+    _io_log.log_foundation_event(
+        event={
+            "event_id": _new_foundation_event_id(),
+            "event_type": "LLMCallLifecycle",
+            "timestamp": _foundation_now_iso(),
+            "run_id": _coerce_foundation_run_id(None, trace_id),
+            "session_id": _llm_call_lifecycle_session_id(call_id),
+            "actor_id": _LLM_CALL_RUNTIME_ACTOR_ID,
+            "operation": {"name": caller, "version": None},
+            "inputs": {
+                "artifact_ids": [],
+                "params": params,
+                "bindings": {},
+            },
+            "outputs": {
+                "artifact_ids": [],
+                "payload_hashes": [],
+            },
+            "llm_call_lifecycle": {
+                "call_id": call_id,
+                "phase": phase,
+                "call_kind": call_kind,
+                "requested_model_id": requested_model,
+                "resolved_model_id": resolved_model,
+                "provider_timeout_s": provider_timeout_s if provider_timeout_s > 0 else None,
+                "timeout_policy": _timeout_policy_label(),
+                "prompt_ref": prompt_ref,
+                "host_name": _PROCESS_HOST_NAME,
+                "process_id": _PROCESS_ID if _PROCESS_ID > 0 else None,
+                "process_start_token": _PROCESS_START_TOKEN,
+                "progress_observable": progress_observable,
+                "progress_source": progress_source,
+                "progress_event_count": progress_event_count,
+                "elapsed_s": elapsed_s,
+                "latency_s": latency_s,
+                "heartbeat_interval_s": (
+                    heartbeat_interval_s
+                    if heartbeat_interval_s and heartbeat_interval_s > 0
+                    else None
+                ),
+                "stall_after_s": stall_after_s if stall_after_s and stall_after_s > 0 else None,
+                "error_type": _llm_lifecycle_error_type(error) if error is not None else None,
+                "error_message": _llm_lifecycle_error_message(error) if error is not None else None,
+            },
+        },
+        caller=caller,
+        task=task,
+        trace_id=trace_id,
+    )
+
+
+class _SyncLLMCallHeartbeatMonitor:
+    """Emit lifecycle updates for one sync call, including real progress when available."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        call_kind: Literal["text", "structured"],
+        caller: str,
+        task: str,
+        trace_id: str,
+        requested_model: str,
+        provider_timeout_s: int,
+        prompt_ref: str | None,
+        heartbeat_interval_s: float,
+        stall_after_s: float,
+        started_at: float,
+        progress_observable: bool = False,
+    ) -> None:
+        self.call_id = call_id
+        self.call_kind = call_kind
+        self.caller = caller
+        self.task = task
+        self.trace_id = trace_id
+        self.requested_model = requested_model
+        self.provider_timeout_s = provider_timeout_s
+        self.prompt_ref = prompt_ref
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.stall_after_s = stall_after_s
+        self.started_at = started_at
+        self._state_lock = threading.Lock()
+        self._progress_observable = progress_observable
+        self._progress_source: str | None = None
+        self._progress_event_count = 0
+        self._last_progress_at_monotonic: float | None = None
+        self._stalled_emitted = False
+        self._last_progress_event_emitted_at: float | None = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the background liveness monitor when thresholds are enabled."""
+
+        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"llm-call-heartbeat-{self.call_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the monitor and wait briefly for clean exit."""
+
+        if self._thread is None:
+            return
+        self._stop_event.set()
+        self._thread.join(timeout=1.0)
+
+    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
+        """Declare that this call path exposes truthful observable progress."""
+
+        with self._state_lock:
+            self._progress_observable = True
+            if default_source:
+                self._progress_source = default_source
+
+    def mark_progress(self, *, source: str) -> None:
+        """Record one unit of observed progress and rate-limit event emission."""
+
+        now = time.monotonic()
+        with self._state_lock:
+            self._progress_observable = True
+            self._progress_source = source
+            self._progress_event_count += 1
+            self._last_progress_at_monotonic = now
+            self._stalled_emitted = False
+            should_emit = (
+                self._last_progress_event_emitted_at is None
+                or self.heartbeat_interval_s <= 0
+                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
+            )
+            if should_emit:
+                self._last_progress_event_emitted_at = now
+            snapshot = self._snapshot_locked()
+        if should_emit:
+            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
+
+    def snapshot(self) -> _LLMCallProgressSnapshot:
+        """Return the current progress-observability state for this call."""
+
+        with self._state_lock:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> _LLMCallProgressSnapshot:
+        """Build a progress snapshot while the internal state lock is held."""
+
+        return _LLMCallProgressSnapshot(
+            progress_observable=self._progress_observable,
+            progress_source=self._progress_source,
+            progress_event_count=self._progress_event_count,
+            last_progress_at_monotonic=self._last_progress_at_monotonic,
+        )
+
+    def _emit_phase(
+        self,
+        phase: Literal["heartbeat", "progress", "stalled"],
+        *,
+        elapsed_s: float,
+        snapshot: _LLMCallProgressSnapshot | None = None,
+    ) -> None:
+        """Emit one non-terminal lifecycle phase with the latest progress metadata."""
+
+        effective_snapshot = snapshot or self.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=self.call_id,
+            phase=phase,
+            call_kind=self.call_kind,
+            caller=self.caller,
+            task=self.task,
+            trace_id=self.trace_id,
+            requested_model=self.requested_model,
+            provider_timeout_s=self.provider_timeout_s,
+            prompt_ref=self.prompt_ref,
+            elapsed_s=elapsed_s,
+            heartbeat_interval_s=self.heartbeat_interval_s,
+            stall_after_s=self.stall_after_s,
+            progress_observable=effective_snapshot.progress_observable,
+            progress_source=effective_snapshot.progress_source,
+            progress_event_count=effective_snapshot.progress_event_count,
+        )
+
+    def _next_stall_wait(
+        self,
+        *,
+        now: float,
+        snapshot: _LLMCallProgressSnapshot,
+    ) -> float | None:
+        """Return seconds until the next eligible stall event, if any."""
+
+        if self.stall_after_s <= 0:
+            return None
+        with self._state_lock:
+            stalled_emitted = self._stalled_emitted
+        if stalled_emitted:
+            return None
+        if snapshot.progress_observable:
+            last_progress = snapshot.last_progress_at_monotonic
+            if last_progress is None:
+                return None
+            idle_for_s = now - last_progress
+            return max(self.stall_after_s - idle_for_s, 0.001)
+        elapsed_s = now - self.started_at
+        return max(self.stall_after_s - elapsed_s, 0.001)
+
+    def _should_emit_stalled(
+        self,
+        *,
+        now: float,
+        snapshot: _LLMCallProgressSnapshot,
+    ) -> bool:
+        """Return whether the current call state has crossed the stall threshold."""
+
+        if self.stall_after_s <= 0:
+            return False
+        with self._state_lock:
+            if self._stalled_emitted:
+                return False
+        if snapshot.progress_observable:
+            last_progress = snapshot.last_progress_at_monotonic
+            if last_progress is None:
+                return False
+            return (now - last_progress) >= self.stall_after_s
+        return (now - self.started_at) >= self.stall_after_s
+
+    def _mark_stalled_emitted(self) -> None:
+        """Remember that the current idle period already emitted a stall marker."""
+
+        with self._state_lock:
+            self._stalled_emitted = True
+
+    def _run(self) -> None:
+        """Emit in-flight lifecycle markers until the wrapped call terminates."""
+
+        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
+        while True:
+            now = time.monotonic()
+            elapsed = now - self.started_at
+            snapshot = self.snapshot()
+            waits: list[float] = []
+            if next_heartbeat is not None:
+                waits.append(max(next_heartbeat - elapsed, 0.001))
+            stall_wait = self._next_stall_wait(now=now, snapshot=snapshot)
+            if stall_wait is not None:
+                waits.append(stall_wait)
+            if not waits:
+                return
+            if self._stop_event.wait(min(waits)):
+                return
+            now = time.monotonic()
+            elapsed = now - self.started_at
+            snapshot = self.snapshot()
+            if next_heartbeat is not None and elapsed >= next_heartbeat:
+                self._emit_phase("heartbeat", elapsed_s=elapsed, snapshot=snapshot)
+                while next_heartbeat is not None and elapsed >= next_heartbeat:
+                    next_heartbeat += self.heartbeat_interval_s
+            if self._should_emit_stalled(now=now, snapshot=snapshot):
+                self._emit_phase("stalled", elapsed_s=elapsed, snapshot=snapshot)
+                self._mark_stalled_emitted()
+
+
+class _AsyncLLMCallHeartbeatMonitor:
+    """Emit lifecycle updates for one async call, including real progress when available."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        call_kind: Literal["text", "structured"],
+        caller: str,
+        task: str,
+        trace_id: str,
+        requested_model: str,
+        provider_timeout_s: int,
+        prompt_ref: str | None,
+        heartbeat_interval_s: float,
+        stall_after_s: float,
+        started_at: float,
+        progress_observable: bool = False,
+    ) -> None:
+        self.call_id = call_id
+        self.call_kind = call_kind
+        self.caller = caller
+        self.task = task
+        self.trace_id = trace_id
+        self.requested_model = requested_model
+        self.provider_timeout_s = provider_timeout_s
+        self.prompt_ref = prompt_ref
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.stall_after_s = stall_after_s
+        self.started_at = started_at
+        self._state_lock = threading.Lock()
+        self._progress_observable = progress_observable
+        self._progress_source: str | None = None
+        self._progress_event_count = 0
+        self._last_progress_at_monotonic: float | None = None
+        self._stalled_emitted = False
+        self._last_progress_event_emitted_at: float | None = None
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Start the async heartbeat task when thresholds are enabled."""
+
+        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
+            return
+        self._task = asyncio.create_task(
+            self._run(),
+            name=f"llm-call-heartbeat-{self.call_id}",
+        )
+
+    async def stop(self) -> None:
+        """Stop the heartbeat task and await clean exit."""
+
+        if self._task is None:
+            return
+        self._stop_event.set()
+        await self._task
+
+    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
+        """Declare that this async call path exposes truthful observable progress."""
+
+        with self._state_lock:
+            self._progress_observable = True
+            if default_source:
+                self._progress_source = default_source
+
+    def mark_progress(self, *, source: str) -> None:
+        """Record one unit of observed progress and rate-limit event emission."""
+
+        now = time.monotonic()
+        with self._state_lock:
+            self._progress_observable = True
+            self._progress_source = source
+            self._progress_event_count += 1
+            self._last_progress_at_monotonic = now
+            self._stalled_emitted = False
+            should_emit = (
+                self._last_progress_event_emitted_at is None
+                or self.heartbeat_interval_s <= 0
+                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
+            )
+            if should_emit:
+                self._last_progress_event_emitted_at = now
+            snapshot = self._snapshot_locked()
+        if should_emit:
+            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
+
+    def snapshot(self) -> _LLMCallProgressSnapshot:
+        """Return the current progress-observability state for this call."""
+
+        with self._state_lock:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> _LLMCallProgressSnapshot:
+        """Build a progress snapshot while the internal state lock is held."""
+
+        return _LLMCallProgressSnapshot(
+            progress_observable=self._progress_observable,
+            progress_source=self._progress_source,
+            progress_event_count=self._progress_event_count,
+            last_progress_at_monotonic=self._last_progress_at_monotonic,
+        )
+
+    def _emit_phase(
+        self,
+        phase: Literal["heartbeat", "progress", "stalled"],
+        *,
+        elapsed_s: float,
+        snapshot: _LLMCallProgressSnapshot | None = None,
+    ) -> None:
+        """Emit one non-terminal lifecycle phase with the latest progress metadata."""
+
+        effective_snapshot = snapshot or self.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=self.call_id,
+            phase=phase,
+            call_kind=self.call_kind,
+            caller=self.caller,
+            task=self.task,
+            trace_id=self.trace_id,
+            requested_model=self.requested_model,
+            provider_timeout_s=self.provider_timeout_s,
+            prompt_ref=self.prompt_ref,
+            elapsed_s=elapsed_s,
+            heartbeat_interval_s=self.heartbeat_interval_s,
+            stall_after_s=self.stall_after_s,
+            progress_observable=effective_snapshot.progress_observable,
+            progress_source=effective_snapshot.progress_source,
+            progress_event_count=effective_snapshot.progress_event_count,
+        )
+
+    def _next_stall_wait(
+        self,
+        *,
+        now: float,
+        snapshot: _LLMCallProgressSnapshot,
+    ) -> float | None:
+        """Return seconds until the next eligible stall event, if any."""
+
+        if self.stall_after_s <= 0:
+            return None
+        with self._state_lock:
+            stalled_emitted = self._stalled_emitted
+        if stalled_emitted:
+            return None
+        if snapshot.progress_observable:
+            last_progress = snapshot.last_progress_at_monotonic
+            if last_progress is None:
+                return None
+            idle_for_s = now - last_progress
+            return max(self.stall_after_s - idle_for_s, 0.001)
+        elapsed_s = now - self.started_at
+        return max(self.stall_after_s - elapsed_s, 0.001)
+
+    def _should_emit_stalled(
+        self,
+        *,
+        now: float,
+        snapshot: _LLMCallProgressSnapshot,
+    ) -> bool:
+        """Return whether the current call state has crossed the stall threshold."""
+
+        if self.stall_after_s <= 0:
+            return False
+        with self._state_lock:
+            if self._stalled_emitted:
+                return False
+        if snapshot.progress_observable:
+            last_progress = snapshot.last_progress_at_monotonic
+            if last_progress is None:
+                return False
+            return (now - last_progress) >= self.stall_after_s
+        return (now - self.started_at) >= self.stall_after_s
+
+    def _mark_stalled_emitted(self) -> None:
+        """Remember that the current idle period already emitted a stall marker."""
+
+        with self._state_lock:
+            self._stalled_emitted = True
+
+    async def _run(self) -> None:
+        """Emit in-flight lifecycle markers until the wrapped async call terminates."""
+
+        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
+        while True:
+            now = time.monotonic()
+            elapsed = now - self.started_at
+            snapshot = self.snapshot()
+            waits: list[float] = []
+            if next_heartbeat is not None:
+                waits.append(max(next_heartbeat - elapsed, 0.001))
+            stall_wait = self._next_stall_wait(now=now, snapshot=snapshot)
+            if stall_wait is not None:
+                waits.append(stall_wait)
+            if not waits:
+                return
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=min(waits))
+                return
+            except TimeoutError:
+                pass
+            now = time.monotonic()
+            elapsed = now - self.started_at
+            snapshot = self.snapshot()
+            if next_heartbeat is not None and elapsed >= next_heartbeat:
+                self._emit_phase("heartbeat", elapsed_s=elapsed, snapshot=snapshot)
+                while next_heartbeat is not None and elapsed >= next_heartbeat:
+                    next_heartbeat += self.heartbeat_interval_s
+            if self._should_emit_stalled(now=now, snapshot=snapshot):
+                self._emit_phase("stalled", elapsed_s=elapsed, snapshot=snapshot)
+                self._mark_stalled_emitted()
 
 
 def _strip_incompatible_sampling_params(model: str, call_kwargs: dict[str, Any]) -> list[str]:
@@ -2559,8 +2769,13 @@ def call_llm(
             or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm.completion
                   (e.g., temperature, max_tokens, stream).
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
                   For GPT-5 models, response_format is automatically
                   converted and max_tokens is stripped.
                   For agent models, agent-specific kwargs are extracted:
@@ -2573,26 +2788,126 @@ def call_llm(
     """
     from llm_client.text_runtime import _call_llm_impl
 
-    return _call_llm_impl(
-        model,
-        messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        execution_mode=execution_mode,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="call_llm",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    monitor = _SyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    started_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=started_snapshot.progress_observable,
+        progress_source=started_snapshot.progress_source,
+        progress_event_count=started_snapshot.progress_event_count,
+    )
+    runtime_kwargs["_lifecycle_monitor"] = monitor
+    monitor.start()
+    try:
+        result = _call_llm_impl(
+            model,
+            messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            execution_mode=execution_mode,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        monitor.stop()
+        snapshot = monitor.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="text",
+            caller="call_llm",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
+            progress_observable=snapshot.progress_observable,
+            progress_source=snapshot.progress_source,
+            progress_event_count=snapshot.progress_event_count,
+        )
+        raise
+    monitor.stop()
+    elapsed_s = time.monotonic() - started_at
+    completed_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="text",
+        caller="call_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=completed_snapshot.progress_observable,
+        progress_source=completed_snapshot.progress_source,
+        progress_event_count=completed_snapshot.progress_event_count,
+    )
+    return result
 
 
 def call_llm_structured(
@@ -2634,34 +2949,139 @@ def call_llm_structured(
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.completion.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     from llm_client.structured_runtime import _call_llm_structured_impl
 
-    return _call_llm_structured_impl(
-        model,
-        messages,
-        response_model,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="call_llm_structured",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    monitor = _SyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    started_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=started_snapshot.progress_observable,
+        progress_source=started_snapshot.progress_source,
+        progress_event_count=started_snapshot.progress_event_count,
+    )
+    runtime_kwargs["_lifecycle_monitor"] = monitor
+    monitor.start()
+    try:
+        parsed, result = _call_llm_structured_impl(
+            model,
+            messages,
+            response_model,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        monitor.stop()
+        snapshot = monitor.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="structured",
+            caller="call_llm_structured",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
+            progress_observable=snapshot.progress_observable,
+            progress_source=snapshot.progress_source,
+            progress_event_count=snapshot.progress_event_count,
+        )
+        raise
+    monitor.stop()
+    elapsed_s = time.monotonic() - started_at
+    completed_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="structured",
+        caller="call_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=completed_snapshot.progress_observable,
+        progress_source=completed_snapshot.progress_source,
+        progress_event_count=completed_snapshot.progress_event_count,
+    )
+    return parsed, result
 
 
 def call_llm_with_tools(
@@ -2777,8 +3197,13 @@ async def acall_llm(
             ``"text"`` (default), ``"structured"``, ``"workspace_agent"``,
             or ``"workspace_tools"``.
         **kwargs: Additional params passed to litellm.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         LLMCallResult with content, usage, cost, model, tool_calls,
@@ -2786,26 +3211,126 @@ async def acall_llm(
     """
     from llm_client.text_runtime import _acall_llm_impl
 
-    return await _acall_llm_impl(
-        model,
-        messages,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        execution_mode=execution_mode,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="acall_llm",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    monitor = _AsyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    started_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=started_snapshot.progress_observable,
+        progress_source=started_snapshot.progress_source,
+        progress_event_count=started_snapshot.progress_event_count,
+    )
+    runtime_kwargs["_lifecycle_monitor"] = monitor
+    monitor.start()
+    try:
+        result = await _acall_llm_impl(
+            model,
+            messages,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            execution_mode=execution_mode,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        await monitor.stop()
+        snapshot = monitor.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="text",
+            caller="acall_llm",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
+            progress_observable=snapshot.progress_observable,
+            progress_source=snapshot.progress_source,
+            progress_event_count=snapshot.progress_event_count,
+        )
+        raise
+    await monitor.stop()
+    elapsed_s = time.monotonic() - started_at
+    completed_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="text",
+        caller="acall_llm",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=completed_snapshot.progress_observable,
+        progress_source=completed_snapshot.progress_source,
+        progress_event_count=completed_snapshot.progress_event_count,
+    )
+    return result
 
 
 async def acall_llm_structured(
@@ -2847,34 +3372,139 @@ async def acall_llm_structured(
         on_fallback: ``(failed_model, error, next_model)`` callback
         hooks: Observability hooks (before_call, after_call, on_error)
         **kwargs: Additional params passed to litellm.acompletion.
-                  ``prompt_ref`` is reserved for llm_client observability and
-                  is not forwarded to the provider.
+                  ``prompt_ref`` is reserved for llm_client observability.
+                  ``lifecycle_heartbeat_interval_s`` and
+                  ``lifecycle_stall_after_s`` are reserved for llm_client
+                  liveness observability. None of these values are forwarded
+                  to the provider. Heartbeats mean `llm_client` is still
+                  waiting on the call; they do not imply token-level provider
+                  progress.
 
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
     from llm_client.structured_runtime import _acall_llm_structured_impl
 
-    return await _acall_llm_structured_impl(
-        model,
-        messages,
-        response_model,
-        timeout=timeout,
-        num_retries=num_retries,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        retry_on=retry_on,
-        on_retry=on_retry,
-        cache=cache,
-        retry=retry,
-        fallback_models=fallback_models,
-        on_fallback=on_fallback,
-        hooks=hooks,
-        config=config,
-        **kwargs,
+    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
+    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
+        kwargs.get("task"),
+        kwargs.get("trace_id"),
+        kwargs.get("max_budget"),
+        caller="acall_llm_structured",
     )
+    _check_budget(resolved_trace_id, resolved_max_budget)
+    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
+
+    runtime_kwargs = dict(kwargs)
+    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
+        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
+        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
+    )
+    runtime_kwargs["task"] = resolved_task
+    runtime_kwargs["trace_id"] = resolved_trace_id
+    runtime_kwargs["max_budget"] = resolved_max_budget
+    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
+
+    call_id = _new_llm_call_lifecycle_id()
+    started_at = time.monotonic()
+    monitor = _AsyncLLMCallHeartbeatMonitor(
+        call_id=call_id,
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        started_at=started_at,
+    )
+    started_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="started",
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=started_snapshot.progress_observable,
+        progress_source=started_snapshot.progress_source,
+        progress_event_count=started_snapshot.progress_event_count,
+    )
+    runtime_kwargs["_lifecycle_monitor"] = monitor
+    monitor.start()
+    try:
+        parsed, result = await _acall_llm_structured_impl(
+            model,
+            messages,
+            response_model,
+            timeout=timeout,
+            num_retries=num_retries,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            retry_on=retry_on,
+            on_retry=on_retry,
+            cache=cache,
+            retry=retry,
+            fallback_models=fallback_models,
+            on_fallback=on_fallback,
+            hooks=hooks,
+            config=config,
+            **runtime_kwargs,
+        )
+    except Exception as exc:
+        await monitor.stop()
+        snapshot = monitor.snapshot()
+        _emit_llm_call_lifecycle_event(
+            call_id=call_id,
+            phase="failed",
+            call_kind="structured",
+            caller="acall_llm_structured",
+            task=resolved_task,
+            trace_id=resolved_trace_id,
+            requested_model=model,
+            provider_timeout_s=effective_provider_timeout,
+            prompt_ref=normalized_prompt_ref,
+            latency_s=time.monotonic() - started_at,
+            error=exc,
+            heartbeat_interval_s=heartbeat_interval_s,
+            stall_after_s=stall_after_s,
+            progress_observable=snapshot.progress_observable,
+            progress_source=snapshot.progress_source,
+            progress_event_count=snapshot.progress_event_count,
+        )
+        raise
+    await monitor.stop()
+    elapsed_s = time.monotonic() - started_at
+    completed_snapshot = monitor.snapshot()
+    _emit_llm_call_lifecycle_event(
+        call_id=call_id,
+        phase="completed",
+        call_kind="structured",
+        caller="acall_llm_structured",
+        task=resolved_task,
+        trace_id=resolved_trace_id,
+        requested_model=model,
+        provider_timeout_s=effective_provider_timeout,
+        prompt_ref=normalized_prompt_ref,
+        resolved_model=result.resolved_model or str(result.model or "") or None,
+        elapsed_s=elapsed_s,
+        latency_s=elapsed_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        stall_after_s=stall_after_s,
+        progress_observable=completed_snapshot.progress_observable,
+        progress_source=completed_snapshot.progress_source,
+        progress_event_count=completed_snapshot.progress_event_count,
+    )
+    return parsed, result
 
 
 async def acall_llm_with_tools(
