@@ -276,8 +276,84 @@ def cmd_failure_patterns(args: argparse.Namespace) -> None:
         print(f"  ({count}x) {seq}")
 
 
+def cmd_interventions(args: argparse.Namespace) -> None:
+    """List logged interventions."""
+    from llm_client import io_log
+
+    interventions = io_log.get_interventions(
+        project=getattr(args, "project", None),
+        dataset=getattr(args, "dataset", None),
+        limit=50,
+    )
+
+    if not interventions:
+        print("No interventions logged.")
+        return
+
+    print(f"Interventions ({len(interventions)}):")
+    print()
+    print(f"{'ID':<14} {'Date':<12} {'Cat':<8} {'Status':<10} {'Description':<40} {'Impact'}")
+    print("-" * 100)
+
+    for i in interventions:
+        ts = i.get("timestamp", "")[:10]
+        cat = i.get("category", "?")[:7]
+        status = i.get("status", "?")[:9]
+        desc = (i.get("description", "") or "")[:39]
+        impact = (i.get("measured_impact", "") or i.get("expected_impact", "") or "")[:30]
+        iid = i.get("intervention_id", "?")
+        print(f"{iid:<14} {ts:<12} {cat:<8} {status:<10} {desc:<40} {impact}")
+
+    # Show detail for the most recent
+    latest = interventions[0]
+    print(f"\nLatest: {latest.get('description', '')}")
+    print(f"  Problem: {latest.get('problem', '')[:120]}")
+    print(f"  Fix: {latest.get('fix', '')[:120]}")
+    if latest.get("baseline_run_id"):
+        print(f"  Baseline run: {latest['baseline_run_id']}")
+    if latest.get("verification_run_id"):
+        print(f"  Verification run: {latest['verification_run_id']}")
+    if latest.get("affected_items"):
+        items = latest["affected_items"]
+        if isinstance(items, list):
+            print(f"  Affected items: {', '.join(items[:5])}")
+
+
+def cmd_log_intervention(args: argparse.Namespace) -> None:
+    """Log a new intervention from CLI args."""
+    from llm_client import io_log
+
+    iid = io_log.log_intervention(
+        description=args.log_intervention[0],
+        problem=args.log_intervention[1],
+        fix=args.log_intervention[2],
+        category=args.intervention_category or "infra",
+        dataset=getattr(args, "dataset", None),
+        baseline_run_id=args.intervention_baseline or None,
+        verification_run_id=args.intervention_verify or None,
+        measured_impact=args.intervention_impact or None,
+        status="verified" if args.intervention_verify else "proposed",
+    )
+    print(f"Intervention logged: {iid}")
+
+
 def register_args(parser: argparse.ArgumentParser) -> None:
     """Register analytics-specific CLI arguments."""
+    parser.add_argument(
+        "--interventions",
+        action="store_true",
+        help="List logged interventions (changes and their measured impact)",
+    )
+    parser.add_argument(
+        "--log-intervention",
+        nargs=3,
+        metavar=("DESCRIPTION", "PROBLEM", "FIX"),
+        help="Log a new intervention: description, problem diagnosed, fix applied",
+    )
+    parser.add_argument("--intervention-category", help="Category: prompt|tool|infra|config|graph|model")
+    parser.add_argument("--intervention-baseline", help="Baseline run_id (before fix)")
+    parser.add_argument("--intervention-verify", help="Verification run_id (after fix)")
+    parser.add_argument("--intervention-impact", help="Measured impact string")
     parser.add_argument(
         "--trace-diff",
         nargs=3,
@@ -308,6 +384,12 @@ def register_args(parser: argparse.ArgumentParser) -> None:
 
 def dispatch(args: argparse.Namespace) -> bool:
     """Try to dispatch an analytics command. Returns True if handled."""
+    if getattr(args, "interventions", False):
+        cmd_interventions(args)
+        return True
+    if getattr(args, "log_intervention", None):
+        cmd_log_intervention(args)
+        return True
     if getattr(args, "trace_diff", None):
         cmd_trace_diff(args)
         return True

@@ -1026,6 +1026,25 @@ CREATE TABLE IF NOT EXISTS foundation_events (
     caller TEXT,
     task TEXT
 );
+
+CREATE TABLE IF NOT EXISTS interventions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    intervention_id TEXT NOT NULL UNIQUE,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    dataset TEXT,
+    git_commit TEXT,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    problem TEXT NOT NULL,
+    fix TEXT NOT NULL,
+    baseline_run_id TEXT,
+    verification_run_id TEXT,
+    affected_items TEXT,
+    expected_impact TEXT,
+    measured_impact TEXT,
+    status TEXT DEFAULT 'proposed'
+);
 """
 
 _INDEXES_SQL = """
@@ -1071,6 +1090,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_fevent_event_id ON foundation_events(event
 CREATE INDEX IF NOT EXISTS idx_fevent_run_id ON foundation_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_trace_id ON foundation_events(trace_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_event_type ON foundation_events(event_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_interv_id ON interventions(intervention_id);
+CREATE INDEX IF NOT EXISTS idx_interv_project ON interventions(project);
+CREATE INDEX IF NOT EXISTS idx_interv_dataset ON interventions(dataset);
+CREATE INDEX IF NOT EXISTS idx_interv_category ON interventions(category);
+CREATE INDEX IF NOT EXISTS idx_interv_status ON interventions(status);
+CREATE INDEX IF NOT EXISTS idx_interv_timestamp ON interventions(timestamp);
 """
 
 
@@ -1832,3 +1857,179 @@ def compare_cohorts(
         since=since,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# Intervention log
+# ---------------------------------------------------------------------------
+
+
+def log_intervention(
+    *,
+    description: str,
+    problem: str,
+    fix: str,
+    category: str = "infra",
+    project: str | None = None,
+    dataset: str | None = None,
+    git_commit: str | None = None,
+    baseline_run_id: str | None = None,
+    verification_run_id: str | None = None,
+    affected_items: list[str] | None = None,
+    expected_impact: str | None = None,
+    measured_impact: str | None = None,
+    status: str = "verified",
+) -> str:
+    """Log a structured intervention — a change made to fix a diagnosed problem.
+
+    An intervention links a specific code/prompt/config change to its
+    measured impact on benchmark results.
+
+    Args:
+        description: Short name for the intervention (e.g. "Add TODO warning")
+        problem: What was failing and why (traced root cause)
+        fix: What was changed (code, prompt, config)
+        category: One of: prompt, tool, infra, config, graph, model
+        project: Project name (default: auto-detected)
+        dataset: Dataset this was tested against
+        git_commit: Commit SHA of the fix (auto-detected if None)
+        baseline_run_id: Run ID before the fix
+        verification_run_id: Run ID after the fix
+        affected_items: List of item_ids that were expected to change
+        expected_impact: What we expected to happen
+        measured_impact: What actually happened (e.g. "+4 EM on 2-hop")
+        status: One of: proposed, verified, reverted, superseded
+
+    Returns:
+        intervention_id
+    """
+    conn = _get_db()
+    if conn is None:
+        return ""
+
+    intervention_id = uuid.uuid4().hex[:12]
+    ts = datetime.now(timezone.utc).isoformat()
+
+    if git_commit is None:
+        try:
+            from llm_client.git_utils import get_git_head
+            git_commit = get_git_head()
+        except Exception:
+            git_commit = None
+
+    if project is None:
+        project = _resolve_project()
+
+    affected_json = json.dumps(affected_items) if affected_items else None
+
+    try:
+        conn.execute(
+            """INSERT INTO interventions
+            (intervention_id, timestamp, project, dataset, git_commit, category,
+             description, problem, fix, baseline_run_id, verification_run_id,
+             affected_items, expected_impact, measured_impact, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                intervention_id, ts, project, dataset, git_commit, category,
+                description, problem, fix, baseline_run_id, verification_run_id,
+                affected_json, expected_impact, measured_impact, status,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning("Failed to log intervention: %s", e)
+        return ""
+
+    return intervention_id
+
+
+def get_interventions(
+    *,
+    project: str | None = None,
+    dataset: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Query logged interventions.
+
+    Returns list of intervention dicts, most recent first.
+    """
+    conn = _get_db()
+    if conn is None:
+        return []
+
+    clauses = []
+    params: list[Any] = []
+    if project:
+        clauses.append("project = ?")
+        params.append(project)
+    if dataset:
+        clauses.append("dataset = ?")
+        params.append(dataset)
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    rows = conn.execute(
+        f"SELECT * FROM interventions {where} ORDER BY timestamp DESC LIMIT ?",
+        params,
+    ).fetchall()
+
+    cols = [d[0] for d in conn.execute("SELECT * FROM interventions LIMIT 0").description]
+    results = []
+    for row in rows:
+        d = dict(zip(cols, row))
+        if d.get("affected_items"):
+            try:
+                d["affected_items"] = json.loads(d["affected_items"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        results.append(d)
+    return results
+
+
+def update_intervention(
+    intervention_id: str,
+    *,
+    verification_run_id: str | None = None,
+    measured_impact: str | None = None,
+    status: str | None = None,
+) -> bool:
+    """Update an existing intervention with verification results."""
+    conn = _get_db()
+    if conn is None:
+        return False
+
+    sets = []
+    params: list[Any] = []
+    if verification_run_id is not None:
+        sets.append("verification_run_id = ?")
+        params.append(verification_run_id)
+    if measured_impact is not None:
+        sets.append("measured_impact = ?")
+        params.append(measured_impact)
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+
+    if not sets:
+        return False
+
+    params.append(intervention_id)
+    try:
+        conn.execute(
+            f"UPDATE interventions SET {', '.join(sets)} WHERE intervention_id = ?",
+            params,
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning("Failed to update intervention %s: %s", intervention_id, e)
+        return False
