@@ -2,6 +2,10 @@
 
 Track all implementation work here.
 
+> **Deprecation notice (2026-03-21):** `llm_client` is being superseded by
+> `llm_client_v2`. No new plans will be added here. Existing plans are
+> retained for historical reference.
+
 ## Gap Summary
 
 | # | Name | Priority | Status | Blocks |
@@ -11,7 +15,23 @@ Track all implementation work here.
 | 3 | [Model Policy Modernization](03_model-policy-modernization.md) | High | ✅ Complete | - |
 | 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
-| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
+| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | ⏸️ Deferred (2026-03-20) | - |
+
+### Plans 7-13 (unmerged — developed on `plan-07-governed-repo-contract-alignment` branch)
+
+The following plans were implemented and completed on the
+`plan-07-governed-repo-contract-alignment` branch but never merged to `main`.
+Their plan files and implementation code live only on that branch.
+
+| # | Name | Priority | Status | Blocks |
+|---|------|----------|--------|--------|
+| 7 | Governed Repo Contract Alignment | High | ✅ Complete (branch only) | - |
+| 8 | Call Liveness and Timeout Policy | High | ✅ Complete (branch only) | - |
+| 9 | Lifecycle Heartbeat and Active Call Query | High | ✅ Complete (branch only) | - |
+| 10 | Governed Repo Friction Observability | Highest | ✅ Complete (branch only) | - |
+| 11 | Context Injection Experiment Support | High | ✅ Complete (branch only) | - |
+| 12 | Progress-Aware Idle Detection | High | ✅ Complete (branch only) | - |
+| 13 | Same-Host Orphaned Call Reaping | High | ✅ Complete (branch only) | - |
 
 ## Status Key
 

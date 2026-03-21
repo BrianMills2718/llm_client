@@ -1,10 +1,36 @@
 # Plan 06: Simplification and Observability Modernization
 
-**Status:** In Progress
+**Status:** Deferred (2026-03-20)
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None (Programs A-D complete)
 **Blocks:** None
+
+---
+
+## Current Checkpoint (2026-03-20)
+
+No implementation slices have landed yet. Plans 07-12 (governance, liveness,
+observability, progress-aware idle detection) were prioritized over
+decomposition because they delivered new capability, not just maintainability.
+Those plans were developed on the `plan-07-governed-repo-contract-alignment`
+branch and never merged to main.
+
+Current file sizes (vs plan baselines):
+- `client.py`: 4,576 lines (plan baseline: 4,630)
+- `mcp_agent.py`: 3,335 lines (plan baseline: 4,959)
+- `agents.py`: 513 lines (plan baseline: 2,818 -- reduced by Plan 02 extraction)
+
+`agents.py` is already well below the 1,000-line soft target. `mcp_agent.py`
+dropped ~1,600 lines from prior work. `client.py` is the remaining concern.
+
+**Decision:** Consciously deferred. Pick up when `client.py` or `mcp_agent.py`
+start causing merge conflicts or cognitive overhead in active plans, not as
+scheduled program work. The governance and observability infrastructure (Plans
+07-12) was higher leverage.
+
+> **2026-03-21 note:** `llm_client` is being superseded by `llm_client_v2`.
+> This plan is unlikely to be executed.
 
 ---
 
