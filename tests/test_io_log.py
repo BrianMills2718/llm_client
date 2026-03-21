@@ -250,6 +250,12 @@ class TestSQLiteDB:
         db2 = io_log._get_db()
         assert db1 is db2
 
+    def test_get_db_sets_busy_timeout(self, tmp_path):
+        db = io_log._get_db()
+        row = db.execute("PRAGMA busy_timeout").fetchone()
+        assert row is not None
+        assert row[0] == 5000
+
     def test_indexes_created(self, tmp_path):
         db = io_log._get_db()
         indexes = db.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()

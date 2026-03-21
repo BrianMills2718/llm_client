@@ -18,6 +18,7 @@ from ~/.secrets/api_keys.env):
     LLM_CLIENT_DATA_ROOT            — base dir (default: ~/projects/data)
     LLM_CLIENT_PROJECT              — project name (default: basename(os.getcwd()))
     LLM_CLIENT_DB_PATH              — SQLite DB path (default: ~/projects/data/llm_observability.db)
+    LLM_CLIENT_DB_BUSY_TIMEOUT_MS   — SQLite busy timeout in ms (default: 5000)
     LLM_CLIENT_LOG_RETENTION_DAYS   — days to keep dated JSONL logs (default: 30)
 
 Or override at runtime via configure().
@@ -48,6 +49,8 @@ _project: str | None = os.environ.get("LLM_CLIENT_PROJECT")
 _db_path: Path = Path(os.environ.get("LLM_CLIENT_DB_PATH", str(Path.home() / "projects" / "data" / "llm_observability.db")))
 _db_conn: sqlite3.Connection | None = None
 _db_lock = threading.Lock()
+_DB_BUSY_TIMEOUT_MS_ENV = "LLM_CLIENT_DB_BUSY_TIMEOUT_MS"
+_DEFAULT_DB_BUSY_TIMEOUT_MS = 5000
 _run_timer_lock = threading.Lock()
 _run_timers: dict[str, dict[str, Any]] = {}
 _active_experiment_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -102,6 +105,15 @@ def _get_log_retention_days() -> int:
     if raw.strip().isdigit():
         return max(1, int(raw.strip()))
     return _DEFAULT_LOG_RETENTION_DAYS
+
+
+def _get_db_busy_timeout_ms() -> int:
+    """Return configured SQLite busy timeout in milliseconds."""
+
+    raw = os.environ.get(_DB_BUSY_TIMEOUT_MS_ENV, "")
+    if raw.strip().isdigit():
+        return max(0, int(raw.strip()))
+    return _DEFAULT_DB_BUSY_TIMEOUT_MS
 
 
 def _dated_jsonl_path(directory: Path, stem: str) -> Path:
@@ -1128,7 +1140,13 @@ def _get_db() -> sqlite3.Connection:
         if _db_conn is not None:
             return _db_conn
         _db_path.parent.mkdir(parents=True, exist_ok=True)
-        _db_conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+        busy_timeout_ms = _get_db_busy_timeout_ms()
+        _db_conn = sqlite3.connect(
+            str(_db_path),
+            check_same_thread=False,
+            timeout=busy_timeout_ms / 1000.0,
+        )
+        _db_conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         _db_conn.executescript(_TABLES_SQL)
         _migrate_db(_db_conn)
         _db_conn.executescript(_INDEXES_SQL)
