@@ -4,6 +4,15 @@ All notable changes to `llm-client` are documented in this file.
 
 ## Unreleased
 
+### Removed
+
+- Dead Gemini native REST path (~730 lines): `_call_gemini_native`,
+  `_acall_gemini_native`, and 9 supporting functions/constants. litellm 1.82.4
+  has full native Gemini support; the hand-rolled path was never enabled by
+  default. Gemini models now fall through to `litellm.completion` naturally.
+  Dispatch simplified from 4 paths to 3 (Agent SDK / Responses API /
+  litellm.completion).
+
 ### Added
 
 - Shared execution-kernel primitives in `llm_client.execution_kernel`:

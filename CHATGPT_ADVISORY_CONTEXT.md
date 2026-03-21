@@ -110,8 +110,7 @@ Routing layers currently mixed into call paths:
 1. Model normalization + provider routing.
 2. Responses API routing for bare GPT-5 names.
 3. Agent SDK routing for `claude-code` and `codex`.
-4. Gemini native REST optional path.
-5. MCP/direct-tool loops.
+4. MCP/direct-tool loops.
 
 Observability:
 1. JSONL + SQLite writes for every call.

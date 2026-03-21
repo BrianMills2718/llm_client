@@ -279,11 +279,6 @@ Structured-output provider notes:
   `openrouter/deepseek/deepseek-chat` ->
   `openrouter/openai/gpt-5-mini` ->
   `gemini/gemini-2.5-flash` (optional).
-- Optional A/B switch: set `LLM_CLIENT_GEMINI_NATIVE_MODE=on` to route
-  `gemini/*` calls through a direct Gemini REST path (bypassing the
-  OpenAI-chat compatibility layer). Unsupported kwargs automatically fall back
-  to the standard litellm route.
-
 ### Execution mode contract
 
 `execution_mode` enforces model capabilities before dispatch, so incompatible

@@ -1508,6 +1508,7 @@ _VALID_EXECUTION_MODES: frozenset[str] = frozenset(
 _AGENT_ONLY_KWARGS: frozenset[str] = frozenset(
     {
         "allowed_tools",
+        "agent_idle_timeout",
         "cwd",
         "max_turns",
         "max_tool_calls",
@@ -2554,7 +2555,6 @@ def _prepare_call_kwargs(
 
     # Thinking model detection: suppress thinking tokens for Gemini 2.5+
     # so all output budget goes to the actual response.
-    # - Native Gemini path handles this internally via thinkingConfig.
     # - litellm path: only inject `thinking` when litellm says the specific
     #   model supports it (litellm's model-level param list is authoritative).
     # - OpenRouter: skip — doesn't support the `thinking` parameter.
