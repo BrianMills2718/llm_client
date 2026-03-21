@@ -15,9 +15,10 @@ Track all implementation work here.
 | 3 | [Model Policy Modernization](03_model-policy-modernization.md) | High | ✅ Complete | - |
 | 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
-| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | ⏸️ Deferred (2026-03-20) | - |
+| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | ❓ Deferred (2026-03-20) | - |
+| 7 | [Call Liveness and Active-Call Visibility](07_call-liveness-and-active-call-visibility.md) | High | ✅ Complete | - |
 
-### Plans 7-13 (unmerged — developed on `plan-07-governed-repo-contract-alignment` branch)
+### Plans 8-13 (unmerged — developed on `plan-07-governed-repo-contract-alignment` branch)
 
 The following plans were implemented and completed on the
 `plan-07-governed-repo-contract-alignment` branch but never merged to `main`.
@@ -25,7 +26,6 @@ Their plan files and implementation code live only on that branch.
 
 | # | Name | Priority | Status | Blocks |
 |---|------|----------|--------|--------|
-| 7 | Governed Repo Contract Alignment | High | ✅ Complete (branch only) | - |
 | 8 | Call Liveness and Timeout Policy | High | ✅ Complete (branch only) | - |
 | 9 | Lifecycle Heartbeat and Active Call Query | High | ✅ Complete (branch only) | - |
 | 10 | Governed Repo Friction Observability | Highest | ✅ Complete (branch only) | - |

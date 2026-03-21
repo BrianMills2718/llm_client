@@ -16,6 +16,7 @@ compatibility contracts in `llm_client`.
 - `0011-prompt-assets-explicit-identity.md`
 - `0012-shared-data-plane-boundary.md`
 - `0013-local-provider-parity-boundary.md`
+- `0014-call-liveness-is-visibility-first-and-active-call-query-backed.md`
 
 Related architecture docs:
 

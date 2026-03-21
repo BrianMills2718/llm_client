@@ -228,6 +228,11 @@ For opaque non-streaming structured calls, the truthful state is usually
 `activity_state="waiting"` with `process_alive=True` while the local process is
 still live.
 
+This capability is governed in:
+
+- `docs/adr/0014-call-liveness-is-visibility-first-and-active-call-query-backed.md`
+- `docs/plans/07_call-liveness-and-active-call-visibility.md`
+
 Foundation event schema strict mode:
 - MCP/tool loops validate emitted foundation events.
 - By default, invalid events are recorded as warnings in run metadata.

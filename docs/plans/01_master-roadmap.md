@@ -168,6 +168,13 @@ stable enough that package-boundary churn is low.
   complementary (not replacement)
 - MCP agent loop capabilities are unique and cannot be replaced by PydanticAI
 
+**Completed to date:**
+
+- transport/runtime extraction and observability cleanup tracked in Program E
+- active-call lifecycle visibility and query support documented in
+  [07_call-liveness-and-active-call-visibility.md](./07_call-liveness-and-active-call-visibility.md)
+  and ADR-0014
+
 ---
 
 ## Current Default Next Step
