@@ -214,6 +214,20 @@ Model identity fields on results:
 - `result.routing_trace` (routing/fallback metadata)
 - `result.warning_records` (machine-readable `LLMC_WARN_*` warnings)
 
+### Inspect active calls
+
+For long-running work, prefer querying active-call state before assuming a hang:
+
+```python
+from llm_client import get_active_llm_calls
+
+active = get_active_llm_calls(project="my-project", limit=20)
+```
+
+For opaque non-streaming structured calls, the truthful state is usually
+`activity_state="waiting"` with `process_alive=True` while the local process is
+still live.
+
 Foundation event schema strict mode:
 - MCP/tool loops validate emitted foundation events.
 - By default, invalid events are recorded as warnings in run metadata.
