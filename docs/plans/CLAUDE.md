@@ -12,7 +12,8 @@ Track all implementation work here.
 | 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | ✅ Complete | - |
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
 | 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
-| 7 | [Stream Lifecycle Heartbeat and Stagnation Visibility](07_stream-lifecycle-observability.md) | High | ✅ Complete | - |
+| 7 | [Stream Lifecycle Heartbeat and Stagnation Visibility](07_stream_lifecycle_observability.md) | High | ✅ Complete | - |
+| 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | 📋 Planned | - |
 
 ## Status Key
 
