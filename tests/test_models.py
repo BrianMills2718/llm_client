@@ -40,12 +40,12 @@ def _reset():
 class TestGetModel:
     def test_extraction_returns_highest_intelligence_structured(self):
         # available_only=False so we don't need env vars set
-        model = get_model("extraction", available_only=False)
+        model = get_model("extraction", available_only=False, use_performance=False)
         # gpt-5.2-pro has intelligence=50 and structured_output=True (highest)
         assert model == "gpt-5.2-pro"
 
     def test_bulk_cheap_returns_cheapest(self):
-        model = get_model("bulk_cheap", available_only=False)
+        model = get_model("bulk_cheap", available_only=False, use_performance=False)
         # gpt-5-nano is cheapest at $0.14 (via OpenRouter)
         assert model == "openrouter/openai/gpt-5-nano"
 
@@ -125,7 +125,7 @@ class TestGetModel:
         with patch.dict(os.environ, env, clear=False):
             for k in ["OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "DEEPSEEK_API_KEY"]:
                 os.environ.pop(k, None)
-            model = get_model("bulk_cheap", available_only=True)
+            model = get_model("bulk_cheap", available_only=True, use_performance=False)
             assert model == "openrouter/openai/gpt-5-nano"
 
     def test_available_only_no_keys_raises(self):
