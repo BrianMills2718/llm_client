@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>llm_client Subtree Instruction Rollout Review Packet</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #fbfbf8;
+      --fg: #1f2328;
+      --muted: #5b6573;
+      --line: #d8dde3;
+      --accent: #0f62fe;
+      --panel: #ffffff;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #f6f7fb 0%, var(--bg) 240px);
+      color: var(--fg);
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    header, section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+      padding: 20px 22px;
+      margin: 0 0 16px;
+    }
+    h1, h2 {
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }
+    h1 { font-size: 28px; }
+    h2 { font-size: 18px; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 8px 0 12px 22px; }
+    li { margin: 4px 0; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    code {
+      background: #f2f4f7;
+      padding: 1px 5px;
+      border-radius: 6px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: #fcfcfd;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #204ecf;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .path-list li {
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="tag">Review Packet</div>
+      <h1>llm_client Subtree Instruction Rollout</h1>
+      <p class="meta">Browser-openable summary for human or LLM review.</p>
+      <p>
+        This packet summarizes the docs-only rollout that added subtree-local
+        <code>CLAUDE.md</code> / <code>AGENTS.md</code> files in <code>llm_client</code>.
+      </p>
+    </header>
+
+    <section>
+      <h2>What Changed</h2>
+      <ul>
+        <li>Added a package-root router at <a href="file:///home/brian/projects/llm_client/llm_client/CLAUDE.md">llm_client/CLAUDE.md</a>.</li>
+        <li>Added subtree-local instruction files for:
+          <ul class="path-list">
+            <li><a href="file:///home/brian/projects/llm_client/llm_client/cli/CLAUDE.md">llm_client/cli/CLAUDE.md</a></li>
+            <li><a href="file:///home/brian/projects/llm_client/llm_client/observability/CLAUDE.md">llm_client/observability/CLAUDE.md</a></li>
+            <li><a href="file:///home/brian/projects/llm_client/llm_client/prompts/CLAUDE.md">llm_client/prompts/CLAUDE.md</a></li>
+            <li><a href="file:///home/brian/projects/llm_client/llm_client/rubrics/CLAUDE.md">llm_client/rubrics/CLAUDE.md</a></li>
+          </ul>
+        </li>
+        <li>Added matching <code>AGENTS.md</code> symlink mirrors for each of those files and for <a href="file:///home/brian/projects/llm_client/llm_client/AGENTS.md">llm_client/AGENTS.md</a>.</li>
+        <li>Added the rollout plan at <a href="file:///home/brian/projects/llm_client/docs/plans/08_llm_client-subtree-instructions.md">docs/plans/08_llm_client-subtree-instructions.md</a>.</li>
+        <li>Added focused regression tests at <a href="file:///home/brian/projects/llm_client/tests/test_llm_client_subtree_instructions.py">tests/test_llm_client_subtree_instructions.py</a>.</li>
+        <li>Updated the plan index in <a href="file:///home/brian/projects/llm_client/docs/plans/CLAUDE.md">docs/plans/CLAUDE.md</a>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Why This Exists</h2>
+      <p>
+        The repo already had strong repo-root guidance, but the package surfaces
+        inside <code>llm_client/llm_client/</code> are operationally distinct:
+      </p>
+      <div class="grid">
+        <div class="card">
+          <strong>cli/</strong>
+          <p>Command entry and inspection surface.</p>
+        </div>
+        <div class="card">
+          <strong>observability/</strong>
+          <p>Event, run, and query plumbing.</p>
+        </div>
+        <div class="card">
+          <strong>prompts/</strong>
+          <p>Prompt asset data.</p>
+        </div>
+        <div class="card">
+          <strong>rubrics/</strong>
+          <p>Rubric YAML data.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Validation Already Run</h2>
+      <ul>
+        <li><code>pytest -q tests/test_llm_client_subtree_instructions.py</code></li>
+        <li><code>python scripts/meta/sync_plan_status.py --check</code></li>
+        <li><code>python /home/brian/projects/project-meta/scripts/check_markdown_links.py --repo-root /home/brian/projects/llm_client docs/plans/CLAUDE.md docs/plans/08_llm_client-subtree-instructions.md llm_client/CLAUDE.md llm_client/cli/CLAUDE.md llm_client/observability/CLAUDE.md llm_client/prompts/CLAUDE.md llm_client/rubrics/CLAUDE.md</code></li>
+      </ul>
+      <p>All of the above passed before commit <code>21f6572</code>.</p>
+    </section>
+
+    <section>
+      <h2>What to Review</h2>
+      <ol>
+        <li>Are the chosen subtree boundaries the right ones for the current <code>llm_client</code> architecture?</li>
+        <li>Do the local <code>CLAUDE.md</code> files stay delta-only, or do any of them repeat parent policy unnecessarily?</li>
+        <li>Are the <code>AGENTS.md</code> symlinks the right mirror strategy for this repo?</li>
+        <li>Is the package-root <code>llm_client/CLAUDE.md</code> routing to the right local surfaces?</li>
+        <li>Does the new plan file reflect a useful rollout slice, or should the next phase be split more narrowly?</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Files to Inspect First</h2>
+      <ul class="path-list">
+        <li><a href="file:///home/brian/projects/llm_client/llm_client/CLAUDE.md">llm_client/CLAUDE.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/llm_client/cli/CLAUDE.md">llm_client/cli/CLAUDE.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/llm_client/observability/CLAUDE.md">llm_client/observability/CLAUDE.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/llm_client/prompts/CLAUDE.md">llm_client/prompts/CLAUDE.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/llm_client/rubrics/CLAUDE.md">llm_client/rubrics/CLAUDE.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/tests/test_llm_client_subtree_instructions.py">tests/test_llm_client_subtree_instructions.py</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/docs/plans/08_llm_client-subtree-instructions.md">docs/plans/08_llm_client-subtree-instructions.md</a></li>
+        <li><a href="file:///home/brian/projects/llm_client/docs/plans/CLAUDE.md">docs/plans/CLAUDE.md</a></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Reviewer Prompt</h2>
+      <p>Review this rollout for subtree specificity, instruction hierarchy consistency, AGENTS/CLAUDE mirror correctness, any missing or overbroad scope, and any documentation drift relative to the repo's plan/index conventions.</p>
+      <p>Return concrete findings only. If there are no issues, say that the rollout looks structurally consistent and call out any residual risks.</p>
+    </section>
+  </main>
+</body>
+</html>
