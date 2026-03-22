@@ -3,6 +3,8 @@
 This document is the stable entry point into the `llm_client` API surface.
 It is an index, not a second full README.
 
+Browser view: [API_REFERENCE.html](file:///home/brian/projects/llm_client/docs/API_REFERENCE.html)
+
 ## Start Here
 
 1. [README.md](../README.md) for installation, usage, routing, and examples.

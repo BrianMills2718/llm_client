@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>llm_client API Reference</title>
+  <style>
+    :root {
+      --fg: #1f2328;
+      --muted: #57606a;
+      --line: #d0d7de;
+      --bg: #ffffff;
+      --code: #f6f8fa;
+      --link: #0969da;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 32px 24px 72px;
+    }
+    header {
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0 0 12px;
+      font-weight: 600;
+    }
+    h1 { font-size: 2rem; }
+    h2 {
+      font-size: 1.3rem;
+      margin-top: 34px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    p { margin: 0 0 12px; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul, ol { margin: 8px 0 12px 24px; }
+    li { margin: 4px 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f6f8fa;
+      font-weight: 600;
+    }
+    code {
+      background: var(--code);
+      border: 1px solid #ebedf0;
+      border-radius: 6px;
+      padding: 1px 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      word-break: break-word;
+    }
+    pre {
+      background: var(--code);
+      border: 1px solid #ebedf0;
+      border-radius: 8px;
+      padding: 12px 14px;
+      overflow: auto;
+      margin: 12px 0 18px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    blockquote {
+      margin: 14px 0;
+      padding: 8px 14px;
+      border-left: 4px solid var(--line);
+      background: #fafbfc;
+      color: var(--fg);
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .toc {
+      background: #fafbfc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 18px 0 6px;
+    }
+    .toc strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+    .sig {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      white-space: normal;
+      word-break: break-word;
+    }
+    .summary {
+      color: var(--muted);
+    }
+    hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 28px 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>llm_client API Reference</h1>
+      <p class="meta">Browser-openable reference generated from module docstrings, public signatures, and the repo's own API index.</p>
+      <p>This page is intended to feel like a docs page: stable entry points, typed signatures, and short source-derived summaries.</p>
+    </header>
+
+    <section class="toc" aria-label="Table of contents">
+      <strong>Contents</strong>
+      <ol>
+        <li><a href="#start-here">Start Here</a></li>
+        <li><a href="#core-runtime">Core Runtime Surface</a></li>
+        <li><a href="#observability">Observability And Experiments</a></li>
+        <li><a href="#prompt-assets">Prompt Assets And Model Selection</a></li>
+        <li><a href="#module-summaries">Module Summaries</a></li>
+        <li><a href="#source-truth">Source Of Truth</a></li>
+      </ol>
+    </section>
+
+    <h2 id="start-here">Start Here</h2>
+    <ol>
+      <li><a href="file:///home/brian/projects/llm_client/README.md">README.md</a> for installation, usage, routing, and examples.</li>
+      <li><a href="file:///home/brian/projects/llm_client/AGENTS.md">AGENTS.md</a> for repo operating rules and architecture boundaries.</li>
+      <li><a href="file:///home/brian/projects/llm_client/docs/plans/01_master-roadmap.md">docs/plans/01_master-roadmap.md</a> for the long-term program state.</li>
+      <li><a href="file:///home/brian/projects/llm_client/docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md">docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md</a> for the shared ecosystem boundary model.</li>
+    </ol>
+
+    <h2 id="core-runtime">Core Runtime Surface</h2>
+    <p class="summary">This is the shared execution substrate exposed by <code>llm_client.client</code> and re-exported at package root.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Function</th>
+          <th>Signature</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>call_llm</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, execution_mode: ExecutionMode = 'text', config: ClientConfig | None = None, **kwargs: Any) -&gt; LLMCallResult</code></td><td>Call any LLM. Routes by model string: litellm, Responses API, or Agent SDK.</td></tr>
+        <tr><td><code>acall_llm</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | AsyncCachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, execution_mode: ExecutionMode = 'text', config: ClientConfig | None = None, **kwargs: Any) -&gt; LLMCallResult</code></td><td>Async version of <code>call_llm</code>. Same three-tier routing (Agent SDK / Responses API / Completions).</td></tr>
+        <tr><td><code>call_llm_structured</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], response_model: type[T], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; tuple[T, LLMCallResult]</code></td><td>Call LLM and get back a validated Pydantic model.</td></tr>
+        <tr><td><code>acall_llm_structured</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], response_model: type[T], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | AsyncCachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; tuple[T, LLMCallResult]</code></td><td>Async version of <code>call_llm_structured</code>.</td></tr>
+        <tr><td><code>call_llm_with_tools</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, execution_mode: ExecutionMode = 'text', config: ClientConfig | None = None, **kwargs: Any) -&gt; LLMCallResult</code></td><td>Call LLM with tool/function calling support.</td></tr>
+        <tr><td><code>acall_llm_with_tools</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | AsyncCachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, execution_mode: ExecutionMode = 'text', config: ClientConfig | None = None, **kwargs: Any) -&gt; LLMCallResult</code></td><td>Async version of <code>call_llm_with_tools</code>.</td></tr>
+        <tr><td><code>call_llm_batch</code></td><td class="sig"><code>(model: str, messages_list: list[list[dict[str, Any]]], *, max_concurrent: int = 5, return_exceptions: bool = False, on_item_complete: Callable[[int, LLMCallResult], None] | None = None, on_item_error: Callable[[int, Exception], None] | None = None, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; list[LLMCallResult | Exception]</code></td><td>Sync wrapper for <code>acall_llm_batch</code>.</td></tr>
+        <tr><td><code>acall_llm_batch</code></td><td class="sig"><code>(model: str, messages_list: list[list[dict[str, Any]]], *, max_concurrent: int = 5, return_exceptions: bool = False, on_item_complete: Callable[[int, LLMCallResult], None] | None = None, on_item_error: Callable[[int, Exception], None] | None = None, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, cache: CachePolicy | AsyncCachePolicy | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; list[LLMCallResult | Exception]</code></td><td>Run multiple LLM calls concurrently with semaphore-based rate limiting.</td></tr>
+        <tr><td><code>stream_llm</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; LLMStream</code></td><td>Stream an LLM response, yielding text chunks as they arrive.</td></tr>
+        <tr><td><code>astream_llm</code></td><td class="sig"><code>(model: str, messages: list[dict[str, Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Callable[[int, Exception, float], None] | None = None, retry: RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Callable[[str, Exception, str], None] | None = None, hooks: Hooks | None = None, config: ClientConfig | None = None, **kwargs: Any) -&gt; AsyncLLMStream</code></td><td>Async version of <code>stream_llm</code> with retry/fallback support.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="observability">Observability And Experiments</h2>
+    <p class="summary">Persistent logging and query surfaces live behind <code>llm_client.io_log</code> and related observability modules.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Function</th>
+          <th>Signature</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>start_run</code></td><td class="sig"><code>(* , dataset: str, model: str, task: str | None = None, config: dict[str, Any] | None = None, condition_id: str | None = None, seed: int | None = None, replicate: int | None = None, scenario_id: str | None = None, phase: str | None = None, metrics_schema: list[str] | None = None, run_id: str | None = None, git_commit: str | None = None, provenance: dict[str, Any] | None = None, feature_profile: str | dict[str, Any] | None = None, agent_spec: str | Path | dict[str, Any] | None = None, allow_missing_agent_spec: bool = False, missing_agent_spec_reason: str | None = None, project: str | None = None) -&gt; str</code></td><td>Compatibility shim: delegate to <code>observability.experiments.start_run</code>.</td></tr>
+        <tr><td><code>finish_run</code></td><td class="sig"><code>(* , run_id: str, summary_metrics: dict[str, Any] | None = None, status: str = 'completed', wall_time_s: float | None = None, cpu_time_s: float | None = None, cpu_user_s: float | None = None, cpu_system_s: float | None = None) -&gt; dict[str, Any]</code></td><td>Compatibility shim: delegate to <code>observability.experiments.finish_run</code>.</td></tr>
+        <tr><td><code>log_item</code></td><td class="sig"><code>(* , run_id: str, item_id: str, metrics: dict[str, Any], predicted: str | None = None, gold: str | None = None, latency_s: float | None = None, cost: float | None = None, n_tool_calls: int | None = None, error: str | None = None, extra: dict[str, Any] | None = None, trace_id: str | None = None) -&gt; None</code></td><td>Compatibility shim: delegate to <code>observability.experiments.log_item</code>.</td></tr>
+        <tr><td><code>get_runs</code></td><td class="sig"><code>(* , dataset: str | None = None, model: str | None = None, project: str | None = None, condition_id: str | None = None, scenario_id: str | None = None, phase: str | None = None, seed: int | None = None, since: str | date | None = None, limit: int = 50) -&gt; list[dict[str, Any]]</code></td><td>Compatibility shim: delegate to <code>observability.experiments.get_runs</code>.</td></tr>
+        <tr><td><code>get_run</code></td><td class="sig"><code>(run_id: str) -&gt; dict[str, Any] | None</code></td><td>Compatibility shim: delegate to <code>observability.experiments.get_run</code>.</td></tr>
+        <tr><td><code>get_run_items</code></td><td class="sig"><code>(run_id: str) -&gt; list[dict[str, Any]]</code></td><td>Compatibility shim: delegate to <code>observability.experiments.get_run_items</code>.</td></tr>
+        <tr><td><code>get_cost</code></td><td class="sig"><code>(* , trace_id: str | None = None, trace_prefix: str | None = None, task: str | None = None, project: str | None = None, since: str | date | None = None) -&gt; float</code></td><td>Compatibility shim: delegate to <code>observability.query.get_cost</code>.</td></tr>
+        <tr><td><code>get_trace_tree</code></td><td class="sig"><code>(trace_prefix: str, *, days: int = 7) -&gt; list[dict[str, Any]]</code></td><td>Compatibility shim: delegate to <code>observability.query.get_trace_tree</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="prompt-assets">Prompt Assets And Model Selection</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Function</th>
+          <th>Signature</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>get_model</code></td><td class="sig"><code>(task: str, *, available_only: bool = True, use_performance: bool = True, performance_days: int = 7, min_calls: int = 10, error_threshold: float = 0.15) -&gt; str</code></td><td>Get the best model for a task category.</td></tr>
+        <tr><td><code>render_prompt</code></td><td class="sig"><code>(template_path: str | Path | None = None, *, prompt_ref: str | None = None, **context: Any) -&gt; list[dict[str, str]]</code></td><td>Load a YAML prompt template or prompt asset and render Jinja2 placeholders.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="module-summaries">Module Summaries</h2>
+    <blockquote>
+      <p><code>llm_client</code> is the shared public facade for provider transport, agent SDK routing, prompt rendering, observability, retries/fallbacks, and related runtime policy.</p>
+      <p class="summary">Source: <a href="file:///home/brian/projects/llm_client/llm_client/__init__.py">llm_client/__init__.py</a></p>
+    </blockquote>
+    <blockquote>
+      <p><code>llm_client.client</code> wraps litellm and agent SDKs.</p>
+      <p class="summary">It exposes the typed runtime entry points for sync, async, structured, batch, and streaming calls.</p>
+      <p class="summary">Source: <a href="file:///home/brian/projects/llm_client/llm_client/client.py">llm_client/client.py</a></p>
+    </blockquote>
+    <blockquote>
+      <p><code>llm_client.io_log</code> handles persistent I/O logging for LLM calls and embeddings.</p>
+      <p class="summary">It writes dated JSONL logs, optionally mirrors into SQLite, and keeps retention bounded.</p>
+      <p class="summary">Source: <a href="file:///home/brian/projects/llm_client/llm_client/io_log.py">llm_client/io_log.py</a></p>
+    </blockquote>
+
+    <h2 id="source-truth">Source Of Truth</h2>
+    <ol>
+      <li><a href="file:///home/brian/projects/llm_client/pyproject.toml">pyproject.toml</a> is authoritative for package metadata and extras.</li>
+      <li>Module docstrings and public function signatures are authoritative for code behavior.</li>
+      <li>The roadmap and ADRs are authoritative for architectural boundaries.</li>
+    </ol>
+    <p class="summary">Canonical markdown companion: <a href="file:///home/brian/projects/llm_client/docs/API_REFERENCE.md">docs/API_REFERENCE.md</a>.</p>
+  </main>
+</body>
+</html>
