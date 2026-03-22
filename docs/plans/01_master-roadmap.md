@@ -156,6 +156,7 @@ stable enough that package-boundary churn is low.
 - no module exceeds ~1,200 lines (soft) / 1,500 lines (hard)
 - each extracted module has a single clear responsibility
 - Langfuse callback available when configured, invisible when not
+- shared replay/divergence diagnosis exists for call-level operational mismatches
 - JSONL logs rotate by date or size
 - model registry inspectable via CLI
 
@@ -167,11 +168,15 @@ stable enough that package-boundary churn is low.
 - observability JSONL+SQLite will hit scaling wall; Langfuse callback is
   complementary (not replacement)
 - MCP agent loop capabilities are unique and cannot be replaced by PydanticAI
+- live-vs-proxy debugging pressure on 2026-03-22 showed a missing shared
+  observability capability: controlled replay and divergence diagnosis
 
 ---
 
 ## Current Default Next Step
 
 Program E (Simplification and Observability Modernization) is the active
-program. Execute phases 1A through 4 in order. Stop only for a real blocker
-or user redirect.
+program. The default next slice is
+[09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md),
+then resume the remaining Program E phases. Stop only for a real blocker or
+user redirect.

@@ -14,6 +14,7 @@ Track all implementation work here.
 | 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | 🚧 In Progress | - |
 | 7 | [Stream Lifecycle Heartbeat and Stagnation Visibility](07_stream_lifecycle_observability.md) | High | ✅ Complete | - |
 | 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | 📋 Planned | - |
+| 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | 📋 Planned | - |
 
 ## Status Key
 

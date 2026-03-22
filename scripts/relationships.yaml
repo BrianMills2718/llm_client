@@ -18,6 +18,7 @@ couplings:
       - docs/adr/0004-result-model-semantics-migration.md
       - docs/adr/0009-long-thinking-background-polling.md
       - docs/adr/0010-cross-project-runtime-substrate.md
+      - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
     description: Core call path identity, routing, warning, and execution contracts.
     required_reading: true
 
@@ -41,6 +42,8 @@ couplings:
       - docs/adr/0007-observability-contract-boundary.md
       - docs/adr/0010-cross-project-runtime-substrate.md
       - docs/adr/0012-shared-data-plane-boundary.md
+      - docs/adr/0013-stream-lifecycle-heartbeat-observability.md
+      - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
     description: Observability sink/query compatibility and warning emission surface.
     required_reading: true
 

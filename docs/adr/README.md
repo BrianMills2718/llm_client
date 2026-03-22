@@ -16,6 +16,7 @@ compatibility contracts in `llm_client`.
 - `0011-prompt-assets-explicit-identity.md`
 - `0012-shared-data-plane-boundary.md`
 - `0013-stream-lifecycle-heartbeat-observability.md`
+- `0014-call-replay-and-divergence-diagnosis-boundary.md`
 
 Related architecture docs:
 

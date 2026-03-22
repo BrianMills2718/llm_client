@@ -28,10 +28,13 @@ Additionally, observability has known scaling gaps:
 - No integration with external observability (Langfuse) despite LiteLLM having
   built-in callback support
 - Model registry has no CLI for inspection/updates
+- No shared request fingerprint, compact call diff, or controlled replay
+  surface when operational paths disagree
 
 **Target:** Each module has a single clear responsibility. No module exceeds
-~1,000 lines. Observability scales with Langfuse as a complementary backend.
-Model registry is CLI-inspectable.
+~1,000 lines. Observability scales with Langfuse as a complementary backend,
+supports controlled replay/divergence diagnosis, and model registry is
+CLI-inspectable.
 
 **Why:** This is a strategic review finding (2026-03-18), not a cleanup wish.
 The code is unique and valuable — the problem is density, not redundancy.
@@ -42,7 +45,9 @@ capabilities while making the codebase easier to navigate, modify, and review.
 **Evidence:** Strategic review conducted 2026-03-18 with full competitive
 analysis against LiteLLM, PydanticAI, Langfuse, Portkey, and 12 other tools.
 All three mega-files identified as maintainability risks. Observability gap
-confirmed against Langfuse feature set.
+confirmed against Langfuse feature set. A 2026-03-22 live-vs-proxy divergence
+review also showed that current observability is better at proving a mismatch
+than at replaying or localizing it.
 
 ---
 
@@ -93,6 +98,11 @@ confirmed against Langfuse feature set.
 - llm_client/io_log.py (modify — add Langfuse callback configuration)
 - docs/API_REFERENCE.md (modify — document Langfuse setup)
 
+### Phase 2A: Replay and divergence diagnosis
+- docs/plans/09_replay-and-divergence-diagnosis.md (create — dedicated child plan)
+- docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md (create — boundary decision)
+- scripts/relationships.yaml (modify — govern new observability ADR linkage)
+
 ### Phase 3: JSONL log rotation
 - llm_client/io_log.py (modify — add rotation to JSONL appender)
 
@@ -131,8 +141,9 @@ This program is done only when all of the following are true:
    may change).
 4. Public `llm_client` API (all 14 functions + data types) unchanged.
 5. Langfuse callback is available when configured, invisible when not.
-6. JSONL logs rotate by date or size.
-7. `llm-client models list` works from CLI.
+6. Shared replay/divergence diagnosis exists for call-level operational mismatches.
+7. JSONL logs rotate by date or size.
+8. `llm-client models list` works from CLI.
 
 ---
 
@@ -256,6 +267,27 @@ as the zero-infrastructure default.
 - Langfuse becomes a required dependency
 - Local logging is degraded
 - New runtime dependency added to core package
+
+### Phase 2A: Shared Replay And Divergence Diagnosis
+
+**Purpose:** add the missing observability capability for stable request
+fingerprints, compact call diffs, and call-level replay when operational paths
+disagree.
+
+**Plan:** [09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)
+
+**Passes if:**
+
+- `llm_client` can compare two captured calls with a compact diff
+- `llm_client` can replay a captured call under a fresh trace/project tag
+- full replayable payloads are preserved without truncation
+- the shared surface is proven on one real mismatch case
+
+**Fails if:**
+
+- comparison logic remains project-local
+- replay depends on hidden workflow state not present at the call boundary
+- the implementation silently truncates replayable payloads
 
 ### Phase 3: JSONL Log Rotation
 
