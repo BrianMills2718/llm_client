@@ -1594,16 +1594,25 @@ def _coerce_model_kwargs_for_execution(
     This enables mixed agent/non-agent fallback chains by removing agent-only
     kwargs when executing non-agent models.
     """
+    # Drop llm_client internal runtime kwargs from all execution paths.
+    # They are injected for orchestration/observability and should never be
+    # hashed into cache keys or sent into provider/SDK payloads.
+    internal_removed = sorted(k for k in kwargs if k.startswith("_"))
+
     if _is_agent_model(current_model):
-        return kwargs
+        return {k: v for k, v in kwargs.items() if k not in internal_removed}
 
     removed = sorted(k for k in kwargs if k in _AGENT_ONLY_KWARGS)
-    if not removed:
+    all_removed = sorted(set([*internal_removed, *removed]))
+    if not all_removed:
         return kwargs
 
     model_kwargs = dict(kwargs)
-    for key in removed:
+    for key in all_removed:
         model_kwargs.pop(key, None)
+
+    if not removed:
+        return model_kwargs
 
     detail = (
         f"COERCE_PARAMS model={current_model} policy=coerce_and_warn "
@@ -1614,6 +1623,17 @@ def _coerce_model_kwargs_for_execution(
     if warning_sink is not None:
         warning_sink.append(detail)
     return model_kwargs
+
+
+def _strip_llm_internal_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop llm_client-internal keys from a kwargs mapping.
+
+    Internal keys are conventionally prefixed with ``_`` and used for private
+    control flow (for example ``_lifecycle_monitor``). They are not part of the
+    provider contract and are intentionally excluded from cache keying and
+    provider payloads.
+    """
+    return {k: v for k, v in kwargs.items() if not k.startswith("_")}
 
 
 # ---------------------------------------------------------------------------
@@ -1877,7 +1897,7 @@ def _prepare_responses_kwargs(
     before output tokens — setting limits can exhaust them on reasoning
     and return empty output while still billing you).
     """
-    kwargs = dict(kwargs)  # Don't mutate caller's dict
+    kwargs = _strip_llm_internal_kwargs(kwargs)
     policy = _resolve_unsupported_param_policy(kwargs.pop("unsupported_param_policy", None))
     _coerce_model_incompatible_params(
         model=model,
@@ -2532,10 +2552,10 @@ def _prepare_call_kwargs(
     arbitrary kwargs into the HTTP request, so non-serializable objects cause
     'not JSON serializable' errors if leaked through.
     """
-    raw_kwargs = dict(kwargs)
-    policy = _resolve_unsupported_param_policy(raw_kwargs.pop("unsupported_param_policy", None))
-    # Strip llm_client-private runtime kwargs before provider dispatch
-    provider_kwargs = {k: v for k, v in raw_kwargs.items() if not k.startswith("_")}
+    provider_kwargs = _strip_llm_internal_kwargs(kwargs)
+    policy = _resolve_unsupported_param_policy(
+        provider_kwargs.pop("unsupported_param_policy", None)
+    )
     call_kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -2566,7 +2586,7 @@ def _prepare_call_kwargs(
     # - litellm path: only inject `thinking` when litellm says the specific
     #   model supports it (litellm's model-level param list is authoritative).
     # - OpenRouter: skip — doesn't support the `thinking` parameter.
-    if _is_thinking_model(model) and "thinking" not in raw_kwargs:
+    if _is_thinking_model(model) and "thinking" not in provider_kwargs:
         _is_openrouter = model.lower().startswith("openrouter/")
         if not _is_openrouter:
             try:

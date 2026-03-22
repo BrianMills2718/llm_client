@@ -155,6 +155,7 @@ def _call_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    public_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
@@ -169,9 +170,9 @@ def _call_llm_structured_impl(
         from llm_client.agents import _route_call_structured
 
         if hooks and hooks.before_call:
-            hooks.before_call(model, messages, kwargs)
+            hooks.before_call(model, messages, public_kwargs)
         parsed, llm_result = _route_call_structured(
-            model, messages, response_model, timeout=timeout, **kwargs,
+            model, messages, response_model, timeout=timeout, **public_kwargs,
         )
         llm_result = _finalize_result(
             llm_result,
@@ -215,7 +216,7 @@ def _call_llm_structured_impl(
         )
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
+            key = _cache_key(current_model, messages, response_model=_model_fqn, **public_kwargs)
             cached = cache.get(key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
@@ -247,7 +248,7 @@ def _call_llm_structured_impl(
                 return reparsed, cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
+            hooks.before_call(current_model, messages, public_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
 
@@ -259,7 +260,7 @@ def _call_llm_structured_impl(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             resp_kwargs["text"] = {
@@ -349,7 +350,7 @@ def _call_llm_structured_impl(
                     max_retries=max_retries,
                     current_model=current_model,
                     current_api_base=current_api_base,
-                    user_kwargs=kwargs,
+                    user_kwargs=public_kwargs,
                     warning_sink=_warnings,
                     on_retry=r.on_retry,
                     caller="call_llm_structured",
@@ -367,7 +368,7 @@ def _call_llm_structured_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             base_kwargs["response_format"] = {
@@ -472,7 +473,7 @@ def _call_llm_structured_impl(
                             max_retries=max_retries,
                             current_model=current_model,
                             current_api_base=current_api_base,
-                            user_kwargs=kwargs,
+                            user_kwargs=public_kwargs,
                             warning_sink=_warnings,
                             on_retry=r.on_retry,
                             caller="call_llm_structured",
@@ -498,7 +499,7 @@ def _call_llm_structured_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
@@ -575,7 +576,7 @@ def _call_llm_structured_impl(
                     max_retries=max_retries,
                     current_model=current_model,
                     current_api_base=current_api_base,
-                    user_kwargs=kwargs,
+                    user_kwargs=public_kwargs,
                     warning_sink=_warnings,
                     on_retry=r.on_retry,
                     caller="call_llm_structured",
@@ -688,6 +689,7 @@ async def _acall_llm_structured_impl(
         log_policy_once_enabled=True,
     )
     _check_budget(trace_id, max_budget)
+    public_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     plan = _resolve_call_plan(
         model=model,
@@ -702,9 +704,9 @@ async def _acall_llm_structured_impl(
         from llm_client.agents import _route_acall_structured
 
         if hooks and hooks.before_call:
-            hooks.before_call(model, messages, kwargs)
+            hooks.before_call(model, messages, public_kwargs)
         parsed, llm_result = await _route_acall_structured(
-            model, messages, response_model, timeout=timeout, **kwargs,
+            model, messages, response_model, timeout=timeout, **public_kwargs,
         )
         llm_result = _finalize_result(
             llm_result,
@@ -748,7 +750,7 @@ async def _acall_llm_structured_impl(
         )
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, response_model=_model_fqn, **kwargs)
+            key = _cache_key(current_model, messages, response_model=_model_fqn, **public_kwargs)
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 reparsed = response_model.model_validate_json(cached.content)
@@ -780,7 +782,7 @@ async def _acall_llm_structured_impl(
                 return reparsed, cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, kwargs)
+            hooks.before_call(current_model, messages, public_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
 
@@ -792,7 +794,7 @@ async def _acall_llm_structured_impl(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             resp_kwargs["text"] = {
@@ -882,7 +884,7 @@ async def _acall_llm_structured_impl(
                     max_retries=max_retries,
                     current_model=current_model,
                     current_api_base=current_api_base,
-                    user_kwargs=kwargs,
+                    user_kwargs=public_kwargs,
                     warning_sink=_warnings,
                     on_retry=r.on_retry,
                     caller="acall_llm_structured",
@@ -900,7 +902,7 @@ async def _acall_llm_structured_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             base_kwargs["response_format"] = {
@@ -1005,7 +1007,7 @@ async def _acall_llm_structured_impl(
                             max_retries=max_retries,
                             current_model=current_model,
                             current_api_base=current_api_base,
-                            user_kwargs=kwargs,
+                            user_kwargs=public_kwargs,
                             warning_sink=_warnings,
                             on_retry=r.on_retry,
                             caller="acall_llm_structured",
@@ -1031,7 +1033,7 @@ async def _acall_llm_structured_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
             call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
@@ -1108,7 +1110,7 @@ async def _acall_llm_structured_impl(
                     max_retries=max_retries,
                     current_model=current_model,
                     current_api_base=current_api_base,
-                    user_kwargs=kwargs,
+                    user_kwargs=public_kwargs,
                     warning_sink=_warnings,
                     on_retry=r.on_retry,
                     caller="acall_llm_structured",

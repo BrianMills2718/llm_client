@@ -729,6 +729,24 @@ stream = await astream_llm(
 )
 async for chunk in stream:
     print(chunk, end="", flush=True)
+
+# Optional stream-lifecycle visibility:
+stream = stream_llm(
+    "gpt-4o",
+    messages,
+    task="readme/stream_visibility",
+    trace_id="readme/stream_visibility",
+    max_budget=1.0,
+    lifecycle_heartbeat_interval_s=2.0,
+    lifecycle_stall_after_s=8.0,
+)
+for chunk in stream:
+    print(chunk, end="", flush=True)
+
+from llm_client import get_active_llm_calls
+
+active = get_active_llm_calls(task="readme/stream_visibility")
+print(active)  # calls currently in 'started/progress/heartbeat/stalled'
 ```
 
 ### Fallback models

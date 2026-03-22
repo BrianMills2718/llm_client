@@ -103,6 +103,7 @@ def _call_llm_impl(
     # Inject task/trace_id into litellm metadata for callback propagation
     # (e.g. Langfuse). Harmless when no callbacks are configured.
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
+    public_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
@@ -141,12 +142,12 @@ def _call_llm_impl(
         caller="call_llm",
     )
 
-    if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
+    if ("mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs) and not _is_agent_model(model):
         from llm_client.agents import _run_sync
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
         mcp_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=kwargs,
+            kwargs=public_runtime_kwargs,
             loop_kwargs=MCP_LOOP_KWARGS,
             task=task,
             trace_id=trace_id,
@@ -171,15 +172,15 @@ def _call_llm_impl(
         ))
         return result
 
-    if "python_tools" in kwargs and not _is_agent_model(model):
+    if "python_tools" in public_runtime_kwargs and not _is_agent_model(model):
         from llm_client.agents import _run_sync
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
         from llm_client.models import supports_tool_calling
 
-        if "mcp_servers" in kwargs or "mcp_sessions" in kwargs:
+        if "mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs:
             raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
         tool_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=kwargs,
+            kwargs=public_runtime_kwargs,
             loop_kwargs=TOOL_LOOP_KWARGS,
             task=task,
             trace_id=trace_id,
@@ -227,13 +228,14 @@ def _call_llm_impl(
             kwargs=kwargs,
             warning_sink=_warnings,
         )
+        public_kwargs = _client._strip_llm_internal_kwargs(model_kwargs)
 
-        if not is_agent and ("mcp_servers" in model_kwargs or "mcp_sessions" in model_kwargs):
+        if not is_agent and ("mcp_servers" in public_kwargs or "mcp_sessions" in public_kwargs):
             from llm_client.agents import _run_sync
             from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
             mcp_kw, remaining = _split_agent_loop_kwargs(
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 loop_kwargs=MCP_LOOP_KWARGS,
                 task=task,
                 trace_id=trace_id,
@@ -253,13 +255,13 @@ def _call_llm_impl(
                 logger.info("call_llm fallback leg %d used MCP loop on %s", model_idx + 1, current_model)
             return cast(LLMCallResult, result)
 
-        if not is_agent and "python_tools" in model_kwargs:
+        if not is_agent and "python_tools" in public_kwargs:
             from llm_client.agents import _run_sync
             from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
             from llm_client.models import supports_tool_calling
 
             tool_kw, remaining = _split_agent_loop_kwargs(
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 loop_kwargs=TOOL_LOOP_KWARGS,
                 task=task,
                 trace_id=trace_id,
@@ -307,7 +309,7 @@ def _call_llm_impl(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
         else:
@@ -317,13 +319,13 @@ def _call_llm_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
 
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, **model_kwargs)
+            key = _cache_key(current_model, messages, **public_kwargs)
             cached = cache.get(key)
             if cached is not None:
                 cached_result = cast(LLMCallResult, _finalize_result(
@@ -354,7 +356,7 @@ def _call_llm_impl(
                 return cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, model_kwargs)
+            hooks.before_call(current_model, messages, public_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
         if is_agent and not agent_retry_safe_enabled:
@@ -377,7 +379,7 @@ def _call_llm_impl(
 
                 result = _route_call(
                     current_model, messages,
-                    timeout=timeout, **model_kwargs,
+                    timeout=timeout, **public_kwargs,
                 )
             elif use_responses:
                 with _rate_limit.acquire(current_model):
@@ -386,7 +388,7 @@ def _call_llm_impl(
                     response,
                     api_base=current_api_base,
                     request_timeout=(timeout if timeout > 0 else None),
-                    model_kwargs=model_kwargs,
+                    model_kwargs=public_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             else:
@@ -443,16 +445,16 @@ def _call_llm_impl(
             logger=logger,
             on_error=(hooks.on_error if hooks and hooks.on_error else None),
             on_retry=r.on_retry,
-            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
-                error=exc,
-                attempt=attempt,
-                max_retries=max_retries,
-                current_model=current_model,
-                current_api_base=current_api_base,
-                user_kwargs=model_kwargs,
-                warning_sink=_warnings,
-                on_retry=r.on_retry,
-                caller="call_llm",
+                maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                    error=exc,
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    current_model=current_model,
+                    current_api_base=current_api_base,
+                    user_kwargs=public_kwargs,
+                    warning_sink=_warnings,
+                    on_retry=r.on_retry,
+                    caller="call_llm",
             ),
         ))
 
@@ -565,6 +567,7 @@ async def _acall_llm_impl(
     # Inject task/trace_id into litellm metadata for callback propagation
     # (e.g. Langfuse). Harmless when no callbacks are configured.
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
+    public_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
@@ -603,11 +606,11 @@ async def _acall_llm_impl(
         caller="acall_llm",
     )
 
-    if ("mcp_servers" in kwargs or "mcp_sessions" in kwargs) and not _is_agent_model(model):
+    if ("mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs) and not _is_agent_model(model):
         from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
         mcp_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=kwargs,
+            kwargs=public_runtime_kwargs,
             loop_kwargs=MCP_LOOP_KWARGS,
             task=task,
             trace_id=trace_id,
@@ -632,14 +635,14 @@ async def _acall_llm_impl(
         ))
         return result
 
-    if "python_tools" in kwargs and not _is_agent_model(model):
+    if "python_tools" in public_runtime_kwargs and not _is_agent_model(model):
         from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
         from llm_client.models import supports_tool_calling
 
-        if "mcp_servers" in kwargs or "mcp_sessions" in kwargs:
+        if "mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs:
             raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
         tool_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=kwargs,
+            kwargs=public_runtime_kwargs,
             loop_kwargs=TOOL_LOOP_KWARGS,
             task=task,
             trace_id=trace_id,
@@ -687,12 +690,13 @@ async def _acall_llm_impl(
             kwargs=kwargs,
             warning_sink=_warnings,
         )
+        public_kwargs = _client._strip_llm_internal_kwargs(model_kwargs)
 
-        if not is_agent and ("mcp_servers" in model_kwargs or "mcp_sessions" in model_kwargs):
+        if not is_agent and ("mcp_servers" in public_kwargs or "mcp_sessions" in public_kwargs):
             from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
             mcp_kw, remaining = _split_agent_loop_kwargs(
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 loop_kwargs=MCP_LOOP_KWARGS,
                 task=task,
                 trace_id=trace_id,
@@ -712,12 +716,12 @@ async def _acall_llm_impl(
                 logger.info("acall_llm fallback leg %d used MCP loop on %s", model_idx + 1, current_model)
             return result
 
-        if not is_agent and "python_tools" in model_kwargs:
+        if not is_agent and "python_tools" in public_kwargs:
             from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
             from llm_client.models import supports_tool_calling
 
             tool_kw, remaining = _split_agent_loop_kwargs(
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 loop_kwargs=TOOL_LOOP_KWARGS,
                 task=task,
                 trace_id=trace_id,
@@ -765,7 +769,7 @@ async def _acall_llm_impl(
                 timeout=timeout,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
         else:
@@ -775,13 +779,13 @@ async def _acall_llm_impl(
                 num_retries=r.max_retries,
                 reasoning_effort=reasoning_effort,
                 api_base=current_api_base,
-                kwargs=model_kwargs,
+                kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
 
         key: str | None = None
         if cache is not None:
-            key = _cache_key(current_model, messages, **model_kwargs)
+            key = _cache_key(current_model, messages, **public_kwargs)
             cached = await _async_cache_get(cache, key)
             if cached is not None:
                 cached_result = cast(LLMCallResult, _finalize_result(
@@ -812,7 +816,7 @@ async def _acall_llm_impl(
                 return cached_result
 
         if hooks and hooks.before_call:
-            hooks.before_call(current_model, messages, model_kwargs)
+            hooks.before_call(current_model, messages, public_kwargs)
 
         backoff_fn = r.backoff or exponential_backoff
         if is_agent and not agent_retry_safe_enabled:
@@ -835,7 +839,7 @@ async def _acall_llm_impl(
 
                 result = await _route_acall(
                     current_model, messages,
-                    timeout=timeout, **model_kwargs,
+                    timeout=timeout, **public_kwargs,
                 )
             elif use_responses:
                 async with _rate_limit.aacquire(current_model):
@@ -844,7 +848,7 @@ async def _acall_llm_impl(
                     response,
                     api_base=current_api_base,
                     request_timeout=(timeout if timeout > 0 else None),
-                    model_kwargs=model_kwargs,
+                    model_kwargs=public_kwargs,
                 )
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             else:
@@ -901,17 +905,17 @@ async def _acall_llm_impl(
             logger=logger,
             on_error=(hooks.on_error if hooks and hooks.on_error else None),
             on_retry=r.on_retry,
-            maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
-                error=exc,
-                attempt=attempt,
-                max_retries=max_retries,
-                current_model=current_model,
-                current_api_base=current_api_base,
-                user_kwargs=model_kwargs,
-                warning_sink=_warnings,
-                on_retry=r.on_retry,
-                caller="acall_llm",
-            ),
+                maybe_retry_hook=lambda exc, attempt, max_retries: _maybe_retry_with_openrouter_key_rotation(
+                    error=exc,
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    current_model=current_model,
+                    current_api_base=current_api_base,
+                    user_kwargs=public_kwargs,
+                    warning_sink=_warnings,
+                    on_retry=r.on_retry,
+                    caller="acall_llm",
+                ),
         ))
 
     try:
