@@ -86,6 +86,8 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
 - `llm_client/agents_codex_runtime.py` (new extracted module)
+- `llm_client/call_contracts.py` (expanded with call-contract helpers from client.py)
+- `llm_client/client_dispatch.py` (new extracted module — routing, result, dispatch helpers)
 - `llm_client/observability/experiments.py` (modify/extract if still needed after earlier tranches)
 - `llm_client/agent_contracts.py` (modify/extract if still needed after earlier tranches)
 - `docs/plans/06_simplification-and-observability.md` (update evidence/status)
