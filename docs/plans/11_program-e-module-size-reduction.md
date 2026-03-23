@@ -751,6 +751,51 @@ a fresh boundary-selection pass across the remaining client-local policy and
 routing helpers rather than pretending the next tranche is already as clear as
 the lifecycle, wrapper, background, Responses, and completion slices were.
 
+**Proposed next tranche (call-contract extraction):**
+
+1. extract the remaining call-contract helpers—budget/tag normalization,
+   `_strip_incompatible_sampling_params`, `_resolve_unsupported_param_policy`,
+   `_coerce_model_incompatible_params`, `_validate_execution_contract`,
+   `_coerce_model_kwargs_for_execution`, `_strip_llm_internal_kwargs`, and the
+   related routing introspection helpers—into a new `call_contracts.py`-like
+   module that lives behind the current public entrypoints
+2. keep `client.py` as the public facade emitting the same observability,
+   lifecycle, and routing behavior; clients continue to call the same helper
+   names while the implementation moves out
+3. focus verification on the existing `tests/test_client.py` helpers around
+   `unsupported_param_policy`, GPT-5 sampling stripping, agent-only kwargs,
+   and execution-mode validation, plus the general call/public-surface suite
+
+Acceptance criteria:
+
+- the new module owns the density around `_prepare_call_kwargs`, `_raise_empty_response`, `execution_mode` validation, and signing agent vs non-agent kwargs
+- helper names exported from `client.py` stay intact so downstream tests keep working
+- targeted helper tests and the full client/public-surface suite pass before committing
+
+**Verified checkpoint 18 (2026-03-22):**
+
+The call-contract helper cluster was extracted from `llm_client/client.py`
+into the existing `llm_client/call_contracts.py`, expanding it from a
+tag/budget/retry-safety module into the centralized pre-call contract surface.
+
+What this checkpoint proved:
+
+1. empty-response classification, schema-error detection, GPT-5 sampling
+   constants, unsupported-param policy, param coercion, agent-model detection,
+   execution-mode validation, agent-only kwargs filtering, max-tokens clamping,
+   and model deprecation warnings form a coherent pre-call contract boundary
+2. `client.py` can re-export all moved names so downstream imports
+   (`text_runtime`, `structured_runtime`, `stream_runtime`, `test_agents`)
+   remain stable without code changes in those modules
+3. focused regression coverage remained green:
+   - `pytest -q tests/test_call_contracts.py tests/test_client.py tests/test_public_surface.py tests/test_client_lifecycle.py`
+   - result: `252 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `2547 -> 2056`
+2. `llm_client/call_contracts.py`: `129 -> 679`
+
 **Verified checkpoint 4 (2026-03-22):**
 
 The first `agents_codex.py` slice extracted Codex process diagnostics,

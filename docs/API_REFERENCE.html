@@ -945,11 +945,14 @@ agent SDK dispatch happens:
 2. every call has a resolved ``trace_id``,
 3. every call has a pre-flight budget check,
 4. prompt asset provenance is validated before it enters observability,
-5. retry-safety policy is derived consistently for agent SDK calls.
+5. retry-safety policy is derived consistently for agent SDK calls,
+6. execution-mode and model/kwargs capability validation,
+7. unsupported-param coercion, agent-only kwargs filtering,
+8. model deprecation warnings and empty-response error classification.
 
 These checks belong to the runtime substrate itself, not to any one transport
-backend. Keeping them in one small module makes the boundary easier to reason
-about and easier to test without dragging the full client runtime with it.</pre>
+backend. Keeping them in one module makes the boundary easier to reason about
+and easier to test without dragging the full client runtime with it.</pre>
 
 <h4>Functions</h4>
 
