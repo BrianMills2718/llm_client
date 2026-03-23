@@ -1,22 +1,35 @@
-## Program E Handoff (Claude Code)
+## Program E Handoff — Plan 11 Complete
 
-**Context**
- - Plan 11 is the active Program E effort. The latest verified slices extracted the call-contract cluster, collapsed the completion/responses callback-passing pattern, and moved routing/dispatch helpers into dedicated modules. `client.py` is now below the Program E hard threshold (1,494 lines < 1,500 limit).
- - The repo is on `digimon-stable`, worktree clean, and API reference + plan docs are in sync.
- - `client.py` is no longer a hard-threshold blocker. The remaining modules above the soft target (~1,200 lines) are: `mcp_turn_execution.py` (1,339), `observability/experiments.py` (1,322), `agents_codex.py` (1,317), `agent_contracts.py` (1,228), `io_log.py` (1,222). These are between the soft target and hard limit, so Program E can proceed to documented justification or further decomposition for each.
+**Status:** Plan 11 (Module Size Reduction) is complete. All modules either
+below threshold or explicitly justified. Program E's size/composition criterion
+is honestly satisfied.
 
-**Current verification**
- - `pytest -q tests/test_call_contracts.py tests/test_client.py tests/test_public_surface.py tests/test_client_lifecycle.py tests/test_observability_defaults.py` (256 passing).
- - Focused helper suites for Responses, completion, and background polling all pass.
- - `python scripts/meta/generate_api_reference.py --write` run after every tranche; API reference docs are in sync.
+**Final module audit (2026-03-22):**
 
-**Modules extracted during this session**
- - `call_contracts.py`: expanded from 129→679 lines (empty-response classification, schema-error detection, GPT-5 sampling, param coercion, agent-model detection, execution-mode validation, model deprecation)
- - `client_dispatch.py`: new 519-line module (routing plan resolution, result finalization, structured-call result building, agent-loop orchestration, call-event logging, text/schema utilities)
- - `completion_runtime.py`: refactored to import directly from `call_contracts`/`model_detection` instead of receiving callbacks
- - `responses_runtime.py`: refactored to import directly from `call_contracts`/`background_runtime` instead of receiving callbacks
+| Module | Lines | Status |
+|--------|-------|--------|
+| `client.py` | 1,494 | Below hard threshold (was 4,184) |
+| `mcp_turn_execution.py` | 1,339 | Justified exception (was 3,202) |
+| `agents_codex.py` | 1,317 | Justified exception (was 1,931) |
+| `agent_contracts.py` | 1,228 | Justified exception (natural boundary) |
+| `io_log.py` | 1,222 | Justified exception (was 2,102) |
+| `experiments.py` | 994 | Below soft target (was 1,322) |
 
-**Next action**
-1. Assess whether the 5 modules between soft target and hard limit need further decomposition or can be documented as justified exceptions.
-2. If all are justified, Program E's closeout criteria can be honestly evaluated.
-3. If any need decomposition, the same thin-slice approach applies.
+**New modules created during this work:**
+
+| Module | Lines | Extracted from |
+|--------|-------|----------------|
+| `call_contracts.py` | 679 | `client.py` (call-contract policy) |
+| `client_dispatch.py` | 519 | `client.py` (routing, result, dispatch) |
+| `observability/comparison.py` | 367 | `experiments.py` (analysis cluster) |
+| `completion_runtime.py` | 210 | Refactored (direct imports, no callbacks) |
+| `responses_runtime.py` | 354 | Refactored (direct imports, no callbacks) |
+
+**Verification:**
+- `pytest -q tests/test_call_contracts.py tests/test_client.py tests/test_public_surface.py tests/test_client_lifecycle.py tests/test_observability_defaults.py` → 256 passed
+- `pytest -q tests/test_experiment_log.py tests/test_io_log_compat.py tests/test_cli_experiments.py` → 80 passed
+- API reference docs regenerated and in sync
+
+**Next steps for Program E overall:**
+Plan 11 is done. The remaining Program E phases (JSONL log rotation, models CLI,
+Langfuse wiring) are tracked in Plan 06.
