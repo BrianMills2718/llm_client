@@ -23,9 +23,10 @@ def test_grouped_exports_flatten_to_public_surface_without_duplicates() -> None:
 
     assert len(flattened) == len(set(flattened))
     assert llm_client.__all__ == flattened
-    assert len(llm_client.__all__) == 148
+    assert len(llm_client.__all__) == 152
 
     assert "call_llm" in llm_client._CORE_SUBSTRATE_EXPORTS
+    assert "compare_call_snapshots" in llm_client._CORE_SUBSTRATE_EXPORTS
     assert "get_active_llm_calls" in llm_client._COMPAT_HOLD_EXPORTS
     assert "MCPAgentResult" in llm_client._COMPAT_HOLD_EXPORTS
     assert "score_output" in llm_client._CANDIDATE_MOVE_EXPORTS
@@ -44,6 +45,8 @@ def test_top_level_declared_exports_resolve_for_star_import_compatibility() -> N
     assert namespace["configure_logging"] is llm_client.configure_logging
     assert "get_active_llm_calls" in namespace
     assert namespace["get_active_llm_calls"] is llm_client.get_active_llm_calls
+    assert "compare_call_snapshots" in namespace
+    assert namespace["compare_call_snapshots"] is llm_client.compare_call_snapshots
     assert "call_llm" in namespace
     assert namespace["call_llm"] is llm_client.call_llm
 

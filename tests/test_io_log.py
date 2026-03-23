@@ -122,6 +122,35 @@ class TestLogCall:
         assert row[0] == "shared.investigation_pipeline.collect@1"
         db.close()
 
+    def test_call_snapshot_logged_to_jsonl_and_sqlite(self, tmp_path):
+        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        call_snapshot = {
+            "snapshot_version": 1,
+            "public_api": "call_llm",
+            "call_kind": "text",
+            "request": {"requested_model": "gpt-5", "messages": [{"role": "user", "content": "hi"}]},
+            "replay": {"unsupported_keys": []},
+        }
+        io_log.log_call(
+            model="gpt-5",
+            result=result,
+            latency_s=1.0,
+            trace_id="trace_snapshot",
+            call_snapshot=call_snapshot,
+            call_fingerprint="abc123",
+        )
+
+        log_file = _today_jsonl(tmp_path, "calls")
+        record = json.loads(log_file.read_text().strip())
+        assert record["call_fingerprint"] == "abc123"
+        assert record["call_snapshot"]["public_api"] == "call_llm"
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute("SELECT call_fingerprint, call_snapshot FROM llm_calls").fetchone()
+        assert row[0] == "abc123"
+        assert json.loads(row[1])["public_api"] == "call_llm"
+        db.close()
+
     def test_error_logged(self, tmp_path):
         io_log.log_call(model="gpt-5", error=ValueError("boom"), latency_s=0.5)
 
@@ -263,13 +292,14 @@ class TestSQLiteDB:
         assert "idx_calls_timestamp" in idx_names
         assert "idx_calls_model" in idx_names
         assert "idx_calls_trace_id" in idx_names
+        assert "idx_calls_fingerprint" in idx_names
         assert "idx_emb_task" in idx_names
         assert "idx_emb_project" in idx_names
         assert "idx_emb_trace_id" in idx_names
 
     def test_migrate_adds_trace_id(self, tmp_path):
-        """Migration adds trace and prompt asset columns to old DBs."""
-        # Create a DB with old schema (has all columns except trace_id/prompt_ref)
+        """Migration adds trace, prompt, and replay columns to old DBs."""
+        # Create a DB with old schema (has all columns except newer observability fields)
         old_db_path = tmp_path / "old.db"
         old_conn = sqlite3.connect(str(old_db_path))
         old_conn.executescript("""
@@ -299,6 +329,8 @@ class TestSQLiteDB:
             assert "trace_id" in cols
         llm_cols = {r[1] for r in db.execute("PRAGMA table_info(llm_calls)").fetchall()}
         assert "prompt_ref" in llm_cols
+        assert "call_fingerprint" in llm_cols
+        assert "call_snapshot" in llm_cols
 
 
 # ---------------------------------------------------------------------------

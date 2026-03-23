@@ -21,6 +21,7 @@ from llm_client.cli.backfill import register_parser as register_backfill_parser
 from llm_client.cli.cost import register_parser as register_cost_parser
 from llm_client.cli.experiments import register_parser as register_experiments_parser
 from llm_client.cli.models import register_parser as register_models_parser
+from llm_client.cli.replay import register_parser as register_replay_parser
 from llm_client.cli.scores import register_parser as register_scores_parser
 from llm_client.cli.tool_lint import register_parser as register_tool_lint_parser
 from llm_client.cli.traces import register_parser as register_traces_parser
@@ -35,6 +36,7 @@ def main() -> None:
 
     register_cost_parser(subparsers)
     register_models_parser(subparsers)
+    register_replay_parser(subparsers)
     register_traces_parser(subparsers)
     register_scores_parser(subparsers)
     register_experiments_parser(subparsers)

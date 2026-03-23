@@ -100,10 +100,30 @@ def _call_llm_impl(
     )
     _check_budget(trace_id, max_budget)
 
+    snapshot_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     # Inject task/trace_id into litellm metadata for callback propagation
     # (e.g. Langfuse). Harmless when no callbacks are configured.
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     public_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
+    from llm_client.observability.replay import build_call_snapshot
+
+    call_snapshot = build_call_snapshot(
+        public_api="call_llm",
+        call_kind="text",
+        requested_model=model,
+        messages=messages,
+        prompt_ref=prompt_ref,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        fallback_models=fallback_models,
+        public_kwargs=snapshot_runtime_kwargs,
+        execution_mode=execution_mode,
+    )
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
@@ -169,6 +189,7 @@ def _call_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         ))
         return result
 
@@ -209,6 +230,7 @@ def _call_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         ))
         return result
 
@@ -352,6 +374,7 @@ def _call_llm_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return cached_result
 
@@ -426,6 +449,7 @@ def _call_llm_impl(
                 task=task,
                 trace_id=trace_id,
                 prompt_ref=prompt_ref,
+                call_snapshot=call_snapshot,
             )
             return result
 
@@ -476,6 +500,7 @@ def _call_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         raise wrap_error(e) from e
 
@@ -564,10 +589,30 @@ async def _acall_llm_impl(
     )
     _check_budget(trace_id, max_budget)
 
+    snapshot_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     # Inject task/trace_id into litellm metadata for callback propagation
     # (e.g. Langfuse). Harmless when no callbacks are configured.
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
     public_runtime_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
+    from llm_client.observability.replay import build_call_snapshot
+
+    call_snapshot = build_call_snapshot(
+        public_api="acall_llm",
+        call_kind="text",
+        requested_model=model,
+        messages=messages,
+        prompt_ref=prompt_ref,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        fallback_models=fallback_models,
+        public_kwargs=snapshot_runtime_kwargs,
+        execution_mode=execution_mode,
+    )
 
     _inner_named = _build_inner_named_call_kwargs(
         num_retries=num_retries,
@@ -632,6 +677,7 @@ async def _acall_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         ))
         return result
 
@@ -671,6 +717,7 @@ async def _acall_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         ))
         return result
 
@@ -812,6 +859,7 @@ async def _acall_llm_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return cached_result
 
@@ -886,6 +934,7 @@ async def _acall_llm_impl(
                 task=task,
                 trace_id=trace_id,
                 prompt_ref=prompt_ref,
+                call_snapshot=call_snapshot,
             )
             return result
 
@@ -936,5 +985,6 @@ async def _acall_llm_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         raise wrap_error(e) from e

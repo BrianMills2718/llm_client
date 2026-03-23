@@ -157,6 +157,25 @@ def _call_llm_structured_impl(
     _check_budget(trace_id, max_budget)
     public_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
+    from llm_client.observability.replay import build_call_snapshot
+
+    call_snapshot = build_call_snapshot(
+        public_api="call_llm_structured",
+        call_kind="structured",
+        requested_model=model,
+        messages=messages,
+        prompt_ref=prompt_ref,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        fallback_models=fallback_models,
+        public_kwargs=public_kwargs,
+        response_model=response_model,
+    )
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,
@@ -198,6 +217,7 @@ def _call_llm_structured_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -244,6 +264,7 @@ def _call_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return reparsed, cached_result
 
@@ -325,6 +346,7 @@ def _call_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return parsed, llm_result
 
@@ -429,6 +451,7 @@ def _call_llm_structured_impl(
                         task=task,
                         trace_id=trace_id,
                         prompt_ref=prompt_ref,
+                        call_snapshot=call_snapshot,
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -551,6 +574,7 @@ def _call_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return parsed, llm_result
 
@@ -603,6 +627,7 @@ def _call_llm_structured_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         raise wrap_error(e) from e
 
@@ -691,6 +716,25 @@ async def _acall_llm_structured_impl(
     _check_budget(trace_id, max_budget)
     public_kwargs = _client._strip_llm_internal_kwargs(dict(kwargs))
     _inject_langfuse_metadata(kwargs, task=task, trace_id=trace_id)
+    from llm_client.observability.replay import build_call_snapshot
+
+    call_snapshot = build_call_snapshot(
+        public_api="acall_llm_structured",
+        call_kind="structured",
+        requested_model=model,
+        messages=messages,
+        prompt_ref=prompt_ref,
+        timeout=timeout,
+        num_retries=num_retries,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retry_on=retry_on,
+        fallback_models=fallback_models,
+        public_kwargs=public_kwargs,
+        response_model=response_model,
+    )
     plan = _resolve_call_plan(
         model=model,
         fallback_models=fallback_models,
@@ -732,6 +776,7 @@ async def _acall_llm_structured_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -778,6 +823,7 @@ async def _acall_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return reparsed, cached_result
 
@@ -859,6 +905,7 @@ async def _acall_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return parsed, llm_result
 
@@ -963,6 +1010,7 @@ async def _acall_llm_structured_impl(
                         task=task,
                         trace_id=trace_id,
                         prompt_ref=prompt_ref,
+                        call_snapshot=call_snapshot,
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -1085,6 +1133,7 @@ async def _acall_llm_structured_impl(
                     task=task,
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
+                    call_snapshot=call_snapshot,
                 )
                 return parsed, llm_result
 
@@ -1137,5 +1186,6 @@ async def _acall_llm_structured_impl(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
         )
         raise wrap_error(e) from e

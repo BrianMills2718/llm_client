@@ -37,6 +37,7 @@ couplings:
   - sources:
       - llm_client/io_log.py
       - llm_client/observability/*.py
+      - llm_client/cli/replay.py
     docs:
       - docs/adr/0003-warning-taxonomy.md
       - docs/adr/0007-observability-contract-boundary.md

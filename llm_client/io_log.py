@@ -682,6 +682,8 @@ def log_call(
     task: str | None = None,
     trace_id: str | None = None,
     prompt_ref: str | None = None,
+    call_snapshot: dict[str, Any] | None = None,
+    call_fingerprint: str | None = None,
 ) -> None:
     """Append one call record with optional prompt asset identity.
 
@@ -754,6 +756,8 @@ def log_call(
             "task": task,
             "trace_id": trace_id,
             "prompt_ref": prompt_ref,
+            "call_snapshot": call_snapshot,
+            "call_fingerprint": call_fingerprint,
         }
         _append_jsonl(d, "calls", record)
 
@@ -776,6 +780,8 @@ def log_call(
             task=task,
             trace_id=trace_id,
             prompt_ref=prompt_ref,
+            call_snapshot=call_snapshot,
+            call_fingerprint=call_fingerprint,
         )
     except Exception:
         # Never break LLM calls for logging
@@ -912,7 +918,9 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     caller TEXT,
     task TEXT,
     trace_id TEXT,
-    prompt_ref TEXT
+    prompt_ref TEXT,
+    call_fingerprint TEXT,
+    call_snapshot TEXT
 );
 
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -1054,6 +1062,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_task ON llm_calls(task);
 CREATE INDEX IF NOT EXISTS idx_calls_project ON llm_calls(project);
 CREATE INDEX IF NOT EXISTS idx_calls_trace_id ON llm_calls(trace_id);
 CREATE INDEX IF NOT EXISTS idx_calls_prompt_ref ON llm_calls(prompt_ref);
+CREATE INDEX IF NOT EXISTS idx_calls_fingerprint ON llm_calls(call_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_emb_timestamp ON embeddings(timestamp);
 CREATE INDEX IF NOT EXISTS idx_emb_model ON embeddings(model);
 CREATE INDEX IF NOT EXISTS idx_emb_task ON embeddings(task);
@@ -1121,6 +1130,11 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     if "prompt_ref" not in llm_cols:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN prompt_ref TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_prompt_ref ON llm_calls(prompt_ref)")
+    if "call_fingerprint" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN call_fingerprint TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_fingerprint ON llm_calls(call_fingerprint)")
+    if "call_snapshot" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN call_snapshot TEXT")
 
     # task_scores: add git_commit if missing
     scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
@@ -1197,6 +1211,8 @@ def _write_call_to_db(
     task: str | None,
     trace_id: str | None = None,
     prompt_ref: str | None = None,
+    call_snapshot: dict[str, Any] | None = None,
+    call_fingerprint: str | None = None,
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:
@@ -1209,8 +1225,9 @@ def _write_call_to_db(
                (timestamp, project, model, messages, response,
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
+                call_fingerprint, call_snapshot)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp, _get_project(), model,
                 json.dumps(messages, default=str) if messages else None,
@@ -1218,6 +1235,8 @@ def _write_call_to_db(
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
                 finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
+                call_fingerprint,
+                json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
             ),
         )
         db.commit()
@@ -1343,8 +1362,9 @@ def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
                    (timestamp, project, model, messages, response,
                     prompt_tokens, completion_tokens, total_tokens,
                     cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                    finish_reason, latency_s, error, caller, task, trace_id, prompt_ref)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
+                    call_fingerprint, call_snapshot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     r.get("timestamp"), project, r.get("model"),
                     json.dumps(r.get("messages"), default=str) if r.get("messages") else None,
@@ -1359,6 +1379,8 @@ def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
                     r.get("finish_reason"),
                     r.get("latency_s"), r.get("error"),
                     r.get("caller"), r.get("task"), r.get("trace_id"), r.get("prompt_ref"),
+                    r.get("call_fingerprint"),
+                    json.dumps(r.get("call_snapshot"), default=str) if r.get("call_snapshot") is not None else None,
                 ),
             )
         else:  # embeddings
@@ -1552,6 +1574,51 @@ def get_background_mode_adoption(
         experiments_path=experiments_path,
         since=since,
         run_id_prefix=run_id_prefix,
+    )
+
+
+def get_call_snapshot(call_id: int) -> dict[str, Any]:
+    """Compatibility shim: delegate to observability.replay.get_call_snapshot."""
+    from llm_client.observability.replay import get_call_snapshot as _get_call_snapshot
+
+    return _get_call_snapshot(call_id)
+
+
+def compare_call_snapshots(left_call_id: int, right_call_id: int) -> dict[str, Any]:
+    """Compatibility shim: delegate to observability.replay.compare_call_snapshots."""
+    from llm_client.observability.replay import (
+        compare_call_snapshots as _compare_call_snapshots,
+    )
+
+    return _compare_call_snapshots(left_call_id, right_call_id)
+
+
+def format_call_diff(report: Mapping[str, Any]) -> str:
+    """Compatibility shim: delegate to observability.replay.format_call_diff."""
+    from llm_client.observability.replay import format_call_diff as _format_call_diff
+
+    return _format_call_diff(report)
+
+
+def replay_call_snapshot(
+    call_id: int,
+    *,
+    trace_id: str,
+    task: str | None = None,
+    max_budget: float = 0.0,
+    project: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility shim: delegate to observability.replay.replay_call_snapshot."""
+    from llm_client.observability.replay import (
+        replay_call_snapshot as _replay_call_snapshot,
+    )
+
+    return _replay_call_snapshot(
+        call_id,
+        trace_id=trace_id,
+        task=task,
+        max_budget=max_budget,
+        project=project,
     )
 
 

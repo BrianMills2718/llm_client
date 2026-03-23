@@ -722,6 +722,7 @@ def _finalize_agent_loop_result(
     task: str | None,
     trace_id: str | None,
     prompt_ref: str | None,
+    call_snapshot: dict[str, Any] | None = None,
 ) -> LLMCallResult:
     """Attach identity/routing trace and emit final call log for loop results."""
     existing_trace = result.routing_trace if isinstance(result.routing_trace, dict) else {}
@@ -776,6 +777,7 @@ def _finalize_agent_loop_result(
         task=task,
         trace_id=trace_id,
         prompt_ref=prompt_ref,
+        call_snapshot=call_snapshot,
     )
     return finalized
 
@@ -791,8 +793,14 @@ def _log_call_event(
     task: str | None = None,
     trace_id: str | None = None,
     prompt_ref: str | None = None,
+    call_snapshot: dict[str, Any] | None = None,
 ) -> None:
     """Write one observability record for an LLM call."""
+    from llm_client.observability.replay import snapshot_fingerprint as _snapshot_fingerprint
+
+    call_fingerprint = (
+        _snapshot_fingerprint(call_snapshot) if call_snapshot is not None else None
+    )
     _io_log.log_call(
         model=model,
         messages=messages,
@@ -803,6 +811,8 @@ def _log_call_event(
         task=task,
         trace_id=trace_id,
         prompt_ref=prompt_ref,
+        call_snapshot=call_snapshot,
+        call_fingerprint=call_fingerprint,
     )
 
 
