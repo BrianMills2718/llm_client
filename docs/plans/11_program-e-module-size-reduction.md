@@ -62,12 +62,17 @@ These counts are the current blocker for Program E completion.
 
 - `llm_client/client.py` (modify/extract)
 - `llm_client/io_log.py` (modify/extract)
+- `llm_client/observability/context.py` (new extracted module)
+- `llm_client/observability/events.py` (compatibility facade wiring)
+- `llm_client/observability/interventions.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/observability/experiments.py` (modify/extract if still needed after earlier tranches)
 - `llm_client/agent_contracts.py` (modify/extract if still needed after earlier tranches)
 - `docs/plans/06_simplification-and-observability.md` (update evidence/status)
 - `docs/plans/01_master-roadmap.md` (update default next step as slices complete)
+- `docs/API_REFERENCE.md` (generated)
+- `docs/API_REFERENCE.html` (generated)
 
 ---
 
@@ -169,6 +174,31 @@ Effect on module size:
 
 1. `llm_client/io_log.py`: `2102 -> 2011`
 2. new module: `llm_client/observability/interventions.py` (`180` lines)
+
+**Verified checkpoint 2 (2026-03-22):**
+
+The experiment-context / feature-profile / AgentSpec guardrail surface was
+extracted from `io_log.py` into `llm_client/observability/context.py`, with
+`io_log.py` and `llm_client.observability.events` kept as compatibility
+facades.
+
+What this checkpoint proved:
+
+1. the second half of the first tranche can move without changing downstream
+   imports
+2. the extraction reduced `io_log.py` materially while preserving the existing
+   guardrail semantics used by call-contract and experiment surfaces
+3. a public-surface regression was caught during test collection
+   (`ActiveFeatureProfile` still had to be exported from
+   `llm_client.observability.events`) and fixed before the slice was accepted
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_experiment_log.py tests/test_io_log_compat.py tests/test_call_contracts.py`
+   - result: `71 passed`
+
+Effect on module size:
+
+1. `llm_client/io_log.py`: `2011 -> 1600`
+2. new module: `llm_client/observability/context.py` (`429` lines)
 
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 

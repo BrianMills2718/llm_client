@@ -18,16 +18,16 @@ Browser view: [API_REFERENCE.html](API_REFERENCE.html)
 - `acall_llm_structured_batch` - Run multiple structured LLM calls concurrently.
 - `acall_llm_with_tools` - Async version of call_llm_with_tools.
 - `activate_experiment_run` - No docstring available.
-- `activate_feature_profile` - No docstring available.
+- `activate_feature_profile` - Return the context manager that binds a feature profile for nested calls.
 - `aembed` - Async version of embed(). See embed() for full docs.
-- `ActiveExperimentRun` - Bind an existing run_id as the active experiment context.
-- `ActiveFeatureProfile` - Bind a feature profile as active context for benchmark/eval calls.
+- `ActiveExperimentRun` - Bind an existing run id as the active experiment context.
+- `ActiveFeatureProfile` - Bind a feature profile as the active profile in the current context.
 - `AgentSpecValidationError` - Raised when an AgentSpec fails validation.
 - `AnalysisReport` - Summary of an analysis run.
 
 ## Module Catalog
 
-Generated from 77 importable modules under `llm_client`.
+Generated from 78 importable modules under `llm_client`.
 
 Open the HTML file for the full module-by-module docs surface.
 
