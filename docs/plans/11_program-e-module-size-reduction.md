@@ -1,6 +1,6 @@
 # Plan 11: Program E Module Size Reduction
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -107,6 +107,31 @@ pass/fail tests and ownership
 - the tranche is just "make client.py smaller"
 - multiple unrelated mega-modules are edited at once without a boundary map
 
+**Selected first tranche (2026-03-22):**
+
+Start with `llm_client/io_log.py`, not `client.py`.
+
+Write scope for the first implementation slice:
+
+1. extract the experiment-run context / enforcement surface now living in
+   `io_log.py` lines `282-673` into a dedicated observability-local module
+2. extract the intervention logging/query/update surface now living in
+   `io_log.py` lines `1934-2065` into a dedicated observability-local module
+3. keep `io_log.py` as the compatibility facade so downstream imports remain
+   truthful during the refactor
+
+Why this tranche goes first:
+
+1. it is meaningfully smaller and less coupled than attacking `client.py`
+   first
+2. it reduces one of the oversized modules without destabilizing the core call
+   hot path
+3. it already has strong regression coverage through:
+   - `tests/test_experiment_log.py`
+   - `tests/test_io_log.py`
+   - `tests/test_io_log_compat.py`
+   - experiment CLI coverage in `tests/test_cli_experiments.py`
+
 ### Phase 2: `client.py` / `io_log.py` First Decomposition Slice
 
 **Purpose:** attack the most central oversized runtime modules first.
@@ -165,9 +190,9 @@ explicitly justified exceptions
 
 ## Acceptance Criteria
 
-- [ ] the remaining oversized modules are inventoried with a durable audit baseline
-- [ ] the first decomposition tranche is explicitly selected with pass/fail tests
-- [ ] the roadmap and Program E umbrella plan point to this child plan as the next default slice
+- [x] the remaining oversized modules are inventoried with a durable audit baseline
+- [x] the first decomposition tranche is explicitly selected with pass/fail tests
+- [x] the roadmap and Program E umbrella plan point to this child plan as the next default slice
 
 ---
 

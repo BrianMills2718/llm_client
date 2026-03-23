@@ -16,7 +16,7 @@ Track all implementation work here.
 | 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | 📋 Planned | - |
 | 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | ✅ Complete | - |
 | 10 | [API Reference Generation Pipeline](10_api-reference-generation-pipeline.md) | High | ✅ Complete | - |
-| 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | 📋 Planned | 6 |
+| 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | 🚧 In Progress | 6 |
 
 
 ## Status Key
