@@ -13,6 +13,7 @@ surfaces that other modules should use.
 
 - `events.py` for configuration, enforcement, and event/logging adapters
 - `experiments.py` for run lifecycle and item logging
+- `comparison.py` for run comparison and cohort analysis
 - `query.py` for read-only lookup and reporting helpers
 - `__init__.py` for the public observability facade
 

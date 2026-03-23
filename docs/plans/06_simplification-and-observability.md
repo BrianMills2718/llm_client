@@ -335,10 +335,20 @@ slice then extracted the Responses API helper cluster into
 next verified slice then extracted the completion-path helper cluster into
 `llm_client/completion_runtime.py`, reducing it further to `2547`.
 
-The next child slice for this program is still
-[11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
-but after the completion-runtime extraction the next `client.py` seam needs a
-fresh boundary-selection pass before more code moves.
+**Plan 11 closeout (2026-03-22):** All modules now either below threshold or
+explicitly justified. `client.py` was reduced from `4184` to `1494` across
+checkpoints 13–19 (call-lifecycle, call-wrappers, background-runtime,
+responses-runtime, completion-runtime, call-contracts, callback-collapse,
+client-dispatch). `experiments.py` was reduced from `1322` to `994` by
+extracting the analysis cluster to `observability/comparison.py`. Four modules
+between soft target and hard limit are documented as justified exceptions in
+[Plan 11](./11_program-e-module-size-reduction.md): `mcp_turn_execution.py`
+(1,339), `agents_codex.py` (1,317), `agent_contracts.py` (1,228), `io_log.py`
+(1,222). Each has been either actively decomposed to its natural boundary or
+audited and found to have tightly coupled internals where further splitting
+would expose internal helpers without improving clarity.
+
+Program E's size/composition criterion is now honestly satisfied.
 
 ### Phase 3: JSONL Log Rotation
 

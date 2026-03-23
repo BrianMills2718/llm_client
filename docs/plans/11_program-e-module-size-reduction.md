@@ -88,7 +88,8 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/agents_codex_runtime.py` (new extracted module)
 - `llm_client/call_contracts.py` (expanded with call-contract helpers from client.py)
 - `llm_client/client_dispatch.py` (new extracted module — routing, result, dispatch helpers)
-- `llm_client/observability/experiments.py` (modify/extract if still needed after earlier tranches)
+- `llm_client/observability/comparison.py` (new extracted module — analysis cluster)
+- `llm_client/observability/experiments.py` (modify/extract)
 - `llm_client/agent_contracts.py` (modify/extract if still needed after earlier tranches)
 - `docs/plans/06_simplification-and-observability.md` (update evidence/status)
 - `docs/plans/01_master-roadmap.md` (update default next step as slices complete)
@@ -940,6 +941,20 @@ explicitly justified exceptions
 - oversized modules are left implicit in conversation only
 - completion depends on vague future cleanup
 
+**Final audit (2026-03-22, post-checkpoint 20):**
+
+| Module | Lines | Status | Justification |
+|--------|-------|--------|---------------|
+| `client.py` | 1,494 | **Below hard threshold** | Actively decomposed across checkpoints 13–19. Remainder is imports/re-exports (250), background polling facades (123, load-bearing for monkeypatch contracts), and public entrypoints (1,094). No further extractable seams without changing the monkeypatch test contract. |
+| `mcp_turn_execution.py` | 1,339 | **Justified exception** | Decomposed across checkpoints 7–12 (from 3,202). Remainder is the per-turn orchestration loop that sequences budget gates, model dispatch, tool execution, outcomes, and completion. Six sub-modules were already extracted; what remains IS the orchestration glue. Further splitting would scatter the turn loop across modules without improving boundary clarity. |
+| `agents_codex.py` | 1,317 | **Justified exception** | Decomposed across checkpoints 4–5 (from 1,931). Shed process diagnostics (agents_codex_process.py) and SDK runtime (agents_codex_runtime.py). Remainder is CLI transport, streaming dispatch, and monkeypatch-sensitive wrapper names that the test suite patches. The compatibility surface IS the module's job. |
+| `agent_contracts.py` | 1,228 | **Justified exception** | Boundary audit (2026-03-22) found 7 clusters. The two largest (Contract Spec Normalization, 420 lines; Validation & Outputs, 398 lines) are tightly interdependent — 14+ functions forming a coherent normalization→validation pipeline. Extracting would expose internal helpers without improving clarity. Small extractable pieces (Data Models 44, Binding Hashing 37) give negligible savings. Module is at its natural boundary: "agent composability contracts." |
+| `io_log.py` | 1,222 | **Justified exception** | Actively decomposed across checkpoints 1–3 (from 2,102). Shed experiment context (observability/context.py), interventions (observability/interventions.py), and redundant wrappers. Remainder is the compatibility facade with dynamic delegation for three monkeypatch-sensitive surfaces (`start_run`, `get_cost`, `get_background_mode_adoption`). The wrappers ARE the module's job — it exists so downstream imports remain stable during the observability extraction. |
+| `experiments.py` | 994 | **Below soft target** | Analysis cluster (compare_runs, compare_cohorts, 339 lines) extracted to observability/comparison.py at checkpoint 20. |
+
+All modules are now either below threshold or explicitly justified. Program E's
+size/composition criteria can be evaluated honestly.
+
 ---
 
 ## Required Tests
@@ -965,6 +980,8 @@ explicitly justified exceptions
 - [x] the remaining oversized modules are inventoried with a durable audit baseline
 - [x] the first decomposition tranche is explicitly selected with pass/fail tests
 - [x] the roadmap and Program E umbrella plan point to this child plan as the next default slice
+- [x] every module above threshold is either reduced below threshold or has an explicit documented exception (Phase 3 final audit)
+- [x] Program E can be evaluated honestly against its size/composition criteria without hand-waving
 
 ---
 
