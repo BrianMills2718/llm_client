@@ -45,13 +45,14 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_agent.py`: `3335`
-3. `llm_client/io_log.py`: `2102`
-4. `llm_client/agents_codex.py`: `1931`
-5. `llm_client/observability/experiments.py`: `1322`
-6. `llm_client/agent_contracts.py`: `1228`
+2. `llm_client/mcp_turn_execution.py`: `3202`
+3. `llm_client/observability/experiments.py`: `1322`
+4. `llm_client/agent_contracts.py`: `1228`
+5. `llm_client/agents_codex.py`: `1317`
+6. `llm_client/io_log.py`: `1222`
+7. `llm_client/mcp_agent.py`: `1037`
 
-These counts are the current blocker for Program E completion.
+These counts are the current audit baseline for the remaining oversize set.
 
 ---
 
@@ -65,6 +66,7 @@ These counts are the current blocker for Program E completion.
 - `llm_client/observability/context.py` (new extracted module)
 - `llm_client/observability/events.py` (compatibility facade wiring)
 - `llm_client/observability/interventions.py` (new extracted module)
+- `llm_client/mcp_turn_execution.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
@@ -244,27 +246,51 @@ Effect on module size:
 
 1. `llm_client/io_log.py`: `1600 -> 1222`
 
-**Selected next tranche (2026-03-22, post-io_log closeout):**
+**Verified checkpoint 6 (2026-03-22):**
 
-Move to `llm_client/agents_codex.py`.
+The `mcp_agent.py` turn-execution implementation was extracted into
+`llm_client/mcp_turn_execution.py`, while `mcp_agent.py` kept the facade
+imports and compatibility entry points that existing tests patch.
+
+What this checkpoint proved:
+
+1. the large per-turn tool-processing loop can move into a dedicated module
+   without breaking the public `mcp_agent` entry points
+2. monkeypatch-sensitive helpers still need to resolve through
+   `llm_client.mcp_agent` so tests and downstream callers continue to intercept
+   them at the facade boundary
+3. the new turn-execution module is now the current oversize follow-on slice,
+   so Program E remains evidence-driven rather than aspirational
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+
+Effect on module size:
+
+1. `llm_client/mcp_agent.py`: `3335 -> 1037`
+2. new module: `llm_client/mcp_turn_execution.py` (`3202` lines)
+
+**Selected next tranche (2026-03-22, post-mcp_agent closeout):**
+
+Move to `llm_client/mcp_turn_execution.py`.
 
 Write scope for the next implementation slice:
 
-1. first extract Codex process diagnostics / forced-termination / timeout
-   helpers into a dedicated module
-2. keep `agents_codex.py` as the orchestration facade so public entry points
-   stay stable
-3. then use that narrower boundary as the base for a later isolated-process
-   transport extraction
+1. split per-turn bookkeeping / finalization concerns out of
+   `mcp_turn_execution.py` into narrower helpers
+2. keep `mcp_agent.py` as the orchestration facade so public runtime entry
+   points stay stable
+3. keep monkeypatch-sensitive helpers resolving through the facade boundary
+   so the existing test contract remains truthful
 
 Why this tranche goes next:
 
-1. `agents_codex.py` is now the smallest remaining hard-threshold violator
-   after `io_log.py` was reduced below `1500`
-2. the isolated-process transport path is a coherent responsibility that is
-   visibly separable from CLI transport, result shaping, and streaming
-3. it offers meaningful size reduction without starting with the most central
-   modules (`client.py`, `mcp_agent.py`)
+1. `mcp_turn_execution.py` is now the clearest remaining hard-threshold
+   blocker after `mcp_agent.py` was reduced below the threshold
+2. the per-turn bookkeeping / finalization split is a coherent responsibility
+   that is visibly separable from the turn orchestrator itself
+3. it offers meaningful size reduction without starting with the even more
+   central `client.py` facade
 
 **Verified checkpoint 4 (2026-03-22):**
 
@@ -325,6 +351,33 @@ Effect on module size:
 
 1. `llm_client/agents_codex.py`: `1747 -> 1317`
 2. new module: `llm_client/agents_codex_runtime.py` (`605` lines)
+
+**Selected next tranche (2026-03-22, post-agents_codex closeout):**
+
+Move to `llm_client/mcp_agent.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the per-turn tool-processing path from `_agent_loop` into a
+   dedicated module
+2. keep `mcp_agent.py` as the orchestration facade so public runtime entry
+   points and event-code imports remain stable
+3. preserve behavior for:
+   - compliance-gate rejection bookkeeping
+   - tool-contract rejection bookkeeping
+   - control-loop suppression
+   - runtime artifact reads, handle injection, and execution ordering
+   - artifact/binding/capability reconciliation after successful tool calls
+
+Why this tranche goes next:
+
+1. `mcp_agent.py` is now the clearest remaining hard-threshold blocker after
+   `agents_codex.py` cleared the threshold
+2. the per-turn tool-processing path is a coherent responsibility inside
+   `_agent_loop`, already backed by dense regression coverage in
+   `tests/test_mcp_agent.py`
+3. it should materially reduce `mcp_agent.py` without starting with the even
+   more central `client.py` facade
 
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 

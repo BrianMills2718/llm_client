@@ -190,11 +190,11 @@ has now completed three verified `io_log.py` extractions
 (`interventions.py`, `context.py`, then compatibility-facade reduction),
 reducing `io_log.py` from `2102` lines to `1222` and clearing that module from
 the hard-threshold blocker set. The default next slice remains Plan 11, with
-the next tranche targeting `agents_codex.py`. Its first verified slice has
-already extracted process diagnostics / forced-termination helpers into
-`agents_codex_process.py`, and the next verified slice extracted the Codex SDK
-runtime path into `agents_codex_runtime.py`, reducing `agents_codex.py` from
-`1931` to `1317`. `agents_codex.py` is no longer a hard-threshold blocker, so
-the next default Plan 11 slice should move to the remaining oversized modules
-(`mcp_agent.py`, then `client.py`, unless a smaller justified exception is
-selected first). Stop only for a real blocker or user redirect.
+the next tranche having cleared `agents_codex.py` below the hard threshold via
+`agents_codex_process.py` and `agents_codex_runtime.py`, reducing it from
+`1931` to `1317`. `mcp_agent.py` was then reduced from `3335` lines to `1037`
+by extracting the turn-execution implementation into
+`mcp_turn_execution.py`, so the next default Plan 11 slice is the
+`mcp_turn_execution.py` follow-on decomposition. That tranche moves the
+per-turn bookkeeping/finalization split out of the new module before Program E
+turns to `client.py`. Stop only for a real blocker or user redirect.

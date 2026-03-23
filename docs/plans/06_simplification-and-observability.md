@@ -305,7 +305,7 @@ Program E is not ready to close yet. A fresh module-size audit still shows
 multiple files above the plan thresholds:
 
 1. `llm_client/client.py`: `4184` lines
-2. `llm_client/mcp_agent.py`: `3335` lines
+2. `llm_client/mcp_turn_execution.py`: `3202` lines
 3. `llm_client/observability/experiments.py`: `1322` lines
 4. `llm_client/agent_contracts.py`: `1228` lines
 
@@ -313,13 +313,15 @@ multiple files above the plan thresholds:
 Plan 11 slices, so it no longer blocks the hard-threshold criterion.
 `llm_client/agents_codex.py` was reduced from `1931` to `1317` across two
 verified Plan 11 slices, so it also no longer blocks the hard-threshold
+criterion. `llm_client/mcp_agent.py` was reduced from `3335` to `1037` by the
+turn-execution extraction, so it likewise no longer blocks the hard-threshold
 criterion.
 
 The next child slice for this program is
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
-with the immediate next tranche moving to the remaining oversized hard-threshold
-modules, starting with `mcp_agent.py` unless a smaller justified exception is
-selected first.
+with the immediate next tranche now explicitly selected as the
+`mcp_turn_execution.py` follow-on decomposition before the program moves on to
+`client.py`.
 
 ### Phase 3: JSONL Log Rotation
 
