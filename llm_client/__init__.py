@@ -197,8 +197,13 @@ from llm_client.prompt_assets import (
     resolve_prompt_asset,
 )
 from llm_client.prompts import render_prompt
-# Relocated: agent_spec → project-meta/scripts/meta (Plan #17)
-# Relocated: validators → agentic_scaffolding/validators/framework (Plan #17)
+from llm_client.agent_spec import (
+    AgentSpecValidationError,
+    REQUIRED_AGENT_SPEC_SECTIONS,
+    load_agent_spec,
+    validate_agent_spec,
+)
+from llm_client.validators import ValidationResult, run_validators, register_validator, spec_hash
 
 if _TYPE_CHECKING:
     from llm_client.difficulty import (
@@ -209,12 +214,63 @@ if _TYPE_CHECKING:
         load_model_floors,
         save_model_floors,
     )
-    # Relocated modules (Plan #17):
-    # git_utils → project-meta/scripts/meta
-    # scoring → prompt_eval
-    # experiment_eval → prompt_eval
-    # task_graph → project-meta/scripts/meta
-    # analyzer → project-meta/scripts/meta
+    from llm_client.git_utils import (
+        CODE_CHANGE,
+        CONFIG_CHANGE,
+        PROMPT_CHANGE,
+        RUBRIC_CHANGE,
+        TEST_CHANGE,
+        classify_diff_files,
+        get_diff_files,
+        get_git_head,
+        get_working_tree_files,
+        is_git_dirty,
+    )
+    from llm_client.scoring import (
+        CriterionScore,
+        Rubric,
+        RubricCriterion,
+        ScoreResult,
+        ascore_output,
+        list_rubrics,
+        load_rubric,
+        score_output,
+    )
+    from llm_client.experiment_eval import (
+        DEFAULT_DETERMINISTIC_CHECKS,
+        build_gate_signals,
+        evaluate_gate_policy,
+        extract_adoption_profile,
+        extract_agent_outcome,
+        load_gate_policy,
+        review_items_with_rubric,
+        run_deterministic_checks_for_item,
+        run_deterministic_checks_for_items,
+        summarize_adoption_profiles,
+        summarize_agent_outcomes,
+        triage_items,
+    )
+    from llm_client.task_graph import (
+        ExecutionReport,
+        ExperimentRecord,
+        GraphMeta,
+        TaskDef,
+        TaskGraph,
+        TaskResult,
+        TaskStatus,
+        load_graph,
+        run_graph,
+        toposort_waves,
+    )
+    from llm_client.analyzer import (
+        AnalysisReport,
+        IssueCategory,
+        Proposal,
+        analyze_history,
+        analyze_run,
+        analyze_scores,
+        check_scorer_reliability,
+    )
 
 from llm_client.mcp_agent import (
     DEFAULT_ENFORCE_TOOL_CONTRACTS,
@@ -368,20 +424,68 @@ _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
     "get_active_llm_calls",
     "get_background_mode_adoption",
     "get_completed_traces",
-    # agent_spec and validators relocated (Plan #17)
+    "AgentSpecValidationError",
+    "REQUIRED_AGENT_SPEC_SECTIONS",
+    "load_agent_spec",
+    "validate_agent_spec",
+    "ValidationResult",
+    "run_validators",
+    "register_validator",
+    "spec_hash",
     "callable_to_openai_tool",
     "prepare_direct_tools",
     "strip_fences",
 )
 
-# Relocated modules removed from exports (Plan #17).
-# difficulty stays — it's control plane.
 _CANDIDATE_MOVE_EXPORTS: tuple[str, ...] = (
     "DifficultyTier",
     "get_model_for_difficulty",
     "get_effective_tier",
     "load_model_floors",
     "save_model_floors",
+    "ExecutionReport",
+    "ExperimentRecord",
+    "GraphMeta",
+    "TaskDef",
+    "TaskGraph",
+    "TaskResult",
+    "TaskStatus",
+    "load_graph",
+    "run_graph",
+    "toposort_waves",
+    "AnalysisReport",
+    "IssueCategory",
+    "Proposal",
+    "analyze_history",
+    "analyze_run",
+    "analyze_scores",
+    "check_scorer_reliability",
+    "CODE_CHANGE",
+    "CONFIG_CHANGE",
+    "PROMPT_CHANGE",
+    "RUBRIC_CHANGE",
+    "TEST_CHANGE",
+    "classify_diff_files",
+    "get_diff_files",
+    "get_git_head",
+    "get_working_tree_files",
+    "is_git_dirty",
+    "CriterionScore",
+    "Rubric",
+    "RubricCriterion",
+    "ScoreResult",
+    "ascore_output",
+    "list_rubrics",
+    "load_rubric",
+    "score_output",
+    "DEFAULT_DETERMINISTIC_CHECKS",
+    "run_deterministic_checks_for_item",
+    "run_deterministic_checks_for_items",
+    "review_items_with_rubric",
+    "load_gate_policy",
+    "build_gate_signals",
+    "evaluate_gate_policy",
+    "triage_items",
 )
 
 __all__ = [
@@ -415,10 +519,194 @@ _DEPRECATED_TOP_LEVEL_EXPORTS: dict[str, tuple[str, str]] = {
         "llm_client.difficulty",
         "save_model_floors",
     ),
-    # Relocated module exports removed (Plan #17):
-    # git_utils → project-meta, scoring → prompt_eval,
-    # experiment_eval → prompt_eval, task_graph → project-meta,
-    # analyzer → project-meta
+    "CODE_CHANGE": (
+        "llm_client.git_utils",
+        "CODE_CHANGE",
+    ),
+    "CONFIG_CHANGE": (
+        "llm_client.git_utils",
+        "CONFIG_CHANGE",
+    ),
+    "PROMPT_CHANGE": (
+        "llm_client.git_utils",
+        "PROMPT_CHANGE",
+    ),
+    "RUBRIC_CHANGE": (
+        "llm_client.git_utils",
+        "RUBRIC_CHANGE",
+    ),
+    "TEST_CHANGE": (
+        "llm_client.git_utils",
+        "TEST_CHANGE",
+    ),
+    "classify_diff_files": (
+        "llm_client.git_utils",
+        "classify_diff_files",
+    ),
+    "get_diff_files": (
+        "llm_client.git_utils",
+        "get_diff_files",
+    ),
+    "get_git_head": (
+        "llm_client.git_utils",
+        "get_git_head",
+    ),
+    "get_working_tree_files": (
+        "llm_client.git_utils",
+        "get_working_tree_files",
+    ),
+    "is_git_dirty": (
+        "llm_client.git_utils",
+        "is_git_dirty",
+    ),
+    "CriterionScore": (
+        "llm_client.scoring",
+        "CriterionScore",
+    ),
+    "Rubric": (
+        "llm_client.scoring",
+        "Rubric",
+    ),
+    "RubricCriterion": (
+        "llm_client.scoring",
+        "RubricCriterion",
+    ),
+    "ScoreResult": (
+        "llm_client.scoring",
+        "ScoreResult",
+    ),
+    "ascore_output": (
+        "llm_client.scoring",
+        "ascore_output",
+    ),
+    "list_rubrics": (
+        "llm_client.scoring",
+        "list_rubrics",
+    ),
+    "load_rubric": (
+        "llm_client.scoring",
+        "load_rubric",
+    ),
+    "score_output": (
+        "llm_client.scoring",
+        "score_output",
+    ),
+    "DEFAULT_DETERMINISTIC_CHECKS": (
+        "llm_client.experiment_eval",
+        "DEFAULT_DETERMINISTIC_CHECKS",
+    ),
+    "build_gate_signals": (
+        "llm_client.experiment_eval",
+        "build_gate_signals",
+    ),
+    "evaluate_gate_policy": (
+        "llm_client.experiment_eval",
+        "evaluate_gate_policy",
+    ),
+    "extract_adoption_profile": (
+        "llm_client.experiment_eval",
+        "extract_adoption_profile",
+    ),
+    "extract_agent_outcome": (
+        "llm_client.experiment_eval",
+        "extract_agent_outcome",
+    ),
+    "load_gate_policy": (
+        "llm_client.experiment_eval",
+        "load_gate_policy",
+    ),
+    "review_items_with_rubric": (
+        "llm_client.experiment_eval",
+        "review_items_with_rubric",
+    ),
+    "run_deterministic_checks_for_item": (
+        "llm_client.experiment_eval",
+        "run_deterministic_checks_for_item",
+    ),
+    "run_deterministic_checks_for_items": (
+        "llm_client.experiment_eval",
+        "run_deterministic_checks_for_items",
+    ),
+    "summarize_adoption_profiles": (
+        "llm_client.experiment_eval",
+        "summarize_adoption_profiles",
+    ),
+    "summarize_agent_outcomes": (
+        "llm_client.experiment_eval",
+        "summarize_agent_outcomes",
+    ),
+    "triage_items": (
+        "llm_client.experiment_eval",
+        "triage_items",
+    ),
+    "ExecutionReport": (
+        "llm_client.task_graph",
+        "ExecutionReport",
+    ),
+    "ExperimentRecord": (
+        "llm_client.task_graph",
+        "ExperimentRecord",
+    ),
+    "GraphMeta": (
+        "llm_client.task_graph",
+        "GraphMeta",
+    ),
+    "TaskDef": (
+        "llm_client.task_graph",
+        "TaskDef",
+    ),
+    "TaskGraph": (
+        "llm_client.task_graph",
+        "TaskGraph",
+    ),
+    "TaskResult": (
+        "llm_client.task_graph",
+        "TaskResult",
+    ),
+    "TaskStatus": (
+        "llm_client.task_graph",
+        "TaskStatus",
+    ),
+    "load_graph": (
+        "llm_client.task_graph",
+        "load_graph",
+    ),
+    "run_graph": (
+        "llm_client.task_graph",
+        "run_graph",
+    ),
+    "toposort_waves": (
+        "llm_client.task_graph",
+        "toposort_waves",
+    ),
+    "AnalysisReport": (
+        "llm_client.analyzer",
+        "AnalysisReport",
+    ),
+    "IssueCategory": (
+        "llm_client.analyzer",
+        "IssueCategory",
+    ),
+    "Proposal": (
+        "llm_client.analyzer",
+        "Proposal",
+    ),
+    "analyze_history": (
+        "llm_client.analyzer",
+        "analyze_history",
+    ),
+    "analyze_run": (
+        "llm_client.analyzer",
+        "analyze_run",
+    ),
+    "analyze_scores": (
+        "llm_client.analyzer",
+        "analyze_scores",
+    ),
+    "check_scorer_reliability": (
+        "llm_client.analyzer",
+        "check_scorer_reliability",
+    ),
 }
 
 
