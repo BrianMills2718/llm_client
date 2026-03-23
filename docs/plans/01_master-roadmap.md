@@ -186,8 +186,10 @@ and the API reference slice in
 [10_api-reference-generation-pipeline.md](./10_api-reference-generation-pipeline.md)
 are complete. The module-size reduction slice in
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md)
-has now completed two verified `io_log.py` extractions
-(`interventions.py`, then `context.py`), reducing `io_log.py` from `2102`
-lines to `1600`. The default next slice remains Plan 11 until `io_log.py` is
-below the hard threshold or explicitly re-scoped, then resume the remaining
-Program E phases. Stop only for a real blocker or user redirect.
+has now completed three verified `io_log.py` extractions
+(`interventions.py`, `context.py`, then compatibility-facade reduction),
+reducing `io_log.py` from `2102` lines to `1222` and clearing that module from
+the hard-threshold blocker set. The default next slice remains Plan 11, with
+the next tranche targeting `agents_codex.py` isolated-process transport
+extraction before moving on to the larger remaining modules. Stop only for a
+real blocker or user redirect.

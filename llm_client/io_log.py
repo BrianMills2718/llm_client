@@ -1080,23 +1080,20 @@ def _truncate_messages(
 # Resume / lookup functions
 # ---------------------------------------------------------------------------
 
+def _query_api() -> Any:
+    """Return the query compatibility target module on demand."""
 
-def lookup_result(trace_id: str) -> dict[str, Any] | None:
-    """Compatibility shim: delegate to observability.query.lookup_result."""
-    from llm_client.observability.query import lookup_result as _lookup_result
+    from llm_client.observability import query as _query
 
-    return _lookup_result(trace_id)
+    return _query
 
 
-def get_completed_traces(
-    *,
-    project: str | None = None,
-    task: str | None = None,
-) -> set[str]:
-    """Compatibility shim: delegate to observability.query.get_completed_traces."""
-    from llm_client.observability.query import get_completed_traces as _get_completed_traces
-
-    return _get_completed_traces(project=project, task=task)
+from llm_client.observability.query import (
+    get_active_llm_calls,
+    get_completed_traces,
+    get_trace_tree,
+    lookup_result,
+)
 
 
 def get_cost(
@@ -1107,44 +1104,14 @@ def get_cost(
     project: str | None = None,
     since: str | date | None = None,
 ) -> float:
-    """Compatibility shim: delegate to observability.query.get_cost."""
-    from llm_client.observability.query import get_cost as _get_cost
+    """Compatibility shim: delegate to ``llm_client.observability.query``."""
 
-    return _get_cost(
+    return _query_api().get_cost(
         trace_id=trace_id,
         trace_prefix=trace_prefix,
         task=task,
         project=project,
         since=since,
-    )
-
-
-def get_trace_tree(
-    trace_prefix: str,
-    *,
-    days: int = 7,
-) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.query.get_trace_tree."""
-    from llm_client.observability.query import get_trace_tree as _get_trace_tree
-
-    return _get_trace_tree(trace_prefix, days=days)
-
-
-def get_active_llm_calls(
-    *,
-    project: str | None = None,
-    task: str | None = None,
-    trace_id: str | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.query.get_active_llm_calls."""
-    from llm_client.observability.query import get_active_llm_calls as _get_active_llm_calls
-
-    return _get_active_llm_calls(
-        project=project,
-        task=task,
-        trace_id=trace_id,
-        limit=limit,
     )
 
 
@@ -1154,75 +1121,49 @@ def get_background_mode_adoption(
     since: str | date | datetime | None = None,
     run_id_prefix: str | None = None,
 ) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.query.get_background_mode_adoption."""
-    from llm_client.observability.query import (
-        get_background_mode_adoption as _get_background_mode_adoption,
-    )
+    """Compatibility shim: delegate to ``llm_client.observability.query``."""
 
-    return _get_background_mode_adoption(
+    return _query_api().get_background_mode_adoption(
         experiments_path=experiments_path,
         since=since,
         run_id_prefix=run_id_prefix,
     )
 
 
-def get_call_snapshot(call_id: int) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.replay.get_call_snapshot."""
-    from llm_client.observability.replay import get_call_snapshot as _get_call_snapshot
-
-    return _get_call_snapshot(call_id)
-
-
-def compare_call_snapshots(left_call_id: int, right_call_id: int) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.replay.compare_call_snapshots."""
-    from llm_client.observability.replay import (
-        compare_call_snapshots as _compare_call_snapshots,
-    )
-
-    return _compare_call_snapshots(left_call_id, right_call_id)
-
-
-def format_call_diff(report: Mapping[str, Any]) -> str:
-    """Compatibility shim: delegate to observability.replay.format_call_diff."""
-    from llm_client.observability.replay import format_call_diff as _format_call_diff
-
-    return _format_call_diff(report)
-
-
-def replay_call_snapshot(
-    call_id: int,
-    *,
-    trace_id: str,
-    task: str | None = None,
-    max_budget: float = 0.0,
-    project: str | None = None,
-) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.replay.replay_call_snapshot."""
-    from llm_client.observability.replay import (
-        replay_call_snapshot as _replay_call_snapshot,
-    )
-
-    return _replay_call_snapshot(
-        call_id,
-        trace_id=trace_id,
-        task=task,
-        max_budget=max_budget,
-        project=project,
-    )
+from llm_client.observability.replay import (
+    compare_call_snapshots,
+    format_call_diff,
+    get_call_snapshot,
+    replay_call_snapshot,
+)
 
 
 # ---------------------------------------------------------------------------
 # Experiment logging
 # ---------------------------------------------------------------------------
 
+def _experiment_api() -> Any:
+    """Return the experiment compatibility target module on demand."""
 
-def _build_auto_run_provenance(*, git_commit: str | None) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.experiments helper."""
-    from llm_client.observability.experiments import (
-        _build_auto_run_provenance as _build_auto_provenance,
-    )
+    from llm_client.observability import experiments as _experiments
 
-    return _build_auto_provenance(git_commit=git_commit)
+    return _experiments
+
+
+from llm_client.observability.experiments import (
+    ExperimentRun,
+    _build_auto_run_provenance,
+    compare_cohorts,
+    compare_runs,
+    experiment_run,
+    finish_run,
+    get_experiment_aggregates,
+    get_run,
+    get_run_items,
+    get_runs,
+    log_experiment_aggregate,
+    log_item,
+)
 
 
 def start_run(
@@ -1246,10 +1187,9 @@ def start_run(
     missing_agent_spec_reason: str | None = None,
     project: str | None = None,
 ) -> str:
-    """Compatibility shim: delegate to observability.experiments.start_run."""
-    from llm_client.observability.experiments import start_run as _start_run
+    """Compatibility shim: delegate to ``llm_client.observability.experiments``."""
 
-    return _start_run(
+    return _experiment_api().start_run(
         dataset=dataset,
         model=model,
         task=task,
@@ -1271,330 +1211,12 @@ def start_run(
     )
 
 
-def log_item(
-    *,
-    run_id: str,
-    item_id: str,
-    metrics: dict[str, Any],
-    predicted: str | None = None,
-    gold: str | None = None,
-    latency_s: float | None = None,
-    cost: float | None = None,
-    n_tool_calls: int | None = None,
-    error: str | None = None,
-    extra: dict[str, Any] | None = None,
-    trace_id: str | None = None,
-) -> None:
-    """Compatibility shim: delegate to observability.experiments.log_item."""
-    from llm_client.observability.experiments import log_item as _log_item
-
-    _log_item(
-        run_id=run_id,
-        item_id=item_id,
-        metrics=metrics,
-        predicted=predicted,
-        gold=gold,
-        latency_s=latency_s,
-        cost=cost,
-        n_tool_calls=n_tool_calls,
-        error=error,
-        extra=extra,
-        trace_id=trace_id,
-    )
-
-
-def finish_run(
-    *,
-    run_id: str,
-    summary_metrics: dict[str, Any] | None = None,
-    status: str = "completed",
-    wall_time_s: float | None = None,
-    cpu_time_s: float | None = None,
-    cpu_user_s: float | None = None,
-    cpu_system_s: float | None = None,
-) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.experiments.finish_run."""
-    from llm_client.observability.experiments import finish_run as _finish_run
-
-    return _finish_run(
-        run_id=run_id,
-        summary_metrics=summary_metrics,
-        status=status,
-        wall_time_s=wall_time_s,
-        cpu_time_s=cpu_time_s,
-        cpu_user_s=cpu_user_s,
-        cpu_system_s=cpu_system_s,
-    )
-
-
-class ExperimentRun:
-    """Compatibility shim for observability.experiments.ExperimentRun."""
-
-    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
-        from llm_client.observability.experiments import ExperimentRun as _ExperimentRun
-
-        return _ExperimentRun(*args, **kwargs)
-
-
-def experiment_run(
-    *,
-    dataset: str,
-    model: str,
-    config: dict[str, Any] | None = None,
-    condition_id: str | None = None,
-    seed: int | None = None,
-    replicate: int | None = None,
-    scenario_id: str | None = None,
-    phase: str | None = None,
-    metrics_schema: list[str] | None = None,
-    run_id: str | None = None,
-    git_commit: str | None = None,
-    provenance: dict[str, Any] | None = None,
-    feature_profile: str | dict[str, Any] | None = None,
-    project: str | None = None,
-    status_on_exception: str = "interrupted",
-) -> Any:
-    """Compatibility shim: delegate to observability.experiments.experiment_run."""
-    from llm_client.observability.experiments import experiment_run as _experiment_run
-
-    return _experiment_run(
-        dataset=dataset,
-        model=model,
-        config=config,
-        condition_id=condition_id,
-        seed=seed,
-        replicate=replicate,
-        scenario_id=scenario_id,
-        phase=phase,
-        metrics_schema=metrics_schema,
-        run_id=run_id,
-        git_commit=git_commit,
-        provenance=provenance,
-        feature_profile=feature_profile,
-        project=project,
-        status_on_exception=status_on_exception,
-    )
-
-
-def get_runs(
-    *,
-    dataset: str | None = None,
-    model: str | None = None,
-    project: str | None = None,
-    condition_id: str | None = None,
-    scenario_id: str | None = None,
-    phase: str | None = None,
-    seed: int | None = None,
-    since: str | date | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.experiments.get_runs."""
-    from llm_client.observability.experiments import get_runs as _get_runs
-
-    return _get_runs(
-        dataset=dataset,
-        model=model,
-        project=project,
-        condition_id=condition_id,
-        scenario_id=scenario_id,
-        phase=phase,
-        seed=seed,
-        since=since,
-        limit=limit,
-    )
-
-
-def get_run(run_id: str) -> dict[str, Any] | None:
-    """Compatibility shim: delegate to observability.experiments.get_run."""
-    from llm_client.observability.experiments import get_run as _get_run
-
-    return _get_run(run_id)
-
-
-def get_run_items(run_id: str) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.experiments.get_run_items."""
-    from llm_client.observability.experiments import get_run_items as _get_run_items
-
-    return _get_run_items(run_id)
-
-
-def log_experiment_aggregate(
-    *,
-    dataset: str,
-    family_id: str,
-    aggregate_type: str,
-    metrics: dict[str, Any],
-    aggregate_id: str | None = None,
-    project: str | None = None,
-    condition_id: str | None = None,
-    scenario_id: str | None = None,
-    phase: str | None = None,
-    provenance: dict[str, Any] | None = None,
-    source_run_ids: list[str] | None = None,
-) -> str:
-    """Compatibility shim: delegate to observability.experiments.log_experiment_aggregate."""
-    from llm_client.observability.experiments import (
-        log_experiment_aggregate as _log_experiment_aggregate,
-    )
-
-    return _log_experiment_aggregate(
-        dataset=dataset,
-        family_id=family_id,
-        aggregate_type=aggregate_type,
-        metrics=metrics,
-        aggregate_id=aggregate_id,
-        project=project,
-        condition_id=condition_id,
-        scenario_id=scenario_id,
-        phase=phase,
-        provenance=provenance,
-        source_run_ids=source_run_ids,
-    )
-
-
-def get_experiment_aggregates(
-    *,
-    dataset: str | None = None,
-    family_id: str | None = None,
-    aggregate_type: str | None = None,
-    project: str | None = None,
-    condition_id: str | None = None,
-    scenario_id: str | None = None,
-    phase: str | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.experiments.get_experiment_aggregates."""
-    from llm_client.observability.experiments import (
-        get_experiment_aggregates as _get_experiment_aggregates,
-    )
-
-    return _get_experiment_aggregates(
-        dataset=dataset,
-        family_id=family_id,
-        aggregate_type=aggregate_type,
-        project=project,
-        condition_id=condition_id,
-        scenario_id=scenario_id,
-        phase=phase,
-        limit=limit,
-    )
-
-
-def compare_runs(run_ids: list[str]) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.experiments.compare_runs."""
-    from llm_client.observability.experiments import compare_runs as _compare_runs
-
-    return _compare_runs(run_ids)
-
-
-def compare_cohorts(
-    *,
-    condition_ids: list[str] | None = None,
-    baseline_condition_id: str | None = None,
-    dataset: str | None = None,
-    model: str | None = None,
-    project: str | None = None,
-    scenario_id: str | None = None,
-    phase: str | None = None,
-    since: str | date | None = None,
-    limit: int = 500,
-) -> dict[str, Any]:
-    """Compatibility shim: delegate to observability.experiments.compare_cohorts."""
-    from llm_client.observability.experiments import compare_cohorts as _compare_cohorts
-
-    return _compare_cohorts(
-        condition_ids=condition_ids,
-        baseline_condition_id=baseline_condition_id,
-        dataset=dataset,
-        model=model,
-        project=project,
-        scenario_id=scenario_id,
-        phase=phase,
-        since=since,
-        limit=limit,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Intervention log
 # ---------------------------------------------------------------------------
 
-
-def log_intervention(
-    *,
-    description: str,
-    problem: str,
-    fix: str,
-    category: str = "infra",
-    project: str | None = None,
-    dataset: str | None = None,
-    git_commit: str | None = None,
-    baseline_run_id: str | None = None,
-    verification_run_id: str | None = None,
-    affected_items: list[str] | None = None,
-    expected_impact: str | None = None,
-    measured_impact: str | None = None,
-    status: str = "verified",
-) -> str:
-    """Compatibility shim: delegate to observability.interventions.log_intervention."""
-    from llm_client.observability.interventions import (
-        log_intervention as _log_intervention,
-    )
-
-    return _log_intervention(
-        description=description,
-        problem=problem,
-        fix=fix,
-        category=category,
-        project=project,
-        dataset=dataset,
-        git_commit=git_commit,
-        baseline_run_id=baseline_run_id,
-        verification_run_id=verification_run_id,
-        affected_items=affected_items,
-        expected_impact=expected_impact,
-        measured_impact=measured_impact,
-        status=status,
-    )
-
-
-def get_interventions(
-    *,
-    project: str | None = None,
-    dataset: str | None = None,
-    category: str | None = None,
-    status: str | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Compatibility shim: delegate to observability.interventions.get_interventions."""
-    from llm_client.observability.interventions import (
-        get_interventions as _get_interventions,
-    )
-
-    return _get_interventions(
-        project=project,
-        dataset=dataset,
-        category=category,
-        status=status,
-        limit=limit,
-    )
-
-
-def update_intervention(
-    intervention_id: str,
-    *,
-    verification_run_id: str | None = None,
-    measured_impact: str | None = None,
-    status: str | None = None,
-) -> bool:
-    """Compatibility shim: delegate to observability.interventions.update_intervention."""
-    from llm_client.observability.interventions import (
-        update_intervention as _update_intervention,
-    )
-
-    return _update_intervention(
-        intervention_id,
-        verification_run_id=verification_run_id,
-        measured_impact=measured_impact,
-        status=status,
-    )
+from llm_client.observability.interventions import (
+    get_interventions,
+    log_intervention,
+    update_intervention,
+)

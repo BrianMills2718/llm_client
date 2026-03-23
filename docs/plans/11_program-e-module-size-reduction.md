@@ -200,6 +200,68 @@ Effect on module size:
 1. `llm_client/io_log.py`: `2011 -> 1600`
 2. new module: `llm_client/observability/context.py` (`429` lines)
 
+**Selected next tranche (2026-03-22):**
+
+Finish `io_log.py` by replacing the remaining handwritten compatibility
+wrappers for query / replay / experiment / intervention surfaces with direct
+re-export bindings where the import graph is cycle-safe.
+
+Passes if:
+
+1. `io_log.py` drops below the hard threshold without changing the public API
+2. the re-exports remain honest about where concrete behavior lives
+3. focused compatibility, public-surface, and `io_log` regression tests stay
+   green
+
+Fails if:
+
+1. the aliasing introduces import-cycle regressions
+2. `io_log.py` still depends on large blocks of redundant wrapper code after
+   the slice
+
+**Verified checkpoint 3 (2026-03-22):**
+
+The remaining `io_log.py` compatibility facade was reduced by replacing most
+handwritten wrappers with truthful direct re-exports, while keeping dynamic
+delegation only for the monkeypatch-sensitive compatibility surfaces that the
+existing tests prove are load-bearing (`start_run`, `get_cost`, and
+`get_background_mode_adoption`).
+
+What this checkpoint proved:
+
+1. `io_log.py` no longer blocks Program E's hard-threshold criterion
+2. the compatibility surface can stay truthful without preserving hundreds of
+   lines of redundant wrapper code
+3. dynamic delegation remains in place where historical patchability is part
+   of the effective contract
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_io_log.py tests/test_io_log_compat.py tests/test_experiment_log.py tests/test_public_surface.py tests/test_api_reference_generation.py`
+   - result: `137 passed`
+
+Effect on module size:
+
+1. `llm_client/io_log.py`: `1600 -> 1222`
+
+**Selected next tranche (2026-03-22, post-io_log closeout):**
+
+Move to `llm_client/agents_codex.py`.
+
+Write scope for the next implementation slice:
+
+1. extract Codex isolated-process transport helpers into a dedicated module
+2. keep `agents_codex.py` as the orchestration facade so public entry points
+   stay stable
+3. prove the extracted boundary against both text and structured Codex paths
+
+Why this tranche goes next:
+
+1. `agents_codex.py` is now the smallest remaining hard-threshold violator
+   after `io_log.py` was reduced below `1500`
+2. the isolated-process transport path is a coherent responsibility that is
+   visibly separable from CLI transport, result shaping, and streaming
+3. it offers meaningful size reduction without starting with the most central
+   modules (`client.py`, `mcp_agent.py`)
+
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 
 **Purpose:** continue through the remaining oversized modules or document a

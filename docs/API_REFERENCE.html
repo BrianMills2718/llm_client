@@ -2930,33 +2930,6 @@ Or override at runtime via configure().</pre>
 
 <h4>Functions</h4>
 
-<details class="symbol" id="module-llm_client-io_log-compare_call_snapshots">
-  <summary><code>compare_call_snapshots</code> <span class="sig">(left_call_id: int, right_call_id: int) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.replay.compare_call_snapshots.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.replay.compare_call_snapshots.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-compare_cohorts">
-  <summary><code>compare_cohorts</code> <span class="sig">(*, condition_ids: list[str] | None = None, baseline_condition_id: str | None = None, dataset: str | None = None, model: str | None = None, project: str | None = None, scenario_id: str | None = None, phase: str | None = None, since: str | datetime.date | None = None, limit: int = 500) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.compare_cohorts.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.compare_cohorts.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-compare_runs">
-  <summary><code>compare_runs</code> <span class="sig">(run_ids: list[str]) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.compare_runs.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.compare_runs.</pre>
-  </div>
-</details>
-
 <details class="symbol" id="module-llm_client-io_log-configure">
   <summary><code>configure</code> <span class="sig">(*, enabled: bool | None = None, data_root: str | pathlib.Path | None = None, project: str | None = None, db_path: str | pathlib.Path | None = None) -&gt; None</span></summary>
   <div class="symbol-body">
@@ -2966,129 +2939,21 @@ Or override at runtime via configure().</pre>
   </div>
 </details>
 
-<details class="symbol" id="module-llm_client-io_log-experiment_run">
-  <summary><code>experiment_run</code> <span class="sig">(*, dataset: str, model: str, config: dict[str, typing.Any] | None = None, condition_id: str | None = None, seed: int | None = None, replicate: int | None = None, scenario_id: str | None = None, phase: str | None = None, metrics_schema: list[str] | None = None, run_id: str | None = None, git_commit: str | None = None, provenance: dict[str, typing.Any] | None = None, feature_profile: str | dict[str, typing.Any] | None = None, project: str | None = None, status_on_exception: str = &#x27;interrupted&#x27;) -&gt; Any</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.experiment_run.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.experiment_run.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-finish_run">
-  <summary><code>finish_run</code> <span class="sig">(*, run_id: str, summary_metrics: dict[str, typing.Any] | None = None, status: str = &#x27;completed&#x27;, wall_time_s: float | None = None, cpu_time_s: float | None = None, cpu_user_s: float | None = None, cpu_system_s: float | None = None) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.finish_run.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.finish_run.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-format_call_diff">
-  <summary><code>format_call_diff</code> <span class="sig">(report: &#x27;Mapping[str, Any]&#x27;) -&gt; &#x27;str&#x27;</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.replay.format_call_diff.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.replay.format_call_diff.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_active_llm_calls">
-  <summary><code>get_active_llm_calls</code> <span class="sig">(*, project: str | None = None, task: str | None = None, trace_id: str | None = None, limit: int = 100) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.get_active_llm_calls.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.get_active_llm_calls.</pre>
-  </div>
-</details>
-
 <details class="symbol" id="module-llm_client-io_log-get_background_mode_adoption">
   <summary><code>get_background_mode_adoption</code> <span class="sig">(*, experiments_path: str | pathlib.Path | None = None, since: str | datetime.date | datetime.datetime | None = None, run_id_prefix: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.get_background_mode_adoption.</p>
+    <p class="summary">Compatibility shim: delegate to ``llm_client.observability.query``.</p>
     <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.get_background_mode_adoption.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_call_snapshot">
-  <summary><code>get_call_snapshot</code> <span class="sig">(call_id: int) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.replay.get_call_snapshot.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.replay.get_call_snapshot.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_completed_traces">
-  <summary><code>get_completed_traces</code> <span class="sig">(*, project: str | None = None, task: str | None = None) -&gt; set[str]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.get_completed_traces.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.get_completed_traces.</pre>
+    <pre class="doc">Compatibility shim: delegate to ``llm_client.observability.query``.</pre>
   </div>
 </details>
 
 <details class="symbol" id="module-llm_client-io_log-get_cost">
   <summary><code>get_cost</code> <span class="sig">(*, trace_id: str | None = None, trace_prefix: str | None = None, task: str | None = None, project: str | None = None, since: str | datetime.date | None = None) -&gt; float</span></summary>
   <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.get_cost.</p>
+    <p class="summary">Compatibility shim: delegate to ``llm_client.observability.query``.</p>
     <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.get_cost.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_experiment_aggregates">
-  <summary><code>get_experiment_aggregates</code> <span class="sig">(*, dataset: str | None = None, family_id: str | None = None, aggregate_type: str | None = None, project: str | None = None, condition_id: str | None = None, scenario_id: str | None = None, phase: str | None = None, limit: int = 100) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.get_experiment_aggregates.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.get_experiment_aggregates.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_interventions">
-  <summary><code>get_interventions</code> <span class="sig">(*, project: str | None = None, dataset: str | None = None, category: str | None = None, status: str | None = None, limit: int = 50) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.interventions.get_interventions.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.interventions.get_interventions.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_run">
-  <summary><code>get_run</code> <span class="sig">(run_id: str) -&gt; dict[str, typing.Any] | None</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.get_run.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.get_run.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_run_items">
-  <summary><code>get_run_items</code> <span class="sig">(run_id: str) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.get_run_items.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.get_run_items.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_runs">
-  <summary><code>get_runs</code> <span class="sig">(*, dataset: str | None = None, model: str | None = None, project: str | None = None, condition_id: str | None = None, scenario_id: str | None = None, phase: str | None = None, seed: int | None = None, since: str | datetime.date | None = None, limit: int = 50) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.get_runs.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.get_runs.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-get_trace_tree">
-  <summary><code>get_trace_tree</code> <span class="sig">(trace_prefix: str, *, days: int = 7) -&gt; list[dict[str, typing.Any]]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.get_trace_tree.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.get_trace_tree.</pre>
+    <pre class="doc">Compatibility shim: delegate to ``llm_client.observability.query``.</pre>
   </div>
 </details>
 
@@ -3145,39 +3010,12 @@ Never raises — observability must not break model execution.</pre>
   </div>
 </details>
 
-<details class="symbol" id="module-llm_client-io_log-log_experiment_aggregate">
-  <summary><code>log_experiment_aggregate</code> <span class="sig">(*, dataset: str, family_id: str, aggregate_type: str, metrics: dict[str, typing.Any], aggregate_id: str | None = None, project: str | None = None, condition_id: str | None = None, scenario_id: str | None = None, phase: str | None = None, provenance: dict[str, typing.Any] | None = None, source_run_ids: list[str] | None = None) -&gt; str</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.log_experiment_aggregate.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.log_experiment_aggregate.</pre>
-  </div>
-</details>
-
 <details class="symbol" id="module-llm_client-io_log-log_foundation_event">
   <summary><code>log_foundation_event</code> <span class="sig">(*, event: dict[str, typing.Any], caller: str = &#x27;foundation&#x27;, task: str | None = None, trace_id: str | None = None) -&gt; None</span></summary>
   <div class="symbol-body">
     <p class="summary">Append one FOUNDATION event record. Never raises by default.</p>
     <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
     <pre class="doc">Append one FOUNDATION event record. Never raises by default.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-log_intervention">
-  <summary><code>log_intervention</code> <span class="sig">(*, description: str, problem: str, fix: str, category: str = &#x27;infra&#x27;, project: str | None = None, dataset: str | None = None, git_commit: str | None = None, baseline_run_id: str | None = None, verification_run_id: str | None = None, affected_items: list[str] | None = None, expected_impact: str | None = None, measured_impact: str | None = None, status: str = &#x27;verified&#x27;) -&gt; str</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.interventions.log_intervention.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.interventions.log_intervention.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-log_item">
-  <summary><code>log_item</code> <span class="sig">(*, run_id: str, item_id: str, metrics: dict[str, typing.Any], predicted: str | None = None, gold: str | None = None, latency_s: float | None = None, cost: float | None = None, n_tool_calls: int | None = None, error: str | None = None, extra: dict[str, typing.Any] | None = None, trace_id: str | None = None) -&gt; None</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.log_item.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.log_item.</pre>
   </div>
 </details>
 
@@ -3190,53 +3028,12 @@ Never raises — observability must not break model execution.</pre>
   </div>
 </details>
 
-<details class="symbol" id="module-llm_client-io_log-lookup_result">
-  <summary><code>lookup_result</code> <span class="sig">(trace_id: str) -&gt; dict[str, typing.Any] | None</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.query.lookup_result.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.query.lookup_result.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-replay_call_snapshot">
-  <summary><code>replay_call_snapshot</code> <span class="sig">(call_id: int, *, trace_id: str, task: str | None = None, max_budget: float = 0.0, project: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.replay.replay_call_snapshot.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.replay.replay_call_snapshot.</pre>
-  </div>
-</details>
-
 <details class="symbol" id="module-llm_client-io_log-start_run">
   <summary><code>start_run</code> <span class="sig">(*, dataset: str, model: str, task: str | None = None, config: dict[str, typing.Any] | None = None, condition_id: str | None = None, seed: int | None = None, replicate: int | None = None, scenario_id: str | None = None, phase: str | None = None, metrics_schema: list[str] | None = None, run_id: str | None = None, git_commit: str | None = None, provenance: dict[str, typing.Any] | None = None, feature_profile: str | dict[str, typing.Any] | None = None, agent_spec: str | pathlib.Path | dict[str, typing.Any] | None = None, allow_missing_agent_spec: bool = False, missing_agent_spec_reason: str | None = None, project: str | None = None) -&gt; str</span></summary>
   <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.experiments.start_run.</p>
+    <p class="summary">Compatibility shim: delegate to ``llm_client.observability.experiments``.</p>
     <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.experiments.start_run.</pre>
-  </div>
-</details>
-
-<details class="symbol" id="module-llm_client-io_log-update_intervention">
-  <summary><code>update_intervention</code> <span class="sig">(intervention_id: str, *, verification_run_id: str | None = None, measured_impact: str | None = None, status: str | None = None) -&gt; bool</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim: delegate to observability.interventions.update_intervention.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> functions</p>
-    <pre class="doc">Compatibility shim: delegate to observability.interventions.update_intervention.</pre>
-  </div>
-</details>
-
-
-
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-io_log-ExperimentRun">
-  <summary><code>ExperimentRun</code> <span class="sig">(*args: Any, **kwargs: Any) -&gt; Any</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Compatibility shim for observability.experiments.ExperimentRun.</p>
-    <p class="meta">Source: <code>llm_client.io_log</code> class</p>
-    <pre class="doc">Compatibility shim for observability.experiments.ExperimentRun.</pre>
-    
+    <pre class="doc">Compatibility shim: delegate to ``llm_client.observability.experiments``.</pre>
   </div>
 </details>
 
