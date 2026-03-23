@@ -71,6 +71,7 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/call_wrappers.py` (new extracted module)
 - `llm_client/background_runtime.py` (new extracted module)
 - `llm_client/responses_runtime.py` (new extracted module)
+- `llm_client/completion_runtime.py` (new extracted module)
 - `llm_client/io_log.py` (modify/extract)
 - `llm_client/observability/context.py` (new extracted module)
 - `llm_client/observability/events.py` (compatibility facade wiring)
@@ -688,6 +689,67 @@ Why this tranche goes next:
    Responses API paths
 3. it reduces `client.py` further without touching public entrypoints or the
    call-wrapper scaffolding that just stabilized
+
+**Verified checkpoint 16 (2026-03-22):**
+
+The Responses API helper cluster was extracted from `llm_client/client.py`
+into `llm_client/responses_runtime.py`, while `client.py` kept the helper
+names that direct helper tests import.
+
+What this checkpoint proved:
+
+1. strict-schema preparation, message/tool/response-format conversion,
+   Responses kwargs building, usage/cost extraction, and Responses result
+   finalization form a coherent runtime-local boundary
+2. client-local policy hooks such as incompatible-param coercion and empty-
+   response classification can stay explicit while the bulk of the helper
+   logic moves out
+3. focused Responses helper coverage and broader client/public-surface
+   coverage both remained green after the move
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_client.py -k 'responses or response_format or strict_json_schema or convert_tools_for_responses_api or prepare_responses_kwargs or extract_responses_usage or build_result_from_responses'`
+   - result: `18 passed, 215 deselected`
+   - `pytest -q tests/test_client_lifecycle.py tests/test_client.py tests/test_public_surface.py`
+   - result: `249 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `2981 -> 2675`
+2. new module: `llm_client/responses_runtime.py` (`353` lines)
+
+**Verified checkpoint 17 (2026-03-22):**
+
+The completion-path helper cluster was extracted from `llm_client/client.py`
+into `llm_client/completion_runtime.py`, while `client.py` kept the helper
+names that the completion path and tests already call.
+
+What this checkpoint proved:
+
+1. provider-kwargs preparation, provider-hint extraction, first-choice
+   normalization, and completion-result finalization form a coherent runtime-
+   local boundary
+2. the completion helper logic can move out without changing the client-level
+   empty-response/error policy hooks
+3. focused completion-path coverage and broader client/public-surface coverage
+   both remained green after the move
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_client.py -k 'temperature or truncated or empty or choices'`
+   - result: `11 passed, 222 deselected`
+   - `pytest -q tests/test_client_lifecycle.py tests/test_client.py tests/test_public_surface.py`
+   - result: `249 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `2675 -> 2547`
+2. new module: `llm_client/completion_runtime.py` (`209` lines)
+
+**Next selection status (2026-03-22, post-completion-runtime extraction):**
+
+`client.py` is materially smaller, but the remaining 2.5k lines are no longer
+dominated by one equally obvious helper seam. The next slice should start with
+a fresh boundary-selection pass across the remaining client-local policy and
+routing helpers rather than pretending the next tranche is already as clear as
+the lifecycle, wrapper, background, Responses, and completion slices were.
 
 **Verified checkpoint 4 (2026-03-22):**
 

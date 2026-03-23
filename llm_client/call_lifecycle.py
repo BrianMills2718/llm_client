@@ -526,12 +526,29 @@ class _AsyncLLMCallHeartbeatMonitor:
         )
 
     async def stop(self) -> None:
-        """Stop the heartbeat task and await clean exit."""
+        """Stop the heartbeat task without letting monitor failures clobber the call.
+
+        Lifecycle heartbeats are observability aids, not the source of truth for
+        call success. If the monitor task itself times out or tears down
+        noisily during shutdown, that failure must be logged loudly but must not
+        replace the real LLM result or real model error that triggered stop.
+        """
 
         if self._task is None:
             return
+        task = self._task
+        self._task = None
         self._stop_event.set()
-        await self._task
+        try:
+            await task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Async heartbeat monitor stop ignored monitor failure for call %s: %r",
+                self.call_id,
+                exc,
+            )
 
     def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
         """Declare that this async call path exposes truthful observable progress."""
@@ -674,7 +691,7 @@ class _AsyncLLMCallHeartbeatMonitor:
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=min(waits))
                 return
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 pass
             now = time.monotonic()
             elapsed = now - self.started_at

@@ -304,7 +304,7 @@ disagree.
 Program E is not ready to close yet. A fresh module-size audit still shows
 multiple files above the plan thresholds:
 
-1. `llm_client/client.py`: `2981` lines
+1. `llm_client/client.py`: `2547` lines
 2. `llm_client/mcp_turn_execution.py`: `1339` lines
 3. `llm_client/observability/experiments.py`: `1322` lines
 4. `llm_client/agents_codex.py`: `1317` lines
@@ -329,12 +329,16 @@ extracted the duplicated public wrapper envelope into
 active hard-threshold blocker by a wide margin. The next verified slice then
 extracted the long-thinking/background polling runtime into
 `llm_client/background_runtime.py`, reducing it to `2981` while preserving the
-client-level monkeypatch surface used by existing tests.
+client-level monkeypatch surface used by existing tests. The next verified
+slice then extracted the Responses API helper cluster into
+`llm_client/responses_runtime.py`, reducing the blocker again to `2675`. The
+next verified slice then extracted the completion-path helper cluster into
+`llm_client/completion_runtime.py`, reducing it further to `2547`.
 
-The next child slice for this program is
+The next child slice for this program is still
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
-with the immediate next tranche now explicitly selected as the `client.py`
-Responses API helper extraction.
+but after the completion-runtime extraction the next `client.py` seam needs a
+fresh boundary-selection pass before more code moves.
 
 ### Phase 3: JSONL Log Rotation
 

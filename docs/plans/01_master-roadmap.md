@@ -213,5 +213,11 @@ public text/structured wrapper envelope into `call_wrappers.py`, reducing the
 main blocker again to `3185`. The next verified slice then extracted the
 long-thinking/background polling cluster into `background_runtime.py`,
 reducing the main blocker to `2981`. The default next Plan 11 slice stays on
-`client.py` and now targets the Responses API helper cluster. Stop only for a
-real blocker or user redirect.
+`client.py` and now targets the Responses API helper cluster. The next
+verified slice then extracted that Responses helper block into
+`responses_runtime.py`, reducing the main blocker to `2675`. The default next
+Plan 11 slice then extracted the completion-path helper cluster into
+`completion_runtime.py`, reducing the main blocker to `2547`. The next step is
+still Plan 11 on `client.py`, but the remaining helper/policy surface now
+needs a fresh boundary-selection pass before another extraction tranche is
+chosen. Stop only for a real blocker or user redirect.
