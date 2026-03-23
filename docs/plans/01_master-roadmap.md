@@ -199,6 +199,8 @@ by extracting the turn-execution implementation into
 already removed duplicate runtime facades there, the next verified slice split
 end-of-run bookkeeping into `mcp_loop_summary.py`, and the latest verified
 slice extracted per-turn tool processing into `mcp_turn_tools.py`, reducing
-`mcp_turn_execution.py` from `3202` to `2105`. The next tranche now targets
-the post-tool outcome/evidence/submission block before Program E turns to
-`client.py`. Stop only for a real blocker or user redirect.
+`mcp_turn_execution.py` from `3202` to `2105`, and the latest verified slice
+extracted the post-tool outcome path into `mcp_turn_outcomes.py`, reducing it
+again to `1877`. The next tranche now targets the turn-exit /
+forced-finalization handoff block before Program E turns to `client.py`. Stop
+only for a real blocker or user redirect.

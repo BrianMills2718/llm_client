@@ -155,6 +155,7 @@ from llm_client.mcp_finalization import (  # noqa: F401  re-exported
     _provider_failure_classification as _provider_failure_classification,
 )
 from llm_client.mcp_loop_summary import _apply_agent_loop_summary
+from llm_client.mcp_turn_outcomes import _process_turn_outcomes
 from llm_client.mcp_turn_tools import _process_tool_calls_turn
 from llm_client.mcp_state import (  # noqa: F401  re-exported
     ADOPTION_PROFILE_ENFORCE_ENV as ADOPTION_PROFILE_ENFORCE_ENV,
@@ -1382,326 +1383,97 @@ async def _agent_loop(
                 tool_processing.pending_control_loop_msg
             )
 
-        turn_arg_coercions = 0
-        turn_arg_coercion_calls = 0
-        turn_arg_validation_rejections = 0
-        for record in records:
-            coercions = getattr(record, "arg_coercions", None) or []
-            if coercions:
-                turn_arg_coercions += len(coercions)
-                turn_arg_coercion_calls += 1
-            if record.error and "validation error:" in record.error.lower():
-                turn_arg_validation_rejections += 1
-
-        if turn_arg_coercions:
-            tool_arg_coercions += turn_arg_coercions
-            tool_arg_coercion_calls += turn_arg_coercion_calls
-            warning = (
-                "TOOL_ARG_COERCION: turn "
-                f"{turn + 1}/{max_turns} applied {turn_arg_coercions} coercion(s) "
-                f"across {turn_arg_coercion_calls} call(s)"
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-        if turn_arg_validation_rejections:
-            tool_arg_validation_rejections += turn_arg_validation_rejections
-            warning = (
-                "TOOL_ARG_VALIDATION: turn "
-                f"{turn + 1}/{max_turns} rejected {turn_arg_validation_rejections} "
-                "tool call(s) due to argument/schema mismatch"
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-
-        submit_error_this_turn = False
-        submit_errors: list[str] = []
-        submit_reason_codes_this_turn: list[str] = []
-        submit_needs_new_evidence_signal = False
-        evidence_digest_before_turn = _evidence_digest(evidence_pointer_labels)
-        for record in executed_records:
-            evidence_pointer_labels.update(_tool_evidence_pointer_labels(record))
-        evidence_pointer_count = len(evidence_pointer_labels)
-        evidence_digest_after_turn = _evidence_digest(evidence_pointer_labels)
-        new_evidence_this_turn = evidence_digest_after_turn != evidence_digest_before_turn
-        if new_evidence_this_turn:
-            evidence_digest_change_count += 1
-        if (
-            new_evidence_this_turn
-            and submit_requires_new_evidence
-            and submit_evidence_digest_at_last_failure is not None
-            and evidence_digest_after_turn != submit_evidence_digest_at_last_failure
-        ):
-            submit_requires_new_evidence = False
-            submit_evidence_digest_at_last_failure = None
-
-        evidence_tools_executed = [
-            rec.tool
-            for rec in executed_records
-            if _is_evidence_tool_name(rec.tool) and not rec.error
-        ]
-        if evidence_tools_executed:
-            evidence_turns_total += 1
-            if new_evidence_this_turn:
-                evidence_turns_with_new_evidence += 1
-                retrieval_stagnation_streak = 0
-                retrieval_stagnation_alerted_for_current_streak = False
-            else:
-                evidence_turns_without_new_evidence += 1
-                retrieval_stagnation_streak += 1
-        else:
-            retrieval_stagnation_streak = 0
-            retrieval_stagnation_alerted_for_current_streak = False
-        if retrieval_stagnation_streak > retrieval_stagnation_streak_max:
-            retrieval_stagnation_streak_max = retrieval_stagnation_streak
-
-        # Persist deficit snapshot for next-turn deficit-progress evaluation.
-        prev_turn_had_evidence_tools = bool(evidence_tools_executed)
-        prev_turn_deficit_digest = current_turn_deficit_digest
-
-        if (
-            retrieval_stagnation_streak >= retrieval_stagnation_turns
-            and not retrieval_stagnation_alerted_for_current_streak
-        ):
-            retrieval_stagnation_triggered = True
-            if retrieval_stagnation_turn is None:
-                retrieval_stagnation_turn = turn + 1
-            stagnation_event_code = (
-                EVENT_CODE_RETRIEVAL_STAGNATION
-                if retrieval_stagnation_action == "force_final"
-                else EVENT_CODE_RETRIEVAL_STAGNATION_OBSERVED
-            )
-            failure_event_codes.append(stagnation_event_code)
-            warning = (
-                "RETRIEVAL_STAGNATION: "
-                f"{retrieval_stagnation_streak} consecutive evidence turns produced no new evidence refs."
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-            _emit_foundation_event(
-                {
-                    "event_id": new_event_id(),
-                    "event_type": "ToolFailed",
-                    "timestamp": now_iso(),
-                    "run_id": foundation_run_id,
-                    "session_id": foundation_session_id,
-                    "actor_id": foundation_actor_id,
-                    "operation": {"name": "__retrieval_stagnation__", "version": None},
-                    "inputs": {
-                        "artifact_ids": sorted(available_artifacts),
-                        "params": {
-                            "streak": retrieval_stagnation_streak,
-                            "turn": turn + 1,
-                            "evidence_tools": evidence_tools_executed,
-                        },
-                        "bindings": dict(available_bindings),
-                    },
-                    "outputs": {"artifact_ids": [], "payload_hashes": []},
-                    "failure": {
-                        "error_code": stagnation_event_code,
-                        "category": "policy",
-                        "phase": "post_validation",
-                        "retryable": False,
-                        "tool_name": "__retrieval_stagnation__",
-                        "user_message": warning,
-                        "debug_ref": None,
-                    },
-                }
-            )
-            if retrieval_stagnation_action == "force_final":
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[SYSTEM: Evidence has stagnated across consecutive retrieval turns. "
-                            "Stop repeating equivalent searches. Verify a different bridge entity, "
-                            "run a conversion tool, or submit your best answer now.]"
-                        ),
-                    }
-                )
-                agent_result.conversation_trace.append(messages[-1])
-                force_final_reason = "retrieval_stagnation"
-                retrieval_stagnation_alerted_for_current_streak = True
-                break
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "[SYSTEM: Evidence stagnation observed. Do NOT repeat equivalent retrieval. "
-                        "Pivot strategy now (different bridge, conversion, or graph path) and continue.]"
-                    ),
-                }
-            )
-            agent_result.conversation_trace.append(messages[-1])
-            retrieval_stagnation_alerted_for_current_streak = True
-
-        for record in records:
-            if record.tool != "submit_answer":
-                continue
-            submit_answer_call_count += 1
-            arg_answer = record.arguments.get("answer") if isinstance(record.arguments, dict) else None
-            if (
-                isinstance(arg_answer, str)
-                and arg_answer.strip()
-                and not _FORCED_REFUSAL_RE.match(arg_answer.strip())
-            ):
-                fallback_submit_guess_value = arg_answer.strip()
-            if record.error:
-                submit_error_this_turn = True
-                submit_errors.append(str(record.error))
-                continue
-            parsed = _parse_record_result_json(record)
-            if parsed is not None:
-                status = str(parsed.get("status", "")).strip().lower()
-                if status and status not in {"submitted", "ok", "success"}:
-                    submit_error_this_turn = True
-                    validation_payload = parsed.get("validation_error")
-                    reason_code = ""
-                    detail = ""
-                    recovery_policy = parsed.get("recovery_policy")
-                    if (
-                        isinstance(recovery_policy, dict)
-                        and bool(recovery_policy.get("new_evidence_required_before_retry"))
-                    ):
-                        submit_needs_new_evidence_signal = True
-                    if isinstance(validation_payload, dict):
-                        reason_code = str(validation_payload.get("reason_code", "")).strip()
-                        detail = str(validation_payload.get("message", "")).strip()
-                    if reason_code:
-                        submit_validation_reason_counts[reason_code] = (
-                            submit_validation_reason_counts.get(reason_code, 0) + 1
-                        )
-                        submit_reason_codes_this_turn.append(reason_code)
-                    err_parts = [f"submit_answer not accepted (status={status})"]
-                    if reason_code:
-                        err_parts.append(f"reason_code={reason_code}")
-                    if detail:
-                        err_parts.append(detail)
-                    submit_errors.append(" | ".join(err_parts))
-                    continue
-
+        turn_outcome = _process_turn_outcomes(
+            turn=turn,
+            max_turns=max_turns,
+            records=records,
+            executed_records=executed_records,
+            tool_calls_this_turn=tool_calls_this_turn,
+            tool_calls_to_execute=tool_calls_to_execute,
+            evidence_pointer_labels=evidence_pointer_labels,
+            submit_requires_new_evidence=submit_requires_new_evidence,
+            submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+            current_turn_deficit_digest=current_turn_deficit_digest,
+            retrieval_stagnation_streak=retrieval_stagnation_streak,
+            retrieval_stagnation_streak_max=retrieval_stagnation_streak_max,
+            retrieval_stagnation_alerted_for_current_streak=(
+                retrieval_stagnation_alerted_for_current_streak
+            ),
+            retrieval_stagnation_turns=retrieval_stagnation_turns,
+            retrieval_stagnation_action=retrieval_stagnation_action,
+            retrieval_stagnation_turn=retrieval_stagnation_turn,
+            zero_exec_tool_turn_streak=zero_exec_tool_turn_streak,
+            max_zero_exec_tool_turn_streak=max_zero_exec_tool_turn_streak,
+            last_todo_status_line=_last_todo_status_line,
+            submit_validation_reason_counts=submit_validation_reason_counts,
+            contract_rejected_record_count=contract_rejected_record_count,
+            suppressed_record_count=suppressed_record_count,
+            available_artifacts=available_artifacts,
+            available_bindings=available_bindings,
+            foundation_run_id=foundation_run_id,
+            foundation_session_id=foundation_session_id,
+            foundation_actor_id=foundation_actor_id,
+            emit_foundation_event=_emit_foundation_event,
+            event_code_retrieval_stagnation=EVENT_CODE_RETRIEVAL_STAGNATION,
+            event_code_retrieval_stagnation_observed=(
+                EVENT_CODE_RETRIEVAL_STAGNATION_OBSERVED
+            ),
+            event_code_control_churn_threshold=EVENT_CODE_CONTROL_CHURN_THRESHOLD,
+            control_churn_turn_threshold=DEFAULT_TOOL_CALL_STALL_TURNS,
+        )
+        tool_arg_coercions += turn_outcome.tool_arg_coercions_delta
+        tool_arg_coercion_calls += turn_outcome.tool_arg_coercion_calls_delta
+        tool_arg_validation_rejections += (
+            turn_outcome.tool_arg_validation_rejections_delta
+        )
+        submit_answer_call_count += turn_outcome.submit_answer_call_count_delta
+        if turn_outcome.submit_answer_succeeded_now:
             submit_answer_succeeded = True
-            if isinstance(arg_answer, str) and arg_answer.strip():
-                submitted_answer_value = arg_answer.strip()
-                continue
-            if isinstance(parsed, dict):
-                parsed_answer = parsed.get("answer")
-                if isinstance(parsed_answer, str) and parsed_answer.strip():
-                    submitted_answer_value = parsed_answer.strip()
-
-        if submit_error_this_turn:
-            refusal_blocked = any(
-                ("refusal-style" in err.lower()) or ("not acceptable" in err.lower())
-                for err in submit_errors
-            )
-            if submit_needs_new_evidence_signal and not new_evidence_this_turn:
-                submit_requires_new_evidence = True
-                submit_evidence_digest_at_last_failure = evidence_digest_after_turn
-            evidence_fix_hint = (
-                " Validator requires NEW evidence refs before retry. "
-                "Run at least one non-control evidence tool call that yields new "
-                "chunk/entity-backed evidence before submit."
-                if submit_requires_new_evidence else
-                ""
-            )
-            retry_submit_msg = {
-                "role": "user",
-                "content": (
-                    "[SYSTEM: submit_answer failed. "
-                    + evidence_fix_hint
-                    + (
-                        "Do NOT use refusal text (cannot, unknown, insufficient, no such, not found). "
-                        "Submit the single best factual guess from retrieved evidence. "
-                        if refusal_blocked else
-                        ""
-                    )
-                    + "Call submit_answer again with answer as a short fact only "
-                    "(name/date/number/yes/no, <=8 words).]"
-                ),
-            }
-            messages.append(retry_submit_msg)
-            agent_result.conversation_trace.append(retry_submit_msg)
-
-        # --- TODO state injection ---
-        # Cache status_line from todo_write results; inject on turns without todo_write.
-        todo_write_called_this_turn = False
-        for record in records:
-            if record.tool == "todo_write" and not record.error:
-                todo_write_called_this_turn = True
-                parsed = _parse_record_result_json(record)
-                if isinstance(parsed, dict):
-                    sl = parsed.get("status_line")
-                    if isinstance(sl, str) and sl.strip():
-                        _last_todo_status_line = sl.strip()
-        if not todo_write_called_this_turn and _last_todo_status_line:
-            todo_inject_msg = {
-                "role": "user",
-                "content": f"[TODO_STATE] {_last_todo_status_line}",
-            }
-            messages.append(todo_inject_msg)
-            agent_result.conversation_trace.append(todo_inject_msg)
-
-        if tool_calls_this_turn and not tool_calls_to_execute:
-            zero_exec_tool_turn_streak += 1
-        else:
-            zero_exec_tool_turn_streak = 0
-        if zero_exec_tool_turn_streak > max_zero_exec_tool_turn_streak:
-            max_zero_exec_tool_turn_streak = zero_exec_tool_turn_streak
-
-        if zero_exec_tool_turn_streak >= DEFAULT_TOOL_CALL_STALL_TURNS:
-            blocked_tools = sorted({
-                str(tc.get("function", {}).get("name", "")).strip() or "<unknown>"
-                for tc in tool_calls_this_turn
-                if isinstance(tc, dict)
-            })
-            warning = (
-                "CONTROL_CHURN: consecutive turns with tool calls but no executable calls "
-                f"({zero_exec_tool_turn_streak} turns). Forcing final answer."
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-            failure_event_codes.append(EVENT_CODE_CONTROL_CHURN_THRESHOLD)
-            stall_msg = {
-                "role": "user",
-                "content": (
-                    "[SYSTEM: Repeated non-executable tool-call loop detected "
-                    f"({zero_exec_tool_turn_streak} turns). Stop calling tools and "
-                    "submit your best answer now from existing evidence.]"
-                ),
-            }
-            messages.append(stall_msg)
-            agent_result.conversation_trace.append(stall_msg)
-            _emit_foundation_event(
-                {
-                    "event_id": new_event_id(),
-                    "event_type": "ToolFailed",
-                    "timestamp": now_iso(),
-                    "run_id": foundation_run_id,
-                    "session_id": foundation_session_id,
-                    "actor_id": foundation_actor_id,
-                    "operation": {"name": "__control_churn__", "version": None},
-                    "inputs": {
-                        "artifact_ids": sorted(available_artifacts),
-                        "params": {
-                            "blocked_tools": blocked_tools,
-                            "streak": zero_exec_tool_turn_streak,
-                            "contract_rejections": contract_rejected_record_count,
-                            "suppressed_calls": suppressed_record_count,
-                        },
-                        "bindings": dict(available_bindings),
-                    },
-                    "outputs": {"artifact_ids": [], "payload_hashes": []},
-                    "failure": {
-                        "error_code": EVENT_CODE_CONTROL_CHURN_THRESHOLD,
-                        "category": "policy",
-                        "phase": "post_validation",
-                        "retryable": False,
-                        "tool_name": "__control_churn__",
-                        "user_message": warning,
-                        "debug_ref": None,
-                    },
-                }
-            )
-            force_final_reason = "control_churn"
+        if turn_outcome.submitted_answer_value is not None:
+            submitted_answer_value = turn_outcome.submitted_answer_value
+        if turn_outcome.fallback_submit_guess_value is not None:
+            fallback_submit_guess_value = turn_outcome.fallback_submit_guess_value
+        submit_requires_new_evidence = turn_outcome.submit_requires_new_evidence
+        submit_evidence_digest_at_last_failure = (
+            turn_outcome.submit_evidence_digest_at_last_failure
+        )
+        evidence_pointer_count = turn_outcome.evidence_pointer_count
+        evidence_digest_change_count += (
+            turn_outcome.evidence_digest_change_count_delta
+        )
+        evidence_turns_total += turn_outcome.evidence_turns_total_delta
+        evidence_turns_with_new_evidence += (
+            turn_outcome.evidence_turns_with_new_evidence_delta
+        )
+        evidence_turns_without_new_evidence += (
+            turn_outcome.evidence_turns_without_new_evidence_delta
+        )
+        retrieval_stagnation_streak = turn_outcome.retrieval_stagnation_streak
+        retrieval_stagnation_streak_max = (
+            turn_outcome.retrieval_stagnation_streak_max
+        )
+        retrieval_stagnation_alerted_for_current_streak = (
+            turn_outcome.retrieval_stagnation_alerted_for_current_streak
+        )
+        retrieval_stagnation_triggered = (
+            retrieval_stagnation_triggered or turn_outcome.retrieval_stagnation_triggered
+        )
+        retrieval_stagnation_turn = turn_outcome.retrieval_stagnation_turn
+        prev_turn_had_evidence_tools = turn_outcome.prev_turn_had_evidence_tools
+        prev_turn_deficit_digest = turn_outcome.prev_turn_deficit_digest
+        zero_exec_tool_turn_streak = turn_outcome.zero_exec_tool_turn_streak
+        max_zero_exec_tool_turn_streak = (
+            turn_outcome.max_zero_exec_tool_turn_streak
+        )
+        _last_todo_status_line = turn_outcome.last_todo_status_line
+        agent_result.warnings.extend(turn_outcome.warnings)
+        failure_event_codes.extend(turn_outcome.failure_event_codes)
+        for emitted_message in turn_outcome.emitted_messages:
+            messages.append(emitted_message)
+            agent_result.conversation_trace.append(emitted_message)
+        if turn_outcome.force_final_reason is not None:
+            force_final_reason = turn_outcome.force_final_reason
+        if turn_outcome.stop_agent_loop:
             break
 
         # Repeated tool-error detection: nudge strategy change instead of

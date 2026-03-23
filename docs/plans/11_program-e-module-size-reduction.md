@@ -45,14 +45,15 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_turn_execution.py`: `2105`
-3. `llm_client/mcp_loop_summary.py`: `522`
-4. `llm_client/mcp_turn_tools.py`: `702`
-5. `llm_client/observability/experiments.py`: `1322`
-6. `llm_client/agent_contracts.py`: `1228`
-7. `llm_client/agents_codex.py`: `1317`
-8. `llm_client/io_log.py`: `1222`
-9. `llm_client/mcp_agent.py`: `1037`
+2. `llm_client/mcp_turn_execution.py`: `1877`
+3. `llm_client/mcp_turn_tools.py`: `702`
+4. `llm_client/mcp_loop_summary.py`: `522`
+5. `llm_client/mcp_turn_outcomes.py`: `503`
+6. `llm_client/observability/experiments.py`: `1322`
+7. `llm_client/agent_contracts.py`: `1228`
+8. `llm_client/agents_codex.py`: `1317`
+9. `llm_client/io_log.py`: `1222`
+10. `llm_client/mcp_agent.py`: `1037`
 
 These counts are the current audit baseline for the remaining oversize set.
 
@@ -71,6 +72,8 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/mcp_turn_execution.py` (new extracted module)
 - `llm_client/mcp_loop_summary.py` (new extracted module)
 - `llm_client/mcp_turn_tools.py` (new extracted module)
+- `llm_client/mcp_turn_outcomes.py` (new extracted module)
+- `llm_client/mcp_turn_completion.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
@@ -372,6 +375,57 @@ Why this tranche goes next:
    after the tool-processing path moved out
 3. this keeps Program E reducing the active blocker instead of jumping
    prematurely to `client.py`
+
+**Verified checkpoint 10 (2026-03-22):**
+
+The post-tool outcome path was extracted from
+`llm_client/mcp_turn_execution.py` into `llm_client/mcp_turn_outcomes.py`.
+
+What this checkpoint proved:
+
+1. argument-coercion bookkeeping, evidence-digest updates,
+   retrieval-stagnation policy, `submit_answer` recovery, TODO-state
+   injection, and control-churn threshold handling form a coherent boundary
+   after tool execution completes
+2. `mcp_turn_execution.py` can keep sequencing and loop nudges while
+   delegating the heavier post-tool policy block to a dedicated helper
+3. the active blocker is still `mcp_turn_execution.py`, but the remaining
+   debt is now concentrated in turn-exit / forced-finalization handoff logic
+   rather than the already-extracted mid-loop mechanics
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `2105 -> 1877`
+2. new module: `llm_client/mcp_turn_outcomes.py` (`503` lines)
+
+**Selected next tranche (2026-03-22, post-outcome extraction):**
+
+Stay on `llm_client/mcp_turn_execution.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the turn-exit / forced-finalization handoff block from
+   `mcp_turn_execution.py` into a dedicated helper module
+2. move tool-result trace capture, submit-success early exit,
+   forced-finalization result adoption, and required-submit exhaustion policy
+   behind a narrower interface
+3. keep `mcp_turn_execution.py` as the top-level turn orchestrator and final
+   summary caller
+
+Why this tranche goes next:
+
+1. `mcp_turn_execution.py` remains the largest active Program E blocker after
+   `client.py`, so continuing here still gives the best blocker reduction per
+   slice
+2. the remaining turn-exit / forced-finalization logic is the next clean
+   boundary visible in the module after the post-tool outcomes moved out
+3. this keeps the decomposition boundary-led instead of bouncing early to
+   `client.py`
 
 **Verified checkpoint 4 (2026-03-22):**
 
