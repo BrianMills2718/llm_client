@@ -47,14 +47,9 @@ import json as _json
 import logging
 import os
 import re
-import socket
-import threading
 import time
 import urllib.parse
-import uuid
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, NoReturn, Protocol, TypeVar
+from typing import Any, Callable, Iterable, Literal, NoReturn, TypeVar
 
 import litellm
 from pydantic import BaseModel
@@ -78,12 +73,6 @@ from llm_client.result_finalization import (
 )
 from llm_client.timeout_policy import (
     normalize_timeout as _normalize_timeout,
-    timeout_policy_label as _timeout_policy_label,
-)
-from llm_client.foundation import (
-    coerce_run_id as _coerce_foundation_run_id,
-    new_event_id as _new_foundation_event_id,
-    now_iso as _foundation_now_iso,
 )
 from llm_client.routing import (
     CallRequest,
@@ -183,30 +172,38 @@ from llm_client.cost_utils import (  # noqa: F401
     _extract_usage,
     _parse_cost_result,
 )
+from llm_client.call_lifecycle import (  # noqa: F401
+    _AsyncLLMCallHeartbeatMonitor,
+    _LLMCallProgressReporter,
+    _LLMCallProgressSnapshot,
+    _SyncLLMCallHeartbeatMonitor,
+    _emit_llm_call_lifecycle_event,
+    _new_llm_call_lifecycle_id,
+    _provider_timeout_for_lifecycle,
+    _resolve_lifecycle_monitoring_settings,
+)
+from llm_client.call_wrappers import (
+    _prepare_public_call_envelope,
+    _run_async_public_call,
+    _run_sync_public_call,
+)
+from llm_client.background_runtime import (
+    _BACKGROUND_DEFAULT_TIMEOUT,
+    _BACKGROUND_POLL_INTERVAL,
+    _background_mode_for_model,
+    _background_polling_config,
+    _maybe_apoll_background_response_impl,
+    _maybe_poll_background_response_impl,
+    _needs_background_mode,
+    _poll_background_response_impl,
+    _retrieve_background_response_impl,
+    _apoll_background_response_impl,
+    _aretrieve_background_response_impl,
+)
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-
-
-@dataclass(frozen=True)
-class _LLMCallProgressSnapshot:
-    """Capture truthful progress-observability state for one in-flight call."""
-
-    progress_observable: bool
-    progress_source: str | None
-    progress_event_count: int
-    last_progress_at_monotonic: float | None
-
-
-class _LLMCallProgressReporter(Protocol):
-    """Minimal contract for lifecycles that can observe real call progress."""
-
-    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
-        """Declare that the call path exposes truthful progress signals."""
-
-    def mark_progress(self, *, source: str) -> None:
-        """Record one observed unit of forward progress for the in-flight call."""
 
 # Silence litellm's noisy default logging
 litellm.suppress_debug_info = True
@@ -225,45 +222,6 @@ from llm_client.openrouter import (  # noqa: F811
     OPENROUTER_ROUTING_ENV,
 )
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
-_LLM_CALL_RUNTIME_ACTOR_ID = "service:llm_client:call_runtime:1"
-_LIFECYCLE_HEARTBEAT_INTERVAL_ENV = "LLM_CLIENT_LIFECYCLE_HEARTBEAT_INTERVAL_S"
-_LIFECYCLE_STALL_AFTER_ENV = "LLM_CLIENT_LIFECYCLE_STALL_AFTER_S"
-_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S = 15.0
-_DEFAULT_LIFECYCLE_STALL_AFTER_S = 300.0
-
-
-def _process_host_name() -> str | None:
-    """Return the current host name for same-host lifecycle correlation."""
-
-    try:
-        hostname = socket.gethostname().strip()
-    except Exception:
-        return None
-    return hostname or None
-
-
-def _linux_process_start_token(pid: int) -> str | None:
-    """Return a Linux procfs start token for one process when available."""
-
-    if pid <= 0:
-        return None
-    try:
-        stat_text = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    _, _, remainder = stat_text.partition(") ")
-    if not remainder:
-        return None
-    fields = remainder.split()
-    if len(fields) <= 19:
-        return None
-    start_ticks = fields[19].strip()
-    return f"linux-proc-start:{start_ticks}" if start_ticks else None
-
-
-_PROCESS_HOST_NAME = _process_host_name()
-_PROCESS_ID = os.getpid()
-_PROCESS_START_TOKEN = _linux_process_start_token(_PROCESS_ID)
 
 
 def _routing_policy_label(config: ClientConfig | None = None) -> str:
@@ -814,602 +772,6 @@ def _log_call_event(
         call_snapshot=call_snapshot,
         call_fingerprint=call_fingerprint,
     )
-
-
-def _new_llm_call_lifecycle_id() -> str:
-    """Return a stable correlation id shared across lifecycle events for one call."""
-
-    return f"llmcall_{uuid.uuid4().hex}"
-
-
-def _llm_call_lifecycle_session_id(call_id: str) -> str:
-    """Derive a deterministic Foundation session id for one public call lifecycle."""
-
-    suffix = call_id.removeprefix("llmcall_")
-    return f"sess_{suffix}"
-
-
-def _llm_lifecycle_error_message(error: Exception) -> str:
-    """Return a non-empty error message for lifecycle failure records."""
-
-    if isinstance(error, LLMError) and error.original is not None:
-        error = error.original
-    message = str(error).strip()
-    if message:
-        return message
-    return error.__class__.__name__
-
-
-def _llm_lifecycle_error_type(error: Exception) -> str:
-    """Return the most informative error type for lifecycle failure records."""
-
-    if isinstance(error, LLMError) and error.original is not None:
-        return error.original.__class__.__name__
-    return error.__class__.__name__
-
-
-def _provider_timeout_for_lifecycle(timeout: Any) -> int:
-    """Compute the effective provider-timeout value for lifecycle observability."""
-
-    if _timeout_policy_label() == "ban":
-        return 0
-    try:
-        parsed = int(timeout)
-    except (TypeError, ValueError):
-        return 0
-    return max(parsed, 0)
-
-
-def _normalize_lifecycle_seconds(value: Any, *, default: float) -> float:
-    """Normalize lifecycle heartbeat/stall thresholds from caller or env values."""
-
-    if value is None:
-        return max(default, 0.0)
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if parsed <= 0:
-        return 0.0
-    return parsed
-
-
-def _resolve_lifecycle_monitoring_settings(
-    *,
-    heartbeat_interval: Any,
-    stall_after: Any,
-) -> tuple[float, float]:
-    """Resolve public liveness settings without forwarding them to providers."""
-
-    heartbeat_default = _normalize_lifecycle_seconds(
-        os.environ.get(
-            _LIFECYCLE_HEARTBEAT_INTERVAL_ENV,
-            _DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S,
-        ),
-        default=_DEFAULT_LIFECYCLE_HEARTBEAT_INTERVAL_S,
-    )
-    stall_default = _normalize_lifecycle_seconds(
-        os.environ.get(_LIFECYCLE_STALL_AFTER_ENV, _DEFAULT_LIFECYCLE_STALL_AFTER_S),
-        default=_DEFAULT_LIFECYCLE_STALL_AFTER_S,
-    )
-    resolved_heartbeat = _normalize_lifecycle_seconds(
-        heartbeat_interval,
-        default=heartbeat_default,
-    )
-    resolved_stall = _normalize_lifecycle_seconds(
-        stall_after,
-        default=stall_default,
-    )
-    return resolved_heartbeat, resolved_stall
-
-
-def _emit_llm_call_lifecycle_event(
-    *,
-    call_id: str,
-    phase: Literal["started", "heartbeat", "progress", "stalled", "completed", "failed"],
-    call_kind: Literal["text", "structured"],
-    caller: str,
-    task: str,
-    trace_id: str,
-    requested_model: str,
-    provider_timeout_s: int,
-    prompt_ref: str | None,
-    resolved_model: str | None = None,
-    latency_s: float | None = None,
-    elapsed_s: float | None = None,
-    heartbeat_interval_s: float | None = None,
-    stall_after_s: float | None = None,
-    progress_observable: bool | None = None,
-    progress_source: str | None = None,
-    progress_event_count: int | None = None,
-    error: Exception | None = None,
-) -> None:
-    """Emit a Foundation-backed lifecycle event for one public LLM call."""
-
-    params: dict[str, Any] = {
-        "task": task,
-        "trace_id": trace_id,
-        "call_kind": call_kind,
-    }
-    if prompt_ref is not None:
-        params["prompt_ref"] = prompt_ref
-    if resolved_model is not None:
-        params["resolved_model"] = resolved_model
-
-    _io_log.log_foundation_event(
-        event={
-            "event_id": _new_foundation_event_id(),
-            "event_type": "LLMCallLifecycle",
-            "timestamp": _foundation_now_iso(),
-            "run_id": _coerce_foundation_run_id(None, trace_id),
-            "session_id": _llm_call_lifecycle_session_id(call_id),
-            "actor_id": _LLM_CALL_RUNTIME_ACTOR_ID,
-            "operation": {"name": caller, "version": None},
-            "inputs": {
-                "artifact_ids": [],
-                "params": params,
-                "bindings": {},
-            },
-            "outputs": {
-                "artifact_ids": [],
-                "payload_hashes": [],
-            },
-            "llm_call_lifecycle": {
-                "call_id": call_id,
-                "phase": phase,
-                "call_kind": call_kind,
-                "requested_model_id": requested_model,
-                "resolved_model_id": resolved_model,
-                "provider_timeout_s": provider_timeout_s if provider_timeout_s > 0 else None,
-                "timeout_policy": _timeout_policy_label(),
-                "prompt_ref": prompt_ref,
-                "host_name": _PROCESS_HOST_NAME,
-                "process_id": _PROCESS_ID if _PROCESS_ID > 0 else None,
-                "process_start_token": _PROCESS_START_TOKEN,
-                "progress_observable": progress_observable,
-                "progress_source": progress_source,
-                "progress_event_count": progress_event_count,
-                "elapsed_s": elapsed_s,
-                "latency_s": latency_s,
-                "heartbeat_interval_s": (
-                    heartbeat_interval_s
-                    if heartbeat_interval_s and heartbeat_interval_s > 0
-                    else None
-                ),
-                "stall_after_s": stall_after_s if stall_after_s and stall_after_s > 0 else None,
-                "error_type": _llm_lifecycle_error_type(error) if error is not None else None,
-                "error_message": _llm_lifecycle_error_message(error) if error is not None else None,
-            },
-        },
-        caller=caller,
-        task=task,
-        trace_id=trace_id,
-    )
-
-
-class _SyncLLMCallHeartbeatMonitor:
-    """Emit lifecycle updates for one sync call, including real progress when available."""
-
-    def __init__(
-        self,
-        *,
-        call_id: str,
-        call_kind: Literal["text", "structured"],
-        caller: str,
-        task: str,
-        trace_id: str,
-        requested_model: str,
-        provider_timeout_s: int,
-        prompt_ref: str | None,
-        heartbeat_interval_s: float,
-        stall_after_s: float,
-        started_at: float,
-        progress_observable: bool = False,
-    ) -> None:
-        self.call_id = call_id
-        self.call_kind = call_kind
-        self.caller = caller
-        self.task = task
-        self.trace_id = trace_id
-        self.requested_model = requested_model
-        self.provider_timeout_s = provider_timeout_s
-        self.prompt_ref = prompt_ref
-        self.heartbeat_interval_s = heartbeat_interval_s
-        self.stall_after_s = stall_after_s
-        self.started_at = started_at
-        self._state_lock = threading.Lock()
-        self._progress_observable = progress_observable
-        self._progress_source: str | None = None
-        self._progress_event_count = 0
-        self._last_progress_at_monotonic: float | None = None
-        self._stalled_emitted = False
-        self._last_progress_event_emitted_at: float | None = None
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        """Start the background liveness monitor when thresholds are enabled."""
-
-        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
-            return
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"llm-call-heartbeat-{self.call_id}",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def stop(self) -> None:
-        """Stop the monitor and wait briefly for clean exit."""
-
-        if self._thread is None:
-            return
-        self._stop_event.set()
-        self._thread.join(timeout=1.0)
-
-    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
-        """Declare that this call path exposes truthful observable progress."""
-
-        with self._state_lock:
-            self._progress_observable = True
-            if default_source:
-                self._progress_source = default_source
-
-    def mark_progress(self, *, source: str) -> None:
-        """Record one unit of observed progress and rate-limit event emission."""
-
-        now = time.monotonic()
-        with self._state_lock:
-            self._progress_observable = True
-            self._progress_source = source
-            self._progress_event_count += 1
-            self._last_progress_at_monotonic = now
-            self._stalled_emitted = False
-            should_emit = (
-                self._last_progress_event_emitted_at is None
-                or self.heartbeat_interval_s <= 0
-                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
-            )
-            if should_emit:
-                self._last_progress_event_emitted_at = now
-            snapshot = self._snapshot_locked()
-        if should_emit:
-            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
-
-    def snapshot(self) -> _LLMCallProgressSnapshot:
-        """Return the current progress-observability state for this call."""
-
-        with self._state_lock:
-            return self._snapshot_locked()
-
-    def _snapshot_locked(self) -> _LLMCallProgressSnapshot:
-        """Build a progress snapshot while the internal state lock is held."""
-
-        return _LLMCallProgressSnapshot(
-            progress_observable=self._progress_observable,
-            progress_source=self._progress_source,
-            progress_event_count=self._progress_event_count,
-            last_progress_at_monotonic=self._last_progress_at_monotonic,
-        )
-
-    def _emit_phase(
-        self,
-        phase: Literal["heartbeat", "progress", "stalled"],
-        *,
-        elapsed_s: float,
-        snapshot: _LLMCallProgressSnapshot | None = None,
-    ) -> None:
-        """Emit one non-terminal lifecycle phase with the latest progress metadata."""
-
-        effective_snapshot = snapshot or self.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=self.call_id,
-            phase=phase,
-            call_kind=self.call_kind,
-            caller=self.caller,
-            task=self.task,
-            trace_id=self.trace_id,
-            requested_model=self.requested_model,
-            provider_timeout_s=self.provider_timeout_s,
-            prompt_ref=self.prompt_ref,
-            elapsed_s=elapsed_s,
-            heartbeat_interval_s=self.heartbeat_interval_s,
-            stall_after_s=self.stall_after_s,
-            progress_observable=effective_snapshot.progress_observable,
-            progress_source=effective_snapshot.progress_source,
-            progress_event_count=effective_snapshot.progress_event_count,
-        )
-
-    def _next_stall_wait(
-        self,
-        *,
-        now: float,
-        snapshot: _LLMCallProgressSnapshot,
-    ) -> float | None:
-        """Return seconds until the next eligible stall event, if any."""
-
-        if self.stall_after_s <= 0:
-            return None
-        with self._state_lock:
-            stalled_emitted = self._stalled_emitted
-        if stalled_emitted:
-            return None
-        if snapshot.progress_observable:
-            last_progress = snapshot.last_progress_at_monotonic
-            if last_progress is None:
-                return None
-            idle_for_s = now - last_progress
-            return max(self.stall_after_s - idle_for_s, 0.001)
-        elapsed_s = now - self.started_at
-        return max(self.stall_after_s - elapsed_s, 0.001)
-
-    def _should_emit_stalled(
-        self,
-        *,
-        now: float,
-        snapshot: _LLMCallProgressSnapshot,
-    ) -> bool:
-        """Return whether the current call state has crossed the stall threshold."""
-
-        if self.stall_after_s <= 0:
-            return False
-        with self._state_lock:
-            if self._stalled_emitted:
-                return False
-        if snapshot.progress_observable:
-            last_progress = snapshot.last_progress_at_monotonic
-            if last_progress is None:
-                return False
-            return (now - last_progress) >= self.stall_after_s
-        return (now - self.started_at) >= self.stall_after_s
-
-    def _mark_stalled_emitted(self) -> None:
-        """Remember that the current idle period already emitted a stall marker."""
-
-        with self._state_lock:
-            self._stalled_emitted = True
-
-    def _run(self) -> None:
-        """Emit in-flight lifecycle markers until the wrapped call terminates."""
-
-        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
-        while True:
-            now = time.monotonic()
-            elapsed = now - self.started_at
-            snapshot = self.snapshot()
-            waits: list[float] = []
-            if next_heartbeat is not None:
-                waits.append(max(next_heartbeat - elapsed, 0.001))
-            stall_wait = self._next_stall_wait(now=now, snapshot=snapshot)
-            if stall_wait is not None:
-                waits.append(stall_wait)
-            if not waits:
-                return
-            if self._stop_event.wait(min(waits)):
-                return
-            now = time.monotonic()
-            elapsed = now - self.started_at
-            snapshot = self.snapshot()
-            if next_heartbeat is not None and elapsed >= next_heartbeat:
-                self._emit_phase("heartbeat", elapsed_s=elapsed, snapshot=snapshot)
-                while next_heartbeat is not None and elapsed >= next_heartbeat:
-                    next_heartbeat += self.heartbeat_interval_s
-            if self._should_emit_stalled(now=now, snapshot=snapshot):
-                self._emit_phase("stalled", elapsed_s=elapsed, snapshot=snapshot)
-                self._mark_stalled_emitted()
-
-
-class _AsyncLLMCallHeartbeatMonitor:
-    """Emit lifecycle updates for one async call, including real progress when available."""
-
-    def __init__(
-        self,
-        *,
-        call_id: str,
-        call_kind: Literal["text", "structured"],
-        caller: str,
-        task: str,
-        trace_id: str,
-        requested_model: str,
-        provider_timeout_s: int,
-        prompt_ref: str | None,
-        heartbeat_interval_s: float,
-        stall_after_s: float,
-        started_at: float,
-        progress_observable: bool = False,
-    ) -> None:
-        self.call_id = call_id
-        self.call_kind = call_kind
-        self.caller = caller
-        self.task = task
-        self.trace_id = trace_id
-        self.requested_model = requested_model
-        self.provider_timeout_s = provider_timeout_s
-        self.prompt_ref = prompt_ref
-        self.heartbeat_interval_s = heartbeat_interval_s
-        self.stall_after_s = stall_after_s
-        self.started_at = started_at
-        self._state_lock = threading.Lock()
-        self._progress_observable = progress_observable
-        self._progress_source: str | None = None
-        self._progress_event_count = 0
-        self._last_progress_at_monotonic: float | None = None
-        self._stalled_emitted = False
-        self._last_progress_event_emitted_at: float | None = None
-        self._stop_event = asyncio.Event()
-        self._task: asyncio.Task[None] | None = None
-
-    def start(self) -> None:
-        """Start the async heartbeat task when thresholds are enabled."""
-
-        if self.heartbeat_interval_s <= 0 and self.stall_after_s <= 0:
-            return
-        self._task = asyncio.create_task(
-            self._run(),
-            name=f"llm-call-heartbeat-{self.call_id}",
-        )
-
-    async def stop(self) -> None:
-        """Stop the heartbeat task and await clean exit."""
-
-        if self._task is None:
-            return
-        self._stop_event.set()
-        await self._task
-
-    def enable_progress_tracking(self, *, default_source: str | None = None) -> None:
-        """Declare that this async call path exposes truthful observable progress."""
-
-        with self._state_lock:
-            self._progress_observable = True
-            if default_source:
-                self._progress_source = default_source
-
-    def mark_progress(self, *, source: str) -> None:
-        """Record one unit of observed progress and rate-limit event emission."""
-
-        now = time.monotonic()
-        with self._state_lock:
-            self._progress_observable = True
-            self._progress_source = source
-            self._progress_event_count += 1
-            self._last_progress_at_monotonic = now
-            self._stalled_emitted = False
-            should_emit = (
-                self._last_progress_event_emitted_at is None
-                or self.heartbeat_interval_s <= 0
-                or (now - self._last_progress_event_emitted_at) >= self.heartbeat_interval_s
-            )
-            if should_emit:
-                self._last_progress_event_emitted_at = now
-            snapshot = self._snapshot_locked()
-        if should_emit:
-            self._emit_phase("progress", elapsed_s=now - self.started_at, snapshot=snapshot)
-
-    def snapshot(self) -> _LLMCallProgressSnapshot:
-        """Return the current progress-observability state for this call."""
-
-        with self._state_lock:
-            return self._snapshot_locked()
-
-    def _snapshot_locked(self) -> _LLMCallProgressSnapshot:
-        """Build a progress snapshot while the internal state lock is held."""
-
-        return _LLMCallProgressSnapshot(
-            progress_observable=self._progress_observable,
-            progress_source=self._progress_source,
-            progress_event_count=self._progress_event_count,
-            last_progress_at_monotonic=self._last_progress_at_monotonic,
-        )
-
-    def _emit_phase(
-        self,
-        phase: Literal["heartbeat", "progress", "stalled"],
-        *,
-        elapsed_s: float,
-        snapshot: _LLMCallProgressSnapshot | None = None,
-    ) -> None:
-        """Emit one non-terminal lifecycle phase with the latest progress metadata."""
-
-        effective_snapshot = snapshot or self.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=self.call_id,
-            phase=phase,
-            call_kind=self.call_kind,
-            caller=self.caller,
-            task=self.task,
-            trace_id=self.trace_id,
-            requested_model=self.requested_model,
-            provider_timeout_s=self.provider_timeout_s,
-            prompt_ref=self.prompt_ref,
-            elapsed_s=elapsed_s,
-            heartbeat_interval_s=self.heartbeat_interval_s,
-            stall_after_s=self.stall_after_s,
-            progress_observable=effective_snapshot.progress_observable,
-            progress_source=effective_snapshot.progress_source,
-            progress_event_count=effective_snapshot.progress_event_count,
-        )
-
-    def _next_stall_wait(
-        self,
-        *,
-        now: float,
-        snapshot: _LLMCallProgressSnapshot,
-    ) -> float | None:
-        """Return seconds until the next eligible stall event, if any."""
-
-        if self.stall_after_s <= 0:
-            return None
-        with self._state_lock:
-            stalled_emitted = self._stalled_emitted
-        if stalled_emitted:
-            return None
-        if snapshot.progress_observable:
-            last_progress = snapshot.last_progress_at_monotonic
-            if last_progress is None:
-                return None
-            idle_for_s = now - last_progress
-            return max(self.stall_after_s - idle_for_s, 0.001)
-        elapsed_s = now - self.started_at
-        return max(self.stall_after_s - elapsed_s, 0.001)
-
-    def _should_emit_stalled(
-        self,
-        *,
-        now: float,
-        snapshot: _LLMCallProgressSnapshot,
-    ) -> bool:
-        """Return whether the current call state has crossed the stall threshold."""
-
-        if self.stall_after_s <= 0:
-            return False
-        with self._state_lock:
-            if self._stalled_emitted:
-                return False
-        if snapshot.progress_observable:
-            last_progress = snapshot.last_progress_at_monotonic
-            if last_progress is None:
-                return False
-            return (now - last_progress) >= self.stall_after_s
-        return (now - self.started_at) >= self.stall_after_s
-
-    def _mark_stalled_emitted(self) -> None:
-        """Remember that the current idle period already emitted a stall marker."""
-
-        with self._state_lock:
-            self._stalled_emitted = True
-
-    async def _run(self) -> None:
-        """Emit in-flight lifecycle markers until the wrapped async call terminates."""
-
-        next_heartbeat = self.heartbeat_interval_s if self.heartbeat_interval_s > 0 else None
-        while True:
-            now = time.monotonic()
-            elapsed = now - self.started_at
-            snapshot = self.snapshot()
-            waits: list[float] = []
-            if next_heartbeat is not None:
-                waits.append(max(next_heartbeat - elapsed, 0.001))
-            stall_wait = self._next_stall_wait(now=now, snapshot=snapshot)
-            if stall_wait is not None:
-                waits.append(stall_wait)
-            if not waits:
-                return
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=min(waits))
-                return
-            except TimeoutError:
-                pass
-            now = time.monotonic()
-            elapsed = now - self.started_at
-            snapshot = self.snapshot()
-            if next_heartbeat is not None and elapsed >= next_heartbeat:
-                self._emit_phase("heartbeat", elapsed_s=elapsed, snapshot=snapshot)
-                while next_heartbeat is not None and elapsed >= next_heartbeat:
-                    next_heartbeat += self.heartbeat_interval_s
-            if self._should_emit_stalled(now=now, snapshot=snapshot):
-                self._emit_phase("stalled", elapsed_s=elapsed, snapshot=snapshot)
-                self._mark_stalled_emitted()
 
 
 def _strip_incompatible_sampling_params(model: str, call_kwargs: dict[str, Any]) -> list[str]:
@@ -2159,84 +1521,6 @@ def _build_result_from_responses(
 # ---------------------------------------------------------------------------
 
 
-_BACKGROUND_ERR_ENDPOINT_UNSUPPORTED = "LLMC_ERR_BACKGROUND_ENDPOINT_UNSUPPORTED"
-_BACKGROUND_ERR_MISSING_OPENAI_KEY = "LLMC_ERR_BACKGROUND_OPENAI_KEY_REQUIRED"
-_BACKGROUND_ERR_MISSING_OPENROUTER_KEY = "LLMC_ERR_BACKGROUND_OPENROUTER_KEY_REQUIRED"
-
-def _validate_background_retrieval_api_base(api_base: str | None) -> str:
-    """Return endpoint kind for background retrieval ("openai" or "openrouter")."""
-    if api_base is None:
-        return "openai"
-    base = str(api_base).strip()
-    if not base:
-        return "openai"
-
-    parsed = urllib.parse.urlparse(base)
-    hostname = (parsed.hostname or "").strip().lower()
-    if hostname == "api.openai.com" or hostname.endswith(".api.openai.com"):
-        return "openai"
-    if "openai.com" in hostname and "openrouter" not in hostname:
-        return "openai"
-    if hostname == "openrouter.ai" or hostname.endswith(".openrouter.ai"):
-        return "openrouter"
-
-    raise LLMConfigurationError(
-        "Background response retrieval for long-thinking models currently supports "
-        f"OpenAI/OpenRouter endpoints only. Received api_base={base!r}. "
-        "Use https://api.openai.com/v1, https://openrouter.ai/api/v1, or default.",
-        error_code=_BACKGROUND_ERR_ENDPOINT_UNSUPPORTED,
-        details={"api_base": base},
-    )
-
-
-def _needs_background_mode(model: str, reasoning_effort: str | None) -> bool:
-    """Check if a model+reasoning_effort combination needs background polling.
-
-    Long-thinking models like gpt-5.2-pro with high/xhigh reasoning can
-    think for 5-10 minutes, exceeding normal HTTP timeouts.
-    """
-    base = _base_model_name(model)
-    return (
-        base in _LONG_THINKING_MODELS
-        and reasoning_effort is not None
-        and reasoning_effort.lower() in _LONG_THINKING_REASONING_EFFORTS
-    )
-
-
-def _coerce_positive_int(value: Any, default: int) -> int:
-    """Best-effort int coercion with positive guard and fallback."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else default
-
-
-def _background_mode_for_model(
-    *,
-    model: str,
-    use_responses: bool,
-    reasoning_effort: str | None,
-) -> bool | None:
-    """Return background mode flag for routing trace / execution policy."""
-    if not use_responses:
-        return None
-    return _needs_background_mode(model, reasoning_effort)
-
-
-def _background_polling_config(model_kwargs: dict[str, Any]) -> tuple[int, int]:
-    """Return validated (timeout, poll_interval) for background polling."""
-    timeout = _coerce_positive_int(
-        model_kwargs.get("background_timeout"),
-        _BACKGROUND_DEFAULT_TIMEOUT,
-    )
-    poll_interval = _coerce_positive_int(
-        model_kwargs.get("background_poll_interval"),
-        _BACKGROUND_POLL_INTERVAL,
-    )
-    return timeout, poll_interval
-
-
 def _maybe_poll_background_response(
     response: Any,
     *,
@@ -2245,21 +1529,12 @@ def _maybe_poll_background_response(
     model_kwargs: dict[str, Any],
 ) -> Any:
     """Poll a non-terminal background response to completion when possible."""
-    bg_status = getattr(response, "status", None)
-    if not bg_status or bg_status == "completed":
-        return response
-
-    response_id = getattr(response, "id", None)
-    if not response_id:
-        return response
-
-    bg_timeout, bg_poll_interval = _background_polling_config(model_kwargs)
-    return _poll_background_response(
-        response_id,
+    return _maybe_poll_background_response_impl(
+        response,
         api_base=api_base,
         request_timeout=request_timeout,
-        timeout=bg_timeout,
-        poll_interval=bg_poll_interval,
+        model_kwargs=model_kwargs,
+        poll_response=_poll_background_response,
     )
 
 
@@ -2271,21 +1546,12 @@ async def _maybe_apoll_background_response(
     model_kwargs: dict[str, Any],
 ) -> Any:
     """Async variant of background polling helper."""
-    bg_status = getattr(response, "status", None)
-    if not bg_status or bg_status == "completed":
-        return response
-
-    response_id = getattr(response, "id", None)
-    if not response_id:
-        return response
-
-    bg_timeout, bg_poll_interval = _background_polling_config(model_kwargs)
-    return await _apoll_background_response(
-        response_id,
+    return await _maybe_apoll_background_response_impl(
+        response,
         api_base=api_base,
         request_timeout=request_timeout,
-        timeout=bg_timeout,
-        poll_interval=bg_poll_interval,
+        model_kwargs=model_kwargs,
+        poll_response=_apoll_background_response,
     )
 
 
@@ -2314,48 +1580,13 @@ def _poll_background_response(
         TimeoutError: If the response doesn't complete within timeout.
         RuntimeError: If the response fails or is cancelled.
     """
-    import time as _time
-
-    deadline = _time.monotonic() + timeout
-    attempt = 0
-    while _time.monotonic() < deadline:
-        try:
-            response = _retrieve_background_response(
-                response_id=response_id,
-                api_base=api_base,
-                request_timeout=request_timeout,
-            )
-        except LLMConfigurationError:
-            # Endpoint/auth misconfiguration is deterministic; fail immediately.
-            raise
-        except Exception as e:
-            logger.warning("Background poll attempt %d failed: %s", attempt, e)
-            _time.sleep(poll_interval)
-            attempt += 1
-            continue
-
-        status = getattr(response, "status", None)
-        if status == "completed":
-            logger.info(
-                "Background response %s completed after %d polls",
-                response_id, attempt + 1,
-            )
-            return response
-        if status in ("failed", "cancelled"):
-            error = getattr(response, "error", None)
-            raise RuntimeError(
-                f"Background response {response_id} {status}: {error}"
-            )
-
-        logger.debug(
-            "Background response %s status=%s, poll %d",
-            response_id, status, attempt + 1,
-        )
-        _time.sleep(poll_interval)
-        attempt += 1
-
-    raise TimeoutError(
-        f"Background response {response_id} did not complete within {timeout}s"
+    return _poll_background_response_impl(
+        response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        retrieve_response=_retrieve_background_response,
     )
 
 
@@ -2371,47 +1602,13 @@ async def _apoll_background_response(
 
     Uses asyncio.sleep between polls to avoid blocking the event loop.
     """
-    import asyncio
-
-    deadline = time.monotonic() + timeout
-    attempt = 0
-    while time.monotonic() < deadline:
-        try:
-            response = await _aretrieve_background_response(
-                response_id=response_id,
-                api_base=api_base,
-                request_timeout=request_timeout,
-            )
-        except LLMConfigurationError:
-            raise
-        except Exception as e:
-            logger.warning("Background poll attempt %d failed: %s", attempt, e)
-            await asyncio.sleep(poll_interval)
-            attempt += 1
-            continue
-
-        status = getattr(response, "status", None)
-        if status == "completed":
-            logger.info(
-                "Background response %s completed after %d polls",
-                response_id, attempt + 1,
-            )
-            return response
-        if status in ("failed", "cancelled"):
-            error = getattr(response, "error", None)
-            raise RuntimeError(
-                f"Background response {response_id} {status}: {error}"
-            )
-
-        logger.debug(
-            "Background response %s status=%s, poll %d",
-            response_id, status, attempt + 1,
-        )
-        await asyncio.sleep(poll_interval)
-        attempt += 1
-
-    raise TimeoutError(
-        f"Background response {response_id} did not complete within {timeout}s"
+    return await _apoll_background_response_impl(
+        response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        retrieve_response=_aretrieve_background_response,
     )
 
 
@@ -2426,37 +1623,11 @@ def _retrieve_background_response(
     LiteLLM currently exposes `responses()` as a function (no `.retrieve` attr) in
     this environment, so retrieval uses OpenAI SDK clients directly.
     """
-    from openai import OpenAI
-
-    endpoint_kind = _validate_background_retrieval_api_base(api_base)
-    if endpoint_kind == "openrouter":
-        api_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
-        if not api_key:
-            ring = _openrouter_key_candidates_from_env()
-            api_key = ring[0] if ring else ""
-        if not api_key:
-            raise LLMConfigurationError(
-                "OPENROUTER_API_KEY is required to retrieve background responses "
-                "for long-thinking models via OpenRouter",
-                error_code=_BACKGROUND_ERR_MISSING_OPENROUTER_KEY,
-                details={"api_base": api_base},
-            )
-    else:
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise LLMConfigurationError(
-                "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
-                error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
-                details={"api_base": api_base},
-            )
-
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
-    if api_base:
-        client_kwargs["base_url"] = api_base
-    if request_timeout is not None:
-        client_kwargs["timeout"] = request_timeout
-    client = OpenAI(**client_kwargs)
-    return client.responses.retrieve(response_id)
+    return _retrieve_background_response_impl(
+        response_id=response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+    )
 
 
 async def _aretrieve_background_response(
@@ -2466,37 +1637,11 @@ async def _aretrieve_background_response(
     request_timeout: int | None,
 ) -> Any:
     """Async retrieve for background responses by ID."""
-    from openai import AsyncOpenAI
-
-    endpoint_kind = _validate_background_retrieval_api_base(api_base)
-    if endpoint_kind == "openrouter":
-        api_key = _normalize_api_key_value(os.environ.get(OPENROUTER_API_KEY_ENV))
-        if not api_key:
-            ring = _openrouter_key_candidates_from_env()
-            api_key = ring[0] if ring else ""
-        if not api_key:
-            raise LLMConfigurationError(
-                "OPENROUTER_API_KEY is required to retrieve background responses "
-                "for long-thinking models via OpenRouter",
-                error_code=_BACKGROUND_ERR_MISSING_OPENROUTER_KEY,
-                details={"api_base": api_base},
-            )
-    else:
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            raise LLMConfigurationError(
-                "OPENAI_API_KEY is required to retrieve background responses for long-thinking models",
-                error_code=_BACKGROUND_ERR_MISSING_OPENAI_KEY,
-                details={"api_base": api_base},
-            )
-
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
-    if api_base:
-        client_kwargs["base_url"] = api_base
-    if request_timeout is not None:
-        client_kwargs["timeout"] = request_timeout
-    client = AsyncOpenAI(**client_kwargs)
-    return await client.responses.retrieve(response_id)
+    return await _aretrieve_background_response_impl(
+        response_id=response_id,
+        api_base=api_base,
+        request_timeout=request_timeout,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2826,62 +1971,18 @@ def call_llm(
     """
     from llm_client.text_runtime import _call_llm_impl
 
-    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
-    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
-        kwargs.get("task"),
-        kwargs.get("trace_id"),
-        kwargs.get("max_budget"),
+    envelope = _prepare_public_call_envelope(
         caller="call_llm",
+        timeout=timeout,
+        kwargs=kwargs,
     )
-    _check_budget(resolved_trace_id, resolved_max_budget)
-    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
-
-    runtime_kwargs = dict(kwargs)
-    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
-        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
-        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
-    )
-    runtime_kwargs["task"] = resolved_task
-    runtime_kwargs["trace_id"] = resolved_trace_id
-    runtime_kwargs["max_budget"] = resolved_max_budget
-    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
-
-    call_id = _new_llm_call_lifecycle_id()
-    started_at = time.monotonic()
-    monitor = _SyncLLMCallHeartbeatMonitor(
-        call_id=call_id,
+    return _run_sync_public_call(
+        model=model,
         call_kind="text",
         caller="call_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        started_at=started_at,
-    )
-    started_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="started",
-        call_kind="text",
-        caller="call_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=started_snapshot.progress_observable,
-        progress_source=started_snapshot.progress_source,
-        progress_event_count=started_snapshot.progress_event_count,
-    )
-    runtime_kwargs["_lifecycle_monitor"] = monitor
-    monitor.start()
-    try:
-        result = _call_llm_impl(
+        timeout=timeout,
+        envelope=envelope,
+        invoke=lambda runtime_kwargs: _call_llm_impl(
             model,
             messages,
             timeout=timeout,
@@ -2900,52 +2001,9 @@ def call_llm(
             execution_mode=execution_mode,
             config=config,
             **runtime_kwargs,
-        )
-    except Exception as exc:
-        monitor.stop()
-        snapshot = monitor.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=call_id,
-            phase="failed",
-            call_kind="text",
-            caller="call_llm",
-            task=resolved_task,
-            trace_id=resolved_trace_id,
-            requested_model=model,
-            provider_timeout_s=effective_provider_timeout,
-            prompt_ref=normalized_prompt_ref,
-            latency_s=time.monotonic() - started_at,
-            error=exc,
-            heartbeat_interval_s=heartbeat_interval_s,
-            stall_after_s=stall_after_s,
-            progress_observable=snapshot.progress_observable,
-            progress_source=snapshot.progress_source,
-            progress_event_count=snapshot.progress_event_count,
-        )
-        raise
-    monitor.stop()
-    elapsed_s = time.monotonic() - started_at
-    completed_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="completed",
-        call_kind="text",
-        caller="call_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        resolved_model=result.resolved_model or str(result.model or "") or None,
-        elapsed_s=elapsed_s,
-        latency_s=elapsed_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=completed_snapshot.progress_observable,
-        progress_source=completed_snapshot.progress_source,
-        progress_event_count=completed_snapshot.progress_event_count,
+        ),
+        resolve_model=lambda result: result.resolved_model or str(result.model or "") or None,
     )
-    return result
 
 
 def call_llm_structured(
@@ -3000,62 +2058,18 @@ def call_llm_structured(
     """
     from llm_client.structured_runtime import _call_llm_structured_impl
 
-    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
-    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
-        kwargs.get("task"),
-        kwargs.get("trace_id"),
-        kwargs.get("max_budget"),
+    envelope = _prepare_public_call_envelope(
         caller="call_llm_structured",
+        timeout=timeout,
+        kwargs=kwargs,
     )
-    _check_budget(resolved_trace_id, resolved_max_budget)
-    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
-
-    runtime_kwargs = dict(kwargs)
-    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
-        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
-        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
-    )
-    runtime_kwargs["task"] = resolved_task
-    runtime_kwargs["trace_id"] = resolved_trace_id
-    runtime_kwargs["max_budget"] = resolved_max_budget
-    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
-
-    call_id = _new_llm_call_lifecycle_id()
-    started_at = time.monotonic()
-    monitor = _SyncLLMCallHeartbeatMonitor(
-        call_id=call_id,
+    return _run_sync_public_call(
+        model=model,
         call_kind="structured",
         caller="call_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        started_at=started_at,
-    )
-    started_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="started",
-        call_kind="structured",
-        caller="call_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=started_snapshot.progress_observable,
-        progress_source=started_snapshot.progress_source,
-        progress_event_count=started_snapshot.progress_event_count,
-    )
-    runtime_kwargs["_lifecycle_monitor"] = monitor
-    monitor.start()
-    try:
-        parsed, result = _call_llm_structured_impl(
+        timeout=timeout,
+        envelope=envelope,
+        invoke=lambda runtime_kwargs: _call_llm_structured_impl(
             model,
             messages,
             response_model,
@@ -3074,52 +2088,9 @@ def call_llm_structured(
             hooks=hooks,
             config=config,
             **runtime_kwargs,
-        )
-    except Exception as exc:
-        monitor.stop()
-        snapshot = monitor.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=call_id,
-            phase="failed",
-            call_kind="structured",
-            caller="call_llm_structured",
-            task=resolved_task,
-            trace_id=resolved_trace_id,
-            requested_model=model,
-            provider_timeout_s=effective_provider_timeout,
-            prompt_ref=normalized_prompt_ref,
-            latency_s=time.monotonic() - started_at,
-            error=exc,
-            heartbeat_interval_s=heartbeat_interval_s,
-            stall_after_s=stall_after_s,
-            progress_observable=snapshot.progress_observable,
-            progress_source=snapshot.progress_source,
-            progress_event_count=snapshot.progress_event_count,
-        )
-        raise
-    monitor.stop()
-    elapsed_s = time.monotonic() - started_at
-    completed_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="completed",
-        call_kind="structured",
-        caller="call_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        resolved_model=result.resolved_model or str(result.model or "") or None,
-        elapsed_s=elapsed_s,
-        latency_s=elapsed_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=completed_snapshot.progress_observable,
-        progress_source=completed_snapshot.progress_source,
-        progress_event_count=completed_snapshot.progress_event_count,
+        ),
+        resolve_model=lambda outcome: outcome[1].resolved_model or str(outcome[1].model or "") or None,
     )
-    return parsed, result
 
 
 def call_llm_with_tools(
@@ -3249,62 +2220,18 @@ async def acall_llm(
     """
     from llm_client.text_runtime import _acall_llm_impl
 
-    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
-    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
-        kwargs.get("task"),
-        kwargs.get("trace_id"),
-        kwargs.get("max_budget"),
+    envelope = _prepare_public_call_envelope(
         caller="acall_llm",
+        timeout=timeout,
+        kwargs=kwargs,
     )
-    _check_budget(resolved_trace_id, resolved_max_budget)
-    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
-
-    runtime_kwargs = dict(kwargs)
-    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
-        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
-        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
-    )
-    runtime_kwargs["task"] = resolved_task
-    runtime_kwargs["trace_id"] = resolved_trace_id
-    runtime_kwargs["max_budget"] = resolved_max_budget
-    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
-
-    call_id = _new_llm_call_lifecycle_id()
-    started_at = time.monotonic()
-    monitor = _AsyncLLMCallHeartbeatMonitor(
-        call_id=call_id,
+    return await _run_async_public_call(
+        model=model,
         call_kind="text",
         caller="acall_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        started_at=started_at,
-    )
-    started_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="started",
-        call_kind="text",
-        caller="acall_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=started_snapshot.progress_observable,
-        progress_source=started_snapshot.progress_source,
-        progress_event_count=started_snapshot.progress_event_count,
-    )
-    runtime_kwargs["_lifecycle_monitor"] = monitor
-    monitor.start()
-    try:
-        result = await _acall_llm_impl(
+        timeout=timeout,
+        envelope=envelope,
+        invoke=lambda runtime_kwargs: _acall_llm_impl(
             model,
             messages,
             timeout=timeout,
@@ -3323,52 +2250,9 @@ async def acall_llm(
             execution_mode=execution_mode,
             config=config,
             **runtime_kwargs,
-        )
-    except Exception as exc:
-        await monitor.stop()
-        snapshot = monitor.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=call_id,
-            phase="failed",
-            call_kind="text",
-            caller="acall_llm",
-            task=resolved_task,
-            trace_id=resolved_trace_id,
-            requested_model=model,
-            provider_timeout_s=effective_provider_timeout,
-            prompt_ref=normalized_prompt_ref,
-            latency_s=time.monotonic() - started_at,
-            error=exc,
-            heartbeat_interval_s=heartbeat_interval_s,
-            stall_after_s=stall_after_s,
-            progress_observable=snapshot.progress_observable,
-            progress_source=snapshot.progress_source,
-            progress_event_count=snapshot.progress_event_count,
-        )
-        raise
-    await monitor.stop()
-    elapsed_s = time.monotonic() - started_at
-    completed_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="completed",
-        call_kind="text",
-        caller="acall_llm",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        resolved_model=result.resolved_model or str(result.model or "") or None,
-        elapsed_s=elapsed_s,
-        latency_s=elapsed_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=completed_snapshot.progress_observable,
-        progress_source=completed_snapshot.progress_source,
-        progress_event_count=completed_snapshot.progress_event_count,
+        ),
+        resolve_model=lambda result: result.resolved_model or str(result.model or "") or None,
     )
-    return result
 
 
 async def acall_llm_structured(
@@ -3423,62 +2307,18 @@ async def acall_llm_structured(
     """
     from llm_client.structured_runtime import _acall_llm_structured_impl
 
-    normalized_prompt_ref = _normalize_prompt_ref(kwargs.get("prompt_ref"))
-    resolved_task, resolved_trace_id, resolved_max_budget, _ = _require_tags(
-        kwargs.get("task"),
-        kwargs.get("trace_id"),
-        kwargs.get("max_budget"),
+    envelope = _prepare_public_call_envelope(
         caller="acall_llm_structured",
+        timeout=timeout,
+        kwargs=kwargs,
     )
-    _check_budget(resolved_trace_id, resolved_max_budget)
-    effective_provider_timeout = _provider_timeout_for_lifecycle(timeout)
-
-    runtime_kwargs = dict(kwargs)
-    heartbeat_interval_s, stall_after_s = _resolve_lifecycle_monitoring_settings(
-        heartbeat_interval=runtime_kwargs.pop("lifecycle_heartbeat_interval_s", None),
-        stall_after=runtime_kwargs.pop("lifecycle_stall_after_s", None),
-    )
-    runtime_kwargs["task"] = resolved_task
-    runtime_kwargs["trace_id"] = resolved_trace_id
-    runtime_kwargs["max_budget"] = resolved_max_budget
-    runtime_kwargs["prompt_ref"] = normalized_prompt_ref
-
-    call_id = _new_llm_call_lifecycle_id()
-    started_at = time.monotonic()
-    monitor = _AsyncLLMCallHeartbeatMonitor(
-        call_id=call_id,
+    return await _run_async_public_call(
+        model=model,
         call_kind="structured",
         caller="acall_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        started_at=started_at,
-    )
-    started_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="started",
-        call_kind="structured",
-        caller="acall_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=started_snapshot.progress_observable,
-        progress_source=started_snapshot.progress_source,
-        progress_event_count=started_snapshot.progress_event_count,
-    )
-    runtime_kwargs["_lifecycle_monitor"] = monitor
-    monitor.start()
-    try:
-        parsed, result = await _acall_llm_structured_impl(
+        timeout=timeout,
+        envelope=envelope,
+        invoke=lambda runtime_kwargs: _acall_llm_structured_impl(
             model,
             messages,
             response_model,
@@ -3497,52 +2337,9 @@ async def acall_llm_structured(
             hooks=hooks,
             config=config,
             **runtime_kwargs,
-        )
-    except Exception as exc:
-        await monitor.stop()
-        snapshot = monitor.snapshot()
-        _emit_llm_call_lifecycle_event(
-            call_id=call_id,
-            phase="failed",
-            call_kind="structured",
-            caller="acall_llm_structured",
-            task=resolved_task,
-            trace_id=resolved_trace_id,
-            requested_model=model,
-            provider_timeout_s=effective_provider_timeout,
-            prompt_ref=normalized_prompt_ref,
-            latency_s=time.monotonic() - started_at,
-            error=exc,
-            heartbeat_interval_s=heartbeat_interval_s,
-            stall_after_s=stall_after_s,
-            progress_observable=snapshot.progress_observable,
-            progress_source=snapshot.progress_source,
-            progress_event_count=snapshot.progress_event_count,
-        )
-        raise
-    await monitor.stop()
-    elapsed_s = time.monotonic() - started_at
-    completed_snapshot = monitor.snapshot()
-    _emit_llm_call_lifecycle_event(
-        call_id=call_id,
-        phase="completed",
-        call_kind="structured",
-        caller="acall_llm_structured",
-        task=resolved_task,
-        trace_id=resolved_trace_id,
-        requested_model=model,
-        provider_timeout_s=effective_provider_timeout,
-        prompt_ref=normalized_prompt_ref,
-        resolved_model=result.resolved_model or str(result.model or "") or None,
-        elapsed_s=elapsed_s,
-        latency_s=elapsed_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-        stall_after_s=stall_after_s,
-        progress_observable=completed_snapshot.progress_observable,
-        progress_source=completed_snapshot.progress_source,
-        progress_event_count=completed_snapshot.progress_event_count,
+        ),
+        resolve_model=lambda outcome: outcome[1].resolved_model or str(outcome[1].model or "") or None,
     )
-    return parsed, result
 
 
 async def acall_llm_with_tools(

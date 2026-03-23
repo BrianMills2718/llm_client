@@ -304,7 +304,7 @@ disagree.
 Program E is not ready to close yet. A fresh module-size audit still shows
 multiple files above the plan thresholds:
 
-1. `llm_client/client.py`: `4184` lines
+1. `llm_client/client.py`: `2981` lines
 2. `llm_client/mcp_turn_execution.py`: `1339` lines
 3. `llm_client/observability/experiments.py`: `1322` lines
 4. `llm_client/agents_codex.py`: `1317` lines
@@ -321,12 +321,20 @@ hard-threshold criterion. The extracted
 runtime facades, split final bookkeeping, extracted the per-turn
 tool-processing path, post-tool outcomes, post-loop completion handoff, and
 the pre-call model stage, reducing that module from `3202` to `1339`. That
-means it no longer blocks the hard-threshold criterion either.
+means it no longer blocks the hard-threshold criterion either. `client.py`
+then shed the lifecycle-monitoring cluster into `llm_client/call_lifecycle.py`,
+reducing the main blocker from `4184` to `3528`; the next verified slice then
+extracted the duplicated public wrapper envelope into
+`llm_client/call_wrappers.py`, reducing it again to `3185`. It remains the
+active hard-threshold blocker by a wide margin. The next verified slice then
+extracted the long-thinking/background polling runtime into
+`llm_client/background_runtime.py`, reducing it to `2981` while preserving the
+client-level monkeypatch surface used by existing tests.
 
 The next child slice for this program is
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
 with the immediate next tranche now explicitly selected as the `client.py`
-lifecycle/heartbeat monitoring extraction.
+Responses API helper extraction.
 
 ### Phase 3: JSONL Log Rotation
 

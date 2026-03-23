@@ -67,6 +67,10 @@ These counts are the current audit baseline for the remaining oversize set.
 > slices must amend this section before touching additional files.
 
 - `llm_client/client.py` (modify/extract)
+- `llm_client/call_lifecycle.py` (new extracted module)
+- `llm_client/call_wrappers.py` (new extracted module)
+- `llm_client/background_runtime.py` (new extracted module)
+- `llm_client/responses_runtime.py` (new extracted module)
 - `llm_client/io_log.py` (modify/extract)
 - `llm_client/observability/context.py` (new extracted module)
 - `llm_client/observability/events.py` (compatibility facade wiring)
@@ -533,6 +537,157 @@ Why this tranche goes next:
 3. this slice reduces shared infrastructure debt directly in the same area
    where replay/divergence diagnosis and call-lifecycle observability have
    already been improved
+
+**Verified checkpoint 13 (2026-03-22):**
+
+The call-lifecycle monitoring cluster was extracted from `llm_client/client.py`
+into `llm_client/call_lifecycle.py`, while `client.py` kept the private helper
+names that `stream_runtime.py` already imports.
+
+What this checkpoint proved:
+
+1. call-lifecycle state, event emission, and sync/async heartbeat monitors are
+   a coherent observability-local boundary separate from the public call
+   facade
+2. the extraction can reduce `client.py` materially without forcing an
+   unrelated `stream_runtime.py` rewrite in the same slice
+3. lifecycle-focused wrapper coverage and broader client/public-surface
+   coverage both remained green after the move
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_client_lifecycle.py`
+   - result: `6 passed`
+   - `pytest -q tests/test_client.py tests/test_public_surface.py`
+   - result: `243 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `4184 -> 3528`
+2. new module: `llm_client/call_lifecycle.py` (`688` lines)
+
+**Selected next tranche (2026-03-22, post-call-lifecycle extraction):**
+
+Stay on `llm_client/client.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the duplicated public text/structured wrapper envelope from
+   `client.py` into a dedicated helper module
+2. move the shared tag normalization, lifecycle setup/teardown, and
+   terminal-event emission scaffolding behind narrower sync/async wrapper
+   helpers while leaving the public signatures in `client.py`
+3. keep `client.py` as the public facade that owns routing choices and the
+   user-facing entrypoints
+
+Why this tranche goes next:
+
+1. after the lifecycle extraction, the clearest remaining concentration in
+   `client.py` is the repeated wrapper envelope around
+   `call_llm` / `call_llm_structured` / `acall_llm` / `acall_llm_structured`
+2. this seam is large enough to reduce the active blocker materially without
+   mixing in provider-specific background polling or Responses API conversion
+   logic
+3. it keeps Program E moving on a truthful `client.py` boundary instead of
+   jumping sideways to softer-target modules
+
+**Verified checkpoint 14 (2026-03-22):**
+
+The duplicated public text/structured wrapper envelope was extracted from
+`llm_client/client.py` into `llm_client/call_wrappers.py`, while `client.py`
+kept the public signatures and runtime-specific dispatch closures.
+
+What this checkpoint proved:
+
+1. tag normalization, lifecycle setup/teardown, and terminal-event emission
+   are a real shared wrapper concern separate from provider/runtime logic
+2. the four public text/structured wrappers can shrink materially without
+   changing their public signatures or the runtime modules they dispatch into
+3. lifecycle-focused coverage and broader client/public-surface coverage both
+   remained green after the move
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_client_lifecycle.py`
+   - result: `6 passed`
+   - `pytest -q tests/test_client.py tests/test_public_surface.py`
+   - result: `243 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `3528 -> 3185`
+2. new module: `llm_client/call_wrappers.py` (`276` lines)
+
+**Selected next tranche (2026-03-22, post-wrapper extraction):**
+
+Stay on `llm_client/client.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the long-thinking/background polling cluster from `client.py` into
+   a dedicated runtime-local module
+2. move background-mode gating, polling configuration, sync/async polling
+   loops, and response-retrieval helpers behind a narrower interface while
+   leaving `client.py` as the public facade
+3. preserve the monkeypatch-sensitive helper names that existing
+   `tests/test_client.py` background tests patch today
+
+Why this tranche goes next:
+
+1. after the wrapper extraction, the background polling block is the clearest
+   remaining coherent runtime seam inside `client.py`
+2. it already has focused regression coverage for mode enabling, poll-until-
+   complete behavior, and retrieval/auth/config failure cases
+3. it reduces `client.py` further without mixing in Responses API conversion
+   helpers or changing public entrypoints
+
+**Verified checkpoint 15 (2026-03-22):**
+
+The long-thinking/background polling runtime was extracted from
+`llm_client/client.py` into `llm_client/background_runtime.py`, while
+`client.py` kept the monkeypatch-sensitive helper names that existing
+background tests patch.
+
+What this checkpoint proved:
+
+1. background-mode gating, polling config, sync/async polling loops, and
+   response-retrieval logic form a coherent runtime-local boundary
+2. the client-level patch surface for `_poll_background_response`,
+   `_apoll_background_response`, `_retrieve_background_response`, and
+   `_aretrieve_background_response` can stay stable while the implementation
+   moves out
+3. focused background tests and broader client/public-surface coverage both
+   remained green after the move
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_client.py -k 'background or poll_background or retrieve_background or long-thinking'`
+   - result: `11 passed, 222 deselected`
+   - `pytest -q tests/test_client_lifecycle.py tests/test_client.py tests/test_public_surface.py`
+   - result: `249 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `3185 -> 2981`
+2. new module: `llm_client/background_runtime.py` (`357` lines)
+
+**Selected next tranche (2026-03-22, post-background-runtime extraction):**
+
+Stay on `llm_client/client.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the Responses API helper cluster from `client.py` into a dedicated
+   runtime-local module
+2. move strict-schema preparation, message/tool/response-format conversion,
+   Responses API kwargs building, usage/cost extraction, and result
+   finalization behind a narrower interface while keeping current helper names
+   available from `client.py`
+3. preserve the direct helper imports currently exercised by
+   `tests/test_client.py`
+
+Why this tranche goes next:
+
+1. after the background extraction, the Responses API helper block is the
+   clearest remaining coherent runtime seam inside `client.py`
+2. it already has focused direct-helper tests plus routing coverage for GPT-5
+   Responses API paths
+3. it reduces `client.py` further without touching public entrypoints or the
+   call-wrapper scaffolding that just stabilized
 
 **Verified checkpoint 4 (2026-03-22):**
 

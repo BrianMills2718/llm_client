@@ -206,6 +206,12 @@ completion handoff into `mcp_turn_completion.py`, reducing it to `1800`. The
 next verified slice extracted the pre-call tool-surface/disclosure/
 LLM-dispatch block into `mcp_turn_model.py`, reducing
 `mcp_turn_execution.py` to `1339` and clearing it below the hard threshold.
-The default next Plan 11 slice now shifts to `client.py`, starting with the
-lifecycle/heartbeat monitoring cluster. Stop only for a real blocker or user
-redirect.
+The next verified slice then extracted the lifecycle/heartbeat monitoring
+cluster from `client.py` into `call_lifecycle.py`, reducing the main blocker
+from `4184` to `3528`. The next verified slice then extracted the duplicated
+public text/structured wrapper envelope into `call_wrappers.py`, reducing the
+main blocker again to `3185`. The next verified slice then extracted the
+long-thinking/background polling cluster into `background_runtime.py`,
+reducing the main blocker to `2981`. The default next Plan 11 slice stays on
+`client.py` and now targets the Responses API helper cluster. Stop only for a
+real blocker or user redirect.
