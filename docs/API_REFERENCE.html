@@ -3535,25 +3535,6 @@ The loop:
     4. Call LLM with tools → if tool_calls → execute via MCP → repeat
     5. Return LLMCallResult with accumulated usage/cost</pre>
 
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-mcp_turn_execution-MCPSessionPool">
-  <summary><code>MCPSessionPool</code> <span class="sig">(mcp_servers: dict[str, dict[str, typing.Any]], init_timeout: float = 30.0)</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Persistent MCP server connections for reuse across multiple acall_llm() calls.</p>
-    <p class="meta">Source: <code>llm_client.mcp_turn_execution</code> class</p>
-    <pre class="doc">Persistent MCP server connections for reuse across multiple acall_llm() calls.
-
-Usage:
-    async with MCPSessionPool(mcp_servers) as pool:
-        for question in questions:
-            result = await acall_llm(model, msgs, mcp_sessions=pool)</pre>
-    
-  </div>
-</details>
-
-
-
 <h4>Constants</h4>
 <table>
   <thead>

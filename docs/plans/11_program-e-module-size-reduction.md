@@ -45,7 +45,7 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_turn_execution.py`: `3202`
+2. `llm_client/mcp_turn_execution.py`: `2711`
 3. `llm_client/observability/experiments.py`: `1322`
 4. `llm_client/agent_contracts.py`: `1228`
 5. `llm_client/agents_codex.py`: `1317`
@@ -269,6 +269,31 @@ Effect on module size:
 
 1. `llm_client/mcp_agent.py`: `3335 -> 1037`
 2. new module: `llm_client/mcp_turn_execution.py` (`3202` lines)
+
+**Verified checkpoint 7 (2026-03-22):**
+
+The accidental duplicate MCP runtime / transport facades were removed from
+`llm_client/mcp_turn_execution.py`, leaving that module focused on the
+extracted `_agent_loop` implementation rather than also shadowing
+`mcp_agent.py`'s public runtime surface.
+
+What this checkpoint proved:
+
+1. the broad `_agent_loop` extraction can be made more truthful without
+   changing the facade contract in `llm_client.mcp_agent`
+2. duplicate runtime helpers inside the extracted module were structural debt,
+   not load-bearing compatibility surface
+3. the module still remains above threshold, so Program E must continue on the
+   new follow-on decomposition rather than treating the checkpoint as closeout
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `3202 -> 2711`
 
 **Selected next tranche (2026-03-22, post-mcp_agent closeout):**
 
