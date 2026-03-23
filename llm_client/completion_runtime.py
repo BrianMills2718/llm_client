@@ -1,44 +1,50 @@
-"""Completion-path helper utilities for ``llm_client.client``.
+"""Completion-path helper utilities for ``llm_client``.
 
 This module owns the helper cluster used by the chat-completions path:
 provider-kwargs preparation, provider-hint extraction, first-choice
-normalization, and completion-result finalization. ``client.py`` keeps the
-helper names that callers and tests import, while the implementation lives
-here with explicit policy hooks passed in from the client boundary.
+normalization, and completion-result finalization. Policy helpers are
+imported directly from ``call_contracts`` and ``model_detection``.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Collection
+from typing import Any
 
+from llm_client.call_contracts import (
+    _apply_max_tokens,
+    _coerce_model_incompatible_params,
+    _raise_empty_response,
+    _resolve_unsupported_param_policy,
+    _strip_llm_internal_kwargs,
+)
 from llm_client.cost_utils import _compute_cost, _extract_tool_calls, _extract_usage, _parse_cost_result
 from llm_client.data_types import LLMCallResult
+from llm_client.model_detection import _is_claude_model, _is_responses_api_model, _is_thinking_model
+from llm_client.retry import _EMPTY_POLICY_FINISH_REASONS, _EMPTY_TOOL_PROTOCOL_FINISH_REASONS
 
 logger = logging.getLogger(__name__)
 
 
-def _prepare_call_kwargs_impl(
+def _prepare_call_kwargs(
     model: str,
     messages: list[dict[str, Any]],
     *,
     timeout: int,
+    num_retries: int = 0,
     reasoning_effort: str | None,
     api_base: str | None,
     kwargs: dict[str, Any],
-    warning_sink: list[str] | None,
-    strip_llm_internal_kwargs: Callable[[dict[str, Any]], dict[str, Any]],
-    resolve_unsupported_param_policy: Callable[[Any], str],
-    is_claude_model: Callable[[str], bool],
-    is_thinking_model: Callable[[str], bool],
-    is_responses_api_model: Callable[[str], bool],
-    apply_max_tokens: Callable[[str, dict[str, Any]], None],
-    coerce_model_incompatible_params: Callable[..., None],
+    warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build kwargs dict shared by sync and async completions calls."""
+    """Build kwargs dict shared by sync and async completions calls.
 
-    provider_kwargs = strip_llm_internal_kwargs(kwargs)
-    policy = resolve_unsupported_param_policy(
+    ``num_retries`` is accepted for call-site compatibility but not used
+    here — retry policy is enforced by the execution kernel.
+    """
+
+    provider_kwargs = _strip_llm_internal_kwargs(kwargs)
+    policy = _resolve_unsupported_param_policy(
         provider_kwargs.pop("unsupported_param_policy", None)
     )
     call_kwargs: dict[str, Any] = {
@@ -51,7 +57,7 @@ def _prepare_call_kwargs_impl(
     if api_base is not None:
         call_kwargs["api_base"] = api_base
 
-    if reasoning_effort and is_claude_model(model):
+    if reasoning_effort and _is_claude_model(model):
         call_kwargs["reasoning_effort"] = reasoning_effort
     elif reasoning_effort:
         logger.debug(
@@ -60,7 +66,7 @@ def _prepare_call_kwargs_impl(
             model,
         )
 
-    if is_thinking_model(model) and "thinking" not in provider_kwargs:
+    if _is_thinking_model(model) and "thinking" not in provider_kwargs:
         is_openrouter = model.lower().startswith("openrouter/")
         if not is_openrouter:
             try:
@@ -76,15 +82,15 @@ def _prepare_call_kwargs_impl(
             except Exception:
                 pass
 
-    coerce_model_incompatible_params(
+    _coerce_model_incompatible_params(
         model=model,
         kwargs=call_kwargs,
         policy=policy,
         warning_sink=warning_sink,
     )
 
-    if not is_responses_api_model(model):
-        apply_max_tokens(model, call_kwargs)
+    if not _is_responses_api_model(model):
+        _apply_max_tokens(model, call_kwargs)
 
     return call_kwargs
 
@@ -105,18 +111,17 @@ def _provider_hint_from_response(response: Any) -> str | None:
     return None
 
 
-def _first_choice_or_empty_error_impl(
+def _first_choice_or_empty_error(
     response: Any,
     *,
     model: str,
     provider: str,
-    raise_empty_response: Callable[..., None],
 ) -> Any:
     """Return first completion choice or raise a typed empty-response error."""
 
     choices = getattr(response, "choices", None)
     if not isinstance(choices, list) or not choices:
-        raise_empty_response(
+        _raise_empty_response(
             provider=provider,
             classification="provider_empty_candidates",
             retryable=True,
@@ -130,22 +135,18 @@ def _first_choice_or_empty_error_impl(
     return choices[0]
 
 
-def _build_result_from_response_impl(
+def _build_result_from_response(
     response: Any,
     model: str,
     *,
-    warnings: list[str] | None,
-    raise_empty_response: Callable[..., None],
-    empty_policy_finish_reasons: Collection[str],
-    empty_tool_protocol_finish_reasons: Collection[str],
+    warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Extract a completion-path response into ``LLMCallResult``."""
 
-    first_choice = _first_choice_or_empty_error_impl(
+    first_choice = _first_choice_or_empty_error(
         response,
         model=model,
         provider="litellm_completion",
-        raise_empty_response=raise_empty_response,
     )
     content: str = first_choice.message.content or ""
     finish_reason: str = first_choice.finish_reason or ""
@@ -166,21 +167,21 @@ def _build_result_from_response_impl(
             "finish_reason": finish_reason or None,
             "has_tool_calls": bool(tool_calls),
         }
-        if finish_norm in empty_policy_finish_reasons:
-            raise_empty_response(
+        if finish_norm in _EMPTY_POLICY_FINISH_REASONS:
+            _raise_empty_response(
                 provider="litellm_completion",
                 classification="provider_policy_block",
                 retryable=False,
                 diagnostics=diagnostics,
             )
-        if finish_norm in empty_tool_protocol_finish_reasons:
-            raise_empty_response(
+        if finish_norm in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
+            _raise_empty_response(
                 provider="litellm_completion",
                 classification="provider_tool_protocol",
                 retryable=False,
                 diagnostics=diagnostics,
             )
-        raise_empty_response(
+        _raise_empty_response(
             provider="litellm_completion",
             classification="provider_empty_unknown",
             retryable=True,

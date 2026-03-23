@@ -229,20 +229,20 @@ from llm_client.background_runtime import (
     _apoll_background_response_impl,
     _aretrieve_background_response_impl,
 )
-from llm_client.responses_runtime import (
-    _build_result_from_responses_impl,
+from llm_client.responses_runtime import (  # noqa: F401
+    _build_result_from_responses,
     _compute_responses_cost,
     _convert_messages_to_input,
     _convert_response_format_for_responses,
     _convert_tools_for_responses_api,
     _extract_responses_usage,
-    _prepare_responses_kwargs_impl,
+    _prepare_responses_kwargs,
     _strict_json_schema,
 )
-from llm_client.completion_runtime import (
-    _build_result_from_response_impl,
-    _first_choice_or_empty_error_impl,
-    _prepare_call_kwargs_impl,
+from llm_client.completion_runtime import (  # noqa: F401
+    _build_result_from_response,
+    _first_choice_or_empty_error,
+    _prepare_call_kwargs,
     _provider_hint_from_response,
 )
 
@@ -720,56 +720,6 @@ def _log_call_event(
 
 
 
-def _prepare_responses_kwargs(
-    model: str,
-    messages: list[dict[str, Any]],
-    *,
-    timeout: int,
-    reasoning_effort: str | None,
-    api_base: str | None,
-    kwargs: dict[str, Any],
-    warning_sink: list[str] | None = None,
-) -> dict[str, Any]:
-    """Build kwargs for litellm.responses() / aresponses().
-
-    Converts messages to input string, response_format to text parameter,
-    and strips max_tokens/max_output_tokens (GPT-5 uses reasoning tokens
-    before output tokens — setting limits can exhaust them on reasoning
-    and return empty output while still billing you).
-    """
-    return _prepare_responses_kwargs_impl(
-        model=model,
-        messages=messages,
-        timeout=timeout,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-        warning_sink=warning_sink,
-        strip_llm_internal_kwargs=_strip_llm_internal_kwargs,
-        resolve_unsupported_param_policy=_resolve_unsupported_param_policy,
-        coerce_model_incompatible_params=_coerce_model_incompatible_params,
-        reasoning_gated_sampling_models=_GPT5_REASONING_GATED_SAMPLING,
-        needs_background_mode=_needs_background_mode,
-    )
-
-
-def _build_result_from_responses(
-    response: Any,
-    model: str,
-    warnings: list[str] | None = None,
-) -> LLMCallResult:
-    """Build ``LLMCallResult`` from a Responses API response."""
-
-    return _build_result_from_responses_impl(
-        response,
-        model,
-        warnings=warnings,
-        raise_empty_response=_raise_empty_response,
-        empty_policy_finish_reasons=_EMPTY_POLICY_FINISH_REASONS,
-        empty_tool_protocol_finish_reasons=_EMPTY_TOOL_PROTOCOL_FINISH_REASONS,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Background polling for long-thinking models (gpt-5.2-pro xhigh etc.)
 # ---------------------------------------------------------------------------
@@ -895,68 +845,6 @@ async def _aretrieve_background_response(
         response_id=response_id,
         api_base=api_base,
         request_timeout=request_timeout,
-    )
-
-
-def _prepare_call_kwargs(
-    model: str,
-    messages: list[dict[str, Any]],
-    *,
-    timeout: int,
-    num_retries: int,
-    reasoning_effort: str | None,
-    api_base: str | None,
-    kwargs: dict[str, Any],
-    warning_sink: list[str] | None = None,
-) -> dict[str, Any]:
-    """Build kwargs dict shared by call_llm and acall_llm."""
-
-    return _prepare_call_kwargs_impl(
-        model,
-        messages,
-        timeout=timeout,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        kwargs=kwargs,
-        warning_sink=warning_sink,
-        strip_llm_internal_kwargs=_strip_llm_internal_kwargs,
-        resolve_unsupported_param_policy=_resolve_unsupported_param_policy,
-        is_claude_model=_is_claude_model,
-        is_thinking_model=_is_thinking_model,
-        is_responses_api_model=_is_responses_api_model,
-        apply_max_tokens=_apply_max_tokens,
-        coerce_model_incompatible_params=_coerce_model_incompatible_params,
-    )
-
-
-def _first_choice_or_empty_error(
-    response: Any,
-    *,
-    model: str,
-    provider: str,
-) -> Any:
-    """Return first completion choice or raise a typed empty-response error."""
-    return _first_choice_or_empty_error_impl(
-        response,
-        model=model,
-        provider=provider,
-        raise_empty_response=_raise_empty_response,
-    )
-
-
-def _build_result_from_response(
-    response: Any,
-    model: str,
-    warnings: list[str] | None = None,
-) -> LLMCallResult:
-    """Extract all fields from a litellm response into LLMCallResult."""
-    return _build_result_from_response_impl(
-        response,
-        model,
-        warnings=warnings,
-        raise_empty_response=_raise_empty_response,
-        empty_policy_finish_reasons=_EMPTY_POLICY_FINISH_REASONS,
-        empty_tool_protocol_finish_reasons=_EMPTY_TOOL_PROTOCOL_FINISH_REASONS,
     )
 
 

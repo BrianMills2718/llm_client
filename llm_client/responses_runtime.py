@@ -1,22 +1,31 @@
-"""Responses API helper utilities for ``llm_client.client``.
+"""Responses API helper utilities for ``llm_client``.
 
 This module owns the OpenAI Responses API helper cluster: strict schema
 preparation, message/tool/response-format conversion, responses-kwargs
-construction, usage/cost extraction, and result finalization. ``client.py``
-keeps the helper names that tests import directly, while the implementation
-lives here with explicit policy hooks passed in from the client boundary.
+construction, usage/cost extraction, and result finalization. Policy helpers
+are imported directly from ``call_contracts``, ``model_detection``, and
+``background_runtime``.
 """
 
 from __future__ import annotations
 
 import json as _json
 import logging
-from typing import Any, Callable, Collection
+from typing import Any
 
 import litellm
 
+from llm_client.background_runtime import _needs_background_mode
+from llm_client.call_contracts import (
+    _GPT5_REASONING_GATED_SAMPLING,
+    _coerce_model_incompatible_params,
+    _raise_empty_response,
+    _resolve_unsupported_param_policy,
+    _strip_llm_internal_kwargs,
+)
 from llm_client.cost_utils import FALLBACK_COST_FLOOR_USD_PER_TOKEN, _parse_cost_result
 from llm_client.data_types import LLMCallResult
+from llm_client.retry import _EMPTY_POLICY_FINISH_REASONS, _EMPTY_TOOL_PROTOCOL_FINISH_REASONS
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +108,7 @@ def _convert_tools_for_responses_api(tools: list[dict[str, Any]]) -> list[dict[s
     return converted
 
 
-def _prepare_responses_kwargs_impl(
+def _prepare_responses_kwargs(
     model: str,
     messages: list[dict[str, Any]],
     *,
@@ -107,20 +116,15 @@ def _prepare_responses_kwargs_impl(
     reasoning_effort: str | None,
     api_base: str | None,
     kwargs: dict[str, Any],
-    warning_sink: list[str] | None,
-    strip_llm_internal_kwargs: Callable[[dict[str, Any]], dict[str, Any]],
-    resolve_unsupported_param_policy: Callable[[Any], str],
-    coerce_model_incompatible_params: Callable[..., None],
-    reasoning_gated_sampling_models: Collection[str],
-    needs_background_mode: Callable[[str, str | None], bool],
+    warning_sink: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build kwargs for ``litellm.responses()`` / ``litellm.aresponses()``."""
 
-    provider_kwargs = strip_llm_internal_kwargs(kwargs)
-    policy = resolve_unsupported_param_policy(
+    provider_kwargs = _strip_llm_internal_kwargs(kwargs)
+    policy = _resolve_unsupported_param_policy(
         provider_kwargs.pop("unsupported_param_policy", None)
     )
-    coerce_model_incompatible_params(
+    _coerce_model_incompatible_params(
         model=model,
         kwargs=provider_kwargs,
         policy=policy,
@@ -145,10 +149,10 @@ def _prepare_responses_kwargs_impl(
         effort = provider_kwargs.pop("reasoning_effort", None)
     else:
         provider_kwargs.pop("reasoning_effort", None)
-    if effort and model in reasoning_gated_sampling_models:
+    if effort and model in _GPT5_REASONING_GATED_SAMPLING:
         resp_kwargs["reasoning"] = {"effort": effort}
 
-    if needs_background_mode(model, effort):
+    if _needs_background_mode(model, effort):
         resp_kwargs["background"] = True
 
     for key in (
@@ -212,14 +216,11 @@ def _compute_responses_cost(response: Any, usage: dict[str, Any]) -> tuple[float
     return fallback, "fallback_estimate"
 
 
-def _build_result_from_responses_impl(
+def _build_result_from_responses(
     response: Any,
     model: str,
     *,
-    warnings: list[str] | None,
-    raise_empty_response: Callable[..., None],
-    empty_policy_finish_reasons: Collection[str],
-    empty_tool_protocol_finish_reasons: Collection[str],
+    warnings: list[str] | None = None,
 ) -> LLMCallResult:
     """Build ``LLMCallResult`` from a Responses API response."""
 
@@ -309,21 +310,21 @@ def _build_result_from_responses_impl(
             "incomplete_reason": detail_reason or None,
             "output_items": len(getattr(response, "output", None) or []),
         }
-        if detail_reason in empty_policy_finish_reasons or finish_reason in empty_policy_finish_reasons:
-            raise_empty_response(
+        if detail_reason in _EMPTY_POLICY_FINISH_REASONS or finish_reason in _EMPTY_POLICY_FINISH_REASONS:
+            _raise_empty_response(
                 provider="responses_api",
                 classification="provider_policy_block",
                 retryable=False,
                 diagnostics=diagnostics,
             )
-        if detail_reason in empty_tool_protocol_finish_reasons:
-            raise_empty_response(
+        if detail_reason in _EMPTY_TOOL_PROTOCOL_FINISH_REASONS:
+            _raise_empty_response(
                 provider="responses_api",
                 classification="provider_tool_protocol",
                 retryable=False,
                 diagnostics=diagnostics,
             )
-        raise_empty_response(
+        _raise_empty_response(
             provider="responses_api",
             classification="provider_empty_unknown",
             retryable=True,

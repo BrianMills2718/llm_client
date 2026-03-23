@@ -1727,16 +1727,15 @@ Useful when calling call_llm() and parsing JSON manually:
 </details>
 
 <details class="module" id="module-llm_client-completion_runtime">
-  <summary><span class="module-name">llm_client.completion_runtime</span> <span class="module-summary">Completion-path helper utilities for ``llm_client.client``.</span></summary>
+  <summary><span class="module-name">llm_client.completion_runtime</span> <span class="module-summary">Completion-path helper utilities for ``llm_client``.</span></summary>
   <div class="module-body">
-    <p class="summary">Completion-path helper utilities for ``llm_client.client``.</p>
-<pre class="doc">Completion-path helper utilities for ``llm_client.client``.
+    <p class="summary">Completion-path helper utilities for ``llm_client``.</p>
+<pre class="doc">Completion-path helper utilities for ``llm_client``.
 
 This module owns the helper cluster used by the chat-completions path:
 provider-kwargs preparation, provider-hint extraction, first-choice
-normalization, and completion-result finalization. ``client.py`` keeps the
-helper names that callers and tests import, while the implementation lives
-here with explicit policy hooks passed in from the client boundary.</pre>
+normalization, and completion-result finalization. Policy helpers are
+imported directly from ``call_contracts`` and ``model_detection``.</pre>
   </div>
 </details>
 
@@ -4889,16 +4888,16 @@ Args:
 </details>
 
 <details class="module" id="module-llm_client-responses_runtime">
-  <summary><span class="module-name">llm_client.responses_runtime</span> <span class="module-summary">Responses API helper utilities for ``llm_client.client``.</span></summary>
+  <summary><span class="module-name">llm_client.responses_runtime</span> <span class="module-summary">Responses API helper utilities for ``llm_client``.</span></summary>
   <div class="module-body">
-    <p class="summary">Responses API helper utilities for ``llm_client.client``.</p>
-<pre class="doc">Responses API helper utilities for ``llm_client.client``.
+    <p class="summary">Responses API helper utilities for ``llm_client``.</p>
+<pre class="doc">Responses API helper utilities for ``llm_client``.
 
 This module owns the OpenAI Responses API helper cluster: strict schema
 preparation, message/tool/response-format conversion, responses-kwargs
-construction, usage/cost extraction, and result finalization. ``client.py``
-keeps the helper names that tests import directly, while the implementation
-lives here with explicit policy hooks passed in from the client boundary.</pre>
+construction, usage/cost extraction, and result finalization. Policy helpers
+are imported directly from ``call_contracts``, ``model_detection``, and
+``background_runtime``.</pre>
 
 <h4>Constants</h4>
 <table>
