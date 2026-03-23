@@ -306,7 +306,7 @@ multiple files above the plan thresholds:
 
 1. `llm_client/client.py`: `4184` lines
 2. `llm_client/mcp_agent.py`: `3335` lines
-3. `llm_client/agents_codex.py`: `1931` lines
+3. `llm_client/agents_codex.py`: `1747` lines after the first verified agents_codex Plan 11 slice
 4. `llm_client/observability/experiments.py`: `1322` lines
 5. `llm_client/agent_contracts.py`: `1228` lines
 
@@ -315,8 +315,8 @@ Plan 11 slices, so it no longer blocks the hard-threshold criterion.
 
 The next child slice for this program is
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
-with the immediate next tranche focused on `agents_codex.py` isolated-process
-transport extraction.
+with the immediate next tranche continuing `agents_codex.py` decomposition
+after the process-diagnostics extraction.
 
 ### Phase 3: JSONL Log Rotation
 

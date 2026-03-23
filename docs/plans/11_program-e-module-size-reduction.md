@@ -67,6 +67,7 @@ These counts are the current blocker for Program E completion.
 - `llm_client/observability/interventions.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
+- `llm_client/agents_codex_process.py` (new extracted module)
 - `llm_client/observability/experiments.py` (modify/extract if still needed after earlier tranches)
 - `llm_client/agent_contracts.py` (modify/extract if still needed after earlier tranches)
 - `docs/plans/06_simplification-and-observability.md` (update evidence/status)
@@ -248,10 +249,12 @@ Move to `llm_client/agents_codex.py`.
 
 Write scope for the next implementation slice:
 
-1. extract Codex isolated-process transport helpers into a dedicated module
+1. first extract Codex process diagnostics / forced-termination / timeout
+   helpers into a dedicated module
 2. keep `agents_codex.py` as the orchestration facade so public entry points
    stay stable
-3. prove the extracted boundary against both text and structured Codex paths
+3. then use that narrower boundary as the base for a later isolated-process
+   transport extraction
 
 Why this tranche goes next:
 
@@ -261,6 +264,29 @@ Why this tranche goes next:
    visibly separable from CLI transport, result shaping, and streaming
 3. it offers meaningful size reduction without starting with the most central
    modules (`client.py`, `mcp_agent.py`)
+
+**Verified checkpoint 4 (2026-03-22):**
+
+The first `agents_codex.py` slice extracted Codex process diagnostics,
+best-effort process-tree termination, and timeout-message helpers into
+`llm_client/agents_codex_process.py`, while keeping `agents_codex.py` as the
+compatibility and orchestration surface.
+
+What this checkpoint proved:
+
+1. `agents_codex.py` has a real separable OS/process-management concern that
+   can move without touching the CLI transport or streaming surfaces
+2. `agents.py` re-export compatibility remains load-bearing and must be
+   preserved explicitly when helpers move
+3. focused Codex timeout and process-isolation dispatch coverage remained
+   green:
+   - `pytest -q tests/test_agents.py -k 'codex_process_isolation or codex_structured_isolation_dispatch or codex_timeout or codex_transport_auto'`
+   - result: `6 passed, 100 deselected`
+
+Effect on module size:
+
+1. `llm_client/agents_codex.py`: `1931 -> 1747`
+2. new module: `llm_client/agents_codex_process.py` (`213` lines)
 
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 
