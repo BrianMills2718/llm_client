@@ -22,12 +22,12 @@ Browser view: [API_REFERENCE.html](API_REFERENCE.html)
 - `aembed` - Async version of embed(). See embed() for full docs.
 - `ActiveExperimentRun` - Bind an existing run id as the active experiment context.
 - `ActiveFeatureProfile` - Bind a feature profile as the active profile in the current context.
-- `AgentSpecValidationError` - Raised when an AgentSpec fails validation.
-- `AnalysisReport` - Summary of an analysis run.
+- `AsyncCachePolicy` - Protocol for async LLM response caches (Redis, etc.).
+- `AsyncLLMStream` - Async streaming wrapper. Yields text chunks, then exposes ``.result``.
 
 ## Module Catalog
 
-Generated from 93 importable modules under `llm_client`.
+Generated from 86 importable modules under `llm_client`.
 
 Open the HTML file for the full module-by-module docs surface.
 
