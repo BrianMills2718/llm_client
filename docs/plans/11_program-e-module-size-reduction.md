@@ -772,6 +772,43 @@ Acceptance criteria:
 - helper names exported from `client.py` stay intact so downstream tests keep working
 - targeted helper tests and the full client/public-surface suite pass before committing
 
+**Verified checkpoint 19 (2026-03-22):**
+
+Two extraction tranches brought `client.py` below the Program E hard threshold:
+
+Tranche A — collapsed the callback-passing pattern in `completion_runtime.py`
+and `responses_runtime.py` by having them import helpers directly from
+`call_contracts` and `model_detection`. The five thin wrapper stubs in
+`client.py` (for `_prepare_call_kwargs`, `_first_choice_or_empty_error`,
+`_build_result_from_response`, `_prepare_responses_kwargs`,
+`_build_result_from_responses`) were replaced with direct re-exports.
+Background polling facades remained because their callback chain is
+load-bearing for monkeypatch test contracts.
+
+Tranche B — extracted routing/orchestration helpers into
+`llm_client/client_dispatch.py`: routing plan resolution, result
+finalization, structured-call result building, agent-loop kwargs splitting,
+call-event logging, and text/schema utilities (`strip_fences`,
+`_as_text_content`, `_clean_schema_for_gemini`).
+
+What this checkpoint proved:
+
+1. `client.py` now clears the Program E hard-threshold criterion (1,494 lines
+   < 1,500 hard limit)
+2. all downstream modules that access helpers via `_client.xxx` continue to
+   work because `client.py` re-exports every moved name
+3. focused regression coverage remained green:
+   - `pytest -q tests/test_call_contracts.py tests/test_client.py tests/test_public_surface.py tests/test_client_lifecycle.py tests/test_observability_defaults.py`
+   - result: `256 passed`
+
+Effect on module size:
+
+1. `llm_client/client.py`: `2547 -> 1494`
+2. `llm_client/call_contracts.py`: `129 -> 679`
+3. new module: `llm_client/client_dispatch.py` (`519` lines)
+4. `llm_client/completion_runtime.py`: `210 -> 210` (signature change only)
+5. `llm_client/responses_runtime.py`: `354 -> 354` (imports changed only)
+
 **Verified checkpoint 18 (2026-03-22):**
 
 The call-contract helper cluster was extracted from `llm_client/client.py`
