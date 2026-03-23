@@ -170,13 +170,17 @@ stable enough that package-boundary churn is low.
 - MCP agent loop capabilities are unique and cannot be replaced by PydanticAI
 - live-vs-proxy debugging pressure on 2026-03-22 showed a missing shared
   observability capability: controlled replay and divergence diagnosis
+- that replay/divergence capability is now implemented and proved on a real
+  `onto-canon6` mismatch case
 
 ---
 
 ## Current Default Next Step
 
 Program E (Simplification and Observability Modernization) is the active
-program. The default next slice is
-[09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md),
+program. The replay/divergence slice in
+[09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)
+is complete. The default next slice is
+[10_api-reference-generation-pipeline.md](./10_api-reference-generation-pipeline.md),
 then resume the remaining Program E phases. Stop only for a real blocker or
 user redirect.

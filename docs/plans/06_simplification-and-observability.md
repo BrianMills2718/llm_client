@@ -289,6 +289,16 @@ disagree.
 - replay depends on hidden workflow state not present at the call boundary
 - the implementation silently truncates replayable payloads
 
+**Completion evidence (2026-03-22):**
+
+- Plan: [09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)
+- Proof note:
+  [2026-03-22_replay_divergence_proof_slice.md](../reviews/2026-03-22_replay_divergence_proof_slice.md)
+- real proof rows:
+  - live `201474`
+  - parity `201477`
+  - replay `201480`
+
 ### Phase 3: JSONL Log Rotation
 
 **Purpose:** Prevent unbounded log growth with date-based file rotation.

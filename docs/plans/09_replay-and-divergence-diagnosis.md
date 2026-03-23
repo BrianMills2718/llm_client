@@ -1,6 +1,6 @@
 # Plan 09: Replay And Divergence Diagnosis
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -210,12 +210,76 @@ documented proof case
 
 ## Acceptance Criteria
 
-- [ ] ADR 0014 is accepted and linked in governance surfaces
-- [ ] Snapshot identity and replay boundary are documented before implementation
-- [ ] New fingerprint, diff, and replay tests pass
-- [ ] Existing observability and client tests pass
-- [ ] Operator CLI exists for compare/replay workflows
-- [ ] One real known divergence case is diagnosed through the shared surface
+- [x] ADR 0014 is accepted and linked in governance surfaces
+- [x] Snapshot identity and replay boundary are documented before implementation
+- [x] New fingerprint, diff, and replay tests pass
+- [x] Existing observability and client tests pass
+- [x] Operator CLI exists for compare/replay workflows
+- [x] One real known divergence case is diagnosed through the shared surface
+
+---
+
+## Completion Evidence
+
+The implementation and proof slice completed on 2026-03-22.
+
+### Fresh Cross-Project Proof Case
+
+The proof case used the known `onto-canon6` chunk-003 live-vs-parity mismatch
+under fresh observability project labels so the rows carried call snapshots and
+fingerprints:
+
+1. live extraction call: `201474`
+   - project: `onto-canon6-plan09-proof-live`
+   - prompt ref:
+     `onto_canon6.extraction.text_to_candidate_assertions_compact_v4@1`
+2. parity prompt-eval call: `201477`
+   - project: `onto-canon6-plan09-proof-prompt-eval`
+   - prompt ref:
+     `onto_canon6.extraction.prompt_eval_text_to_candidate_assertions_compact_operational_parity@2`
+3. replayed live call: `201480`
+   - project: `onto-canon6-plan09-proof-replay`
+   - trace id: `plan09-proof-replay-live-201474`
+
+### What The Shared Surface Proved
+
+`python -m llm_client replay compare --left-call-id 201474 --right-call-id 201477`
+showed the live/parity divergence through shared infrastructure only:
+
+1. fingerprints do not match;
+2. the parity call includes explicit `temperature=0.0` while the live call does
+   not;
+3. the user wrapper text differs (`source text` vs `source material`, plus
+   prompt-eval case wrapper text); and
+4. the result payloads differ.
+
+`python -m llm_client replay rerun --call-id 201474 ...` proved
+non-destructive replay under a fresh trace/project tag. Comparing the original
+call to replay call `201480` showed:
+
+1. `fingerprints_match=True`;
+2. `request: no request differences`; and
+3. `result.response` still differed, proving why replay plus compare is needed
+   instead of fingerprinting alone.
+
+### Verification
+
+Code verification already completed during implementation:
+
+1. `python -m py_compile ...`
+2. `pytest -q tests/test_observability_replay.py tests/test_cli_replay.py tests/test_io_log.py tests/test_public_surface.py`
+3. `pytest -q tests/test_io_log_compat.py tests/test_client_lifecycle.py`
+4. `pytest -q tests/test_client.py`
+5. `python scripts/meta/validate_relationships.py`
+6. `python scripts/meta/generate_api_reference.py --write`
+
+Proof-slice verification:
+
+1. fresh live `onto-canon6` extraction call captured with snapshot fields
+2. fresh `prompt_eval` parity call captured with snapshot fields
+3. `python -m llm_client replay compare --left-call-id 201474 --right-call-id 201477 --format text`
+4. `python -m llm_client replay rerun --call-id 201474 --trace-id plan09-proof-replay-live-201474 --project onto-canon6-plan09-proof-replay --task budget_extraction --max-budget 0.0 --format text`
+5. `python -m llm_client replay compare --left-call-id 201474 --right-call-id 201480 --format text`
 
 ---
 
