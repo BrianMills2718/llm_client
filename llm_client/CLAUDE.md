@@ -7,7 +7,9 @@ Read these first when working under `llm_client/`:
 
 1. [`../CLAUDE.md`](../CLAUDE.md)
 2. [`../docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)
-3. [`../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md`](../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md)
+3. [`../docs/API_REFERENCE.html`](../docs/API_REFERENCE.html)
+4. [`../scripts/meta/generate_api_reference.py`](../scripts/meta/generate_api_reference.py)
+5. [`../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md`](../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md)
 
 ## Local Surfaces
 
@@ -26,3 +28,5 @@ Read these first when working under `llm_client/`:
 3. Keep data directories data-only unless a local routing doc is needed.
 4. When a local rule changes, update this file and the leaf subtree file rather
    than repeating parent policy.
+5. Regenerate the API reference after changing any public module docstring,
+   signature, or export surface.

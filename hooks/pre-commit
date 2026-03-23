@@ -62,7 +62,23 @@ if [[ -n "$DOC_COUPLING" ]]; then
     fi
 fi
 
-# 3. Mypy on changed src/ files (if mypy is installed)
+# 3. Generated API reference sync (if generator exists)
+API_REFERENCE_GEN=$(find_script "generate_api_reference.py")
+if [[ -n "$API_REFERENCE_GEN" ]]; then
+    STAGED_API=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(llm_client/.*\.py|docs/API_REFERENCE\.(md|html)|scripts/meta/generate_api_reference\.py|scripts/doc_coupling\.yaml)$' || true)
+    if [[ -n "$STAGED_API" ]]; then
+        echo "Checking API reference docs..."
+        if ! python "$API_REFERENCE_GEN" --check 2>/dev/null; then
+            echo ""
+            echo "ERROR: API reference docs are out of sync!"
+            echo "Run 'python $API_REFERENCE_GEN --write' to regenerate them."
+            echo ""
+            exit 1
+        fi
+    fi
+fi
+
+# 4. Mypy on changed src/ files (if mypy is installed)
 STAGED_SRC=$(echo "$STAGED_PY" | grep '^src/' || true)
 if [[ -n "$STAGED_SRC" ]] && command -v mypy >/dev/null 2>&1; then
     echo "Running mypy on changed files..."
@@ -74,7 +90,7 @@ if [[ -n "$STAGED_SRC" ]] && command -v mypy >/dev/null 2>&1; then
     fi
 fi
 
-# 4. Plan status consistency (if script exists and plan files staged)
+# 5. Plan status consistency (if script exists and plan files staged)
 SYNC_STATUS=$(find_script "sync_plan_status.py")
 if [[ -n "$SYNC_STATUS" ]]; then
     STAGED_PLANS=$(git diff --cached --name-only --diff-filter=ACM | grep '^docs/plans/' || true)
@@ -90,7 +106,7 @@ if [[ -n "$SYNC_STATUS" ]]; then
     fi
 fi
 
-# 5. Branch divergence check
+# 6. Branch divergence check
 echo "Checking branch freshness..."
 git fetch origin 2>/dev/null || true
 

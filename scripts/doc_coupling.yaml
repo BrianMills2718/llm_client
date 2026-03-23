@@ -1,1 +1,9 @@
-couplings: []
+couplings:
+  - description: Generated browser API reference for the public llm_client package surface
+    sources:
+      - llm_client/*.py
+      - llm_client/**/*.py
+      - scripts/meta/generate_api_reference.py
+    docs:
+      - docs/API_REFERENCE.md
+      - docs/API_REFERENCE.html
