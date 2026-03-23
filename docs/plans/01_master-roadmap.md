@@ -196,7 +196,9 @@ the next tranche having cleared `agents_codex.py` below the hard threshold via
 by extracting the turn-execution implementation into
 `mcp_turn_execution.py`, so the next default Plan 11 slice is the
 `mcp_turn_execution.py` follow-on decomposition. The first cleanup pass has
-already removed duplicate runtime facades there, reducing it from `3202` to
-`2711`, and the next tranche now moves the per-turn
-bookkeeping/finalization split out of the new module before Program E turns to
+already removed duplicate runtime facades there, the next verified slice split
+end-of-run bookkeeping into `mcp_loop_summary.py`, and the latest verified
+slice extracted per-turn tool processing into `mcp_turn_tools.py`, reducing
+`mcp_turn_execution.py` from `3202` to `2105`. The next tranche now targets
+the post-tool outcome/evidence/submission block before Program E turns to
 `client.py`. Stop only for a real blocker or user redirect.

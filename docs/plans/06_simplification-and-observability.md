@@ -305,7 +305,7 @@ Program E is not ready to close yet. A fresh module-size audit still shows
 multiple files above the plan thresholds:
 
 1. `llm_client/client.py`: `4184` lines
-2. `llm_client/mcp_turn_execution.py`: `2711` lines
+2. `llm_client/mcp_turn_execution.py`: `2105` lines
 3. `llm_client/observability/experiments.py`: `1322` lines
 4. `llm_client/agent_contracts.py`: `1228` lines
 
@@ -316,14 +316,15 @@ verified Plan 11 slices, so it also no longer blocks the hard-threshold
 criterion. `llm_client/mcp_agent.py` was reduced from `3335` to `1037` by the
 turn-execution extraction, so it likewise no longer blocks the hard-threshold
 criterion. The extracted `llm_client/mcp_turn_execution.py` follow-on slice
-has already removed duplicate MCP runtime facades, reducing that module from
-`3202` to `2711`, but it remains the current hard-threshold blocker.
+has already removed duplicate MCP runtime facades, split final bookkeeping,
+and extracted the per-turn tool-processing path, reducing that module from
+`3202` to `2105`, but it remains the current hard-threshold blocker.
 
 The next child slice for this program is
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
 with the immediate next tranche now explicitly selected as the
-`mcp_turn_execution.py` follow-on decomposition before the program moves on to
-`client.py`.
+`mcp_turn_execution.py` post-tool outcome/evidence/submission decomposition
+before the program moves on to `client.py`.
 
 ### Phase 3: JSONL Log Rotation
 

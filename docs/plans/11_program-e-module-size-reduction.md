@@ -45,12 +45,14 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_turn_execution.py`: `2711`
-3. `llm_client/observability/experiments.py`: `1322`
-4. `llm_client/agent_contracts.py`: `1228`
-5. `llm_client/agents_codex.py`: `1317`
-6. `llm_client/io_log.py`: `1222`
-7. `llm_client/mcp_agent.py`: `1037`
+2. `llm_client/mcp_turn_execution.py`: `2105`
+3. `llm_client/mcp_loop_summary.py`: `522`
+4. `llm_client/mcp_turn_tools.py`: `702`
+5. `llm_client/observability/experiments.py`: `1322`
+6. `llm_client/agent_contracts.py`: `1228`
+7. `llm_client/agents_codex.py`: `1317`
+8. `llm_client/io_log.py`: `1222`
+9. `llm_client/mcp_agent.py`: `1037`
 
 These counts are the current audit baseline for the remaining oversize set.
 
@@ -67,6 +69,8 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/observability/events.py` (compatibility facade wiring)
 - `llm_client/observability/interventions.py` (new extracted module)
 - `llm_client/mcp_turn_execution.py` (new extracted module)
+- `llm_client/mcp_loop_summary.py` (new extracted module)
+- `llm_client/mcp_turn_tools.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
@@ -295,27 +299,79 @@ Effect on module size:
 
 1. `llm_client/mcp_turn_execution.py`: `3202 -> 2711`
 
-**Selected next tranche (2026-03-22, post-mcp_agent closeout):**
+**Verified checkpoint 8 (2026-03-22):**
 
-Move to `llm_client/mcp_turn_execution.py`.
+The end-of-run summary / metadata writeout was extracted from
+`llm_client/mcp_turn_execution.py` into `llm_client/mcp_loop_summary.py`.
+
+What this checkpoint proved:
+
+1. the long metadata/failure-summary tail is a clean, test-covered boundary
+   separate from turn orchestration
+2. the extraction keeps `mcp_turn_execution.py` focused on control flow rather
+   than final bookkeeping
+3. the remaining oversize debt is still real, so the next slice must keep
+   splitting `mcp_turn_execution.py` rather than moving on prematurely
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `2711 -> 2581`
+2. new module: `llm_client/mcp_loop_summary.py` (`522` lines)
+
+**Verified checkpoint 9 (2026-03-22):**
+
+The per-turn tool-processing path was extracted from
+`llm_client/mcp_turn_execution.py` into `llm_client/mcp_turn_tools.py`.
+
+What this checkpoint proved:
+
+1. compliance-gate validation, tool-contract validation, control-loop
+   suppression, runtime-artifact reads, external tool execution, and
+   artifact/binding/capability reconciliation form a coherent boundary
+   separate from turn orchestration
+2. the turn orchestrator can delegate that dense mid-loop path without losing
+   the existing MCP-agent behavior proved by the focused regression suites
+3. the extracted helper needed one follow-on fix for the control-churn
+   bookkeeping path, which confirms the value of keeping these slices small
+   and verified before moving on
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `2581 -> 2105`
+2. new module: `llm_client/mcp_turn_tools.py` (`702` lines)
+
+**Selected next tranche (2026-03-22, post-tool-processing extraction):**
+
+Stay on `llm_client/mcp_turn_execution.py`.
 
 Write scope for the next implementation slice:
 
-1. split per-turn bookkeeping / finalization concerns out of
-   `mcp_turn_execution.py` into narrower helpers
-2. keep `mcp_agent.py` as the orchestration facade so public runtime entry
-   points stay stable
-3. keep monkeypatch-sensitive helpers resolving through the facade boundary
-   so the existing test contract remains truthful
+1. extract the post-tool outcome handling block from `mcp_turn_execution.py`
+   into a dedicated helper module
+2. move the evidence-digest update, retrieval-stagnation policy,
+   `submit_answer` bookkeeping, TODO-state injection, and control-churn
+   threshold handling behind a narrower interface
+3. keep `mcp_turn_execution.py` as the per-turn orchestrator that sequences
+   prompt calls, tool execution, and finalization decisions
 
 Why this tranche goes next:
 
-1. `mcp_turn_execution.py` is now the clearest remaining hard-threshold
-   blocker after `mcp_agent.py` was reduced below the threshold
-2. the per-turn bookkeeping / finalization split is a coherent responsibility
-   that is visibly separable from the turn orchestrator itself
-3. it offers meaningful size reduction without starting with the even more
-   central `client.py` facade
+1. `mcp_turn_execution.py` is still the clearest remaining hard-threshold
+   blocker after the tool-processing extraction
+2. the post-tool outcome block is the next largest coherent responsibility
+   after the tool-processing path moved out
+3. this keeps Program E reducing the active blocker instead of jumping
+   prematurely to `client.py`
 
 **Verified checkpoint 4 (2026-03-22):**
 
