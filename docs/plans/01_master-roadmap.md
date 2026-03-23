@@ -172,6 +172,8 @@ stable enough that package-boundary churn is low.
   observability capability: controlled replay and divergence diagnosis
 - that replay/divergence capability is now implemented and proved on a real
   `onto-canon6` mismatch case
+- the generated browser API reference is now code-derived and guarded by a
+  `--check` pipeline in pre-commit
 
 ---
 
@@ -180,7 +182,9 @@ stable enough that package-boundary churn is low.
 Program E (Simplification and Observability Modernization) is the active
 program. The replay/divergence slice in
 [09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)
-is complete. The default next slice is
-[10_api-reference-generation-pipeline.md](./10_api-reference-generation-pipeline.md),
+and the API reference slice in
+[10_api-reference-generation-pipeline.md](./10_api-reference-generation-pipeline.md)
+are complete. The default next slice is
+[11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
 then resume the remaining Program E phases. Stop only for a real blocker or
 user redirect.

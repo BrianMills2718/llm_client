@@ -299,6 +299,21 @@ disagree.
   - parity `201477`
   - replay `201480`
 
+### Remaining Completion Gap (2026-03-22 audit)
+
+Program E is not ready to close yet. A fresh module-size audit still shows
+multiple files above the plan thresholds:
+
+1. `llm_client/client.py`: `4184` lines
+2. `llm_client/mcp_agent.py`: `3335` lines
+3. `llm_client/io_log.py`: `2102` lines
+4. `llm_client/agents_codex.py`: `1931` lines
+5. `llm_client/observability/experiments.py`: `1322` lines
+6. `llm_client/agent_contracts.py`: `1228` lines
+
+The next child slice for this program is
+[11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md).
+
 ### Phase 3: JSONL Log Rotation
 
 **Purpose:** Prevent unbounded log growth with date-based file rotation.
