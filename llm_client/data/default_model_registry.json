@@ -102,6 +102,36 @@
     },
     {
       "api_key_env": "OPENROUTER_API_KEY",
+      "context": 400000,
+      "cost": 1.69,
+      "intelligence": 44,
+      "litellm_id": "openrouter/openai/gpt-5.4-mini",
+      "name": "gpt-5.4-mini",
+      "provider": "openrouter",
+      "speed": 130,
+      "structured_output": true,
+      "tags": [
+        "reliable-structured",
+        "strong-tool-calling"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
+      "context": 400000,
+      "cost": 0.46,
+      "intelligence": 33,
+      "litellm_id": "openrouter/openai/gpt-5.4-nano",
+      "name": "gpt-5.4-nano",
+      "provider": "openrouter",
+      "speed": 150,
+      "structured_output": true,
+      "tags": [
+        "cheap",
+        "strong-tool-calling"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
       "context": 2000000,
       "cost": 0.28,
       "intelligence": 39,
