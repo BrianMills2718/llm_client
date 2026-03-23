@@ -150,6 +150,26 @@ submodules with clearer seams
 - extraction only moves code without improving responsibility boundaries
 - compatibility surfaces silently drift
 
+**Verified checkpoint 1 (2026-03-22):**
+
+The intervention storage surface was extracted from `io_log.py` into
+`llm_client/observability/interventions.py`, with `io_log.py` kept as the
+compatibility facade.
+
+What this checkpoint proved:
+
+1. the tranche is viable without touching the core call hot path
+2. the extraction surfaced and fixed a real latent bug in the old
+   implementation (`log_intervention()` referenced missing `_resolve_project()`)
+3. focused regression coverage remained green:
+   - `pytest -q tests/test_experiment_log.py tests/test_io_log_compat.py`
+   - result: `68 passed`
+
+Effect on module size:
+
+1. `llm_client/io_log.py`: `2102 -> 2011`
+2. new module: `llm_client/observability/interventions.py` (`180` lines)
+
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 
 **Purpose:** continue through the remaining oversized modules or document a

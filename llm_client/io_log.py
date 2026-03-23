@@ -1947,67 +1947,26 @@ def log_intervention(
     measured_impact: str | None = None,
     status: str = "verified",
 ) -> str:
-    """Log a structured intervention — a change made to fix a diagnosed problem.
+    """Compatibility shim: delegate to observability.interventions.log_intervention."""
+    from llm_client.observability.interventions import (
+        log_intervention as _log_intervention,
+    )
 
-    An intervention links a specific code/prompt/config change to its
-    measured impact on benchmark results.
-
-    Args:
-        description: Short name for the intervention (e.g. "Add TODO warning")
-        problem: What was failing and why (traced root cause)
-        fix: What was changed (code, prompt, config)
-        category: One of: prompt, tool, infra, config, graph, model
-        project: Project name (default: auto-detected)
-        dataset: Dataset this was tested against
-        git_commit: Commit SHA of the fix (auto-detected if None)
-        baseline_run_id: Run ID before the fix
-        verification_run_id: Run ID after the fix
-        affected_items: List of item_ids that were expected to change
-        expected_impact: What we expected to happen
-        measured_impact: What actually happened (e.g. "+4 EM on 2-hop")
-        status: One of: proposed, verified, reverted, superseded
-
-    Returns:
-        intervention_id
-    """
-    conn = _get_db()
-    if conn is None:
-        return ""
-
-    intervention_id = uuid.uuid4().hex[:12]
-    ts = datetime.now(timezone.utc).isoformat()
-
-    if git_commit is None:
-        try:
-            from llm_client.git_utils import get_git_head
-            git_commit = get_git_head()
-        except Exception:
-            git_commit = None
-
-    if project is None:
-        project = _resolve_project()
-
-    affected_json = json.dumps(affected_items) if affected_items else None
-
-    try:
-        conn.execute(
-            """INSERT INTO interventions
-            (intervention_id, timestamp, project, dataset, git_commit, category,
-             description, problem, fix, baseline_run_id, verification_run_id,
-             affected_items, expected_impact, measured_impact, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                intervention_id, ts, project, dataset, git_commit, category,
-                description, problem, fix, baseline_run_id, verification_run_id,
-                affected_json, expected_impact, measured_impact, status,
-            ),
-        )
-        conn.commit()
-    except Exception as e:
-        logger.warning("Failed to log intervention: %s", e)
-        return ""
-
-    return intervention_id
+    return _log_intervention(
+        description=description,
+        problem=problem,
+        fix=fix,
+        category=category,
+        project=project,
+        dataset=dataset,
+        git_commit=git_commit,
+        baseline_run_id=baseline_run_id,
+        verification_run_id=verification_run_id,
+        affected_items=affected_items,
+        expected_impact=expected_impact,
+        measured_impact=measured_impact,
+        status=status,
+    )
 
 
 def get_interventions(
@@ -2018,48 +1977,18 @@ def get_interventions(
     status: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Query logged interventions.
+    """Compatibility shim: delegate to observability.interventions.get_interventions."""
+    from llm_client.observability.interventions import (
+        get_interventions as _get_interventions,
+    )
 
-    Returns list of intervention dicts, most recent first.
-    """
-    conn = _get_db()
-    if conn is None:
-        return []
-
-    clauses = []
-    params: list[Any] = []
-    if project:
-        clauses.append("project = ?")
-        params.append(project)
-    if dataset:
-        clauses.append("dataset = ?")
-        params.append(dataset)
-    if category:
-        clauses.append("category = ?")
-        params.append(category)
-    if status:
-        clauses.append("status = ?")
-        params.append(status)
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(limit)
-
-    rows = conn.execute(
-        f"SELECT * FROM interventions {where} ORDER BY timestamp DESC LIMIT ?",
-        params,
-    ).fetchall()
-
-    cols = [d[0] for d in conn.execute("SELECT * FROM interventions LIMIT 0").description]
-    results = []
-    for row in rows:
-        d = dict(zip(cols, row))
-        if d.get("affected_items"):
-            try:
-                d["affected_items"] = json.loads(d["affected_items"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        results.append(d)
-    return results
+    return _get_interventions(
+        project=project,
+        dataset=dataset,
+        category=category,
+        status=status,
+        limit=limit,
+    )
 
 
 def update_intervention(
@@ -2069,34 +1998,14 @@ def update_intervention(
     measured_impact: str | None = None,
     status: str | None = None,
 ) -> bool:
-    """Update an existing intervention with verification results."""
-    conn = _get_db()
-    if conn is None:
-        return False
+    """Compatibility shim: delegate to observability.interventions.update_intervention."""
+    from llm_client.observability.interventions import (
+        update_intervention as _update_intervention,
+    )
 
-    sets = []
-    params: list[Any] = []
-    if verification_run_id is not None:
-        sets.append("verification_run_id = ?")
-        params.append(verification_run_id)
-    if measured_impact is not None:
-        sets.append("measured_impact = ?")
-        params.append(measured_impact)
-    if status is not None:
-        sets.append("status = ?")
-        params.append(status)
-
-    if not sets:
-        return False
-
-    params.append(intervention_id)
-    try:
-        conn.execute(
-            f"UPDATE interventions SET {', '.join(sets)} WHERE intervention_id = ?",
-            params,
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.warning("Failed to update intervention %s: %s", intervention_id, e)
-        return False
+    return _update_intervention(
+        intervention_id,
+        verification_run_id=verification_run_id,
+        measured_impact=measured_impact,
+        status=status,
+    )

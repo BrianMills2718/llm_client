@@ -1127,3 +1127,47 @@ class TestAgentSpecEnforcement:
         assert prov["agent_spec"]["summary"]["source"].endswith("agent_spec.json")
         assert prov["agent_spec"]["summary"]["tool_count"] == 2
         assert prov["agent_spec"]["summary"]["contract_count"] == 2
+
+
+class TestInterventionLog:
+    def test_log_intervention_defaults_project_and_decodes_items(self, tmp_path):
+        intervention_id = io_log.log_intervention(
+            description="Tighten benchmark prompt",
+            problem="A benchmark case over-extracted narrator voice",
+            fix="Adjusted the prompt and reran the case",
+            category="prompt",
+            dataset="psyop_eval_slice",
+            affected_items=["psyop_017"],
+        )
+
+        assert intervention_id
+        interventions = io_log.get_interventions(limit=1)
+        assert len(interventions) == 1
+        record = interventions[0]
+        assert record["intervention_id"] == intervention_id
+        assert record["project"] == "test_project"
+        assert record["dataset"] == "psyop_eval_slice"
+        assert record["affected_items"] == ["psyop_017"]
+
+    def test_update_intervention_persists_verification_fields(self, tmp_path):
+        intervention_id = io_log.log_intervention(
+            description="Add replay compare CLI",
+            problem="Operators could not compare call contracts directly",
+            fix="Added replay compare and rerun commands",
+            category="infra",
+            status="proposed",
+        )
+
+        updated = io_log.update_intervention(
+            intervention_id,
+            verification_run_id="run_after_fix",
+            measured_impact="diagnosed mismatch without repo-local diff logic",
+            status="verified",
+        )
+
+        assert updated is True
+        record = io_log.get_interventions(limit=1)[0]
+        assert record["intervention_id"] == intervention_id
+        assert record["verification_run_id"] == "run_after_fix"
+        assert record["measured_impact"] == "diagnosed mismatch without repo-local diff logic"
+        assert record["status"] == "verified"
