@@ -45,16 +45,17 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_turn_execution.py`: `1800`
-3. `llm_client/mcp_turn_tools.py`: `702`
-4. `llm_client/mcp_loop_summary.py`: `522`
-5. `llm_client/mcp_turn_outcomes.py`: `503`
-6. `llm_client/mcp_turn_completion.py`: `369`
-7. `llm_client/observability/experiments.py`: `1322`
-8. `llm_client/agent_contracts.py`: `1228`
-9. `llm_client/agents_codex.py`: `1317`
-10. `llm_client/io_log.py`: `1222`
-11. `llm_client/mcp_agent.py`: `1037`
+2. `llm_client/mcp_turn_execution.py`: `1339`
+3. `llm_client/mcp_turn_model.py`: `944`
+4. `llm_client/mcp_turn_tools.py`: `702`
+5. `llm_client/mcp_loop_summary.py`: `522`
+6. `llm_client/mcp_turn_outcomes.py`: `503`
+7. `llm_client/mcp_turn_completion.py`: `369`
+8. `llm_client/observability/experiments.py`: `1322`
+9. `llm_client/agent_contracts.py`: `1228`
+10. `llm_client/agents_codex.py`: `1317`
+11. `llm_client/io_log.py`: `1222`
+12. `llm_client/mcp_agent.py`: `1037`
 
 These counts are the current audit baseline for the remaining oversize set.
 
@@ -478,6 +479,60 @@ Why this tranche goes next:
    handling
 3. if that slice lands cleanly, `mcp_turn_execution.py` should stop blocking
    Program E and the plan can shift to `client.py`
+
+**Verified checkpoint 12 (2026-03-22):**
+
+The pre-call tool-surface/disclosure/LLM-dispatch block was extracted from
+`llm_client/mcp_turn_execution.py` into `llm_client/mcp_turn_model.py`,
+leaving `mcp_turn_execution.py` as the per-turn orchestrator that sequences
+budget gates, the model stage, tool execution, outcome handling, and
+completion.
+
+What this checkpoint proved:
+
+1. active-artifact context updates, context compaction, progressive
+   disclosure, deficit nudges, model dispatch, and no-tool handling form a
+   coherent boundary separate from the turn loop
+2. `mcp_turn_execution.py` now clears the Program E hard-threshold criterion,
+   so the active blocker can honestly shift from MCP-turn orchestration to
+   `client.py`
+3. the extracted model-stage helper can preserve the existing call semantics
+   without weakening focused MCP-agent regression coverage
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `1800 -> 1339`
+2. new module: `llm_client/mcp_turn_model.py` (`944` lines)
+
+**Selected next tranche (2026-03-22, post-model-stage extraction):**
+
+Shift the active blocker to `llm_client/client.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the lifecycle/heartbeat monitoring cluster from `client.py` into a
+   dedicated runtime-local module
+2. move `_LLMCallProgressSnapshot`, `_LLMCallProgressReporter`,
+   lifecycle-event helpers, and the sync/async heartbeat monitors behind a
+   narrower interface that `client.py` can call from its public entrypoints
+3. keep `client.py` as the public facade that owns routing and public call
+   signatures while delegating lifecycle observability internals to the new
+   module
+
+Why this tranche goes next:
+
+1. `client.py` is now the clearest remaining hard-threshold blocker in
+   Program E
+2. the lifecycle/heartbeat surface is a large, recent, observability-local
+   seam rather than an arbitrary helper grab-bag
+3. this slice reduces shared infrastructure debt directly in the same area
+   where replay/divergence diagnosis and call-lifecycle observability have
+   already been improved
 
 **Verified checkpoint 4 (2026-03-22):**
 

@@ -305,27 +305,28 @@ Program E is not ready to close yet. A fresh module-size audit still shows
 multiple files above the plan thresholds:
 
 1. `llm_client/client.py`: `4184` lines
-2. `llm_client/mcp_turn_execution.py`: `1800` lines
+2. `llm_client/mcp_turn_execution.py`: `1339` lines
 3. `llm_client/observability/experiments.py`: `1322` lines
-4. `llm_client/agent_contracts.py`: `1228` lines
+4. `llm_client/agents_codex.py`: `1317` lines
+5. `llm_client/agent_contracts.py`: `1228` lines
 
 `llm_client/io_log.py` was reduced from `2102` to `1222` across three verified
 Plan 11 slices, so it no longer blocks the hard-threshold criterion.
 `llm_client/agents_codex.py` was reduced from `1931` to `1317` across two
-verified Plan 11 slices, so it also no longer blocks the hard-threshold
-criterion. `llm_client/mcp_agent.py` was reduced from `3335` to `1037` by the
-turn-execution extraction, so it likewise no longer blocks the hard-threshold
-criterion. The extracted `llm_client/mcp_turn_execution.py` follow-on slice
-has already removed duplicate MCP runtime facades, split final bookkeeping,
-and extracted the per-turn tool-processing path, post-tool outcomes, and the
-post-loop completion handoff, reducing that module from `3202` to `1800`, but
-it remains the current hard-threshold blocker.
+verified Plan 11 slices, so it is below the hard threshold but still slightly
+above the soft target. `llm_client/mcp_agent.py` was reduced from `3335` to
+`1037` by the turn-execution extraction, so it likewise no longer blocks the
+hard-threshold criterion. The extracted
+`llm_client/mcp_turn_execution.py` follow-on slices then removed duplicate MCP
+runtime facades, split final bookkeeping, extracted the per-turn
+tool-processing path, post-tool outcomes, post-loop completion handoff, and
+the pre-call model stage, reducing that module from `3202` to `1339`. That
+means it no longer blocks the hard-threshold criterion either.
 
 The next child slice for this program is
 [11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md),
-with the immediate next tranche now explicitly selected as the
-`mcp_turn_execution.py` pre-call tool-surface/disclosure/LLM-dispatch
-decomposition before the program moves on to `client.py`.
+with the immediate next tranche now explicitly selected as the `client.py`
+lifecycle/heartbeat monitoring extraction.
 
 ### Phase 3: JSONL Log Rotation
 

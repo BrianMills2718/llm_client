@@ -203,6 +203,9 @@ slice extracted per-turn tool processing into `mcp_turn_tools.py`, reducing
 extracted the post-tool outcome path into `mcp_turn_outcomes.py`, reducing it
 again to `1877`; the next verified slice then extracted the post-loop
 completion handoff into `mcp_turn_completion.py`, reducing it to `1800`. The
-next tranche now targets the pre-call tool-surface/disclosure/LLM-dispatch
-block before Program E turns to `client.py`. Stop only for a real blocker or
-user redirect.
+next verified slice extracted the pre-call tool-surface/disclosure/
+LLM-dispatch block into `mcp_turn_model.py`, reducing
+`mcp_turn_execution.py` to `1339` and clearing it below the hard threshold.
+The default next Plan 11 slice now shifts to `client.py`, starting with the
+lifecycle/heartbeat monitoring cluster. Stop only for a real blocker or user
+redirect.

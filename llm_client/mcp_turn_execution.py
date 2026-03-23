@@ -156,6 +156,7 @@ from llm_client.mcp_finalization import (  # noqa: F401  re-exported
     _provider_failure_classification as _provider_failure_classification,
 )
 from llm_client.mcp_loop_summary import _apply_agent_loop_summary
+from llm_client.mcp_turn_model import _run_turn_model_stage
 from llm_client.mcp_turn_outcomes import _process_turn_outcomes
 from llm_client.mcp_turn_tools import _process_tool_calls_turn
 from llm_client.mcp_state import (  # noqa: F401  re-exported
@@ -720,599 +721,137 @@ async def _agent_loop(
                 last_budget_remaining = remaining_tool_calls
 
         agent_result.turns = turn + 1
-
-        (
-            artifact_context_message_index,
-            artifact_context_content,
-            artifact_context_changed,
-        ) = _upsert_active_artifact_context_message(
-            messages,
+        turn_model = await _run_turn_model_stage(
+            turn=turn,
+            model=model,
+            effective_model=effective_model,
+            attempted_models=attempted_models,
+            sticky_fallback=sticky_fallback,
+            messages=messages,
+            openai_tools=openai_tools,
+            runtime_artifact_registry_by_id=runtime_artifact_registry_by_id,
+            runtime_artifact_read_tool=runtime_artifact_read_tool,
+            tool_result_metadata_by_id=tool_result_metadata_by_id,
+            agent_result=agent_result,
+            max_turns=max_turns,
+            max_tool_calls=max_tool_calls,
+            max_message_chars=max_message_chars,
+            tool_result_keep_recent=tool_result_keep_recent,
+            tool_result_context_preview_chars=tool_result_context_preview_chars,
+            progressive_tool_disclosure=progressive_tool_disclosure,
+            normalized_tool_contracts=normalized_tool_contracts,
             available_artifacts=available_artifacts,
             available_capabilities=available_capabilities,
-            tool_result_metadata_by_id=tool_result_metadata_by_id,
-            enabled=active_artifact_context_enabled,
-            max_handles=active_artifact_context_max_handles,
-            max_chars=active_artifact_context_max_chars,
-            existing_index=artifact_context_message_index,
+            available_bindings=available_bindings,
+            prev_turn_deficit_digest=prev_turn_deficit_digest,
+            prev_turn_had_evidence_tools=prev_turn_had_evidence_tools,
+            deficit_no_progress_streak=deficit_no_progress_streak,
+            max_deficit_no_progress_streak=max_deficit_no_progress_streak,
+            deficit_no_progress_last_nudged=deficit_no_progress_last_nudged,
+            plain_text_no_tool_turn_streak=plain_text_no_tool_turn_streak,
+            require_tool_reasoning=require_tool_reasoning,
+            timeout=timeout,
+            kwargs=kwargs,
+            foundation_run_id=foundation_run_id,
+            foundation_session_id=foundation_session_id,
+            foundation_actor_id=foundation_actor_id,
+            emit_foundation_event=_emit_foundation_event,
+            inner_acall_llm=_inner_acall_llm,
+            is_responses_api_raw_response=_is_responses_api_raw_response,
+            artifact_context_message_index=artifact_context_message_index,
+            active_artifact_context_enabled=active_artifact_context_enabled,
+            active_artifact_context_max_handles=active_artifact_context_max_handles,
+            active_artifact_context_max_chars=active_artifact_context_max_chars,
+            requires_submit_answer=requires_submit_answer,
+            submit_answer_succeeded=submit_answer_succeeded,
+            current_tool_call_count=len(agent_result.tool_calls),
+            turn_warning_threshold=TURN_WARNING_THRESHOLD,
+            disclosure_token_chars=DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS,
+            event_code_no_legal_noncontrol_tools=EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS,
+            event_code_provider_empty=EVENT_CODE_PROVIDER_EMPTY,
         )
-        if artifact_context_changed and artifact_context_content:
-            artifact_context_updates += 1
-            artifact_context_chars += len(artifact_context_content)
-            agent_result.conversation_trace.append(
-                {
-                    "role": "user",
-                    "content": artifact_context_content,
-                    "synthetic": "active_artifact_context",
-                }
-            )
-
-        cleared_count, cleared_chars = _clear_old_tool_results_for_context(
-            messages,
-            keep_recent=tool_result_keep_recent,
-            preview_chars=tool_result_context_preview_chars,
-            tool_result_metadata_by_id=tool_result_metadata_by_id,
+        artifact_context_message_index = turn_model.artifact_context_message_index
+        context_tool_result_clearings += (
+            turn_model.context_tool_result_clearings_delta
         )
-        if cleared_count:
-            context_tool_result_clearings += 1
-            context_tool_results_cleared += cleared_count
-            context_tool_result_cleared_chars += cleared_chars
-            warning = (
-                "CONTEXT_TOOL_RESULT_CLEARING: replaced "
-                f"{cleared_count} older tool payload(s) with compact stubs "
-                f"(saved ~{cleared_chars} chars; keep_recent={tool_result_keep_recent})."
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-
-        compacted_count, compacted_chars, current_chars = _compact_tool_history_for_context(
-            messages, max_message_chars,
+        context_tool_results_cleared += (
+            turn_model.context_tool_results_cleared_delta
         )
-        if compacted_count:
-            context_compactions += 1
-            context_compacted_messages += compacted_count
-            context_compacted_chars += compacted_chars
-            warning = (
-                "CONTEXT_COMPACTION: compacted "
-                f"{compacted_count} tool message(s), saved ~{compacted_chars} chars "
-                f"(history ~{current_chars} chars)"
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-
-        current_tool_surface = list(openai_tools)
-        if runtime_artifact_registry_by_id:
-            current_tool_surface.append(runtime_artifact_read_tool)
-
-        disclosed_tools = current_tool_surface
-        hidden_disclosure: list[dict[str, Any]] = []
-        hidden_disclosure_total = 0
-        disclosure_repair_hints: list[str] = []
-        current_turn_deficit_labels: list[str] = []
-        current_turn_deficit_digest: str | None = None
-        if progressive_tool_disclosure and normalized_tool_contracts:
-            disclosed_tools, hidden_disclosure, hidden_disclosure_total = _filter_tools_for_disclosure(
-                openai_tools=current_tool_surface,
-                normalized_tool_contracts=normalized_tool_contracts,
-                available_artifacts=available_artifacts,
-                available_capabilities=available_capabilities,
-                available_bindings=available_bindings,
-            )
-            if hidden_disclosure:
-                tool_disclosure_turns += 1
-                tool_disclosure_hidden_total += hidden_disclosure_total
-                tool_disclosure_repair_suggestions += sum(
-                    len(entry.get("repair_tools") or [])
-                    for entry in hidden_disclosure
-                    if isinstance(entry, dict)
-                )
-                seen_repair_hints: set[str] = set()
-                for entry in hidden_disclosure:
-                    if not isinstance(entry, dict):
-                        continue
-                    for candidate in (entry.get("repair_tools") or []):
-                        name = str(candidate or "").strip()
-                        if not name or name in seen_repair_hints:
-                            continue
-                        seen_repair_hints.add(name)
-                        disclosure_repair_hints.append(name)
-                current_turn_deficit_labels = _deficit_labels_from_hidden_entries(hidden_disclosure)
-                if current_turn_deficit_labels:
-                    current_turn_deficit_digest = sha256_json(current_turn_deficit_labels).replace("sha256:", "")
-                hidden_names = [h["tool"] for h in hidden_disclosure]
-                disclosure_reason = _disclosure_message(hidden_disclosure)
-                disclosure_msg = {
-                    "role": "user",
-                    "content": (
-                        "[SYSTEM: Currently unavailable tools with missing requirements: "
-                        f"{disclosure_reason}]"
-                    ),
-                }
-                disclosure_chars = len(str(disclosure_msg.get("content", "")))
-                tool_disclosure_unavailable_msgs += 1
-                tool_disclosure_unavailable_reason_chars += disclosure_chars
-                tool_disclosure_unavailable_reason_tokens_est += max(
-                    1, disclosure_chars // DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS,
-                )
-                messages.append(disclosure_msg)
-                agent_result.conversation_trace.append(disclosure_msg)
-                logger.info(
-                    "TOOL_DISCLOSURE turn=%d exposed=%d/%d hidden=%s available_artifacts=%s available_capabilities=%s",
-                    turn + 1,
-                    len(disclosed_tools),
-                    len(current_tool_surface),
-                    hidden_names,
-                    sorted(available_artifacts),
-                    _capability_state_snapshot(available_capabilities),
-                )
-                agent_result.warnings.append(
-                    "TOOL_DISCLOSURE: hidden currently incompatible tools on turn "
-                    f"{turn + 1}: {', '.join(hidden_names)}"
-                )
-
-        if prev_turn_had_evidence_tools and current_turn_deficit_digest:
-            if prev_turn_deficit_digest == current_turn_deficit_digest:
-                deficit_no_progress_streak += 1
-            else:
-                deficit_no_progress_streak = 0
-        elif not prev_turn_had_evidence_tools:
-            deficit_no_progress_streak = 0
-
-        if deficit_no_progress_streak > max_deficit_no_progress_streak:
-            max_deficit_no_progress_streak = deficit_no_progress_streak
-
-        if (
-            deficit_no_progress_streak >= 2
-            and deficit_no_progress_streak > deficit_no_progress_last_nudged
-            and current_turn_deficit_labels
+        context_tool_result_cleared_chars += (
+            turn_model.context_tool_result_cleared_chars_delta
+        )
+        context_compactions += turn_model.context_compactions_delta
+        context_compacted_messages += (
+            turn_model.context_compacted_messages_delta
+        )
+        context_compacted_chars += turn_model.context_compacted_chars_delta
+        artifact_context_updates += turn_model.artifact_context_updates_delta
+        artifact_context_chars += turn_model.artifact_context_chars_delta
+        tool_disclosure_turns += turn_model.tool_disclosure_turns_delta
+        tool_disclosure_hidden_total += (
+            turn_model.tool_disclosure_hidden_total_delta
+        )
+        tool_disclosure_unavailable_msgs += (
+            turn_model.tool_disclosure_unavailable_msgs_delta
+        )
+        tool_disclosure_unavailable_reason_chars += (
+            turn_model.tool_disclosure_unavailable_reason_chars_delta
+        )
+        tool_disclosure_unavailable_reason_tokens_est += (
+            turn_model.tool_disclosure_unavailable_reason_tokens_est_delta
+        )
+        tool_disclosure_repair_suggestions += (
+            turn_model.tool_disclosure_repair_suggestions_delta
+        )
+        no_legal_noncontrol_turns += turn_model.no_legal_noncontrol_turns_delta
+        deficit_no_progress_streak = turn_model.deficit_no_progress_streak
+        max_deficit_no_progress_streak = (
+            turn_model.max_deficit_no_progress_streak
+        )
+        deficit_no_progress_nudges += (
+            turn_model.deficit_no_progress_nudges_delta
+        )
+        deficit_no_progress_last_nudged = (
+            turn_model.deficit_no_progress_last_nudged
+        )
+        current_turn_deficit_digest = turn_model.current_turn_deficit_digest
+        disclosure_repair_hints = turn_model.disclosure_repair_hints
+        effective_model = turn_model.effective_model
+        sticky_fallback = turn_model.sticky_fallback
+        total_cost += turn_model.total_cost_delta
+        agent_result.total_input_tokens += turn_model.total_input_tokens_delta
+        agent_result.total_output_tokens += turn_model.total_output_tokens_delta
+        agent_result.total_cached_tokens += turn_model.total_cached_tokens_delta
+        agent_result.total_cache_creation_tokens += (
+            turn_model.total_cache_creation_tokens_delta
+        )
+        final_content = turn_model.final_content
+        final_finish_reason = turn_model.final_finish_reason
+        failure_event_codes.extend(turn_model.failure_event_codes)
+        plain_text_no_tool_turn_streak = (
+            turn_model.plain_text_no_tool_turn_streak
+        )
+        tool_calls_this_turn = turn_model.tool_calls_this_turn
+        tool_call_turns_total += turn_model.tool_call_turns_total_delta
+        tool_call_empty_text_turns += (
+            turn_model.tool_call_empty_text_turns_delta
+        )
+        responses_tool_call_empty_text_turns += (
+            turn_model.responses_tool_call_empty_text_turns_delta
+        )
+        autofilled_tool_reasoning_calls += (
+            turn_model.autofilled_tool_reasoning_calls_delta
+        )
+        for tool_name, delta in (
+            turn_model.autofilled_tool_reasoning_by_tool_delta.items()
         ):
-            deficit_no_progress_nudges += 1
-            deficit_no_progress_last_nudged = deficit_no_progress_streak
-            suggested = [
-                name
-                for name in disclosure_repair_hints
-                if name and not _is_budget_exempt_tool(name)
-            ][:3]
-            suggested_hint = f" Try: {', '.join(suggested)}." if suggested else ""
-            deficit_msg = {
-                "role": "user",
-                "content": (
-                    "[SYSTEM: Recent evidence calls did not reduce unresolved artifacts. "
-                    "Still missing: "
-                    + ", ".join(current_turn_deficit_labels[:4])
-                    + ". Choose the next call to close one missing requirement."
-                    + suggested_hint
-                    + "]"
-                ),
-            }
-            messages.append(deficit_msg)
-            agent_result.conversation_trace.append(deficit_msg)
-
-        if progressive_tool_disclosure and normalized_tool_contracts:
-            noncontrol_disclosed = [
-                t for t in disclosed_tools
-                if isinstance(t, dict)
-                and not _is_control_tool_name(
-                    str(t.get("function", {}).get("name", "")).strip(),
-                    normalized_tool_contracts,
-                )
-            ]
-            if not noncontrol_disclosed:
-                no_legal_noncontrol_turns += 1
-                warning = (
-                    "TOOL_DISCLOSURE: no legal non-control tools available this turn. "
-                    "Use conversion/planning/control tools to unlock capabilities."
-                )
-                agent_result.warnings.append(warning)
-                logger.warning(warning)
-                failure_event_codes.append(EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS)
-                _emit_foundation_event(
-                    {
-                        "event_id": new_event_id(),
-                        "event_type": "ToolFailed",
-                        "timestamp": now_iso(),
-                        "run_id": foundation_run_id,
-                        "session_id": foundation_session_id,
-                        "actor_id": foundation_actor_id,
-                        "operation": {"name": "__disclosure__", "version": None},
-                        "inputs": {
-                            "artifact_ids": sorted(available_artifacts),
-                            "params": {
-                                "hidden_tools": [h.get("tool") for h in hidden_disclosure],
-                                "hidden_total": hidden_disclosure_total,
-                            },
-                            "bindings": dict(available_bindings),
-                        },
-                        "outputs": {"artifact_ids": [], "payload_hashes": []},
-                        "failure": {
-                            "error_code": EVENT_CODE_NO_LEGAL_NONCONTROL_TOOLS,
-                            "category": "validation",
-                            "phase": "input_validation",
-                            "retryable": True,
-                            "tool_name": "__disclosure__",
-                            "user_message": warning,
-                            "debug_ref": None,
-                        },
-                    }
-                )
-
-        try:
-            result = await _inner_acall_llm(
-                effective_model, messages, timeout=timeout, tools=disclosed_tools, **kwargs,
+            autofilled_tool_reasoning_by_tool[tool_name] = (
+                autofilled_tool_reasoning_by_tool.get(tool_name, 0) + delta
             )
-        except Exception as exc:
-            error_text = str(exc).strip() or f"{type(exc).__name__}"
-            (
-                is_provider_failure,
-                event_code,
-                provider_classification,
-                retryable_provider,
-            ) = _provider_failure_classification(
-                exc,
-                error_text,
-            )
-            if not event_code:
-                event_code = EVENT_CODE_TOOL_RUNTIME_ERROR
-            provider_subevent = "first_turn" if turn == 0 else "turn"
-            failure_event_codes.append(event_code)
-            warning = (
-                "AGENT_LLM_CALL_FAILED: turn="
-                f"{turn + 1} model={effective_model} error={error_text}"
-            )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-            _emit_foundation_event(
-                {
-                    "event_id": new_event_id(),
-                    "event_type": "ToolFailed",
-                    "timestamp": now_iso(),
-                    "run_id": foundation_run_id,
-                    "session_id": foundation_session_id,
-                    "actor_id": foundation_actor_id,
-                    "operation": {"name": "_inner_acall_llm", "version": None},
-                    "inputs": {
-                        "artifact_ids": sorted(available_artifacts),
-                        "params": {
-                            "turn": turn + 1,
-                            "error": error_text,
-                            "provider_classification": provider_classification or "",
-                            "provider_subevent": provider_subevent if is_provider_failure else "",
-                        },
-                        "bindings": dict(available_bindings),
-                    },
-                    "outputs": {"artifact_ids": [], "payload_hashes": []},
-                    "failure": {
-                        "error_code": event_code,
-                        "category": "provider" if is_provider_failure else "execution",
-                        "phase": "execution",
-                        "retryable": bool(retryable_provider),
-                        "tool_name": "_inner_acall_llm",
-                        "user_message": error_text,
-                        "debug_ref": None,
-                    },
-                }
-            )
-            final_content = error_text
-            final_finish_reason = "error"
+        if turn_model.should_continue_turn:
+            continue
+        if turn_model.should_break_loop:
             break
-
-        # Track per-turn diagnostics
-        result_model = str(result.model).strip() or effective_model
-        agent_result.models_used.add(result_model)
-        if result_model and result_model not in attempted_models:
-            attempted_models.append(result_model)
-        if result.warnings:
-            agent_result.warnings.extend(result.warnings)
-
-        # Sticky fallback: if inner call fell back to a different model,
-        # use that model for remaining turns (avoids re-hitting dead primary).
-        if result_model != effective_model:
-            agent_result.warnings.append(
-                f"STICKY_FALLBACK: {effective_model} failed, "
-                f"using {result_model} for remaining turns"
-            )
-            effective_model = result_model
-            sticky_fallback = True
-
-        _emit_foundation_event(
-            {
-                "event_id": new_event_id(),
-                "event_type": "LLMCalled",
-                "timestamp": now_iso(),
-                "run_id": foundation_run_id,
-                "session_id": foundation_session_id,
-                "actor_id": foundation_actor_id,
-                "operation": {"name": "_inner_acall_llm", "version": None},
-                "inputs": {
-                    "artifact_ids": sorted(available_artifacts),
-                    "params": {
-                        "turn": turn + 1,
-                    "model": effective_model,
-                        "capabilities_sha256": sha256_json(_capability_state_snapshot(available_capabilities)),
-                    },
-                    "bindings": dict(available_bindings),
-                },
-                "outputs": {
-                    "artifact_ids": [],
-                    "payload_hashes": [sha256_text(result.content or "")],
-                },
-                "llm": {
-                    "model_id": result_model,
-                    "content_persisted": "hash_only",
-                    "prompt_sha256": sha256_json(messages),
-                    "response_sha256": sha256_text(result.content or ""),
-                    "token_usage": dict(result.usage or {}),
-                    "cost_usd": float(result.cost or 0.0),
-                },
-            }
-        )
-
-        # Accumulate usage
-        inp, out, cached, cache_create = _extract_usage(result.usage or {})
-        agent_result.total_input_tokens += inp
-        agent_result.total_output_tokens += out
-        agent_result.total_cached_tokens += cached
-        agent_result.total_cache_creation_tokens += cache_create
-        total_cost += result.cost
-
-        # No tool calls → done
-        if not result.tool_calls:
-            remaining_turns = max_turns - (turn + 1)
-            if requires_submit_answer and not submit_answer_succeeded and remaining_turns > 0:
-                # Benchmark loops require explicit submit_answer() so scorers can
-                # reliably parse the final answer from tool calls.
-                if result.content:
-                    draft_msg = {
-                        "role": "assistant",
-                        "content": result.content,
-                    }
-                    messages.append(draft_msg)
-                    agent_result.conversation_trace.append(draft_msg)
-
-                # Two-stage recovery for plain-text replies:
-                # 1) first no-tool turn -> continue tool-based solving (avoid premature submit loops)
-                # 2) repeated no-tool turn (or near end) -> require explicit submit_answer
-                near_end = remaining_turns <= TURN_WARNING_THRESHOLD
-                if plain_text_no_tool_turn_streak == 0 and not near_end:
-                    continue_nudge = {
-                        "role": "user",
-                        "content": (
-                            "[SYSTEM: Do NOT finalize yet. Continue with tools to resolve remaining TODO atoms. "
-                            "Review your TODO status, gather missing evidence, then submit.]"
-                        ),
-                    }
-                    messages.append(continue_nudge)
-                    agent_result.conversation_trace.append(continue_nudge)
-                    plain_text_no_tool_turn_streak += 1
-                    logger.warning(
-                        "Agent loop: model returned plain text without tool calls on turn %d/%d; nudging continued tool use before submission.",
-                        turn + 1, max_turns,
-                    )
-                    continue
-
-                submit_nudge = {
-                    "role": "user",
-                    "content": (
-                        "[SYSTEM: Do NOT answer in plain text. You MUST call "
-                        "submit_answer(reasoning, answer) now. Use a short factual "
-                        "answer (<=8 words). No additional searches.]"
-                    ),
-                }
-                messages.append(submit_nudge)
-                agent_result.conversation_trace.append(submit_nudge)
-                plain_text_no_tool_turn_streak += 1
-                logger.warning(
-                    "Agent loop: model returned plain text without submit_answer on turn %d/%d; nudging explicit submission.",
-                    turn + 1, max_turns,
-                )
-                continue
-
-            final_content = result.content
-            final_finish_reason = result.finish_reason
-            # Log visibility: empty content on first turn is almost always a model failure
-            if not result.content and turn == 0:
-                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY)
-                _emit_foundation_event(
-                    {
-                        "event_id": new_event_id(),
-                        "event_type": "ToolFailed",
-                        "timestamp": now_iso(),
-                        "run_id": foundation_run_id,
-                        "session_id": foundation_session_id,
-                        "actor_id": foundation_actor_id,
-                        "operation": {"name": "_inner_acall_llm", "version": None},
-                        "inputs": {
-                            "artifact_ids": sorted(available_artifacts),
-                            "params": {
-                                "turn": turn + 1,
-                                "finish_reason": result.finish_reason,
-                                "provider_classification": "provider_empty_candidates",
-                                "provider_subevent": "first_turn",
-                            },
-                            "bindings": dict(available_bindings),
-                        },
-                        "outputs": {"artifact_ids": [], "payload_hashes": []},
-                        "failure": {
-                            "error_code": EVENT_CODE_PROVIDER_EMPTY,
-                            "category": "provider",
-                            "phase": "execution",
-                            "retryable": True,
-                            "tool_name": "_inner_acall_llm",
-                            "user_message": "Provider returned empty content with no tool calls on first turn.",
-                            "debug_ref": None,
-                        },
-                    }
-                )
-                logger.error(
-                    "Agent loop: model=%s returned empty content with 0 tool calls on turn 1 "
-                    "(finish_reason=%s). All %d retries + fallback exhausted at the per-turn level.",
-                    model, result.finish_reason, kwargs.get("num_retries", 2),
-                )
-            elif not result.content:
-                failure_event_codes.append(EVENT_CODE_PROVIDER_EMPTY)
-                _emit_foundation_event(
-                    {
-                        "event_id": new_event_id(),
-                        "event_type": "ToolFailed",
-                        "timestamp": now_iso(),
-                        "run_id": foundation_run_id,
-                        "session_id": foundation_session_id,
-                        "actor_id": foundation_actor_id,
-                        "operation": {"name": "_inner_acall_llm", "version": None},
-                        "inputs": {
-                            "artifact_ids": sorted(available_artifacts),
-                            "params": {
-                                "turn": turn + 1,
-                                "finish_reason": result.finish_reason,
-                                "provider_classification": "provider_empty_candidates",
-                                "provider_subevent": "turn",
-                            },
-                            "bindings": dict(available_bindings),
-                        },
-                        "outputs": {"artifact_ids": [], "payload_hashes": []},
-                        "failure": {
-                            "error_code": EVENT_CODE_PROVIDER_EMPTY,
-                            "category": "provider",
-                            "phase": "execution",
-                            "retryable": True,
-                            "tool_name": "_inner_acall_llm",
-                            "user_message": "Provider returned empty content with no tool calls.",
-                            "debug_ref": None,
-                        },
-                    }
-                )
-                logger.warning(
-                    "Agent loop: model=%s returned empty content on turn %d/%d "
-                    "(finish_reason=%s, %d tool calls so far).",
-                    model, turn + 1, max_turns, result.finish_reason,
-                    len(agent_result.tool_calls),
-                )
-            # Capture final assistant message in trace
-            if result.content:
-                agent_result.conversation_trace.append({
-                    "role": "assistant",
-                    "content": result.content,
-                })
-            break
-
-        # Reset plain-text streak once the model returns at least one tool call.
-        plain_text_no_tool_turn_streak = 0
-
-        # Append assistant message with tool calls
-        tool_calls_this_turn = list(result.tool_calls)
-        autofilled_reasoning_tools: list[str] = []
-        patched_calls: list[dict[str, Any]] = []
-        for tc in tool_calls_this_turn:
-            patched, changed = _autofill_tool_reasoning(tc)
-            normalized_name = _normalize_tool_call_name_inplace(patched)
-            if changed:
-                name = normalized_name
-                if name:
-                    autofilled_reasoning_tools.append(name)
-                    autofilled_tool_reasoning_by_tool[name] = (
-                        autofilled_tool_reasoning_by_tool.get(name, 0) + 1
-                    )
-                autofilled_tool_reasoning_calls += 1
-            patched_calls.append(patched)
-        tool_calls_this_turn = patched_calls
-        if autofilled_reasoning_tools:
-            agent_result.warnings.append(
-                "OBSERVABILITY: auto-filled missing tool_reasoning on tools: "
-                + ", ".join(autofilled_reasoning_tools)
-            )
-        tool_call_turns_total += 1
-        if not (result.content or "").strip():
-            tool_call_empty_text_turns += 1
-            is_responses_turn = _is_responses_api_raw_response(result.raw_response)
-            if is_responses_turn:
-                responses_tool_call_empty_text_turns += 1
-            logger.info(
-                "Agent loop metric: turn %d/%d model=%s returned %d tool call(s) with empty assistant text%s",
-                turn + 1,
-                max_turns,
-                result.model,
-                len(tool_calls_this_turn),
-                " [responses-api]" if is_responses_turn else "",
-            )
-
-        if max_tool_calls is not None:
-            budgeted_used = _count_budgeted_records(agent_result.tool_calls)
-            remaining_tool_calls = max_tool_calls - budgeted_used
-            budgeted_requested = _count_budgeted_tool_calls(tool_calls_this_turn)
-            if budgeted_requested > remaining_tool_calls:
-                tool_calls_this_turn, dropped = _trim_tool_calls_to_budget(
-                    tool_calls_this_turn,
-                    max(remaining_tool_calls, 0),
-                )
-                trim_msg = {
-                    "role": "user",
-                    "content": (
-                        f"[SYSTEM: Retrieval-tool budget allows only {remaining_tool_calls} more budgeted call(s). "
-                        f"Ignored {dropped} over-budget retrieval call(s). "
-                        f"Budget-exempt tools ({', '.join(sorted(BUDGET_EXEMPT_TOOL_NAMES))}) are still allowed.]"
-                    ),
-                }
-                messages.append(trim_msg)
-                agent_result.conversation_trace.append(trim_msg)
-                logger.warning(
-                    "Agent loop trimmed %d over-budget retrieval call(s) on turn %d; budget remaining=%d",
-                    dropped,
-                    turn + 1,
-                    remaining_tool_calls,
-                )
-
-        missing_reasoning_tools: list[str] = []
-        for tc in tool_calls_this_turn:
-            fn = tc.get("function", {})
-            tc_name = fn.get("name", "")
-            tc_args = _extract_tool_call_args(tc)
-            if not isinstance(tc_args, dict):
-                missing_reasoning_tools.append(tc_name or "<unknown>")
-                continue
-            tc_reasoning = tc_args.get(TOOL_REASONING_FIELD)
-            if not isinstance(tc_reasoning, str) or not tc_reasoning.strip():
-                missing_reasoning_tools.append(tc_name or "<unknown>")
-
-        if missing_reasoning_tools:
-            reasoning_nudge = {
-                "role": "user",
-                "content": (
-                    "[SYSTEM: Observability requirement: every tool call must include "
-                    f"'{TOOL_REASONING_FIELD}' with one concise sentence explaining why this call is needed."
-                    + (
-                        " Calls without it are rejected."
-                        if require_tool_reasoning else
-                        ""
-                    )
-                    + "]"
-                ),
-            }
-            messages.append(reasoning_nudge)
-            agent_result.conversation_trace.append(reasoning_nudge)
-            agent_result.warnings.append(
-                "OBSERVABILITY: missing tool_reasoning on tools: "
-                + ", ".join(missing_reasoning_tools)
-            )
-
-        assistant_msg = {
-            "role": "assistant",
-            "content": result.content or None,
-            "tool_calls": tool_calls_this_turn,
-        }
-        messages.append(assistant_msg)
-
-        # Capture assistant message in trace (with tool call names for readability)
-        agent_result.conversation_trace.append({
-            "role": "assistant",
-            "content": result.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.get("id", ""),
-                    "name": tc.get("function", {}).get("name", ""),
-                    "arguments": tc.get("function", {}).get("arguments", ""),
-                }
-                for tc in tool_calls_this_turn
-            ],
-        })
 
         tool_processing = await _process_tool_calls_turn(
             turn=turn,
