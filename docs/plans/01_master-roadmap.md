@@ -201,6 +201,8 @@ end-of-run bookkeeping into `mcp_loop_summary.py`, and the latest verified
 slice extracted per-turn tool processing into `mcp_turn_tools.py`, reducing
 `mcp_turn_execution.py` from `3202` to `2105`, and the latest verified slice
 extracted the post-tool outcome path into `mcp_turn_outcomes.py`, reducing it
-again to `1877`. The next tranche now targets the turn-exit /
-forced-finalization handoff block before Program E turns to `client.py`. Stop
-only for a real blocker or user redirect.
+again to `1877`; the next verified slice then extracted the post-loop
+completion handoff into `mcp_turn_completion.py`, reducing it to `1800`. The
+next tranche now targets the pre-call tool-surface/disclosure/LLM-dispatch
+block before Program E turns to `client.py`. Stop only for a real blocker or
+user redirect.

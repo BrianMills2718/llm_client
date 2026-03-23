@@ -135,6 +135,7 @@ from llm_client.mcp_context import (  # noqa: F401  re-exported
     _message_char_length as _message_char_length,
     _trim_text as _trim_text,
 )
+from llm_client.mcp_turn_completion import _resolve_turn_completion
 from llm_client.mcp_evidence import (  # noqa: F401  re-exported
     DEFAULT_RETRIEVAL_STAGNATION_ACTION as DEFAULT_RETRIEVAL_STAGNATION_ACTION,
     DEFAULT_RETRIEVAL_STAGNATION_TURNS as DEFAULT_RETRIEVAL_STAGNATION_TURNS,
@@ -1578,192 +1579,114 @@ async def _agent_loop(
     else:
         force_final_reason = "max_turns"
 
-    if force_final_reason is not None and not submit_answer_succeeded:
-        forced_final_result = await _execute_forced_finalization(
-            force_final_reason=force_final_reason,
-            max_turns=max_turns,
-            max_message_chars=max_message_chars,
-            tool_result_keep_recent=tool_result_keep_recent,
-            tool_result_context_preview_chars=tool_result_context_preview_chars,
-            messages=messages,
-            tool_result_metadata_by_id=tool_result_metadata_by_id,
-            artifact_context_message_index=artifact_context_message_index,
-            kwargs=kwargs,
-            timeout=timeout,
-            effective_model=effective_model,
-            attempted_models=attempted_models,
-            finalization_fallback_models=finalization_fallback_models,
-            forced_final_max_attempts=forced_final_max_attempts,
-            forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
-            available_artifacts=available_artifacts,
-            available_capabilities=available_capabilities,
-            available_bindings=available_bindings,
-            active_artifact_context_enabled=active_artifact_context_enabled,
-            active_artifact_context_max_handles=active_artifact_context_max_handles,
-            active_artifact_context_max_chars=active_artifact_context_max_chars,
-            foundation_run_id=foundation_run_id,
-            foundation_session_id=foundation_session_id,
-            foundation_actor_id=foundation_actor_id,
-            agent_result=agent_result,
-            emit_foundation_event=_emit_foundation_event,
-        )
-        final_content = forced_final_result.final_content
-        final_finish_reason = forced_final_result.final_finish_reason
-        finalization_primary_model = forced_final_result.finalization_primary_model
-        forced_final_attempts = forced_final_result.forced_final_attempts
-        forced_final_circuit_breaker_opened = forced_final_result.forced_final_circuit_breaker_opened
-        finalization_fallback_used = forced_final_result.finalization_fallback_used
-        finalization_fallback_succeeded = forced_final_result.finalization_fallback_succeeded
-        finalization_events = list(forced_final_result.finalization_events)
-        finalization_fallback_attempts = list(forced_final_result.finalization_fallback_attempts)
-        failure_event_codes.extend(forced_final_result.failure_event_codes)
-        context_tool_result_clearings += forced_final_result.context_tool_result_clearings_delta
-        context_tool_results_cleared += forced_final_result.context_tool_results_cleared_delta
-        context_tool_result_cleared_chars += (
-            forced_final_result.context_tool_result_cleared_chars_delta
-        )
-        context_compactions += forced_final_result.context_compactions_delta
-        context_compacted_messages += forced_final_result.context_compacted_messages_delta
-        context_compacted_chars += forced_final_result.context_compacted_chars_delta
-        total_cost += forced_final_result.total_cost_delta
-        agent_result.total_input_tokens += forced_final_result.total_input_tokens_delta
-        agent_result.total_output_tokens += forced_final_result.total_output_tokens_delta
-        agent_result.total_cached_tokens += forced_final_result.total_cached_tokens_delta
-        agent_result.total_cache_creation_tokens += (
-            forced_final_result.total_cache_creation_tokens_delta
-        )
-        agent_result.turns += forced_final_result.turns_delta
-
-    required_submit_missing = requires_submit_answer and not submit_answer_succeeded
-    submit_forced_retry_on_budget_exhaustion = False
-    submit_forced_accept_on_budget_exhaustion = False
-    forced_exhaustion_reason: str | None = None
-    if force_final_reason == "max_tool_calls":
-        forced_exhaustion_reason = "budget"
-    elif force_final_reason == "max_turns":
-        forced_exhaustion_reason = "turns"
-    elif force_final_reason is not None:
-        forced_exhaustion_reason = force_final_reason
-    if (
-        forced_exhaustion_reason is not None
-        and requires_submit_answer
-        and not submit_answer_succeeded
-    ):
-        if force_submit_retry_on_max_tool_calls:
-            submit_forced_retry_on_budget_exhaustion = True
-            submit_answer_call_count += 1
-            if forced_exhaustion_reason == "budget":
-                warning = (
-                    "SUBMIT_FORCED_RETRY_BUDGET_EXHAUSTION: counted one forced submit retry "
-                    "attempt after tool budget exhaustion."
-                )
-            elif forced_exhaustion_reason == "turns":
-                warning = (
-                    "SUBMIT_FORCED_RETRY_TURN_EXHAUSTION: counted one forced submit retry "
-                    "attempt after max-turn exhaustion."
-                )
-            else:
-                warning = (
-                    "SUBMIT_FORCED_RETRY_FORCED_FINAL: counted one forced submit retry "
-                    f"attempt after forced-final reason '{forced_exhaustion_reason}'."
-                )
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-        # Accept the best available answer when budget/turns are exhausted.
-        # Sources in priority order:
-        #   1. Agent's last explicit submit_answer guess (non-refusal)
-        #   2. Forced-final text extraction (only when forced-final succeeded)
-        # When forced-final errored (finish_reason="error"), its content is an
-        # error message, not an answer — never extract from it.
-        _has_fallback_guess = (
-            isinstance(fallback_submit_guess_value, str)
-            and bool(fallback_submit_guess_value.strip())
-        )
-        _forced_final_succeeded = final_finish_reason != "error"
-        _has_final_content = _forced_final_succeeded and bool(final_content.strip())
-        if accept_forced_answer_on_max_tool_calls and (_has_final_content or _has_fallback_guess):
-            submit_forced_accept_on_budget_exhaustion = True
-            submit_answer_succeeded = True
-            if _has_fallback_guess and fallback_submit_guess_value is not None:
-                normalized_forced_answer = fallback_submit_guess_value.strip()
-            elif _has_final_content:
-                normalized_forced_answer = _normalize_forced_final_answer(final_content)
-            else:
-                normalized_forced_answer = ""
-            submitted_answer_value = (
-                submitted_answer_value
-                or normalized_forced_answer
-                or (final_content.strip() if _forced_final_succeeded else "")
-            )
-            required_submit_missing = False
-            if forced_exhaustion_reason == "budget":
-                warning = (
-                    "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION: accepted forced-final answer "
-                    "without grounding validation because tool budget was exhausted."
-                )
-                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION)
-            elif forced_exhaustion_reason == "turns":
-                warning = (
-                    "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION: accepted forced-final answer "
-                    "without grounding validation because max turns were exhausted."
-                )
-                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION)
-            else:
-                warning = (
-                    "SUBMIT_FORCED_ACCEPT_FORCED_FINAL: accepted forced-final answer "
-                    "without grounding validation after forced-final termination "
-                    f"('{forced_exhaustion_reason}')."
-                )
-                failure_event_codes.append(EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL)
-            agent_result.warnings.append(warning)
-            logger.warning(warning)
-
-    if required_submit_missing:
-        submit_failure_code = (
+    turn_completion = await _resolve_turn_completion(
+        force_final_reason=force_final_reason,
+        max_turns=max_turns,
+        max_message_chars=max_message_chars,
+        tool_result_keep_recent=tool_result_keep_recent,
+        tool_result_context_preview_chars=tool_result_context_preview_chars,
+        messages=messages,
+        tool_result_metadata_by_id=tool_result_metadata_by_id,
+        artifact_context_message_index=artifact_context_message_index,
+        kwargs=kwargs,
+        timeout=timeout,
+        effective_model=effective_model,
+        attempted_models=attempted_models,
+        finalization_fallback_models=finalization_fallback_models,
+        forced_final_max_attempts=forced_final_max_attempts,
+        forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+        available_artifacts=available_artifacts,
+        available_capabilities=available_capabilities,
+        available_bindings=available_bindings,
+        active_artifact_context_enabled=active_artifact_context_enabled,
+        active_artifact_context_max_handles=active_artifact_context_max_handles,
+        active_artifact_context_max_chars=active_artifact_context_max_chars,
+        foundation_run_id=foundation_run_id,
+        foundation_session_id=foundation_session_id,
+        foundation_actor_id=foundation_actor_id,
+        agent_result=agent_result,
+        emit_foundation_event=_emit_foundation_event,
+        final_content=final_content,
+        final_finish_reason=final_finish_reason,
+        finalization_primary_model=finalization_primary_model,
+        forced_final_attempts=forced_final_attempts,
+        forced_final_circuit_breaker_opened=forced_final_circuit_breaker_opened,
+        finalization_fallback_used=finalization_fallback_used,
+        finalization_fallback_succeeded=finalization_fallback_succeeded,
+        finalization_events=finalization_events,
+        finalization_fallback_attempts=finalization_fallback_attempts,
+        requires_submit_answer=requires_submit_answer,
+        submit_answer_call_count=submit_answer_call_count,
+        submit_answer_succeeded=submit_answer_succeeded,
+        submitted_answer_value=submitted_answer_value,
+        force_submit_retry_on_max_tool_calls=force_submit_retry_on_max_tool_calls,
+        accept_forced_answer_on_max_tool_calls=accept_forced_answer_on_max_tool_calls,
+        fallback_submit_guess_value=fallback_submit_guess_value,
+        event_code_submit_forced_accept_budget_exhaustion=(
+            EVENT_CODE_SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION
+        ),
+        event_code_submit_forced_accept_turn_exhaustion=(
+            EVENT_CODE_SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION
+        ),
+        event_code_submit_forced_accept_forced_final=(
+            EVENT_CODE_SUBMIT_FORCED_ACCEPT_FORCED_FINAL
+        ),
+        event_code_required_submit_not_attempted=(
             EVENT_CODE_REQUIRED_SUBMIT_NOT_ATTEMPTED
-            if submit_answer_call_count == 0
-            else EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED
-        )
-        if not failure_event_codes:
-            # Classify missing required submit as terminal/policy only when no
-            # stronger prior failure signal has already explained the run.
-            failure_event_codes.append(submit_failure_code)
-        warning = (
-            "REQUIRED_SUBMIT: submit_answer tool is available but no accepted submit was recorded. "
-            f"submit_answer_call_count={submit_answer_call_count}."
-        )
-        agent_result.warnings.append(warning)
-        logger.warning(warning)
-        _emit_foundation_event(
-            {
-                "event_id": new_event_id(),
-                "event_type": "ToolFailed",
-                "timestamp": now_iso(),
-                "run_id": foundation_run_id,
-                "session_id": foundation_session_id,
-                "actor_id": foundation_actor_id,
-                "operation": {"name": "submit_answer", "version": None},
-                "inputs": {
-                    "artifact_ids": sorted(available_artifacts),
-                    "params": {
-                        "submit_answer_call_count": submit_answer_call_count,
-                        "submit_answer_succeeded": submit_answer_succeeded,
-                        "reason": "required_submit_not_satisfied",
-                    },
-                    "bindings": dict(available_bindings),
-                },
-                "outputs": {"artifact_ids": [], "payload_hashes": []},
-                "failure": {
-                    "error_code": submit_failure_code,
-                    "category": "policy",
-                    "phase": "post_validation",
-                    "retryable": False,
-                    "tool_name": "submit_answer",
-                    "user_message": warning,
-                    "debug_ref": None,
-                },
-            }
-        )
+        ),
+        event_code_required_submit_not_accepted=(
+            EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED
+        ),
+    )
+    final_content = turn_completion.final_content
+    final_finish_reason = turn_completion.final_finish_reason
+    finalization_primary_model = turn_completion.finalization_primary_model
+    forced_final_attempts = turn_completion.forced_final_attempts
+    forced_final_circuit_breaker_opened = (
+        turn_completion.forced_final_circuit_breaker_opened
+    )
+    finalization_fallback_used = turn_completion.finalization_fallback_used
+    finalization_fallback_succeeded = (
+        turn_completion.finalization_fallback_succeeded
+    )
+    finalization_events = list(turn_completion.finalization_events)
+    finalization_fallback_attempts = list(
+        turn_completion.finalization_fallback_attempts
+    )
+    failure_event_codes.extend(turn_completion.failure_event_codes)
+    context_tool_result_clearings += (
+        turn_completion.context_tool_result_clearings_delta
+    )
+    context_tool_results_cleared += (
+        turn_completion.context_tool_results_cleared_delta
+    )
+    context_tool_result_cleared_chars += (
+        turn_completion.context_tool_result_cleared_chars_delta
+    )
+    context_compactions += turn_completion.context_compactions_delta
+    context_compacted_messages += (
+        turn_completion.context_compacted_messages_delta
+    )
+    context_compacted_chars += turn_completion.context_compacted_chars_delta
+    total_cost += turn_completion.total_cost_delta
+    agent_result.total_input_tokens += turn_completion.total_input_tokens_delta
+    agent_result.total_output_tokens += turn_completion.total_output_tokens_delta
+    agent_result.total_cached_tokens += turn_completion.total_cached_tokens_delta
+    agent_result.total_cache_creation_tokens += (
+        turn_completion.total_cache_creation_tokens_delta
+    )
+    agent_result.turns += turn_completion.turns_delta
+    required_submit_missing = turn_completion.required_submit_missing
+    submit_forced_retry_on_budget_exhaustion = (
+        turn_completion.submit_forced_retry_on_budget_exhaustion
+    )
+    submit_forced_accept_on_budget_exhaustion = (
+        turn_completion.submit_forced_accept_on_budget_exhaustion
+    )
+    submit_answer_call_count += turn_completion.submit_answer_call_count_delta
+    submit_answer_succeeded = turn_completion.submit_answer_succeeded
+    submitted_answer_value = turn_completion.submitted_answer_value
+    agent_result.warnings.extend(turn_completion.warnings)
 
     _apply_agent_loop_summary(
         agent_result=agent_result,

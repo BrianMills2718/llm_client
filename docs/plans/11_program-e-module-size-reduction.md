@@ -45,15 +45,16 @@ structural decomposition and truthful closeout.
 Fresh line-count audit on 2026-03-22:
 
 1. `llm_client/client.py`: `4184`
-2. `llm_client/mcp_turn_execution.py`: `1877`
+2. `llm_client/mcp_turn_execution.py`: `1800`
 3. `llm_client/mcp_turn_tools.py`: `702`
 4. `llm_client/mcp_loop_summary.py`: `522`
 5. `llm_client/mcp_turn_outcomes.py`: `503`
-6. `llm_client/observability/experiments.py`: `1322`
-7. `llm_client/agent_contracts.py`: `1228`
-8. `llm_client/agents_codex.py`: `1317`
-9. `llm_client/io_log.py`: `1222`
-10. `llm_client/mcp_agent.py`: `1037`
+6. `llm_client/mcp_turn_completion.py`: `369`
+7. `llm_client/observability/experiments.py`: `1322`
+8. `llm_client/agent_contracts.py`: `1228`
+9. `llm_client/agents_codex.py`: `1317`
+10. `llm_client/io_log.py`: `1222`
+11. `llm_client/mcp_agent.py`: `1037`
 
 These counts are the current audit baseline for the remaining oversize set.
 
@@ -74,6 +75,7 @@ These counts are the current audit baseline for the remaining oversize set.
 - `llm_client/mcp_turn_tools.py` (new extracted module)
 - `llm_client/mcp_turn_outcomes.py` (new extracted module)
 - `llm_client/mcp_turn_completion.py` (new extracted module)
+- `llm_client/mcp_turn_model.py` (new extracted module)
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
@@ -426,6 +428,56 @@ Why this tranche goes next:
    boundary visible in the module after the post-tool outcomes moved out
 3. this keeps the decomposition boundary-led instead of bouncing early to
    `client.py`
+
+**Verified checkpoint 11 (2026-03-22):**
+
+The post-loop forced-finalization handoff and required-submit completion path
+were extracted from `llm_client/mcp_turn_execution.py` into
+`llm_client/mcp_turn_completion.py`.
+
+What this checkpoint proved:
+
+1. async forced-finalization adoption, submit exhaustion policy, and required
+   submit failure handling form a coherent post-loop completion boundary
+2. `mcp_turn_execution.py` can keep the main loop while delegating the
+   termination/completion bookkeeping that only runs once the turn loop exits
+3. the active blocker is now concentrated in the large pre-call
+   tool-surface/disclosure/LLM-dispatch block inside `mcp_turn_execution.py`
+4. focused regression coverage remained green:
+   - `pytest -q tests/test_mcp_agent.py`
+   - result: `106 passed`
+   - `pytest -q tests/test_tool_runtime_common.py tests/test_agent_runtime_adapters.py tests/test_model_identity_contract.py`
+   - result: `27 passed, 1 warning`
+
+Effect on module size:
+
+1. `llm_client/mcp_turn_execution.py`: `1877 -> 1800`
+2. new module: `llm_client/mcp_turn_completion.py` (`369` lines)
+
+**Selected next tranche (2026-03-22, post-completion extraction):**
+
+Stay on `llm_client/mcp_turn_execution.py`.
+
+Write scope for the next implementation slice:
+
+1. extract the pre-call tool-surface/disclosure/LLM-dispatch block from
+   `mcp_turn_execution.py` into a dedicated helper module
+2. move context compaction, progressive disclosure filtering, deficit nudges,
+   the `_inner_acall_llm` call, and no-tool response handling behind a
+   narrower interface
+3. keep `mcp_turn_execution.py` as the top-level turn loop that sequences
+   budget checks, pre-call preparation, tool execution, outcomes, and
+   completion
+
+Why this tranche goes next:
+
+1. it is now the largest coherent boundary left inside `mcp_turn_execution.py`
+   and is large enough to plausibly clear the hard threshold in one more slice
+2. it is more leverageful than the smaller trace/nudge tail because it
+   removes a dense block that mixes policy, prompt-shaping, and model-call
+   handling
+3. if that slice lands cleanly, `mcp_turn_execution.py` should stop blocking
+   Program E and the plan can shift to `client.py`
 
 **Verified checkpoint 4 (2026-03-22):**
 
