@@ -68,6 +68,7 @@ These counts are the current blocker for Program E completion.
 - `llm_client/mcp_agent.py` (modify/extract, later slice)
 - `llm_client/agents_codex.py` (modify/extract, later slice)
 - `llm_client/agents_codex_process.py` (new extracted module)
+- `llm_client/agents_codex_runtime.py` (new extracted module)
 - `llm_client/observability/experiments.py` (modify/extract if still needed after earlier tranches)
 - `llm_client/agent_contracts.py` (modify/extract if still needed after earlier tranches)
 - `docs/plans/06_simplification-and-observability.md` (update evidence/status)
@@ -287,6 +288,43 @@ Effect on module size:
 
 1. `llm_client/agents_codex.py`: `1931 -> 1747`
 2. new module: `llm_client/agents_codex_process.py` (`213` lines)
+
+**Selected next slice (2026-03-22, within agents_codex tranche):**
+
+Extract the Codex SDK runtime path into a dedicated module:
+
+1. move in-process SDK execution, isolated-process worker entrypoints, and
+   structured-runtime helpers into a new runtime module
+2. keep monkeypatch-sensitive wrappers in `agents_codex.py` for
+   `_acall_codex_inproc`, `_call_codex_in_isolated_process`,
+   `_acall_codex_structured_inproc`, and
+   `_call_codex_structured_in_isolated_process`
+3. leave CLI transport and streaming in `agents_codex.py` for a later slice
+
+**Verified checkpoint 5 (2026-03-22):**
+
+The Codex SDK runtime path was extracted into
+`llm_client/agents_codex_runtime.py`, with `agents_codex.py` retaining only
+the orchestration logic and monkeypatch-sensitive wrapper names used by the
+existing tests.
+
+What this checkpoint proved:
+
+1. the in-process SDK path and isolated-process worker/runtime path are a
+   coherent boundary that can move together
+2. preserving wrapper names in `agents_codex.py` keeps the effective test and
+   monkeypatch contract intact while shrinking the main module materially
+3. `agents_codex.py` now clears the Program E hard-threshold criterion
+4. focused Codex runtime coverage remained green:
+   - `pytest -q tests/test_agents.py -k 'codex_process_isolation or codex_structured_isolation_dispatch or codex_timeout or codex_transport_auto'`
+   - result: `6 passed, 100 deselected`
+   - `pytest -q tests/test_agents.py -k 'codex and (structured_sync or structured_async or structured_with_fenced_json or codex_timeout_explicit or codex_process_isolation_dispatches_sync or codex_transport_cli_dispatches_async or codex_transport_auto_dispatches_sync or structured_process_isolation_dispatches_sync)'`
+   - result: `6 passed, 100 deselected`
+
+Effect on module size:
+
+1. `llm_client/agents_codex.py`: `1747 -> 1317`
+2. new module: `llm_client/agents_codex_runtime.py` (`605` lines)
 
 ### Phase 3: Remaining Oversized Modules Or Explicit Re-Scope
 

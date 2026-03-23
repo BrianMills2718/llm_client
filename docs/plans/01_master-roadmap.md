@@ -192,7 +192,9 @@ reducing `io_log.py` from `2102` lines to `1222` and clearing that module from
 the hard-threshold blocker set. The default next slice remains Plan 11, with
 the next tranche targeting `agents_codex.py`. Its first verified slice has
 already extracted process diagnostics / forced-termination helpers into
-`agents_codex_process.py`, reducing `agents_codex.py` from `1931` to `1747`.
-The next default slice is still within that `agents_codex.py` tranche before
-moving on to the larger remaining modules. Stop only for a real blocker or
-user redirect.
+`agents_codex_process.py`, and the next verified slice extracted the Codex SDK
+runtime path into `agents_codex_runtime.py`, reducing `agents_codex.py` from
+`1931` to `1317`. `agents_codex.py` is no longer a hard-threshold blocker, so
+the next default Plan 11 slice should move to the remaining oversized modules
+(`mcp_agent.py`, then `client.py`, unless a smaller justified exception is
+selected first). Stop only for a real blocker or user redirect.
