@@ -16,7 +16,7 @@ from typing import Any
 import litellm
 
 from llm_client.core.data_types import LLMCallResult
-from llm_client.retry import Hooks
+from llm_client.execution.retry import Hooks
 
 
 class LLMStream:

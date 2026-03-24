@@ -4,7 +4,7 @@ Generate OpenAI-compatible tool schemas from plain Python functions and execute
 tool calls in-process — no MCP subprocess, no stdio, no JSON-RPC overhead.
 
 Usage:
-    from llm_client.tool_utils import callable_to_openai_tool, prepare_direct_tools
+    from llm_client.tools.tool_utils import callable_to_openai_tool, prepare_direct_tools
 
     async def search(query: str, limit: int = 10) -> str:
         '''Search for entities.'''
@@ -24,7 +24,7 @@ import logging
 import time
 from typing import Any, Callable, Optional, Union, get_args, get_origin, get_type_hints
 
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
     append_input_examples_to_description as _append_input_examples_to_description,

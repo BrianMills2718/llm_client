@@ -135,7 +135,7 @@ from llm_client.errors import (
     wrap_error,
 )
 
-from llm_client.rate_limit import configure as configure_rate_limit
+from llm_client.utils.rate_limit import configure as configure_rate_limit
 from llm_client.observability import (
     ActiveFeatureProfile,
     ActiveExperimentRun,
@@ -210,7 +210,7 @@ if _TYPE_CHECKING:
     )
     # Relocated (Plan #17): git_utils, scoring, experiment_eval, task_graph, analyzer
 
-from llm_client.mcp_agent import (
+from llm_client.agent.mcp_agent import (
     DEFAULT_ENFORCE_TOOL_CONTRACTS,
     DEFAULT_INITIAL_ARTIFACTS,
     DEFAULT_MAX_TURNS,
@@ -222,7 +222,7 @@ from llm_client.mcp_agent import (
     MCPToolCallRecord,
 )
 
-from llm_client.tool_utils import (
+from llm_client.tools.tool_utils import (
     callable_to_openai_tool,
     lint_tool_callable,
     lint_tool_registry,

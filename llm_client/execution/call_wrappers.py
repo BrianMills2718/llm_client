@@ -13,12 +13,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, TypeVar
 
-from llm_client.call_contracts import (
+from llm_client.execution.call_contracts import (
     check_budget as _check_budget,
     normalize_prompt_ref as _normalize_prompt_ref,
     require_tags as _require_tags,
 )
-from llm_client.call_lifecycle import (
+from llm_client.execution.call_lifecycle import (
     _AsyncLLMCallHeartbeatMonitor,
     _SyncLLMCallHeartbeatMonitor,
     _emit_llm_call_lifecycle_event,

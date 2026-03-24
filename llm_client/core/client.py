@@ -59,7 +59,7 @@ litellm.enable_json_schema_validation = True
 from llm_client.core.config import ClientConfig
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit
-from llm_client.call_contracts import (
+from llm_client.execution.call_contracts import (
     AGENT_RETRY_SAFE_ENV,
     ExecutionMode,
     _AGENT_ONLY_KWARGS,
@@ -95,10 +95,10 @@ from llm_client.call_contracts import (
     normalize_prompt_ref as _normalize_prompt_ref,
     require_tags as _require_tags,
 )
-from llm_client.timeout_policy import (
+from llm_client.execution.timeout_policy import (
     normalize_timeout as _normalize_timeout,
 )
-from llm_client.execution_kernel import (
+from llm_client.execution.execution_kernel import (
     run_async_with_fallback,
     run_async_with_retry,
     run_sync_with_fallback,
@@ -128,7 +128,7 @@ from llm_client.core.data_types import (  # noqa: F401
 )
 
 # Re-export retry infrastructure for backward compatibility.
-from llm_client.retry import (  # noqa: F401
+from llm_client.execution.retry import (  # noqa: F401
     Hooks,
     RetryPolicy,
     _NON_RETRYABLE_PATTERNS,
@@ -151,7 +151,7 @@ from llm_client.retry import (  # noqa: F401
 )
 
 # Re-export OpenRouter utilities for backward compatibility.
-from llm_client.openrouter import (  # noqa: F401
+from llm_client.utils.openrouter import (  # noqa: F401
     _is_openrouter_call,
     _is_openrouter_key_limit_error,
     _mask_api_key,
@@ -165,7 +165,7 @@ from llm_client.openrouter import (  # noqa: F401
 )
 
 # Re-export streaming classes for backward compatibility.
-from llm_client.streaming import (  # noqa: F401
+from llm_client.execution.streaming import (  # noqa: F401
     AsyncLLMStream,
     LLMStream,
 )
@@ -183,14 +183,14 @@ from llm_client.core.model_detection import (  # noqa: F401
 )
 
 # Re-export cost/usage utilities for backward compatibility.
-from llm_client.cost_utils import (  # noqa: F401
+from llm_client.utils.cost_utils import (  # noqa: F401
     FALLBACK_COST_FLOOR_USD_PER_TOKEN,  # noqa: F811
     _compute_cost,
     _extract_tool_calls,
     _extract_usage,
     _parse_cost_result,
 )
-from llm_client.call_lifecycle import (  # noqa: F401
+from llm_client.execution.call_lifecycle import (  # noqa: F401
     _AsyncLLMCallHeartbeatMonitor,
     _LLMCallProgressReporter,
     _LLMCallProgressSnapshot,
@@ -200,12 +200,12 @@ from llm_client.call_lifecycle import (  # noqa: F401
     _provider_timeout_for_lifecycle,
     _resolve_lifecycle_monitoring_settings,
 )
-from llm_client.call_wrappers import (
+from llm_client.execution.call_wrappers import (
     _prepare_public_call_envelope,
     _run_async_public_call,
     _run_sync_public_call,
 )
-from llm_client.background_runtime import (
+from llm_client.execution.background_runtime import (
     _BACKGROUND_DEFAULT_TIMEOUT,
     _BACKGROUND_POLL_INTERVAL,
     _background_mode_for_model,
@@ -218,7 +218,7 @@ from llm_client.background_runtime import (
     _apoll_background_response_impl,
     _aretrieve_background_response_impl,
 )
-from llm_client.responses_runtime import (  # noqa: F401
+from llm_client.execution.responses_runtime import (  # noqa: F401
     _build_result_from_responses,
     _compute_responses_cost,
     _convert_messages_to_input,
@@ -228,7 +228,7 @@ from llm_client.responses_runtime import (  # noqa: F401
     _prepare_responses_kwargs,
     _strict_json_schema,
 )
-from llm_client.completion_runtime import (  # noqa: F401
+from llm_client.execution.completion_runtime import (  # noqa: F401
     _build_result_from_response,
     _first_choice_or_empty_error,
     _prepare_call_kwargs,
@@ -264,7 +264,7 @@ from llm_client.langfuse_callbacks import configure_langfuse_callbacks, inject_m
 configure_langfuse_callbacks()
 
 # Re-export OpenRouter constants from their canonical home.
-from llm_client.openrouter import (  # noqa: F811
+from llm_client.utils.openrouter import (  # noqa: F811
     OPENROUTER_API_BASE_ENV,
     OPENROUTER_API_KEY_ENV,
     OPENROUTER_API_KEYS_ENV,
@@ -485,7 +485,7 @@ def call_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
-    from llm_client.text_runtime import _call_llm_impl
+    from llm_client.execution.text_runtime import _call_llm_impl
 
     envelope = _prepare_public_call_envelope(
         caller="call_llm",
@@ -572,7 +572,7 @@ def call_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
-    from llm_client.structured_runtime import _call_llm_structured_impl
+    from llm_client.execution.structured_runtime import _call_llm_structured_impl
 
     envelope = _prepare_public_call_envelope(
         caller="call_llm_structured",
@@ -734,7 +734,7 @@ async def acall_llm(
         LLMCallResult with content, usage, cost, model, tool_calls,
         finish_reason, and raw_response
     """
-    from llm_client.text_runtime import _acall_llm_impl
+    from llm_client.execution.text_runtime import _acall_llm_impl
 
     envelope = _prepare_public_call_envelope(
         caller="acall_llm",
@@ -821,7 +821,7 @@ async def acall_llm_structured(
     Returns:
         Tuple of (parsed Pydantic model instance, LLMCallResult)
     """
-    from llm_client.structured_runtime import _acall_llm_structured_impl
+    from llm_client.execution.structured_runtime import _acall_llm_structured_impl
 
     envelope = _prepare_public_call_envelope(
         caller="acall_llm_structured",
@@ -973,7 +973,7 @@ async def acall_llm_batch(
         List of LLMCallResult (or Exception if return_exceptions=True),
         in the same order as messages_list
     """
-    from llm_client.batch_runtime import acall_llm_batch_impl
+    from llm_client.execution.batch_runtime import acall_llm_batch_impl
 
     return await acall_llm_batch_impl(
         model,
@@ -1032,7 +1032,7 @@ def call_llm_batch(
 
     See :func:`acall_llm_batch` for full parameter documentation.
     """
-    from llm_client.batch_runtime import call_llm_batch_impl
+    from llm_client.execution.batch_runtime import call_llm_batch_impl
 
     return call_llm_batch_impl(
         model,
@@ -1093,7 +1093,7 @@ async def acall_llm_structured_batch(
         List of (parsed_model, LLMCallResult) tuples (or Exception if
         return_exceptions=True), in input order.
     """
-    from llm_client.batch_runtime import acall_llm_structured_batch_impl
+    from llm_client.execution.batch_runtime import acall_llm_structured_batch_impl
 
     return await acall_llm_structured_batch_impl(
         model,
@@ -1150,7 +1150,7 @@ def call_llm_structured_batch(
 
     See :func:`acall_llm_batch` for concurrency semantics.
     """
-    from llm_client.batch_runtime import call_llm_structured_batch_impl
+    from llm_client.execution.batch_runtime import call_llm_structured_batch_impl
 
     return call_llm_structured_batch_impl(
         model,
@@ -1238,7 +1238,7 @@ def stream_llm(
     Returns:
         LLMStream that yields text chunks and exposes ``.result``
     """
-    from llm_client.stream_runtime import stream_llm_impl
+    from llm_client.execution.stream_runtime import stream_llm_impl
 
     return stream_llm_impl(
         model,
@@ -1286,7 +1286,7 @@ async def astream_llm(
     Returns:
         AsyncLLMStream that yields text chunks and exposes ``.result``
     """
-    from llm_client.stream_runtime import astream_llm_impl
+    from llm_client.execution.stream_runtime import astream_llm_impl
 
     return await astream_llm_impl(
         model,
@@ -1454,7 +1454,7 @@ def embed(
     Returns:
         EmbeddingResult with embeddings list, usage, and cost
     """
-    from llm_client.embedding_runtime import embed_impl
+    from llm_client.execution.embedding_runtime import embed_impl
 
     return embed_impl(
         model,
@@ -1482,7 +1482,7 @@ async def aembed(
     **kwargs: Any,
 ) -> EmbeddingResult:
     """Async version of embed(). See embed() for full docs."""
-    from llm_client.embedding_runtime import aembed_impl
+    from llm_client.execution.embedding_runtime import aembed_impl
 
     return await aembed_impl(
         model,

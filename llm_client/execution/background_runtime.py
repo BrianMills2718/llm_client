@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable
 
 from llm_client.core.errors import LLMConfigurationError
 from llm_client.core.model_detection import _base_model_name
-from llm_client.openrouter import (
+from llm_client.utils.openrouter import (
     OPENROUTER_API_KEY_ENV,
     _normalize_api_key_value,
     _openrouter_key_candidates_from_env,

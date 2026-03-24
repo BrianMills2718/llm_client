@@ -451,7 +451,7 @@ def stream_llm_impl(
 
     try:
         if _client._is_agent_model(model):
-            from llm_client.agents import _route_stream
+            from llm_client.sdk.agents import _route_stream
 
             stream = cast(
                 "LLMStream",
@@ -680,7 +680,7 @@ async def astream_llm_impl(
 
     try:
         if _client._is_agent_model(model):
-            from llm_client.agents import _route_astream
+            from llm_client.sdk.agents import _route_astream
 
             stream = await _route_astream(
                 model,

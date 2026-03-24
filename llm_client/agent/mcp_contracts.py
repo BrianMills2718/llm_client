@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm_client.agent_artifacts import (
+from llm_client.agent.agent_artifacts import (
     _artifact_handle_summaries as _agent_artifact_handle_summaries,
     _build_active_artifact_context_content as _agent_build_active_artifact_context_content,
     _collect_recent_artifact_handles as _agent_collect_recent_artifact_handles,
     _upsert_active_artifact_context_message as _agent_upsert_active_artifact_context_message,
 )
-from llm_client.agent_contracts import (
+from llm_client.agent.agent_contracts import (
     CapabilityRequirement,
     _analyze_lane_closure as _agent_analyze_lane_closure,
     _apply_handle_input_injections as _agent_apply_handle_input_injections,
@@ -40,13 +40,13 @@ from llm_client.agent_contracts import (
     _tool_declares_no_artifact_prereqs as _agent_tool_declares_no_artifact_prereqs,
     _validate_tool_contract_call as _agent_validate_tool_contract_call,
 )
-from llm_client.agent_disclosure import (
+from llm_client.agent.agent_disclosure import (
     _deficit_labels_from_hidden_entries as _agent_deficit_labels_from_hidden_entries,
     _disclosure_message as _agent_disclosure_message,
     _disclosure_reason_from_entry as _agent_disclosure_reason_from_entry,
     _filter_tools_for_disclosure as _agent_filter_tools_for_disclosure,
 )
-from llm_client.mcp_tools import (
+from llm_client.agent.mcp_tools import (
     BUDGET_EXEMPT_TOOL_NAMES,
     RUNTIME_ARTIFACT_READ_TOOL_NAME,
     _extract_tool_call_args,
@@ -54,8 +54,8 @@ from llm_client.mcp_tools import (
     _parse_record_result_json_value,
     _set_tool_call_args,
 )
-from llm_client.mcp_context import _trim_text
-from llm_client.tool_runtime_common import (
+from llm_client.agent.mcp_context import _trim_text
+from llm_client.tools.tool_runtime_common import (
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
     normalize_tool_contracts as _shared_normalize_tool_contracts,

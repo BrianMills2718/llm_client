@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from llm_client.foundation import new_event_id, now_iso, sha256_json, sha256_text
-from llm_client.mcp_context import (
+from llm_client.agent.mcp_context import (
     _clear_old_tool_results_for_context,
     _compact_tool_history_for_context,
 )
-from llm_client.mcp_contracts import (
+from llm_client.agent.mcp_contracts import (
     _capability_state_snapshot,
     _deficit_labels_from_hidden_entries,
     _disclosure_message,
@@ -25,8 +25,8 @@ from llm_client.mcp_contracts import (
     _is_control_tool_name,
     _upsert_active_artifact_context_message,
 )
-from llm_client.mcp_finalization import _provider_failure_classification
-from llm_client.mcp_tools import (
+from llm_client.agent.mcp_finalization import _provider_failure_classification
+from llm_client.agent.mcp_tools import (
     BUDGET_EXEMPT_TOOL_NAMES,
     _autofill_tool_reasoning,
     _count_budgeted_records,
@@ -36,7 +36,7 @@ from llm_client.mcp_tools import (
     _normalize_tool_call_name_inplace,
     _trim_tool_calls_to_budget,
 )
-from llm_client.tool_runtime_common import MCPAgentResult, TOOL_REASONING_FIELD, extract_usage_counts
+from llm_client.tools.tool_runtime_common import MCPAgentResult, TOOL_REASONING_FIELD, extract_usage_counts
 
 logger = logging.getLogger(__name__)
 

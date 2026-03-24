@@ -15,14 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Pattern
 
 from llm_client.foundation import new_event_id, now_iso
-from llm_client.mcp_evidence import (
+from llm_client.agent.mcp_evidence import (
     _evidence_digest,
     _is_evidence_tool_name,
     _tool_evidence_pointer_labels,
 )
-from llm_client.mcp_finalization import _FORCED_REFUSAL_RE
-from llm_client.mcp_tools import _parse_record_result_json
-from llm_client.tool_runtime_common import MCPToolCallRecord
+from llm_client.agent.mcp_finalization import _FORCED_REFUSAL_RE
+from llm_client.agent.mcp_tools import _parse_record_result_json
+from llm_client.tools.tool_runtime_common import MCPToolCallRecord
 
 logger = logging.getLogger(__name__)
 

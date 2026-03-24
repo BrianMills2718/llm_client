@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterable
 from pydantic import BaseModel
 
 from llm_client import io_log as _io_log
-from llm_client.call_contracts import (
+from llm_client.execution.call_contracts import (
     ExecutionMode,
     _DEPRECATED_MODEL_EXCEPTIONS,
     _DEPRECATED_MODELS,
@@ -35,13 +35,13 @@ from llm_client.call_contracts import (
 from llm_client.core.config import ClientConfig
 from llm_client.core.data_types import LLMCallResult
 from llm_client.core.model_detection import _resolve_api_base_for_model
-from llm_client.openrouter import _openrouter_routing_enabled
+from llm_client.utils.openrouter import _openrouter_routing_enabled
 from llm_client.result_finalization import finalize_result as _finalize_result_base
 from llm_client.result_metadata import (
     build_routing_trace as _build_routing_trace_base,
     warning_record as _warning_record,
 )
-from llm_client.retry import Hooks, RetryPolicy
+from llm_client.execution.retry import Hooks, RetryPolicy
 from llm_client.core.routing import (
     CallRequest,
     ResolvedCallPlan,

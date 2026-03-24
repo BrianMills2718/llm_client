@@ -228,7 +228,7 @@ def _call_llm_structured_impl(
     routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
 
     if _is_agent_model(model):
-        from llm_client.agents import _route_call_structured
+        from llm_client.sdk.agents import _route_call_structured
 
         if hooks and hooks.before_call:
             hooks.before_call(model, messages, public_kwargs)
@@ -800,7 +800,7 @@ async def _acall_llm_structured_impl(
     routing_policy = str(plan.routing_trace.get("routing_policy", _routing_policy_label(cfg)))
 
     if _is_agent_model(model):
-        from llm_client.agents import _route_acall_structured
+        from llm_client.sdk.agents import _route_acall_structured
 
         if hooks and hooks.before_call:
             hooks.before_call(model, messages, public_kwargs)

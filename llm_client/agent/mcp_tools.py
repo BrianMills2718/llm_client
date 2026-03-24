@@ -12,12 +12,12 @@ import json as _json
 import re
 from typing import Any
 
-from llm_client.agent_artifacts import (
+from llm_client.agent.agent_artifacts import (
     _runtime_artifact_read_contract as _agent_runtime_artifact_read_contract,
     _runtime_artifact_read_result as _agent_runtime_artifact_read_result,
     _runtime_artifact_read_tool_def as _agent_runtime_artifact_read_tool_def,
 )
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
     truncate_text as _truncate,

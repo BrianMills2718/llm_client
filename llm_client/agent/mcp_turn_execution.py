@@ -38,13 +38,13 @@ import time
 from contextlib import AsyncExitStack
 from typing import Any
 
-from llm_client.agent_artifacts import (
+from llm_client.agent.agent_artifacts import (
     _artifact_handle_summaries as _agent_artifact_handle_summaries,
     _build_active_artifact_context_content as _agent_build_active_artifact_context_content,
     _collect_recent_artifact_handles as _agent_collect_recent_artifact_handles,
     _upsert_active_artifact_context_message as _agent_upsert_active_artifact_context_message,
 )
-from llm_client.agent_contracts import (
+from llm_client.agent.agent_contracts import (
     CapabilityRequirement,
     ToolCallValidation,
     _apply_handle_input_injections as _agent_apply_handle_input_injections,
@@ -60,19 +60,19 @@ from llm_client.agent_contracts import (
     _infer_output_capabilities as _agent_infer_output_capabilities,
     _is_control_tool_name as _agent_is_control_tool_name,
 )
-from llm_client.agent_disclosure import (
+from llm_client.agent.agent_disclosure import (
     _deficit_labels_from_hidden_entries as _agent_deficit_labels_from_hidden_entries,
     _disclosure_message as _agent_disclosure_message,
     _disclosure_reason_from_entry as _agent_disclosure_reason_from_entry,
     _filter_tools_for_disclosure as _agent_filter_tools_for_disclosure,
 )
-from llm_client.agent_adoption import (
+from llm_client.agent.agent_adoption import (
     DEFAULT_ADOPTION_PROFILE,
     AdoptionProfileAssessment,
     assess_adoption_profile,
     normalize_adoption_profile,
 )
-from llm_client.agent_outcomes import (
+from llm_client.agent.agent_outcomes import (
     ForcedFinalizationResult,
     _PRIMARY_FAILURE_PRIORITY,
     _TERMINAL_FAILURE_EVENT_CODES,
@@ -83,7 +83,7 @@ from llm_client.agent_outcomes import (
     _summarize_finalization_attempts,
 )
 from llm_client.core.client import LLMCallResult
-from llm_client.compliance_gate import (
+from llm_client.agent.compliance_gate import (
     build_tool_parameter_index,
     validate_tool_call_inputs,
 )
@@ -106,7 +106,7 @@ from llm_client.foundation import (
     validate_foundation_event,
 )
 # --- Decomposed sub-modules (Phase 1B) ---
-from llm_client.mcp_tools import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_tools import (  # noqa: F401  re-exported
     AUTO_REASONING_TOOL_DEFAULTS as AUTO_REASONING_TOOL_DEFAULTS,
     BUDGET_EXEMPT_TOOL_NAMES as BUDGET_EXEMPT_TOOL_NAMES,
     RUNTIME_ARTIFACT_READ_TOOL_NAME as RUNTIME_ARTIFACT_READ_TOOL_NAME,
@@ -126,7 +126,7 @@ from llm_client.mcp_tools import (  # noqa: F401  re-exported
     _tool_error_signature as _tool_error_signature,
     _trim_tool_calls_to_budget as _trim_tool_calls_to_budget,
 )
-from llm_client.mcp_context import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_context import (  # noqa: F401  re-exported
     DEFAULT_MAX_MESSAGE_CHARS as DEFAULT_MAX_MESSAGE_CHARS,
     DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS as DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS,
     DEFAULT_TOOL_RESULT_KEEP_RECENT as DEFAULT_TOOL_RESULT_KEEP_RECENT,
@@ -135,8 +135,8 @@ from llm_client.mcp_context import (  # noqa: F401  re-exported
     _message_char_length as _message_char_length,
     _trim_text as _trim_text,
 )
-from llm_client.mcp_turn_completion import _resolve_turn_completion
-from llm_client.mcp_evidence import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_turn_completion import _resolve_turn_completion
+from llm_client.agent.mcp_evidence import (  # noqa: F401  re-exported
     DEFAULT_RETRIEVAL_STAGNATION_ACTION as DEFAULT_RETRIEVAL_STAGNATION_ACTION,
     DEFAULT_RETRIEVAL_STAGNATION_TURNS as DEFAULT_RETRIEVAL_STAGNATION_TURNS,
     RETRIEVAL_STAGNATION_ACTIONS as RETRIEVAL_STAGNATION_ACTIONS,
@@ -145,7 +145,7 @@ from llm_client.mcp_evidence import (  # noqa: F401  re-exported
     _is_evidence_tool_name as _is_evidence_tool_name,
     _tool_evidence_pointer_labels as _tool_evidence_pointer_labels,
 )
-from llm_client.mcp_finalization import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_finalization import (  # noqa: F401  re-exported
     DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS as DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS,
     DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS as DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS,
     DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD as DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD,
@@ -155,11 +155,11 @@ from llm_client.mcp_finalization import (  # noqa: F401  re-exported
     _normalize_forced_final_answer as _normalize_forced_final_answer,
     _provider_failure_classification as _provider_failure_classification,
 )
-from llm_client.mcp_loop_summary import _apply_agent_loop_summary
-from llm_client.mcp_turn_model import _run_turn_model_stage
-from llm_client.mcp_turn_outcomes import _process_turn_outcomes
-from llm_client.mcp_turn_tools import _process_tool_calls_turn
-from llm_client.mcp_state import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_loop_summary import _apply_agent_loop_summary
+from llm_client.agent.mcp_turn_model import _run_turn_model_stage
+from llm_client.agent.mcp_turn_outcomes import _process_turn_outcomes
+from llm_client.agent.mcp_turn_tools import _process_tool_calls_turn
+from llm_client.agent.mcp_state import (  # noqa: F401  re-exported
     ADOPTION_PROFILE_ENFORCE_ENV as ADOPTION_PROFILE_ENFORCE_ENV,
     ADOPTION_PROFILE_ENV as ADOPTION_PROFILE_ENV,
     AgentLoopRuntimePolicy as AgentLoopRuntimePolicy,
@@ -173,7 +173,7 @@ from llm_client.mcp_state import (  # noqa: F401  re-exported
     _normalize_model_chain as _normalize_model_chain,
     _resolve_agent_runtime_policy as _resolve_agent_runtime_policy,
 )
-from llm_client.mcp_contracts import (  # noqa: F401  re-exported
+from llm_client.agent.mcp_contracts import (  # noqa: F401  re-exported
     _analyze_lane_closure as _analyze_lane_closure,
     _apply_handle_input_injections as _apply_handle_input_injections,
     _artifact_handle_summaries as _artifact_handle_summaries,
@@ -206,7 +206,7 @@ from llm_client.mcp_contracts import (  # noqa: F401  re-exported
     _upsert_active_artifact_context_message as _upsert_active_artifact_context_message,
     _validate_tool_contract_call as _validate_tool_contract_call,
 )
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS as DEFAULT_TOOL_INPUT_EXAMPLE_MAX_CHARS,
     DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS as DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS,
     MCPAgentResult as MCPAgentResult,

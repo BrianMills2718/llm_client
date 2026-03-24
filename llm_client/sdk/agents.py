@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable, TypeVar, cast
 from pydantic import BaseModel
 
 from llm_client.core.client import Hooks, LLMCallResult
-from llm_client.timeout_policy import normalize_timeout as _normalize_timeout
+from llm_client.execution.timeout_policy import normalize_timeout as _normalize_timeout
 
 _T = TypeVar("_T")
 
@@ -306,7 +306,7 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 # Re-exports from agents_claude.py (backward compatibility)
 # ---------------------------------------------------------------------------
-from llm_client.agents_claude import (  # noqa: F401
+from llm_client.sdk.agents_claude import (  # noqa: F401
     AsyncAgentStream,
     AgentStream,
     _acall_agent,
@@ -324,7 +324,7 @@ from llm_client.agents_claude import (  # noqa: F401
 # ---------------------------------------------------------------------------
 # Re-exports from agents_codex.py (backward compatibility)
 # ---------------------------------------------------------------------------
-from llm_client.agents_codex import (  # noqa: F401
+from llm_client.sdk.agents_codex import (  # noqa: F401
     AsyncCodexStream,
     CodexStream,
     _acall_codex,

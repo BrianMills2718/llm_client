@@ -13,13 +13,13 @@ import logging
 import re
 from typing import Any
 
-from llm_client.agent_outcomes import ForcedFinalizationResult
+from llm_client.agent.agent_outcomes import ForcedFinalizationResult
 from llm_client.foundation import new_event_id, now_iso
-from llm_client.mcp_context import (
+from llm_client.agent.mcp_context import (
     _clear_old_tool_results_for_context,
     _compact_tool_history_for_context,
 )
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     MCPAgentResult,
     extract_usage_counts as _extract_usage,
 )
@@ -125,7 +125,7 @@ def _provider_failure_classification(exc: Exception, error_text: str) -> tuple[b
             "provider_insufficient_credits",
             "provider_insufficient_quota",
         }:
-            from llm_client.mcp_agent import EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED
+            from llm_client.agent.mcp_agent import EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED
             return True, EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED, normalized, False
 
     lower = (error_text or "").strip().lower()
@@ -136,7 +136,7 @@ def _provider_failure_classification(exc: Exception, error_text: str) -> tuple[b
         or "insufficient quota" in lower
         or "\"code\":402" in lower
     ):
-        from llm_client.mcp_agent import EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED
+        from llm_client.agent.mcp_agent import EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED
         return (
             True,
             EVENT_CODE_PROVIDER_CREDITS_EXHAUSTED,
@@ -181,7 +181,7 @@ async def _execute_forced_finalization(
 ) -> ForcedFinalizationResult:
     """Run the forced-final no-tools lane and return aggregate deltas/outcomes."""
     # Lazy imports to avoid circular dependencies
-    from llm_client.mcp_agent import _inner_acall_llm, _upsert_active_artifact_context_message
+    from llm_client.agent.mcp_agent import _inner_acall_llm, _upsert_active_artifact_context_message
 
     _no_tools_suffix = (
         " Tools are now DISABLED — do NOT call any functions. "

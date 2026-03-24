@@ -27,7 +27,7 @@ from llm_client.foundation import (
     new_event_id as _new_foundation_event_id,
     now_iso as _foundation_now_iso,
 )
-from llm_client.timeout_policy import timeout_policy_label as _timeout_policy_label
+from llm_client.execution.timeout_policy import timeout_policy_label as _timeout_policy_label
 
 logger = logging.getLogger(__name__)
 

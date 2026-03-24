@@ -12,38 +12,38 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from llm_client.agent_adoption import (
+from llm_client.agent.agent_adoption import (
     DEFAULT_ADOPTION_PROFILE,
     normalize_adoption_profile,
 )
-from llm_client.agent_contracts import (
+from llm_client.agent.agent_contracts import (
     _analyze_lane_closure as _agent_analyze_lane_closure,
     _capability_requirement_from_raw as _agent_capability_requirement_from_raw,
     _capability_state_add as _agent_capability_state_add,
     _capability_state_snapshot as _agent_capability_state_snapshot,
     _normalize_artifact_kind as _agent_normalize_artifact_kind,
 )
-from llm_client.compliance_gate import build_tool_parameter_index
+from llm_client.agent.compliance_gate import build_tool_parameter_index
 from llm_client.foundation import (
     normalize_bindings,
     sha256_json,
 )
-from llm_client.mcp_context import (
+from llm_client.agent.mcp_context import (
     DEFAULT_TOOL_RESULT_CONTEXT_PREVIEW_CHARS,
     DEFAULT_TOOL_RESULT_KEEP_RECENT,
 )
-from llm_client.mcp_evidence import (
+from llm_client.agent.mcp_evidence import (
     DEFAULT_RETRIEVAL_STAGNATION_ACTION,
     DEFAULT_RETRIEVAL_STAGNATION_TURNS,
     RETRIEVAL_STAGNATION_ACTIONS,
 )
-from llm_client.mcp_finalization import (
+from llm_client.agent.mcp_finalization import (
     DEFAULT_ACCEPT_FORCED_ANSWER_ON_MAX_TOOL_CALLS,
     DEFAULT_FORCE_SUBMIT_RETRY_ON_MAX_TOOL_CALLS,
     DEFAULT_FORCED_FINAL_CIRCUIT_BREAKER_THRESHOLD,
     DEFAULT_FORCED_FINAL_MAX_ATTEMPTS,
 )
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     normalize_tool_contracts as _shared_normalize_tool_contracts,
 )
 

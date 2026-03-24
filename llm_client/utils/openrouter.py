@@ -16,7 +16,7 @@ import re
 import threading
 from typing import Any, Callable
 
-from llm_client.retry import _error_status_code
+from llm_client.execution.retry import _error_status_code
 
 logger = logging.getLogger(__name__)
 

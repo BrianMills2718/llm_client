@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from llm_client.core.client import Hooks, LLMCallResult
 from llm_client.core.data_types import TurnEvent
-from llm_client.timeout_policy import normalize_timeout as _normalize_timeout
+from llm_client.execution.timeout_policy import normalize_timeout as _normalize_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _build_agent_options(
     """
     import os
 
-    from llm_client.agents import (
+    from llm_client.sdk.agents import (
         _AGENT_KWARGS,
         _apply_agent_yolo_defaults,
         _messages_to_agent_prompt,
@@ -147,7 +147,7 @@ def _result_from_agent(
         result_msg: The ResultMessage from the SDK.
         agent_tool_calls: Tool use records captured from ToolUseBlock in messages.
     """
-    from llm_client.agents import _agent_billing_mode
+    from llm_client.sdk.agents import _agent_billing_mode
 
     content = "\n".join(last_message_text) if last_message_text else ""
     full_text = "\n".join(all_text) if all_text else ""
@@ -351,7 +351,7 @@ def _call_agent(
     **kwargs: Any,
 ) -> LLMCallResult:
     """Sync wrapper for _acall_agent."""
-    from llm_client.agents import _run_sync
+    from llm_client.sdk.agents import _run_sync
 
     coro = _acall_agent(model, messages, timeout=timeout, **kwargs)
     return cast(LLMCallResult, _run_sync(coro))
@@ -426,7 +426,7 @@ def _call_agent_structured(
     **kwargs: Any,
 ) -> tuple[BaseModel, LLMCallResult]:
     """Sync wrapper for _acall_agent_structured."""
-    from llm_client.agents import _run_sync
+    from llm_client.sdk.agents import _run_sync
 
     coro = _acall_agent_structured(
         model, messages, response_model, timeout=timeout, **kwargs,

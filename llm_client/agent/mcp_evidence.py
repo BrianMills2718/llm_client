@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm_client.agent_artifacts import (
+from llm_client.agent.agent_artifacts import (
     _collect_evidence_pointer_labels as _agent_collect_evidence_pointer_labels,
     _evidence_digest as _agent_evidence_digest,
     _tool_evidence_pointer_labels as _agent_tool_evidence_pointer_labels,
 )
-from llm_client.mcp_tools import (
+from llm_client.agent.mcp_tools import (
     BUDGET_EXEMPT_TOOL_NAMES,
     _is_budget_exempt_tool,
 )
-from llm_client.tool_runtime_common import MCPToolCallRecord
+from llm_client.tools.tool_runtime_common import MCPToolCallRecord
 
 
 # ---------------------------------------------------------------------------

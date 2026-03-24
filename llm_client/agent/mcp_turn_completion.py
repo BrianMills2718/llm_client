@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from llm_client.foundation import new_event_id, now_iso
-from llm_client.mcp_finalization import (
+from llm_client.agent.mcp_finalization import (
     _execute_forced_finalization,
     _normalize_forced_final_answer,
 )

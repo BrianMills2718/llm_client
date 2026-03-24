@@ -163,8 +163,8 @@ def _call_llm_impl(
     )
 
     if ("mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs) and not _is_agent_model(model):
-        from llm_client.agents import _run_sync
-        from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
+        from llm_client.sdk.agents import _run_sync
+        from llm_client.agent.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
         mcp_kw, remaining = _split_agent_loop_kwargs(
             kwargs=public_runtime_kwargs,
@@ -194,8 +194,8 @@ def _call_llm_impl(
         return result
 
     if "python_tools" in public_runtime_kwargs and not _is_agent_model(model):
-        from llm_client.agents import _run_sync
-        from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
+        from llm_client.sdk.agents import _run_sync
+        from llm_client.agent.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
         from llm_client.core.models import supports_tool_calling
 
         if "mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs:
@@ -208,7 +208,7 @@ def _call_llm_impl(
             max_budget=max_budget,
         )
         if not supports_tool_calling(model):
-            from llm_client.tool_shim import _acall_with_tool_shim
+            from llm_client.tools.tool_shim import _acall_with_tool_shim
 
             result = _run_sync(_acall_with_tool_shim(
                 primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
@@ -253,8 +253,8 @@ def _call_llm_impl(
         public_kwargs = _client._strip_llm_internal_kwargs(model_kwargs)
 
         if not is_agent and ("mcp_servers" in public_kwargs or "mcp_sessions" in public_kwargs):
-            from llm_client.agents import _run_sync
-            from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
+            from llm_client.sdk.agents import _run_sync
+            from llm_client.agent.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
             mcp_kw, remaining = _split_agent_loop_kwargs(
                 kwargs=public_kwargs,
@@ -278,8 +278,8 @@ def _call_llm_impl(
             return cast(LLMCallResult, result)
 
         if not is_agent and "python_tools" in public_kwargs:
-            from llm_client.agents import _run_sync
-            from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
+            from llm_client.sdk.agents import _run_sync
+            from llm_client.agent.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
             from llm_client.core.models import supports_tool_calling
 
             tool_kw, remaining = _split_agent_loop_kwargs(
@@ -292,7 +292,7 @@ def _call_llm_impl(
             inner_named_loop = dict(_inner_named)
             inner_named_loop.pop("fallback_models", None)
             if not supports_tool_calling(current_model):
-                from llm_client.tool_shim import _acall_with_tool_shim
+                from llm_client.tools.tool_shim import _acall_with_tool_shim
 
                 result = _run_sync(_acall_with_tool_shim(
                     current_model,
@@ -398,7 +398,7 @@ def _call_llm_impl(
 
         def _invoke_attempt(attempt: int) -> LLMCallResult:
             if is_agent:
-                from llm_client.agents import _route_call
+                from llm_client.sdk.agents import _route_call
 
                 result = _route_call(
                     current_model, messages,
@@ -674,7 +674,7 @@ async def _acall_llm_impl(
         public_kwargs = _client._strip_llm_internal_kwargs(model_kwargs)
 
         if not is_agent and ("mcp_servers" in public_kwargs or "mcp_sessions" in public_kwargs):
-            from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
+            from llm_client.agent.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
 
             mcp_kw, remaining = _split_agent_loop_kwargs(
                 kwargs=public_kwargs,
@@ -698,7 +698,7 @@ async def _acall_llm_impl(
             return result
 
         if not is_agent and "python_tools" in public_kwargs:
-            from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
+            from llm_client.agent.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
             from llm_client.core.models import supports_tool_calling
 
             tool_kw, remaining = _split_agent_loop_kwargs(
@@ -711,7 +711,7 @@ async def _acall_llm_impl(
             inner_named_loop = dict(_inner_named)
             inner_named_loop.pop("fallback_models", None)
             if not supports_tool_calling(current_model):
-                from llm_client.tool_shim import _acall_with_tool_shim
+                from llm_client.tools.tool_shim import _acall_with_tool_shim
 
                 result = await _acall_with_tool_shim(
                     current_model,
@@ -817,7 +817,7 @@ async def _acall_llm_impl(
 
         async def _invoke_attempt(attempt: int) -> LLMCallResult:
             if is_agent:
-                from llm_client.agents import _route_acall
+                from llm_client.sdk.agents import _route_acall
 
                 result = await _route_acall(
                     current_model, messages,

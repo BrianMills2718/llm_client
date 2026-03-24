@@ -13,7 +13,7 @@ import json as _json
 from dataclasses import dataclass, field
 from typing import Any
 
-from llm_client.agent_contracts import _normalize_tool_contracts as _agent_normalize_tool_contracts
+from llm_client.agent.agent_contracts import _normalize_tool_contracts as _agent_normalize_tool_contracts
 
 DEFAULT_TOOL_INPUT_EXAMPLES_MAX_ITEMS: int = 2
 """Maximum tool input examples appended to tool descriptions."""

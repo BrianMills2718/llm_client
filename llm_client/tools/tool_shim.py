@@ -19,9 +19,9 @@ import json as _json
 import logging
 from typing import Any, Callable
 
-from llm_client.agent_outcomes import _classify_failure_signals
+from llm_client.agent.agent_outcomes import _classify_failure_signals
 from llm_client.core.client import LLMCallResult
-from llm_client.compliance_gate import (
+from llm_client.agent.compliance_gate import (
     build_tool_parameter_index,
     validate_tool_call_inputs,
 )
@@ -30,7 +30,7 @@ from llm_client.foundation import (
     merge_binding_state,
     normalize_bindings,
 )
-from llm_client.mcp_agent import (
+from llm_client.agent.mcp_agent import (
     BUDGET_EXEMPT_TOOL_NAMES,
     DEFAULT_INITIAL_ARTIFACTS,
     DEFAULT_MAX_TOOL_CALLS,
@@ -42,13 +42,13 @@ from llm_client.mcp_agent import (
     EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING,
     EVENT_CODE_TOOL_VALIDATION_SCHEMA,
 )
-from llm_client.tool_runtime_common import (
+from llm_client.tools.tool_runtime_common import (
     MCPAgentResult,
     MCPToolCallRecord,
     TOOL_REASONING_FIELD,
     extract_usage_counts as _extract_usage,
 )
-from llm_client.tool_utils import execute_direct_tool_calls, prepare_direct_tools
+from llm_client.tools.tool_utils import execute_direct_tool_calls, prepare_direct_tools
 
 logger = logging.getLogger(__name__)
 

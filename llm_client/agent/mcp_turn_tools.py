@@ -12,8 +12,8 @@ import json as _json
 from dataclasses import dataclass
 from typing import Any
 
-from llm_client.agent_contracts import CapabilityRequirement
-from llm_client.compliance_gate import validate_tool_call_inputs
+from llm_client.agent.agent_contracts import CapabilityRequirement
+from llm_client.agent.compliance_gate import validate_tool_call_inputs
 from llm_client.foundation import (
     extract_bindings_from_tool_args,
     merge_binding_state,
@@ -21,7 +21,7 @@ from llm_client.foundation import (
     now_iso,
     sha256_text,
 )
-from llm_client.mcp_contracts import (
+from llm_client.agent.mcp_contracts import (
     _apply_handle_input_injections,
     _artifact_handle_summaries,
     _artifact_output_state_from_record,
@@ -32,9 +32,9 @@ from llm_client.mcp_contracts import (
     _infer_output_capabilities,
     _validate_tool_contract_call,
 )
-from llm_client.mcp_evidence import _evidence_digest, _tool_evidence_pointer_labels
-from llm_client.mcp_tools import _extract_tool_call_args, _runtime_artifact_read_result
-from llm_client.tool_runtime_common import MCPToolCallRecord, TOOL_REASONING_FIELD
+from llm_client.agent.mcp_evidence import _evidence_digest, _tool_evidence_pointer_labels
+from llm_client.agent.mcp_tools import _extract_tool_call_args, _runtime_artifact_read_result
+from llm_client.tools.tool_runtime_common import MCPToolCallRecord, TOOL_REASONING_FIELD
 
 EVENT_CODE_TOOL_VALIDATION_SCHEMA = "TOOL_VALIDATION_REJECTED_SCHEMA"
 EVENT_CODE_TOOL_VALIDATION_MISSING_TOOL_REASONING = (

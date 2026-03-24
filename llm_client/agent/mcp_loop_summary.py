@@ -11,23 +11,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from llm_client.agent_adoption import AdoptionProfileAssessment
-from llm_client.agent_outcomes import (
+from llm_client.agent.agent_adoption import AdoptionProfileAssessment
+from llm_client.agent.agent_outcomes import (
     _PRIMARY_FAILURE_PRIORITY,
     _TERMINAL_FAILURE_EVENT_CODES,
     _summarize_failure_events,
     _summarize_finalization_attempts,
 )
-from llm_client.mcp_contracts import (
+from llm_client.agent.mcp_contracts import (
     _capability_state_snapshot,
     _full_bindings_spec,
     _full_bindings_state_hash,
     _hard_bindings_spec,
     _hard_bindings_state_hash,
 )
-from llm_client.mcp_evidence import _evidence_digest
-from llm_client.mcp_tools import BUDGET_EXEMPT_TOOL_NAMES, _count_budgeted_records
-from llm_client.tool_runtime_common import MCPAgentResult
+from llm_client.agent.mcp_evidence import _evidence_digest
+from llm_client.agent.mcp_tools import BUDGET_EXEMPT_TOOL_NAMES, _count_budgeted_records
+from llm_client.tools.tool_runtime_common import MCPAgentResult
 
 logger = logging.getLogger(__name__)
 

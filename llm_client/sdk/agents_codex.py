@@ -27,7 +27,7 @@ from typing import Any, Callable, cast
 
 from pydantic import BaseModel
 
-from llm_client.agents_codex_process import (
+from llm_client.sdk.agents_codex_process import (
     _collect_process_tree_snapshot,
     _codex_exec_diagnostics,
     _codex_timeout_message,
@@ -39,7 +39,7 @@ from llm_client.agents_codex_process import (
 )
 from llm_client.core.client import Hooks, LLMCallResult
 from llm_client.core.data_types import TurnEvent
-from llm_client.timeout_policy import normalize_timeout as _normalize_timeout
+from llm_client.execution.timeout_policy import normalize_timeout as _normalize_timeout
 
 logger = logging.getLogger(__name__)
 

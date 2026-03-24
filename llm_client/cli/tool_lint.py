@@ -78,7 +78,7 @@ def _load_contracts(module: types.ModuleType, var_name: str | None) -> dict[str,
 
 
 def cmd_tool_lint(args: argparse.Namespace) -> None:
-    from llm_client.tool_utils import lint_tool_registry
+    from llm_client.tools.tool_utils import lint_tool_registry
 
     try:
         module = _load_module(args.module)

@@ -9,7 +9,7 @@ environment variable LLM_CLIENT_RATE_LIMITS.
 
 Usage::
 
-    from llm_client.rate_limit import acquire, aacquire
+    from llm_client.utils.rate_limit import acquire, aacquire
 
     # Async (preferred)
     async with aacquire("gemini/gemini-3-flash"):
