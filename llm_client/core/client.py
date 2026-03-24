@@ -42,12 +42,9 @@ Full provider list: https://docs.litellm.ai/docs/providers
 
 from __future__ import annotations
 
-import asyncio
-import json as _json
+import asyncio  # noqa: F401 — used by downstream mock targets
 import logging
-import os
 import time
-import urllib.parse
 from typing import Any, Callable, TypeVar
 
 import litellm

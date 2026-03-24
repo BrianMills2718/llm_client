@@ -80,7 +80,7 @@ def _prepare_call_kwargs(
                 if "thinking" in supported:
                     call_kwargs["thinking"] = {"type": "enabled", "budget_tokens": 0}
             except Exception:
-                pass
+                logger.debug("Thinking probe failed for model=%s", model, exc_info=True)
 
     _coerce_model_incompatible_params(
         model=model,

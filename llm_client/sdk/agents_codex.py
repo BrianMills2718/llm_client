@@ -84,7 +84,8 @@ def _codex_process_grace_s(kwargs: dict[str, Any]) -> float:
     raw = kwargs.get("codex_process_grace_s", os.environ.get(_CODEX_PROCESS_GRACE_ENV, 3.0))
     try:
         return max(0.5, float(raw))
-    except Exception:
+    except (TypeError, ValueError) as exc:
+        logger.warning("Invalid codex_process_grace_s=%r, using default 3.0: %s", raw, exc)
         return 3.0
 
 
@@ -278,7 +279,7 @@ def _patch_codex_buffer_limit() -> None:
         _codex_patched = True
         logging.getLogger(__name__).debug("Patched CodexExec buffer limit to 4MB")
     except Exception:
-        pass  # SDK not installed or API changed — skip silently
+        logging.getLogger(__name__).debug("Codex buffer patch skipped (SDK not installed or API changed)", exc_info=True)
 
 
 def _import_codex_sdk() -> tuple[Any, ...]:
@@ -397,7 +398,8 @@ def _estimate_codex_cost(model: str, usage: Any) -> float:
             completion_tokens=getattr(usage, "output_tokens", 0),
         )
         return float(cost)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Codex cost extraction failed (returning 0.0): %s", exc)
         return 0.0
 
 
@@ -489,10 +491,7 @@ def _serialize_llm_result(result: LLMCallResult) -> dict[str, Any]:
         raw_summary = {"type": type(raw).__name__}
         for key in ("num_turns",):
             if hasattr(raw, key):
-                try:
-                    raw_summary[key] = getattr(raw, key)
-                except Exception:
-                    pass
+                raw_summary[key] = getattr(raw, key)
 
     return {
         "content": result.content,

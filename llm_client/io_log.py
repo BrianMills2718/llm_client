@@ -28,14 +28,11 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
-import statistics
 import threading
 import time
-import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -327,7 +324,7 @@ def log_call(
         record = {
             "timestamp": timestamp,
             "model": model,
-            "messages": _truncate_messages(messages),
+            "messages": _copy_messages_for_storage(messages),
             "response": response_content,
             "usage": usage,
             "cost": cost,
@@ -354,7 +351,7 @@ def log_call(
         _write_call_to_db(
             timestamp=timestamp,
             model=model,
-            messages=_truncate_messages(messages),
+            messages=_copy_messages_for_storage(messages),
             response=response_content,
             usage=usage,
             cost=cost,
@@ -1067,7 +1064,7 @@ def log_score(
         logger.debug("io_log.log_score failed", exc_info=True)
 
 
-def _truncate_messages(
+def _copy_messages_for_storage(
     messages: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]] | None:
     """Deep-copy messages for storage (full content, no truncation)."""
