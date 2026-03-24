@@ -16,11 +16,53 @@ from llm_client.core.client import AsyncCachePolicy, CachePolicy, Hooks, LLMCall
 from llm_client.core.config import ClientConfig
 from llm_client.core.errors import LLMCapabilityError
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 
 _client: Any = import_module("llm_client.client")
+
+
+class _StructuredValidationRetry(Exception):
+    """Retryable validation error from model_validate_json.
+
+    Raised when the LLM provider returns syntactically valid JSON that passes
+    the provider's schema check but fails Pydantic validation (e.g., the
+    provider didn't enforce ``minProperties``).  Carries the raw content and
+    formatted error so a repair message can be appended on retry.
+    """
+
+    def __init__(self, raw_content: str, validation_error: ValidationError) -> None:
+        self.raw_content = raw_content
+        self.validation_error = validation_error
+        super().__init__(
+            f"Pydantic validation failed on provider-accepted response: "
+            f"{validation_error.error_count()} error(s). "
+            f"First: {validation_error.errors()[0]['msg'] if validation_error.errors() else 'unknown'}"
+        )
+
+
+def _build_validation_repair_message(exc: _StructuredValidationRetry) -> dict[str, str]:
+    """Build a user message that tells the model what went wrong.
+
+    The repair message includes the specific validation errors so the model
+    can fix its output on the next attempt rather than guessing blindly.
+    """
+
+    error_lines = []
+    for err in exc.validation_error.errors():
+        loc = " -> ".join(str(part) for part in err.get("loc", ()))
+        msg = err.get("msg", "unknown error")
+        error_lines.append(f"  - {loc}: {msg}")
+    errors_text = "\n".join(error_lines[:5])  # Cap at 5 errors to avoid prompt bloat.
+    return {
+        "role": "user",
+        "content": (
+            "Your previous response was valid JSON but failed schema validation:\n"
+            f"{errors_text}\n\n"
+            "Please fix these issues and return a corrected response."
+        ),
+    }
 
 
 def _base_model_name(model: str) -> str:
@@ -402,7 +444,14 @@ def _call_llm_structured_impl(
                 },
             }
 
+            _pending_repair_message: dict[str, str] | None = None
+
             def _invoke_native_schema_attempt(attempt: int) -> tuple[T, LLMCallResult]:
+                nonlocal _pending_repair_message
+                if _pending_repair_message is not None:
+                    base_kwargs["messages"] = list(base_kwargs["messages"]) + [_pending_repair_message]
+                    _pending_repair_message = None
+                    logger.info("call_llm_structured: appended validation repair message for attempt %d", attempt)
                 try:
                     with _rate_limit.acquire(current_model):
                         response = litellm.completion(**base_kwargs)
@@ -414,7 +463,12 @@ def _call_llm_structured_impl(
                     raw_content = first_choice.message.content or ""
                     if not raw_content.strip():
                         raise ValueError("Empty content from LLM (native JSON schema structured)")
-                    parsed = response_model.model_validate_json(raw_content)
+                    try:
+                        parsed = response_model.model_validate_json(raw_content)
+                    except ValidationError as ve:
+                        retry_exc = _StructuredValidationRetry(raw_content, ve)
+                        _pending_repair_message = _build_validation_repair_message(retry_exc)
+                        raise retry_exc from ve
                     usage = _extract_usage(response)
                     cost, cost_source = _parse_cost_result(_compute_cost(response))
                     finish_reason: str = first_choice.finish_reason or "stop"
@@ -477,7 +531,8 @@ def _call_llm_structured_impl(
                     max_retries=r.max_retries,
                     invoke=_invoke_native_schema_attempt,
                     should_retry=lambda exc: (
-                        not isinstance(exc, _NativeSchemaFallback) and _check_retryable(exc, r)
+                        isinstance(exc, _StructuredValidationRetry)
+                        or (not isinstance(exc, _NativeSchemaFallback) and _check_retryable(exc, r))
                     ),
                     compute_delay=lambda attempt, exc: _compute_retry_delay(
                         attempt=attempt,
@@ -961,7 +1016,14 @@ async def _acall_llm_structured_impl(
                 },
             }
 
+            _pending_repair_message_async: dict[str, str] | None = None
+
             async def _invoke_native_schema_attempt(attempt: int) -> tuple[T, LLMCallResult]:
+                nonlocal _pending_repair_message_async
+                if _pending_repair_message_async is not None:
+                    base_kwargs["messages"] = list(base_kwargs["messages"]) + [_pending_repair_message_async]
+                    _pending_repair_message_async = None
+                    logger.info("acall_llm_structured: appended validation repair message for attempt %d", attempt)
                 try:
                     async with _rate_limit.aacquire(current_model):
                         response = await litellm.acompletion(**base_kwargs)
@@ -973,7 +1035,12 @@ async def _acall_llm_structured_impl(
                     raw_content = first_choice.message.content or ""
                     if not raw_content.strip():
                         raise ValueError("Empty content from LLM (native JSON schema structured)")
-                    parsed = response_model.model_validate_json(raw_content)
+                    try:
+                        parsed = response_model.model_validate_json(raw_content)
+                    except ValidationError as ve:
+                        retry_exc = _StructuredValidationRetry(raw_content, ve)
+                        _pending_repair_message_async = _build_validation_repair_message(retry_exc)
+                        raise retry_exc from ve
                     usage = _extract_usage(response)
                     cost, cost_source = _parse_cost_result(_compute_cost(response))
                     finish_reason: str = first_choice.finish_reason or "stop"
@@ -1036,7 +1103,8 @@ async def _acall_llm_structured_impl(
                     max_retries=r.max_retries,
                     invoke=_invoke_native_schema_attempt,
                     should_retry=lambda exc: (
-                        not isinstance(exc, _NativeSchemaFallback) and _check_retryable(exc, r)
+                        isinstance(exc, _StructuredValidationRetry)
+                        or (not isinstance(exc, _NativeSchemaFallback) and _check_retryable(exc, r))
                     ),
                     compute_delay=lambda attempt, exc: _compute_retry_delay(
                         attempt=attempt,

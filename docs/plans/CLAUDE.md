@@ -19,6 +19,7 @@ Track all implementation work here.
 | 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | ✅ Complete | 6 |
 | 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | 📋 Planned | 11 |
 | 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | ✅ Complete | 12 |
+| 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | 📋 Planned | - |
 
 
 ## Status Key
