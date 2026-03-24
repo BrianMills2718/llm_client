@@ -176,6 +176,8 @@ dispatch facade + 6 focused modules
 - All existing tests pass
 - No behavior changes — pure structural move
 - Internal imports updated consistently
+- Internal runtime control kwargs remain internal-only and are stripped before
+  provider dispatch
 
 **Fails if:**
 
@@ -183,6 +185,8 @@ dispatch facade + 6 focused modules
 - Circular imports introduced
 - Test logic must be rewritten (import path updates are fine)
 - Extracted modules depend back on `client.py` internals
+- Provider requests can be poisoned by non-serializable llm_client runtime
+  objects leaking into LiteLLM kwargs
 
 ### Phase 1B: Decompose `mcp_agent.py` Into Concern-Specific Modules
 
