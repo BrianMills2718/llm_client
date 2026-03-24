@@ -651,75 +651,9 @@ async def _acall_llm_impl(
         caller="acall_llm",
     )
 
-    if ("mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs) and not _is_agent_model(model):
-        from llm_client.mcp_agent import MCP_LOOP_KWARGS, acall_with_mcp_runtime
-
-        mcp_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=public_runtime_kwargs,
-            loop_kwargs=MCP_LOOP_KWARGS,
-            task=task,
-            trace_id=trace_id,
-            max_budget=max_budget,
-        )
-        result = await acall_with_mcp_runtime(
-            primary_model, messages, timeout=timeout, **_inner_named, **mcp_kw, **remaining,
-        )
-        result = cast(LLMCallResult, _finalize_agent_loop_result(
-            result=result,
-            requested_model=model,
-            primary_model=primary_model,
-            requested_api_base=api_base,
-            config=cfg,
-            routing_policy=routing_policy,
-            caller="acall_llm",
-            messages=messages,
-            log_started_at=_log_t0,
-            task=task,
-            trace_id=trace_id,
-            prompt_ref=prompt_ref,
-            call_snapshot=call_snapshot,
-        ))
-        return result
-
-    if "python_tools" in public_runtime_kwargs and not _is_agent_model(model):
-        from llm_client.mcp_agent import TOOL_LOOP_KWARGS, acall_with_python_tools_runtime
-        from llm_client.core.models import supports_tool_calling
-
-        if "mcp_servers" in public_runtime_kwargs or "mcp_sessions" in public_runtime_kwargs:
-            raise ValueError("python_tools and mcp_servers/mcp_sessions are mutually exclusive.")
-        tool_kw, remaining = _split_agent_loop_kwargs(
-            kwargs=public_runtime_kwargs,
-            loop_kwargs=TOOL_LOOP_KWARGS,
-            task=task,
-            trace_id=trace_id,
-            max_budget=max_budget,
-        )
-        if not supports_tool_calling(model):
-            from llm_client.tool_shim import _acall_with_tool_shim
-
-            result = await _acall_with_tool_shim(
-                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
-            )
-        else:
-            result = await acall_with_python_tools_runtime(
-                primary_model, messages, timeout=timeout, **_inner_named, **tool_kw, **remaining,
-            )
-        result = cast(LLMCallResult, _finalize_agent_loop_result(
-            result=result,
-            requested_model=model,
-            primary_model=primary_model,
-            requested_api_base=api_base,
-            config=cfg,
-            routing_policy=routing_policy,
-            caller="acall_llm",
-            messages=messages,
-            log_started_at=_log_t0,
-            task=task,
-            trace_id=trace_id,
-            prompt_ref=prompt_ref,
-            call_snapshot=call_snapshot,
-        ))
-        return result
+    # Agent loop routing (MCP/python_tools) is handled inside _execute_model
+    # (lines 742-801) where it participates in the fallback chain. Do NOT
+    # add early returns here — that was the cause of the fallback bypass bug.
 
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
     if cache is not None and _is_agent_model(model):
