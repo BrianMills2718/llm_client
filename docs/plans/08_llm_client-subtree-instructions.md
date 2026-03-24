@@ -4,104 +4,76 @@
 **Type:** implementation
 **Priority:** Medium
 **Blocked By:** None
-**Blocks:** none
+**Blocks:** None
 
 ---
 
 ## Gap
 
-**Current:** `llm_client` has strong repo-root instructions, but the package
-subtrees that carry the actual runtime surface do not yet have local
-`CLAUDE.md` / `AGENTS.md` files. Agents working inside `llm_client/llm_client/`
-still have to infer local boundaries from root docs and module names.
+**Current:** After Plan 12 reorganization, the package has 6 new subdirectories
+(core/, execution/, agent/, sdk/, tools/, utils/) plus existing ones (cli/,
+observability/, prompts/). The package-root `llm_client/CLAUDE.md` was updated
+with a surfaces table, but the new subdirectories lack local CLAUDE.md files.
 
-**Target:** meaningful package subtrees have local, delta-only instruction
-files that route agents to the right local surface without repeating parent
-policy.
+**Target:** Each meaningful package subdirectory has a delta-only CLAUDE.md
+that routes agents to the right local surface. AGENTS.md symlink mirrors
+for each.
 
-**Why:** the repo already has distinct surfaces for CLI commands, observability
-logic, prompt assets, and rubric data. Those surfaces should be loaded
-automatically and stay specific to their subtrees.
+**Why:** Agents working inside `llm_client/execution/` should get
+execution-specific context loaded automatically without reading the full
+package-root doc.
 
 ---
 
 ## References Reviewed
 
-- `CLAUDE.md`
-- `AGENTS.md`
-- `docs/API_REFERENCE.md`
-- `docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md`
-- `scripts/CLAUDE.md`
-- `tests/CLAUDE.md`
-- `docs/meta-patterns/02_claude-md-authoring.md`
+- `llm_client/CLAUDE.md` — updated surfaces table (Plan 12)
+- `llm_client/cli/CLAUDE.md` — existing example of leaf instruction file
+- `llm_client/observability/CLAUDE.md` — existing example
+- `docs/meta-patterns/02_claude-md-authoring.md` — authoring guidelines
 
 ---
 
 ## Files Affected
 
-- `llm_client/CLAUDE.md` (create)
-- `llm_client/AGENTS.md` (create symlink mirror)
-- `llm_client/cli/CLAUDE.md` (create)
-- `llm_client/cli/AGENTS.md` (create symlink mirror)
-- `llm_client/observability/CLAUDE.md` (create)
-- `llm_client/observability/AGENTS.md` (create symlink mirror)
-- `llm_client/prompts/CLAUDE.md` (create)
-- `llm_client/prompts/AGENTS.md` (create symlink mirror)
-- `llm_client/rubrics/CLAUDE.md` (create)
-- `llm_client/rubrics/AGENTS.md` (create symlink mirror)
-- `docs/plans/CLAUDE.md` (modify)
-- `tests/test_llm_client_subtree_instructions.py` (create)
+- `llm_client/core/CLAUDE.md` (create)
+- `llm_client/core/AGENTS.md` (create symlink)
+- `llm_client/execution/CLAUDE.md` (create)
+- `llm_client/execution/AGENTS.md` (create symlink)
+- `llm_client/agent/CLAUDE.md` (create)
+- `llm_client/agent/AGENTS.md` (create symlink)
+- `llm_client/sdk/CLAUDE.md` (create)
+- `llm_client/sdk/AGENTS.md` (create symlink)
+- `llm_client/tools/CLAUDE.md` (create)
+- `llm_client/tools/AGENTS.md` (create symlink)
+- `llm_client/utils/CLAUDE.md` (create)
+- `llm_client/utils/AGENTS.md` (create symlink)
+
+---
+
+## Pre-made Decisions
+
+1. **Delta-only:** Each leaf file describes ONLY what's specific to that
+   subdirectory. Do not repeat parent policy.
+2. **Short:** 10-20 lines max. A surfaces table + 2-3 working rules.
+3. **AGENTS.md is symlink:** `ln -s CLAUDE.md AGENTS.md` per convention.
+4. **cli/ and observability/ already done:** Don't recreate, just verify.
 
 ---
 
 ## Plan
 
-### Steps
-
-1. Write leaf `CLAUDE.md` files for the meaningful package subdirs.
-2. Add `AGENTS.md` symlink mirrors for each new subtree file.
-3. Add a package-root `llm_client/CLAUDE.md` router that points to the leaf
-   surfaces.
-4. Add tests that verify the package subtree docs and mirrors exist and stay
-   aligned.
-5. Update the plan index.
-
----
-
-## Required Tests
-
-### New Tests (TDD)
-
-| Test File | Test Function | What It Verifies |
-|-----------|---------------|------------------|
-| `tests/test_llm_client_subtree_instructions.py` | `test_package_subtree_docs_exist` | Leaf docs exist for the selected package subdirs |
-| `tests/test_llm_client_subtree_instructions.py` | `test_agents_mirror_claude_symlinks` | `AGENTS.md` mirrors are symlinks to `CLAUDE.md` |
-| `tests/test_llm_client_subtree_instructions.py` | `test_package_root_routes_to_local_surfaces` | Package-root instructions route to the leaf surfaces |
-
-### Existing Tests (Must Pass)
-
-| Test Pattern | Why |
-|--------------|-----|
-| `tests/test_*.py` focused on docs, hooks, and plan validation | No regressions in repo governance |
+### For each new subdirectory (core, execution, agent, sdk, tools, utils):
+1. Write CLAUDE.md with: purpose, key modules, working rules
+2. Create AGENTS.md symlink
+3. Commit
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] The new package and subtree instruction files exist.
-- [ ] Each new `AGENTS.md` is a symlink mirror of its `CLAUDE.md`.
-- [ ] The package-root `CLAUDE.md` routes agents to the local leaf surfaces.
-- [ ] The subtree docs stay delta-only and do not repeat parent policy.
-- [ ] Tests pass and markdown links remain valid.
-
----
-
-## Notes
-
-Start from the deepest meaningful subdirs and move upward. Keep the leaf docs
-specific to their own local responsibilities:
-
-- `cli/` for command entrypoints and read-only inspection commands
-- `observability/` for event/run/query adapters
-- `prompts/` for prompt assets
-- `rubrics/` for rubric YAML data
+- [ ] 6 new CLAUDE.md files (one per new subdirectory)
+- [ ] 6 new AGENTS.md symlinks
+- [ ] Each file is delta-only, <20 lines
+- [ ] Existing cli/ and observability/ CLAUDE.md files still exist
+- [ ] All tests pass

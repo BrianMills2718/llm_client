@@ -17,9 +17,12 @@ Track all implementation work here.
 | 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | ✅ Complete | - |
 | 10 | [API Reference Generation Pipeline](10_api-reference-generation-pipeline.md) | High | ✅ Complete | - |
 | 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | ✅ Complete | 6 |
-| 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | 📋 Planned | 11 |
+| 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | ✅ Complete | 11 |
 | 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | ✅ Complete | 12 |
-| 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | 📋 Planned | - |
+| 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | ✅ Complete | - |
+| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Medium | 📋 Planned | - |
+| 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | 📋 Planned | 12 |
+| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | High | 📋 Planned | - |
 
 
 ## Status Key
