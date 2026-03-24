@@ -17,6 +17,8 @@ Track all implementation work here.
 | 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | ✅ Complete | - |
 | 10 | [API Reference Generation Pipeline](10_api-reference-generation-pipeline.md) | High | ✅ Complete | - |
 | 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | ✅ Complete | 6 |
+| 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | 📋 Planned | 11 |
+| 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | 📋 Planned | 12 |
 
 
 ## Status Key
