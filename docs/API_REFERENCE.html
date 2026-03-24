@@ -669,16 +669,26 @@ while the concrete implementation lives here.</pre>
   <summary><span class="module-name">llm_client.batch_runtime</span> <span class="module-summary">Batch execution internals extracted from client.py.</span></summary>
   <div class="module-body">
     <p class="summary">Batch execution internals extracted from client.py.</p>
-<pre class="doc">Batch execution internals extracted from client.py.</pre>
+<pre class="doc">Batch execution internals extracted from client.py.
+
+Includes batch-level progress tracking, stagnation detection, and
+per-item timeout. See Plan #14.</pre>
 
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-batch_runtime-acall_llm_batch_impl">
-  <summary><code>acall_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | AsyncCachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
+  <summary><code>acall_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | AsyncCachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, progress_interval: &#x27;int&#x27; = 100, on_batch_progress: &#x27;Callable[[BatchProgressTracker], None] | None&#x27; = None, stagnation_window: &#x27;int&#x27; = 5, abort_on_stagnation: &#x27;bool&#x27; = False, item_timeout_s: &#x27;float | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
   <div class="symbol-body">
     <p class="summary">Implementation for acall_llm_batch extracted out of client facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
-    <pre class="doc">Implementation for acall_llm_batch extracted out of client facade.</pre>
+    <pre class="doc">Implementation for acall_llm_batch extracted out of client facade.
+
+Args:
+    progress_interval: Log batch progress every N items.
+    on_batch_progress: Optional callback receiving BatchProgressTracker snapshots.
+    stagnation_window: Consecutive identical errors before stagnation alert.
+    abort_on_stagnation: If True, cancel remaining items on stagnation.
+    item_timeout_s: Per-item wall-clock timeout (includes retries). None = no limit.</pre>
   </div>
 </details>
 
@@ -692,7 +702,7 @@ while the concrete implementation lives here.</pre>
 </details>
 
 <details class="symbol" id="module-llm_client-batch_runtime-call_llm_batch_impl">
-  <summary><code>call_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
+  <summary><code>call_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, progress_interval: &#x27;int&#x27; = 100, on_batch_progress: &#x27;Callable[[BatchProgressTracker], None] | None&#x27; = None, stagnation_window: &#x27;int&#x27; = 5, abort_on_stagnation: &#x27;bool&#x27; = False, item_timeout_s: &#x27;float | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
   <div class="symbol-body">
     <p class="summary">Implementation for call_llm_batch extracted out of client facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
@@ -706,6 +716,50 @@ while the concrete implementation lives here.</pre>
     <p class="summary">Implementation for call_llm_structured_batch extracted from facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
     <pre class="doc">Implementation for call_llm_structured_batch extracted from facade.</pre>
+  </div>
+</details>
+
+
+
+<h4>Classes</h4>
+
+<details class="symbol class-symbol" id="module-llm_client-batch_runtime-BatchProgressTracker">
+  <summary><code>BatchProgressTracker</code> <span class="sig">(total: int, completed: int = 0, errored: int = 0, total_latency_s: float = 0.0, started_at: float = &lt;factory&gt;, _error_hashes: list[str] = &lt;factory&gt;, _stagnation_window: int = 5) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Aggregates per-item results into batch-level progress.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> class</p>
+    <pre class="doc">Aggregates per-item results into batch-level progress.</pre>
+    
+    <h4>Methods</h4>
+    
+<details class="symbol" id="module-llm_client-batch_runtime-record_completion">
+  <summary><code>record_completion</code> <span class="sig">(self, latency_s: float) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Record a successful item completion.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Record a successful item completion.</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-batch_runtime-record_error">
+  <summary><code>record_error</code> <span class="sig">(self, error: Exception) -&gt; bool</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Record an item error. Returns True if stagnation detected.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Record an item error. Returns True if stagnation detected.</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-batch_runtime-summary">
+  <summary><code>summary</code> <span class="sig">(self) -&gt; dict[str, typing.Any]</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Return a snapshot dict for logging.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Return a snapshot dict for logging.</pre>
+  </div>
+</details>
+
+    
   </div>
 </details>
 
@@ -8920,16 +8974,26 @@ while the concrete implementation lives here.</pre>
   <summary><span class="module-name">llm_client.execution.batch_runtime</span> <span class="module-summary">Batch execution internals extracted from client.py.</span></summary>
   <div class="module-body">
     <p class="summary">Batch execution internals extracted from client.py.</p>
-<pre class="doc">Batch execution internals extracted from client.py.</pre>
+<pre class="doc">Batch execution internals extracted from client.py.
+
+Includes batch-level progress tracking, stagnation detection, and
+per-item timeout. See Plan #14.</pre>
 
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-execution-batch_runtime-acall_llm_batch_impl">
-  <summary><code>acall_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | AsyncCachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
+  <summary><code>acall_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | AsyncCachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, progress_interval: &#x27;int&#x27; = 100, on_batch_progress: &#x27;Callable[[BatchProgressTracker], None] | None&#x27; = None, stagnation_window: &#x27;int&#x27; = 5, abort_on_stagnation: &#x27;bool&#x27; = False, item_timeout_s: &#x27;float | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
   <div class="symbol-body">
     <p class="summary">Implementation for acall_llm_batch extracted out of client facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
-    <pre class="doc">Implementation for acall_llm_batch extracted out of client facade.</pre>
+    <pre class="doc">Implementation for acall_llm_batch extracted out of client facade.
+
+Args:
+    progress_interval: Log batch progress every N items.
+    on_batch_progress: Optional callback receiving BatchProgressTracker snapshots.
+    stagnation_window: Consecutive identical errors before stagnation alert.
+    abort_on_stagnation: If True, cancel remaining items on stagnation.
+    item_timeout_s: Per-item wall-clock timeout (includes retries). None = no limit.</pre>
   </div>
 </details>
 
@@ -8943,7 +9007,7 @@ while the concrete implementation lives here.</pre>
 </details>
 
 <details class="symbol" id="module-llm_client-execution-batch_runtime-call_llm_batch_impl">
-  <summary><code>call_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
+  <summary><code>call_llm_batch_impl</code> <span class="sig">(model: &#x27;str&#x27;, messages_list: &#x27;list[list[dict[str, Any]]]&#x27;, *, max_concurrent: &#x27;int&#x27; = 5, return_exceptions: &#x27;bool&#x27; = False, on_item_complete: &#x27;Callable[[int, LLMCallResult], None] | None&#x27; = None, on_item_error: &#x27;Callable[[int, Exception], None] | None&#x27; = None, timeout: &#x27;int&#x27; = 60, num_retries: &#x27;int&#x27; = 2, reasoning_effort: &#x27;str | None&#x27; = None, api_base: &#x27;str | None&#x27; = None, base_delay: &#x27;float&#x27; = 1.0, max_delay: &#x27;float&#x27; = 30.0, retry_on: &#x27;list[str] | None&#x27; = None, on_retry: &#x27;Callable[[int, Exception, float], None] | None&#x27; = None, cache: &#x27;CachePolicy | None&#x27; = None, retry: &#x27;RetryPolicy | None&#x27; = None, fallback_models: &#x27;list[str] | None&#x27; = None, on_fallback: &#x27;Callable[[str, Exception, str], None] | None&#x27; = None, hooks: &#x27;Hooks | None&#x27; = None, config: &#x27;ClientConfig | None&#x27; = None, progress_interval: &#x27;int&#x27; = 100, on_batch_progress: &#x27;Callable[[BatchProgressTracker], None] | None&#x27; = None, stagnation_window: &#x27;int&#x27; = 5, abort_on_stagnation: &#x27;bool&#x27; = False, item_timeout_s: &#x27;float | None&#x27; = None, **kwargs: &#x27;Any&#x27;) -&gt; &#x27;list[LLMCallResult | Exception]&#x27;</span></summary>
   <div class="symbol-body">
     <p class="summary">Implementation for call_llm_batch extracted out of client facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
@@ -8957,6 +9021,50 @@ while the concrete implementation lives here.</pre>
     <p class="summary">Implementation for call_llm_structured_batch extracted from facade.</p>
     <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
     <pre class="doc">Implementation for call_llm_structured_batch extracted from facade.</pre>
+  </div>
+</details>
+
+
+
+<h4>Classes</h4>
+
+<details class="symbol class-symbol" id="module-llm_client-execution-batch_runtime-BatchProgressTracker">
+  <summary><code>BatchProgressTracker</code> <span class="sig">(total: int, completed: int = 0, errored: int = 0, total_latency_s: float = 0.0, started_at: float = &lt;factory&gt;, _error_hashes: list[str] = &lt;factory&gt;, _stagnation_window: int = 5) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Aggregates per-item results into batch-level progress.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> class</p>
+    <pre class="doc">Aggregates per-item results into batch-level progress.</pre>
+    
+    <h4>Methods</h4>
+    
+<details class="symbol" id="module-llm_client-execution-batch_runtime-record_completion">
+  <summary><code>record_completion</code> <span class="sig">(self, latency_s: float) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Record a successful item completion.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Record a successful item completion.</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-execution-batch_runtime-record_error">
+  <summary><code>record_error</code> <span class="sig">(self, error: Exception) -&gt; bool</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Record an item error. Returns True if stagnation detected.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Record an item error. Returns True if stagnation detected.</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-execution-batch_runtime-summary">
+  <summary><code>summary</code> <span class="sig">(self) -&gt; dict[str, typing.Any]</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Return a snapshot dict for logging.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> method</p>
+    <pre class="doc">Return a snapshot dict for logging.</pre>
+  </div>
+</details>
+
+    
   </div>
 </details>
 
