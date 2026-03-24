@@ -15,10 +15,15 @@ Read these first when working under `llm_client/`:
 
 | Subdir | Purpose |
 |--------|---------|
-| [`cli/`](cli/) | CLI command modules for runtime and observability inspection |
+| [`core/`](core/) | Types, config, errors, models, dispatch hub |
+| [`execution/`](execution/) | Call lifecycle, runtimes, retry, streaming |
+| [`agent/`](agent/) | MCP loop, contracts, tools, turn lifecycle |
+| [`sdk/`](sdk/) | Agent SDK adapters (Claude, Codex) |
+| [`tools/`](tools/) | Tool registry, result cleaning, shim, utils |
+| [`utils/`](utils/) | Cost, git, OpenRouter, rate limiting |
 | [`observability/`](observability/) | Event, run, and query adapters around `io_log` |
+| [`cli/`](cli/) | CLI command modules for runtime and observability inspection |
 | [`prompts/`](prompts/) | Prompt asset data and templates |
-| [`rubrics/`](rubrics/) | Versioned rubric definitions used by scoring and evaluation |
 
 ## Working Rules
 
