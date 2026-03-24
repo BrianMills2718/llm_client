@@ -50,6 +50,12 @@ from typing import Any, Callable, TypeVar
 import litellm
 from pydantic import BaseModel
 
+# Enable post-generation JSON Schema validation. Providers only enforce
+# structural constraints (type, required, enum) at decode time. Value-level
+# constraints (minProperties, minLength, pattern, minimum) are NOT enforced.
+# This catches violations on the client side so the retry loop can self-correct.
+litellm.enable_json_schema_validation = True
+
 from llm_client.core.config import ClientConfig
 from llm_client import io_log as _io_log
 from llm_client import rate_limit as _rate_limit

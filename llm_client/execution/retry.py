@@ -268,6 +268,13 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
                 return False
             return True  # transient rate limit — retry
 
+        # JSON Schema validation failures — retryable because the structured
+        # runtime appends a repair prompt with the specific validation errors,
+        # giving the model a chance to self-correct on retry.
+        json_schema_types = _litellm_error_types("JSONSchemaValidationError")
+        if json_schema_types and isinstance(error, json_schema_types):
+            return True
+
         # Transient server errors — always retry
         transient_types = _litellm_error_types(
             "InternalServerError",   # 500
