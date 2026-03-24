@@ -1,35 +1,131 @@
-## Program E Handoff — Plan 11 Complete
+# Handoff: llm_client consolidation & architecture cleanup
 
-**Status:** Plan 11 (Module Size Reduction) is complete. All modules either
-below threshold or explicitly justified. Program E's size/composition criterion
-is honestly satisfied.
+**Date:** 2026-03-24
+**Session:** Claude Code (Opus 4.6)
+**Duration:** ~5 hours
+**Repos touched:** llm_client, agentic_scaffolding, prompt_eval, project-meta
 
-**Final module audit (2026-03-22):**
+---
 
-| Module | Lines | Status |
-|--------|-------|--------|
-| `client.py` | 1,494 | Below hard threshold (was 4,184) |
-| `mcp_turn_execution.py` | 1,339 | Justified exception (was 3,202) |
-| `agents_codex.py` | 1,317 | Justified exception (was 1,931) |
-| `agent_contracts.py` | 1,228 | Justified exception (natural boundary) |
-| `io_log.py` | 1,222 | Justified exception (was 2,102) |
-| `experiments.py` | 994 | Below soft target (was 1,322) |
+## What was done
 
-**New modules created during this work:**
+### Plan #17: llm_client consolidation (COMPLETE)
+- Relocated 7 governance modules to proper homes per ADR-2026-03-22:
+  - validators → agentic_scaffolding/validators/framework.py (68 tests)
+  - git_utils, agent_spec, task_graph, analyzer → project-meta/scripts/meta/
+  - scoring + experiment_eval → prompt_eval
+- Discovered v2's observability is a regression (deleted SQLite, stubs for experiment_run)
+- Cancelled wholesale v2 swap, cherry-picked 4 context-engineering features instead
+- Archived v2 to ~/projects/archive/llm_client_v2/
+- Updated root CLAUDE.md: scoring → prompt_eval, Langfuse rejected per library guidelines
 
-| Module | Lines | Extracted from |
-|--------|-------|----------------|
-| `call_contracts.py` | 679 | `client.py` (call-contract policy) |
-| `client_dispatch.py` | 519 | `client.py` (routing, result, dispatch) |
-| `observability/comparison.py` | 367 | `experiments.py` (analysis cluster) |
-| `completion_runtime.py` | 210 | Refactored (direct imports, no callbacks) |
-| `responses_runtime.py` | 354 | Refactored (direct imports, no callbacks) |
+### Plan #12: Module reorganization (COMPLETE)
+- Moved 79 flat modules into 6 subdirectories: core/, execution/, agent/, sdk/, tools/, utils/
+- sys.modules aliasing pattern for transparent compatibility stubs
+- 101 public exports unchanged, 247+ tests pass
 
-**Verification:**
-- `pytest -q tests/test_call_contracts.py tests/test_client.py tests/test_public_surface.py tests/test_client_lifecycle.py tests/test_observability_defaults.py` → 256 passed
-- `pytest -q tests/test_experiment_log.py tests/test_io_log_compat.py tests/test_cli_experiments.py` → 80 passed
-- API reference docs regenerated and in sync
+### Plan #14: Batch progress & stagnation (COMPLETE)
+- BatchProgressTracker, stagnation detection (rolling error hash), per-item timeout
+- New params: progress_interval, on_batch_progress, stagnation_window, abort_on_stagnation, item_timeout_s
 
-**Next steps for Program E overall:**
-Plan 11 is done. The remaining Program E phases (JSONL log rotation, models CLI,
-Langfuse wiring) are tracked in Plan 06.
+### Plan #13: SDK adapter investigation (COMPLETE — no change needed)
+- Subprocess fallback is load-bearing (1610+ observed calls, handles real SDK failures)
+
+### Other completed work
+- Fixed agent loop fallback bypass bug (text_runtime.py early returns removed)
+- Code smell fixes: 6 silent except:pass → warnings, dead imports, misleading function name
+- Deleted 28 zero-importer compatibility stubs, fixed all internal canonical paths
+- Enabled litellm.enable_json_schema_validation + retryable JSONSchemaValidationError
+- Plan #8: subtree CLAUDE.md for 6 new subdirectories
+- Plan #15 step 1: ClientConfig default fields added
+- Root CLAUDE.md: refined "don't speculate" → "don't add code paths for hypothetical scenarios"
+- BACKLOG items resolved/closed
+- TODOs added to Digimon, sam_gov, active-stack-core ISSUES.md files
+
+---
+
+## Current state
+
+| Repo | Branch | Pushed | Key state |
+|------|--------|--------|-----------|
+| llm_client | main + digimon-stable (synced) | Yes | 101 exports, 6 subdirs, 29 stubs remaining |
+| agentic_scaffolding | trip-backup-* | Yes | validators/framework.py added |
+| prompt_eval | main | Yes | scoring.py + experiment_eval.py added |
+| project-meta | master | Yes | Plan #17 complete, handoff docs |
+
+---
+
+## Remaining llm_client work (all planned, none urgent)
+
+### Plan #15 step 2: Wire ClientConfig defaults into signatures
+**File:** `docs/plans/15_centralize-defaults.md`
+**What:** Change `timeout: int = 60` → `timeout: int | None = None` in 16+ signatures.
+Resolve to `config.default_timeout` at call time.
+**Blocker:** The resolution needs to happen in the impl functions (text_runtime,
+structured_runtime, batch_runtime), not in the client.py facade. The call chain
+passes `timeout` through multiple layers. An earlier attempt was reverted because
+tests broke — mock targets reference these defaults.
+**Step 1 done:** ClientConfig has the fields and resolve_*() methods.
+
+### Plan #16: Remove remaining 29 compatibility stubs
+**File:** `docs/plans/16_remove-compatibility-stubs.md`
+**What:** 28 stubs already deleted. 29 remain — they're imported by `__init__.py`
+and tests. To delete them: update `__init__.py` imports to canonical paths, update
+test mock targets, then delete stubs.
+**Key insight:** The `__init__.py` still does `from llm_client.client import ...`
+(old path via stub) instead of `from llm_client.core.client import ...`. Same for
+`mcp_agent` (62 references), `errors` (7), etc.
+
+### Plan #17: text_runtime sync/async deduplication
+**File:** `docs/plans/17_text-runtime-dedup.md`
+**What:** `_call_llm_impl` and `_acall_llm_impl` are ~400 lines each, near
+identical. Also has 86-line rebinding blocks. Strategy: async-first, make
+sync wrap async via asyncio.run(). Pre-investigation needed: measure
+asyncio.run() overhead.
+
+---
+
+## Downstream projects needing llm_client migration
+
+| Project | Issue | Files | Priority |
+|---------|-------|-------|----------|
+| active-stack-core | Private API imports (_route_acall, etc.) | 95 | High |
+| Digimon_for_KG_application | LiteLLMProvider in 40 files | 51 | Medium |
+| sam_gov | Deprecated imports (LiteLLMClient, etc.) | 62 | Low (frozen) |
+
+TODOs added to each project's ISSUES.md.
+
+---
+
+## Gotchas for next agent
+
+- **Pre-commit hooks:** llm_client has doc-coupling, API reference sync, plan
+  status consistency, and branch protection (main requires `ALLOW_MAIN_COMMIT=1`
+  / `ALLOW_MAIN_PUSH=1`). Regenerate API docs after any public surface change:
+  `python scripts/meta/generate_api_reference.py --write`
+
+- **sys.modules stubs:** The 29 remaining stubs at root use `sys.modules[__name__] = _canonical`
+  to transparently alias old paths to new subdirectories. This makes ALL attributes
+  (including privates and mock targets) work. Don't replace with `from X import *`
+  — that breaks private names.
+
+- **project-meta .doc-coupling-acks:** YAML list with `path` + `reason` keys.
+  Post-commit hook auto-deletes the file. agentic_scaffolding's hook doesn't
+  support ack files — update CLAUDE.md "Last verified" date instead.
+
+- **prompt_eval scoring.py** still has `from llm_client import io_log` (late import
+  inside ascore_output). This works because prompt_eval depends on llm_client. If
+  io_log ever moves, this breaks.
+
+- **experiment_summary stays in llm_client** — 3 core observability modules import
+  it. Don't move it.
+
+- **git_utils.py** exists as both a root stub AND in utils/. The root stub was
+  recreated by another agent for import compatibility. The canonical location is
+  `llm_client/utils/git_utils.py`.
+
+- **Langfuse rejected:** Per root CLAUDE.md "observability is tier 1, libraries
+  are tier 2." Don't recommend adding Langfuse.
+
+- **All personal repos use SSH** (`git@github.com:BrianMills2718/...`).
+  `gh auth` active = `brian-steno` (work account).
