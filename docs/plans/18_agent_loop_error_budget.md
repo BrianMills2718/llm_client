@@ -1,6 +1,6 @@
 # Plan #18: Agent Loop Error Budget and Retry Policy
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
