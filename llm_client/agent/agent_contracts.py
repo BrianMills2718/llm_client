@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
@@ -1226,3 +1227,131 @@ def _analyze_lane_closure(
         "unresolved_tools": unresolved_tools,
         "unresolved_tool_count": len(unresolved_tools),
     }
+
+
+# ---------------------------------------------------------------------------
+# Agent Error Budget
+# ---------------------------------------------------------------------------
+
+# Patterns indicating non-recoverable failures (never retry).
+_NON_RECOVERABLE_PATTERNS: list[str] = [
+    "quota", "billing", "insufficient", "exceeded your current",
+    "plan and billing", "account deactivated", "account suspended",
+    "invalid api key", "authentication", "unauthorized", "forbidden",
+    "model not found", "does not exist",
+]
+
+# Patterns indicating recoverable failures (retry within budget).
+_RECOVERABLE_PATTERNS: list[str] = [
+    "rate limit", "rate_limit", "timeout", "timed out",
+    "connection reset", "connection error", "server error",
+    "service unavailable", "overloaded", "http 500", "http 502",
+    "http 503", "http 529", "temporary failure",
+]
+
+
+def classify_error(error: str | Exception) -> str:
+    """Classify an error as non_recoverable, recoverable, or unknown.
+
+    Returns one of: 'non_recoverable', 'recoverable', 'unknown'.
+    """
+    text = str(error).lower()
+    for pattern in _NON_RECOVERABLE_PATTERNS:
+        if pattern in text:
+            return "non_recoverable"
+    for pattern in _RECOVERABLE_PATTERNS:
+        if pattern in text:
+            return "recoverable"
+    return "unknown"
+
+
+@dataclass
+class AgentErrorBudget:
+    """Aggregate error budget for the agent loop.
+
+    Consumers MUST declare this explicitly — either using defaults or
+    with custom values. There is no silent default behavior.
+
+    Controls total retry effort across all models and fallbacks to prevent
+    runaway agent loops (observed: 318 LLM calls for a single question).
+
+    Attributes:
+        max_agent_turns: Total LLM→tool→LLM cycles allowed per question.
+            Counts successful turns, not raw API calls. Default 200 is
+            generous (normal questions use 5-20 turns).
+        max_consecutive_errors_per_model: How many consecutive errors
+            from the same model before switching to the next fallback.
+            Default 3 — if a model fails 3 times in a row, it probably
+            can't handle this question.
+        max_total_errors: Aggregate error count across all models.
+            When exceeded, the agent loop stops. Default 30 is high
+            enough that a 5-model fallback chain with 3 errors each
+            (15 errors) still has headroom for transient issues.
+    """
+
+    max_agent_turns: int = 200
+    max_consecutive_errors_per_model: int = 3
+    max_total_errors: int = 30
+
+
+@dataclass
+class ErrorBudgetState:
+    """Mutable state tracker for an active error budget.
+
+    Created once per agent loop invocation. Updated after each turn.
+    """
+
+    budget: AgentErrorBudget
+    total_turns: int = 0
+    total_errors: int = 0
+    consecutive_errors_by_model: dict[str, int] = field(default_factory=dict)
+    _last_model: str = ""
+
+    def record_success(self, model: str) -> None:
+        """Record a successful turn. Resets consecutive error count for this model."""
+        self.total_turns += 1
+        self.consecutive_errors_by_model[model] = 0
+        self._last_model = model
+
+    def record_error(self, model: str, error: str | Exception) -> str:
+        """Record a failed turn. Returns the error classification.
+
+        Raises BudgetExhaustedError if any budget limit is exceeded.
+        """
+        self.total_turns += 1
+        self.total_errors += 1
+        classification = classify_error(error)
+
+        consecutive = self.consecutive_errors_by_model.get(model, 0) + 1
+        self.consecutive_errors_by_model[model] = consecutive
+        self._last_model = model
+
+        return classification
+
+    def should_stop(self) -> tuple[bool, str]:
+        """Check if the error budget is exhausted.
+
+        Returns (should_stop, reason). Reason is empty string if not stopping.
+        """
+        if self.total_turns >= self.budget.max_agent_turns:
+            return True, f"max_agent_turns ({self.budget.max_agent_turns}) exceeded"
+
+        if self.total_errors >= self.budget.max_total_errors:
+            return True, f"max_total_errors ({self.budget.max_total_errors}) exceeded"
+
+        return False, ""
+
+    def should_skip_model(self, model: str) -> bool:
+        """Check if a specific model has exceeded its consecutive error budget."""
+        consecutive = self.consecutive_errors_by_model.get(model, 0)
+        return consecutive >= self.budget.max_consecutive_errors_per_model
+
+    def summary(self) -> dict[str, Any]:
+        """Return a summary dict for logging/observability."""
+        return {
+            "total_turns": self.total_turns,
+            "total_errors": self.total_errors,
+            "budget_max_turns": self.budget.max_agent_turns,
+            "budget_max_errors": self.budget.max_total_errors,
+            "consecutive_errors_by_model": dict(self.consecutive_errors_by_model),
+        }

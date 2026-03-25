@@ -158,6 +158,7 @@ from llm_client.agent.mcp_finalization import (  # noqa: F401  re-exported
 from llm_client.agent.mcp_loop_summary import _apply_agent_loop_summary
 from llm_client.agent.mcp_turn_model import _run_turn_model_stage
 from llm_client.agent.mcp_turn_outcomes import _process_turn_outcomes
+from llm_client.agent.agent_contracts import AgentErrorBudget, ErrorBudgetState
 from llm_client.agent.mcp_turn_tools import _process_tool_calls_turn
 from llm_client.agent.mcp_state import (  # noqa: F401  re-exported
     ADOPTION_PROFILE_ENFORCE_ENV as ADOPTION_PROFILE_ENFORCE_ENV,
@@ -426,6 +427,7 @@ async def _agent_loop(
     initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     kwargs: dict[str, Any] | None = None,
+    error_budget: "AgentErrorBudget | None" = None,
 ) -> tuple[str, str]:
     """Core agent loop shared by MCP, direct-tool, and session-pool paths.
 
@@ -433,6 +435,9 @@ async def _agent_loop(
         executor: async callable (tool_calls, max_result_length) -> (records, tool_messages).
             For MCP: wraps _execute_tool_calls with bound sessions.
             For direct tools: wraps execute_direct_tool_calls with bound tool_map.
+        error_budget: Aggregate error budget for this agent invocation.
+            Controls total retry effort across all models. Consumers should
+            declare explicitly. When None, a generous default is used.
 
     Returns (final_content, final_finish_reason).
     """
@@ -497,6 +502,10 @@ async def _agent_loop(
     contract_rejected_calls = 0
     contract_violation_events: list[dict[str, Any]] = []
     failure_event_codes: list[str] = []
+
+    # Error budget tracking
+    _error_budget = error_budget if error_budget is not None else AgentErrorBudget()
+    _budget_state = ErrorBudgetState(budget=_error_budget)
     handle_input_resolution_count = 0
     handle_input_resolved_artifact_count = 0
     autofilled_tool_reasoning_calls = 0
@@ -1097,9 +1106,29 @@ async def _agent_loop(
             )
             break
 
+        # --- Error budget tracking ---
+        turn_had_errors = any(r.error for r in records)
+        if turn_had_errors:
+            for r in records:
+                if r.error:
+                    _budget_state.record_error(effective_model, r.error)
+        else:
+            _budget_state.record_success(effective_model)
+
+        budget_stop, budget_reason = _budget_state.should_stop()
+        if budget_stop:
+            logger.warning(
+                "Agent error budget exhausted: %s (turns=%d, errors=%d)",
+                budget_reason, _budget_state.total_turns, _budget_state.total_errors,
+            )
+            agent_result.warnings.append(f"error_budget_exhausted: {budget_reason}")
+            break
+
         logger.debug(
-            "Agent turn %d/%d: %d tool calls",
+            "Agent turn %d/%d: %d tool calls (budget: %d/%d turns, %d/%d errors)",
             turn + 1, max_turns, len(tool_calls_this_turn),
+            _budget_state.total_turns, _error_budget.max_agent_turns,
+            _budget_state.total_errors, _error_budget.max_total_errors,
         )
 
         # Turn countdown: warn agent when it's running low on turns
