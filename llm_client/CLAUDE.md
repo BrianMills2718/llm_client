@@ -9,7 +9,7 @@ Read these first when working under `llm_client/`:
 2. [`../docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)
 3. [`../docs/API_REFERENCE.html`](../docs/API_REFERENCE.html)
 4. [`../scripts/meta/generate_api_reference.py`](../scripts/meta/generate_api_reference.py)
-5. [`../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md`](../docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md)
+5. [`../docs/guides/`](../docs/guides/) for advanced usage guides
 
 ## Local Surfaces
 
@@ -23,7 +23,10 @@ Read these first when working under `llm_client/`:
 | [`utils/`](utils/) | Cost, git, OpenRouter, rate limiting |
 | [`observability/`](observability/) | Event, run, and query adapters around `io_log` |
 | [`cli/`](cli/) | CLI command modules for runtime and observability inspection |
-| [`prompts/`](prompts/) | Prompt asset data and templates |
+
+Prompt assets live in `~/projects/prompts/` (external, shared across projects).
+The `render_prompt()` engine and `prompt_assets.py` resolution logic live here.
+Override with `LLM_CLIENT_PROMPT_ASSET_ROOT` env var.
 
 ## Working Rules
 

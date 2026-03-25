@@ -17,6 +17,7 @@ filesystem path to a prompt template.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -25,7 +26,25 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 _PROMPT_REF_RE = re.compile(r"^(?P<asset_id>[a-z0-9][a-z0-9_.-]*)@(?P<version>[1-9][0-9]*)$")
-_PROMPT_ASSET_ROOT = Path(__file__).resolve().parent / "prompt_assets"
+
+_DEFAULT_PROMPT_ROOT = Path("~/projects/prompts").expanduser()
+_PACKAGE_PROMPT_ROOT = Path(__file__).resolve().parent / "prompt_assets"
+
+
+def _resolve_prompt_root() -> Path:
+    """Determine the prompt asset root directory.
+
+    Priority: LLM_CLIENT_PROMPT_ASSET_ROOT env var > ~/projects/prompts/ > package fallback.
+    """
+    env_root = os.environ.get("LLM_CLIENT_PROMPT_ASSET_ROOT", "")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    if _DEFAULT_PROMPT_ROOT.is_dir():
+        return _DEFAULT_PROMPT_ROOT.resolve()
+    return _PACKAGE_PROMPT_ROOT
+
+
+_PROMPT_ASSET_ROOT = _resolve_prompt_root()
 
 
 class PromptAssetRef(BaseModel):
