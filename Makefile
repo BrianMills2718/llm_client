@@ -1,100 +1,116 @@
-# === META-PROCESS TARGETS ===
-# Added by meta-process install.sh
+# llm_client Makefile — consumer interface for observability and development
+#
+# Usage: make help
 
-# Configuration
-SCRIPTS_META := scripts/meta
-PLANS_DIR := docs/plans
-READS_FILE ?= /tmp/.claude_session_reads
-GITHUB_ACCOUNT ?= BrianMills2718
-PR_AUTO_EXPECTED_REPO ?= llm_client
-CLAIMS_SCRIPT ?= scripts/meta/worktree-coordination/check_claims.py
-META_STATUS_SCRIPT ?= scripts/meta/worktree-coordination/meta_status.py
-SAFE_WORKTREE_REMOVE_SCRIPT ?= scripts/meta/worktree-coordination/safe_worktree_remove.py
-MAC_MIGRATION_OUT_DIR ?= $(HOME)/Desktop
-MAC_MIGRATION_BUNDLE ?=
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+PYTHON := python
+DAYS ?= 7
+PROJECT ?=
+LIMIT ?= 20
 
-# --- Session Start ---
-.PHONY: status worktree worktree-remove claim release claims meta-status
+# ─── Observability ───────────────────────────────────────────────────────────
 
-status:  ## Show git status
-	@git status --short --branch
+.PHONY: cost cost-by-project cost-by-model cost-by-task errors recent traces summary
 
-worktree:  ## Create worktree from origin/main (BRANCH=... TASK="..." optional)
-ifndef BRANCH
-	$(error BRANCH is required. Usage: make worktree BRANCH=plan-NN-description TASK="...optional...")
-endif
-	@git fetch origin main
-	@mkdir -p worktrees
-	@if git show-ref --verify --quiet "refs/heads/$(BRANCH)"; then \
-		echo "ERROR: branch '$(BRANCH)' already exists locally."; \
-		exit 1; \
-	fi
-	@git worktree add "worktrees/$(BRANCH)" -b "$(BRANCH)" origin/main
-	@echo "Worktree created: worktrees/$(BRANCH)"
-	@echo "Next: cd worktrees/$(BRANCH)"
-	@if [ -n "$(TASK)" ] && [ -f "$(CLAIMS_SCRIPT)" ]; then \
-		python "$(CLAIMS_SCRIPT)" --claim --id "$(BRANCH)" --task "$(TASK)"; \
-	fi
-	@if [ -z "$(TASK)" ]; then \
-		echo "Optional claim: python $(CLAIMS_SCRIPT) --claim --id \"$(BRANCH)\" --task \"...\""; \
-	fi
+cost:  ## Total spend (DAYS=7 default, PROJECT= optional)
+	@$(PYTHON) -m llm_client cost --group-by project --days $(DAYS) \
+		$(if $(PROJECT),--project $(PROJECT))
 
-worktree-remove:  ## Safely remove worktree (BRANCH=...)
-ifndef BRANCH
-	$(error BRANCH is required. Usage: make worktree-remove BRANCH=plan-NN-description)
-endif
-	@if [ -f "$(SAFE_WORKTREE_REMOVE_SCRIPT)" ]; then \
-		python "$(SAFE_WORKTREE_REMOVE_SCRIPT)" "worktrees/$(BRANCH)"; \
-	else \
-		git worktree remove "worktrees/$(BRANCH)"; \
-	fi
+cost-by-project:  ## Spend per project (DAYS=7)
+	@$(PYTHON) -m llm_client cost --group-by project --days $(DAYS)
 
-claim:  ## Create/update active claim for current branch (TASK="...")
-ifndef TASK
-	$(error TASK is required. Usage: make claim TASK="description" [ID=branch-name])
-endif
-	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
-		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
-		exit 1; \
-	fi
-	@CLAIM_ID="$${ID:-$$(git rev-parse --abbrev-ref HEAD)}"; \
-	python "$(CLAIMS_SCRIPT)" --claim --id "$$CLAIM_ID" --task "$(TASK)"
+cost-by-model:  ## Spend per model (DAYS=7, PROJECT= optional)
+	@$(PYTHON) -m llm_client cost --group-by model --days $(DAYS) \
+		$(if $(PROJECT),--project $(PROJECT))
 
-release:  ## Release active claim for current branch
-	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
-		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
-		exit 1; \
-	fi
-	@CLAIM_ID="$${ID:-$$(git rev-parse --abbrev-ref HEAD)}"; \
-	python "$(CLAIMS_SCRIPT)" --release --id "$$CLAIM_ID"
+cost-by-task:  ## Spend per task (DAYS=7, PROJECT= optional)
+	@$(PYTHON) -m llm_client cost --group-by task --days $(DAYS) \
+		$(if $(PROJECT),--project $(PROJECT))
 
-claims:  ## List active claims/worktrees
-	@if [ ! -f "$(CLAIMS_SCRIPT)" ]; then \
-		echo "ERROR: claims script not found at $(CLAIMS_SCRIPT)"; \
-		exit 1; \
-	fi
-	@python "$(CLAIMS_SCRIPT)" --list
+errors:  ## Error breakdown by model (DAYS=7, PROJECT= optional)
+	@$(PYTHON) -c "\
+	import sqlite3, os; \
+	from pathlib import Path; \
+	db = sqlite3.connect(os.environ.get('LLM_CLIENT_DB_PATH', str(Path.home() / 'projects/data/llm_observability.db')), timeout=10); \
+	from datetime import datetime, timedelta, timezone; \
+	cutoff = (datetime.now(timezone.utc) - timedelta(days=$(DAYS))).isoformat(); \
+	pf = \"AND project = '$(PROJECT)'\" if '$(PROJECT)' else ''; \
+	rows = db.execute(f\"\"\"SELECT model, COUNT(*) as total, \
+		SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors, \
+		ROUND(100.0 * SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) / COUNT(*), 1) as error_pct \
+		FROM llm_calls WHERE timestamp >= ? {pf} \
+		GROUP BY model ORDER BY errors DESC LIMIT 20\"\"\", (cutoff,)).fetchall(); \
+	print(f\"{'Model':<55} {'Total':>7} {'Errors':>7} {'Rate':>7}\"); \
+	print('-' * 80); \
+	[print(f'{r[0]:<55} {r[1]:>7} {r[2]:>7} {r[3]:>6}%') for r in rows]; \
+	total = sum(r[1] for r in rows); errs = sum(r[2] for r in rows); \
+	print('-' * 80); \
+	print(f\"{'TOTAL':<55} {total:>7} {errs:>7} {(100*errs/total if total else 0):>6.1f}%\")"
 
-meta-status:  ## Coordination dashboard (claims/PRs/worktrees)
-	@if [ -f "$(META_STATUS_SCRIPT)" ]; then \
-		python "$(META_STATUS_SCRIPT)"; \
-	elif [ -f "$(CLAIMS_SCRIPT)" ]; then \
-		python "$(CLAIMS_SCRIPT)" --list; \
-	else \
-		echo "ERROR: no coordination status script found."; \
-		exit 1; \
-	fi
+recent:  ## Last N calls (LIMIT=20, PROJECT= optional)
+	@$(PYTHON) -c "\
+	import sqlite3, os; \
+	from pathlib import Path; \
+	db = sqlite3.connect(os.environ.get('LLM_CLIENT_DB_PATH', str(Path.home() / 'projects/data/llm_observability.db')), timeout=10); \
+	pf = \"WHERE project = '$(PROJECT)'\" if '$(PROJECT)' else ''; \
+	rows = db.execute(f\"\"\"SELECT timestamp, model, task, \
+		ROUND(COALESCE(marginal_cost, cost), 4) as cost, \
+		total_tokens, ROUND(latency_s, 1) as latency, \
+		CASE WHEN error IS NOT NULL THEN 'ERR' ELSE 'ok' END as status \
+		FROM llm_calls {pf} ORDER BY timestamp DESC LIMIT $(LIMIT)\"\"\").fetchall(); \
+	print(f\"{'Time':<20} {'Model':<40} {'Task':<25} {'Cost':>8} {'Tokens':>8} {'Lat':>6} {'St':>4}\"); \
+	print('-' * 115); \
+	[print(f'{r[0][11:19]:<20} {(r[1] or \"?\")[:39]:<40} {(r[2] or \"-\")[:24]:<25} \$${ r[3] or 0:>7.4f} {r[4] or 0:>8} {r[5] or 0:>5.1f}s {r[6]:>4}') for r in rows]"
 
-# --- During Implementation ---
-.PHONY: test test-quick check adoption-gate read-gate-check read-gate-check-warn mac-migration-prep
+traces:  ## Recent traces with cost rollup (DAYS=3, PROJECT= optional)
+	@$(PYTHON) -m llm_client traces --days $(DAYS) \
+		$(if $(PROJECT),--project $(PROJECT))
 
-test:  ## Run pytest
-	pytest tests/ -v
+summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
+	@echo "=== llm_client Summary (last $(DAYS) days) ==="
+	@echo ""
+	@$(PYTHON) -c "\
+	import sqlite3, os; \
+	from pathlib import Path; \
+	db = sqlite3.connect(os.environ.get('LLM_CLIENT_DB_PATH', str(Path.home() / 'projects/data/llm_observability.db')), timeout=10); \
+	from datetime import datetime, timedelta, timezone; \
+	cutoff = (datetime.now(timezone.utc) - timedelta(days=$(DAYS))).isoformat(); \
+	r = db.execute(\"\"\"SELECT COUNT(*), ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 2), \
+		SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), \
+		COUNT(DISTINCT project), COUNT(DISTINCT model), \
+		COALESCE(SUM(total_tokens), 0) \
+		FROM llm_calls WHERE timestamp >= ?\"\"\", (cutoff,)).fetchone(); \
+	print(f'  Calls:    {r[0]:,}'); \
+	print(f'  Spend:    \$${r[1]:,.2f}'); \
+	print(f'  Errors:   {r[2]:,} ({100*r[2]/r[0] if r[0] else 0:.1f}%)'); \
+	print(f'  Projects: {r[3]}'); \
+	print(f'  Models:   {r[4]}'); \
+	print(f'  Tokens:   {r[5]:,}'); \
+	print(); \
+	print('Top projects by spend:'); \
+	rows = db.execute(\"\"\"SELECT COALESCE(project,'unknown'), \
+		ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 2), COUNT(*) \
+		FROM llm_calls WHERE timestamp >= ? GROUP BY project ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
+	[print(f'  \$${r[1]:>8.2f}  {r[2]:>6} calls  {r[0]}') for r in rows]; \
+	print(); \
+	print('Top models by spend:'); \
+	rows = db.execute(\"\"\"SELECT model, \
+		ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 2), COUNT(*) \
+		FROM llm_calls WHERE timestamp >= ? GROUP BY model ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
+	[print(f'  \$${r[1]:>8.2f}  {r[2]:>6} calls  {r[0]}') for r in rows]"
 
-test-quick:  ## Run pytest (no traceback)
-	pytest tests/ -q --tb=no
+# ─── Development ─────────────────────────────────────────────────────────────
 
-check:  ## Run all checks (test, mypy)
+.PHONY: test test-quick check install
+
+test:  ## Run full test suite
+	@pytest tests/ -q --tb=short
+
+test-quick:  ## Run tests (minimal output)
+	@pytest tests/ -q --tb=no
+
+check:  ## Run tests + mypy
 	@echo "Running tests..."
 	@pytest tests/ -q --tb=short
 	@echo ""
@@ -103,112 +119,36 @@ check:  ## Run all checks (test, mypy)
 	@echo ""
 	@echo "All checks passed!"
 
-adoption-gate:  ## Run local long-thinking adoption gate (cron/CI friendly)
-	./scripts/adoption_gate.sh
+install:  ## Install llm_client in editable mode
+	@pip install -e .
 
-mac-migration-prep:  ## Build personal Mac migration bundle (OUT_DIR/BUNDLE optional)
-	@chmod +x scripts/macos/create_personal_transfer_bundle.sh
-	@if [ -n "$(MAC_MIGRATION_BUNDLE)" ]; then \
-		./scripts/macos/create_personal_transfer_bundle.sh --out-dir "$(MAC_MIGRATION_OUT_DIR)" --name "$(MAC_MIGRATION_BUNDLE)"; \
-	else \
-		./scripts/macos/create_personal_transfer_bundle.sh --out-dir "$(MAC_MIGRATION_OUT_DIR)"; \
-	fi
+# ─── Maintenance ─────────────────────────────────────────────────────────────
+
+.PHONY: api-docs models
+
+api-docs:  ## Regenerate API reference docs
+	@$(PYTHON) scripts/meta/generate_api_reference.py --write
+
+models:  ## Show model registry
+	@$(PYTHON) -m llm_client models
+
+# ─── Help ────────────────────────────────────────────────────────────────────
+
+.PHONY: help
+
+help:  ## Show this help
+	@echo "llm_client — runtime substrate for multi-provider LLM calls"
 	@echo ""
-	@echo "Runbook: docs/MAC_MINI_MIGRATION_PREP.md"
-	@echo "Read it with: sed -n '1,220p' docs/MAC_MINI_MIGRATION_PREP.md"
-
-read-gate-check:  ## Check required-reading gate (FILE=llm_client/client.py)
-ifndef FILE
-	$(error FILE is required. Usage: make read-gate-check FILE=llm_client/client.py)
-endif
-	@python $(SCRIPTS_META)/check_required_reading.py "$(FILE)" --reads-file "$(READS_FILE)"
-
-read-gate-check-warn:  ## Check gate in warn mode (FILE=llm_client/client.py)
-ifndef FILE
-	$(error FILE is required. Usage: make read-gate-check-warn FILE=llm_client/client.py)
-endif
-	@LLM_CLIENT_READ_GATE_MODE=warn \
-		python $(SCRIPTS_META)/check_required_reading.py "$(FILE)" --reads-file "$(READS_FILE)"
-
-# --- PR Workflow ---
-.PHONY: pr-ready pr merge finish pr-auto-check pr-auto
-
-pr-ready:  ## Rebase on main and push
-	@git fetch origin main
-	@git rebase origin/main
-	@git push -u origin HEAD
-
-pr:  ## Create PR (opens browser)
-	@gh pr create --fill --web
-
-pr-auto-check:  ## Autonomous PR preflight (branch/clean tree/origin/account)
-	@python $(SCRIPTS_META)/pr_auto.py --preflight-only --expected-origin-repo $(PR_AUTO_EXPECTED_REPO) --account $(GITHUB_ACCOUNT)
-
-pr-auto:  ## Autonomous PR create + auto-merge request (non-interactive)
-	@python $(SCRIPTS_META)/pr_auto.py --expected-origin-repo $(PR_AUTO_EXPECTED_REPO) --account $(GITHUB_ACCOUNT) --fill --auto-merge
-
-merge:  ## Merge PR (PR=number required)
-ifndef PR
-	$(error PR is required. Usage: make merge PR=123)
-endif
-	@python $(SCRIPTS_META)/merge_pr.py $(PR)
-
-finish:  ## Merge PR + cleanup branch (BRANCH=name PR=number required)
-ifndef BRANCH
-	$(error BRANCH is required. Usage: make finish BRANCH=plan-42-feature PR=123)
-endif
-ifndef PR
-	$(error PR is required. Usage: make finish BRANCH=plan-42-feature PR=123)
-endif
-	@gh pr merge $(PR) --squash --delete-branch
-	@git checkout main && git pull --ff-only
-	@git branch -d $(BRANCH) 2>/dev/null || true
-
-# --- Plans ---
-.PHONY: plan-tests plan-complete
-
-plan-tests:  ## Check plan's required tests (PLAN=N required)
-ifndef PLAN
-	$(error PLAN is required. Usage: make plan-tests PLAN=42)
-endif
-	@python $(SCRIPTS_META)/check_plan_tests.py --plan $(PLAN)
-
-plan-complete:  ## Mark plan complete with verification (PLAN=N required)
-ifndef PLAN
-	$(error PLAN is required. Usage: make plan-complete PLAN=42)
-endif
-	@python $(SCRIPTS_META)/complete_plan.py --plan $(PLAN)
-
-# --- Help ---
-.PHONY: help-meta
-
-help-meta:  ## Show meta-process targets
-	@echo "Meta-Process Targets:"
+	@echo "Observability:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(cost|errors|recent|traces|summary)' | \
+		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "  Session:"
-	@echo "    status               Show git status"
-	@echo "    worktree             Create worktree from main (BRANCH=... TASK=...)"
-	@echo "    worktree-remove      Safely remove worktree (BRANCH=...)"
-	@echo "    claim                Claim current branch (TASK=...)"
-	@echo "    release              Release current claim"
-	@echo "    claims               List active claims/worktrees"
-	@echo "    meta-status          Coordination dashboard"
+	@echo "Development:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(test|check|install)' | \
+		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "  Development:"
-	@echo "    test                 Run tests"
-	@echo "    check                Run tests + mypy"
-	@echo "    mac-migration-prep   Build personal Mac migration bundle"
-	@echo "    read-gate-check      Check required reading (FILE=...)"
-	@echo "    read-gate-check-warn Check gate in warn mode (FILE=...)"
+	@echo "Maintenance:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(api-docs|models)' | \
+		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "  PR Workflow:"
-	@echo "    pr-ready             Rebase + push"
-	@echo "    pr                   Create PR"
-	@echo "    pr-auto-check        Preflight autonomous PR flow"
-	@echo "    pr-auto              Non-interactive PR + auto-merge request"
-	@echo "    merge                Merge PR (PR=number)"
-	@echo "    finish               Merge + cleanup (BRANCH=name PR=number)"
-	@echo ""
-	@echo "  Plans:"
-	@echo "    plan-tests           Check plan tests (PLAN=N)"
-	@echo "    plan-complete        Complete plan (PLAN=N)"
+	@echo "Options: DAYS=7 PROJECT= LIMIT=20"
