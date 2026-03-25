@@ -23,6 +23,7 @@ Track all implementation work here.
 | 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Medium | 📋 Planned | - |
 | 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | 📋 Planned | 12 |
 | 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | High | 📋 Planned | - |
+| 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | 📋 Planned | - |
 
 
 ## Status Key
