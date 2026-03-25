@@ -48,14 +48,9 @@ couplings:
     description: Observability sink/query compatibility and warning emission surface.
     required_reading: true
 
-  - sources:
-      - llm_client/task_graph.py
-      - llm_client/experiment_eval.py
-    docs:
-      - docs/adr/0008-task-graph-evaluation-contract-boundary.md
-      - docs/adr/0010-cross-project-runtime-substrate.md
-    description: Task-graph orchestration and evaluation lifecycle constraints.
-    required_reading: true
+  # NOTE: task_graph.py and experiment_eval.py were extracted from llm_client
+  # to project-meta and prompt_eval respectively (Plan #17, 2026-03-24).
+  # ADR-0008 is superseded. Coupling entry removed.
 
   - sources:
       - llm_client/prompts.py

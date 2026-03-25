@@ -1,6 +1,6 @@
 # Plan #17: text_runtime Sync/Async Deduplication
 
-**Status:** Planned
+**Status:** Cancelled
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None

@@ -11,8 +11,9 @@ without becoming a second implementation layer.
 ## What Lives Here
 
 - `common.py` for shared CLI helpers
-- `adoption.py`, `backfill.py`, `cost.py`, `experiments.py`, `models.py`,
-  `scores.py`, `tool_lint.py`, and `traces.py` for subcommand handlers
+- `adoption.py`, `backfill.py`, `cost.py`, `experiments.py`,
+  `experiments_analytics.py`, `models.py`, `replay.py`, `scores.py`,
+  `tool_lint.py`, and `traces.py` for subcommand handlers
 - `__init__.py` for subcommand registration
 
 ## Local Rules

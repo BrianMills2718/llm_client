@@ -1,6 +1,7 @@
 # ADR 0008: Task Graph and Evaluation Contract Boundary
 
-Status: Accepted  
+Status: Superseded
+Superseded: 2026-03-24 — task_graph.py extracted to project-meta, experiment_eval.py to prompt_eval (Plan #17)  
 Date: 2026-02-23
 
 ## Context

@@ -179,45 +179,23 @@ stable enough that package-boundary churn is low.
 
 ## Current Default Next Step
 
-Program E (Simplification and Observability Modernization) is the active
-program. The replay/divergence slice in
-[09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)
-and the API reference slice in
-[10_api-reference-generation-pipeline.md](./10_api-reference-generation-pipeline.md)
-are complete. The module-size reduction slice in
-[11_program-e-module-size-reduction.md](./11_program-e-module-size-reduction.md)
-has now completed three verified `io_log.py` extractions
-(`interventions.py`, `context.py`, then compatibility-facade reduction),
-reducing `io_log.py` from `2102` lines to `1222` and clearing that module from
-the hard-threshold blocker set. The default next slice remains Plan 11, with
-the next tranche having cleared `agents_codex.py` below the hard threshold via
-`agents_codex_process.py` and `agents_codex_runtime.py`, reducing it from
-`1931` to `1317`. `mcp_agent.py` was then reduced from `3335` lines to `1037`
-by extracting the turn-execution implementation into
-`mcp_turn_execution.py`, so the next default Plan 11 slice is the
-`mcp_turn_execution.py` follow-on decomposition. The first cleanup pass has
-already removed duplicate runtime facades there, the next verified slice split
-end-of-run bookkeeping into `mcp_loop_summary.py`, and the latest verified
-slice extracted per-turn tool processing into `mcp_turn_tools.py`, reducing
-`mcp_turn_execution.py` from `3202` to `2105`, and the latest verified slice
-extracted the post-tool outcome path into `mcp_turn_outcomes.py`, reducing it
-again to `1877`; the next verified slice then extracted the post-loop
-completion handoff into `mcp_turn_completion.py`, reducing it to `1800`. The
-next verified slice extracted the pre-call tool-surface/disclosure/
-LLM-dispatch block into `mcp_turn_model.py`, reducing
-`mcp_turn_execution.py` to `1339` and clearing it below the hard threshold.
-The next verified slice then extracted the lifecycle/heartbeat monitoring
-cluster from `client.py` into `call_lifecycle.py`, reducing the main blocker
-from `4184` to `3528`. The next verified slice then extracted the duplicated
-public text/structured wrapper envelope into `call_wrappers.py`, reducing the
-main blocker again to `3185`. The next verified slice then extracted the
-long-thinking/background polling cluster into `background_runtime.py`,
-reducing the main blocker to `2981`. The default next Plan 11 slice stays on
-`client.py` and now targets the Responses API helper cluster. The next
-verified slice then extracted that Responses helper block into
-`responses_runtime.py`, reducing the main blocker to `2675`. The default next
-Plan 11 slice then extracted the completion-path helper cluster into
-`completion_runtime.py`, reducing the main blocker to `2547`. The next step is
-still Plan 11 on `client.py`, but the remaining helper/policy surface now
-needs a fresh boundary-selection pass before another extraction tranche is
-chosen. Stop only for a real blocker or user redirect.
+Programs A–E are complete. The library is in **maintenance mode**.
+
+**Active work:**
+- Plan 16 (Remove Compatibility Stubs) — only remaining cleanup with real value
+- Plan 18 (Agent Loop Error Budget) — solves the 318-call pathology
+
+**Cancelled:**
+- Plan 15 (Centralize Defaults) — pure refactoring, no consumer value
+- Plan 17 (text_runtime Dedup) — pure refactoring, not worth the effort
+
+**Deferred:**
+- Plan 19 (Agent Planning & Working Memory) — well-designed but large scope, not blocking
+
+**Completed this session (2026-03-25):**
+- Module reorganization (Plan 12) landed; 29 stubs remain for Plan 16
+- Prompt assets externalized to `~/projects/prompts/`
+- LiteLLM observer callback added for unmigrated projects
+- Repo decluttered: README 1002→169 lines, stale docs archived, guides created
+- Makefile rewritten as consumer observability interface
+- ADR-0008 superseded (task_graph/experiment_eval extracted)

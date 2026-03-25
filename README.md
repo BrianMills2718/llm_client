@@ -70,7 +70,7 @@ results = await acall_llm_batch("openrouter/openai/gpt-5-mini", [msgs1, msgs2, m
 
 ## Core API
 
-Fourteen functions (7 sync + 7 async):
+Sixteen functions (8 sync + 8 async):
 
 | Function | Async | Returns | Purpose |
 |----------|-------|---------|---------|
@@ -81,6 +81,7 @@ Fourteen functions (7 sync + 7 async):
 | `call_llm_structured_batch` | `acall_llm_structured_batch` | `list[(T, LLMCallResult)]` | Structured batch |
 | `stream_llm` | `astream_llm` | `LLMStream` | Streaming |
 | `stream_llm_with_tools` | `astream_llm_with_tools` | `LLMStream` | Streaming + tools |
+| `embed` | `aembed` | `EmbeddingResult` | Embeddings |
 
 **Required on every call:** `task=`, `trace_id=`, `max_budget=`
 
@@ -98,7 +99,10 @@ model = get_model("extraction")       # Best model for extraction tasks
 models = list_models("extraction")    # All candidates, ranked
 ```
 
-Task profiles: `extraction` (highest quality), `budget_extraction` (cheaper),
+Task profiles: `extraction`, `budget_extraction`, `graph_building`,
+`fast_extraction`, `bulk_cheap`, `synthesis`, `deep_review`,
+`code_generation`, `judging`, `agent_reasoning`. Use `make models` or
+`list_models(task)` to see candidates per task.
 `graph_building` (lowest cost).
 
 ## Observability

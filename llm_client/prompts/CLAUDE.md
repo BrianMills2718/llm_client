@@ -1,16 +1,12 @@
-# Prompt Assets
+# Prompt Rendering
 
-This subtree stores prompt assets for `llm_client`.
+This subtree contains the prompt rendering engine for `llm_client`.
 
 ## Purpose
 
-Prompt assets are data, not inline source strings. Keep them explicit,
-versioned, and easy for agents to find without reading code that only consumes
-them.
-
-## What Lives Here
-
-- `rubric_judge.yaml`, the structured scoring prompt used by rubric evaluation
+Prompt rendering logic (`prompts.py`, `prompt_assets.py`) lives here. Prompt
+asset data files (YAML/Jinja2 templates) live externally at
+`~/projects/prompts/` — configurable via `LLM_CLIENT_PROMPT_ASSET_ROOT`.
 
 ## Local Rules
 

@@ -13,16 +13,16 @@ Track all implementation work here.
 | 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | ✅ Complete | - |
 | 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | ✅ Complete | - |
 | 7 | [Stream Lifecycle Heartbeat and Stagnation Visibility](07_stream_lifecycle_observability.md) | High | ✅ Complete | - |
-| 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | 📋 Planned | - |
+| 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | ✅ Complete | - |
 | 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | ✅ Complete | - |
 | 10 | [API Reference Generation Pipeline](10_api-reference-generation-pipeline.md) | High | ✅ Complete | - |
 | 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | ✅ Complete | 6 |
 | 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | ✅ Complete | 11 |
 | 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | ✅ Complete | 12 |
 | 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | ✅ Complete | - |
-| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Medium | 📋 Planned | - |
+| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | ❓ Cancelled | - |
 | 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | 📋 Planned | 12 |
-| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | High | 📋 Planned | - |
+| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | Low | ❓ Cancelled | - |
 | 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | 🚧 In Progress | - |
 | 19 | [Agent Planning and Working Memory](19_agent_planning_and_working_memory.md) | High | 📋 Planned | - |
 

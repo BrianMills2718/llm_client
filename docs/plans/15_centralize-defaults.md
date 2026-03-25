@@ -1,6 +1,6 @@
 # Plan #15: Centralize Hardcoded Defaults into ClientConfig
 
-**Status:** Planned
+**Status:** Cancelled
 **Type:** implementation
 **Priority:** Medium
 **Blocked By:** None
