@@ -10,3 +10,10 @@ build/
 .claude/active-work.yaml
 .claude/sessions/
 adoption_gate.log
+
+# Archived docs (historical, not useful to consumers)
+docs/archive/
+
+# Personal/machine-specific setup
+scripts/macos/
+.openclaw/

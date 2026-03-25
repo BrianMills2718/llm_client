@@ -42,33 +42,8 @@ pytest -q tests/test_required_reading_gate.py
 python scripts/meta/validate_relationships.py --strict
 ```
 
-## Worktree Coordination Scripts (opt-in)
-
-If using the worktree coordination module, these additional scripts are available
-in `scripts/worktree-coordination/`:
-
-| Script | Purpose |
-|--------|---------|
-| `check_claims.py` | Manage active work claims |
-| `meta_status.py` | Dashboard: claims, PRs, progress |
-| `finish_pr.py` | Complete PR lifecycle: merge + cleanup |
-| `safe_worktree_remove.py` | Safely remove worktrees |
-| `check_messages.py` | Inter-CC messaging inbox |
-| `send_message.py` | Send messages to other CC instances |
-
 ## Configuration
 
 Edit config files in repo root to customize behavior:
-- `meta-process.yaml` - Meta-process settings
 - `docs/plans/CLAUDE.md` - plan index
 - `scripts/relationships.yaml` - source/doc couplings and required-reading defaults
-
-Required-reading gate controls:
-- `meta_process.quality.required_reading.enabled`
-- `meta_process.quality.required_reading.mode` (`strict` | `warn` | `off`)
-- `meta_process.quality.required_reading.uncoupled_mode` (`strict` | `warn` | `off`)
-- `meta_process.quality.required_reading.show_success`
-
-Current project default:
-- Coupled source files: `strict`
-- Uncoupled source files: `strict`
