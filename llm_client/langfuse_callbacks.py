@@ -103,14 +103,11 @@ def inject_metadata(
 
     This is a no-op when both task and trace_id are None.
     """
-    meta: dict[str, object] = {}
+    meta: dict[str, object] = {"_llm_client_logged": True}
     if task is not None:
         meta["task"] = task
     if trace_id is not None:
         meta["trace_id"] = trace_id
-
-    if not meta:
-        return
 
     existing = kwargs.get("metadata")
     if isinstance(existing, dict):

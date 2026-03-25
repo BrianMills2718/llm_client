@@ -128,19 +128,28 @@ class TestInjectMetadata:
         """Both task and trace_id are added to metadata dict."""
         kwargs: dict[str, object] = {}
         inject_metadata(kwargs, task="my_task", trace_id="trace-123")
-        assert kwargs["metadata"] == {"task": "my_task", "trace_id": "trace-123"}
+        meta = kwargs["metadata"]
+        assert isinstance(meta, dict)
+        assert meta["task"] == "my_task"
+        assert meta["trace_id"] == "trace-123"
+        assert meta["_llm_client_logged"] is True
 
     def test_noop_when_both_none(self) -> None:
-        """When both values are None, kwargs is not modified."""
+        """When both values are None, marker is still injected."""
         kwargs: dict[str, object] = {}
         inject_metadata(kwargs, task=None, trace_id=None)
-        assert "metadata" not in kwargs
+        meta = kwargs["metadata"]
+        assert isinstance(meta, dict)
+        assert meta["_llm_client_logged"] is True
 
     def test_partial_injection(self) -> None:
-        """Only non-None values are injected."""
+        """Only non-None values are injected, marker always present."""
         kwargs: dict[str, object] = {}
         inject_metadata(kwargs, task="only_task", trace_id=None)
-        assert kwargs["metadata"] == {"task": "only_task"}
+        meta = kwargs["metadata"]
+        assert isinstance(meta, dict)
+        assert meta["task"] == "only_task"
+        assert meta["_llm_client_logged"] is True
 
     def test_preserves_existing_metadata(self) -> None:
         """Existing metadata keys are preserved, new ones merged."""
