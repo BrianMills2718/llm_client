@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -365,6 +367,114 @@ class TestSQLiteDB:
         row = db.execute("PRAGMA busy_timeout").fetchone()
         assert row is not None
         assert row[0] == 5000
+
+    def test_get_db_uses_wal_journal_mode(self, tmp_path):
+        db = io_log._get_db()
+        row = db.execute("PRAGMA journal_mode").fetchone()
+        assert row is not None
+        assert str(row[0]).lower() == "wal"
+
+    def test_log_call_retries_through_transient_external_db_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLM_CLIENT_DB_BUSY_TIMEOUT_MS", "10")
+        monkeypatch.setenv("LLM_CLIENT_DB_LOCK_RETRIES", "6")
+        monkeypatch.setenv("LLM_CLIENT_DB_LOCK_RETRY_DELAY_MS", "50")
+
+        io_log._db_conn = None
+        io_log.log_call(
+            model="gpt-5",
+            result=MagicMock(
+                content="seed",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                cost=0.0,
+                finish_reason="stop",
+            ),
+            latency_s=0.1,
+            task="seed",
+        )
+
+        lock_ready = threading.Event()
+
+        def _hold_external_write_lock() -> None:
+            lock_conn = sqlite3.connect(str(tmp_path / "test.db"), timeout=0.01, isolation_level=None)
+            lock_conn.execute("PRAGMA journal_mode = WAL")
+            lock_conn.execute("BEGIN IMMEDIATE")
+            lock_ready.set()
+            time.sleep(0.15)
+            lock_conn.rollback()
+            lock_conn.close()
+
+        holder = threading.Thread(target=_hold_external_write_lock)
+        holder.start()
+        lock_ready.wait(timeout=1.0)
+        io_log._db_conn = None
+
+        result = MagicMock(
+            content="hello",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            cost=0.002,
+            finish_reason="stop",
+        )
+        io_log.log_call(model="gpt-5", result=result, latency_s=2.0, task="sql_test")
+        holder.join()
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        rows = db.execute("SELECT task FROM llm_calls ORDER BY id").fetchall()
+        assert [row[0] for row in rows] == ["seed", "sql_test"]
+        db.close()
+
+    def test_concurrent_log_call_and_tool_call_share_connection_safely(self, tmp_path):
+        def _log_text_call(i: int) -> None:
+            io_log.log_call(
+                model="gpt-5",
+                result=MagicMock(
+                    content=f"content-{i}",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    cost=0.0,
+                    finish_reason="stop",
+                ),
+                latency_s=0.01,
+                task=f"text-{i}",
+                trace_id="trace-concurrent",
+            )
+
+        def _log_tool(i: int) -> None:
+            log_tool_call(
+                ToolCallResult(
+                    call_id=f"tool-{i}",
+                    tool_name="open_web_retrieval",
+                    operation="fetch",
+                    provider="httpx",
+                    target=f"https://example.com/{i}",
+                    status="succeeded",
+                    started_at="2026-03-25T00:00:00+00:00",
+                    ended_at="2026-03-25T00:00:01+00:00",
+                    duration_ms=1000,
+                    attempt=1,
+                    task="collect",
+                    trace_id="trace-concurrent",
+                    metrics={"index": i},
+                )
+            )
+
+        threads = [
+            threading.Thread(target=_log_text_call, args=(i,))
+            for i in range(10)
+        ] + [
+            threading.Thread(target=_log_tool, args=(i,))
+            for i in range(10)
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        llm_count = db.execute("SELECT COUNT(*) FROM llm_calls").fetchone()[0]
+        tool_count = db.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
+        assert llm_count == 10
+        assert tool_count == 10
+        db.close()
 
     def test_indexes_created(self, tmp_path):
         db = io_log._get_db()

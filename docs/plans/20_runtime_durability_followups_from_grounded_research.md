@@ -1,6 +1,6 @@
 # Plan #20: Runtime Durability Follow-Ups From Grounded Research
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -81,6 +81,13 @@ benchmark-oriented consumers do not need bespoke safety policy to:
 - reproduce the `database is locked` failure mode with focused tests
 - harden connection behavior, busy timeout, and write-path policy in `io_log.py`
 - prove that concurrent read/write pressure does not kill benchmark runs
+
+**Completed 2026-03-26**
+- enabled WAL mode on the shared observability DB connection
+- serialized writes through one connection inside the process
+- added bounded retry for transient `database is locked` failures
+- verified with a real transient external writer-lock test and a concurrent
+  mixed `log_call`/`log_tool_call` test
 
 ### Step 2: Promote long-call runtime defaults into shared policy
 

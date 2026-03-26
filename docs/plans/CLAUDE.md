@@ -25,7 +25,7 @@ Track all implementation work here.
 | 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | Low | ❓  | - |
 | 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | ✅ Complete | - |
 | 19 | [Agent Planning and Working Memory](19_agent_planning_and_working_memory.md) | High | ✅ Complete | - |
-| 20 | [Runtime Durability Follow-Ups From Grounded Research](20_runtime_durability_followups_from_grounded_research.md) | High | 📋 Planned | - |
+| 20 | [Runtime Durability Follow-Ups From Grounded Research](20_runtime_durability_followups_from_grounded_research.md) | High | 🚧 In Progress | - |
 
 
 ## Status Key
