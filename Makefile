@@ -124,13 +124,27 @@ install:  ## Install llm_client in editable mode
 
 # ─── Maintenance ─────────────────────────────────────────────────────────────
 
-.PHONY: api-docs models
+.PHONY: api-docs models log-stats log-rotate log-cleanup
 
 api-docs:  ## Regenerate API reference docs
 	@$(PYTHON) scripts/meta/generate_api_reference.py --write
 
 models:  ## Show model registry
 	@$(PYTHON) -m llm_client models
+
+log-stats:  ## Show JSONL log sizes per project
+	@$(PYTHON) scripts/log_maintenance.py stats
+
+log-rotate:  ## Rotate oversized JSONL logs (MAX_SIZE_MB=100, DRY_RUN= for preview)
+	@$(PYTHON) scripts/log_maintenance.py rotate \
+		--max-size $(or $(MAX_SIZE_MB),100) \
+		$(if $(DRY_RUN),--dry-run)
+
+log-cleanup:  ## Archive old JSONL logs (ARCHIVE_DAYS=90, DELETE_DAYS= optional, DRY_RUN= for preview)
+	@$(PYTHON) scripts/log_maintenance.py cleanup \
+		--days $(or $(ARCHIVE_DAYS),90) \
+		$(if $(DELETE_DAYS),--delete-days $(DELETE_DAYS)) \
+		$(if $(DRY_RUN),--dry-run)
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -148,7 +162,7 @@ help:  ## Show this help
 		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Maintenance:"
-	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(api-docs|models)' | \
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(api-docs|models|log-)' | \
 		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Options: DAYS=7 PROJECT= LIMIT=20"
+	@echo "Options: DAYS=7 PROJECT= LIMIT=20 MAX_SIZE_MB=100 ARCHIVE_DAYS=90 DRY_RUN= DELETE_DAYS="
