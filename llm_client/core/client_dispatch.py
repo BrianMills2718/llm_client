@@ -387,6 +387,9 @@ def _log_call_event(
     trace_id: str | None = None,
     prompt_ref: str | None = None,
     call_snapshot: dict[str, Any] | None = None,
+    error_type: str | None = None,
+    execution_path: str | None = None,
+    retry_count: int | None = None,
 ) -> None:
     """Write one observability record for an LLM call."""
     from llm_client.observability.replay import snapshot_fingerprint as _snapshot_fingerprint
@@ -406,6 +409,9 @@ def _log_call_event(
         prompt_ref=prompt_ref,
         call_snapshot=call_snapshot,
         call_fingerprint=call_fingerprint,
+        error_type=error_type,
+        execution_path=execution_path,
+        retry_count=retry_count,
     )
 
 
