@@ -22,6 +22,7 @@ from llm_client.utils.cost_utils import _compute_cost, _extract_tool_calls, _ext
 from llm_client.core.data_types import LLMCallResult
 from llm_client.core.model_detection import _is_claude_model, _is_responses_api_model, _is_thinking_model
 from llm_client.execution.retry import _EMPTY_POLICY_FINISH_REASONS, _EMPTY_TOOL_PROTOCOL_FINISH_REASONS
+from llm_client.execution.timeout_policy import safety_timeout_s as _safety_timeout_s
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ def _prepare_call_kwargs(
     }
     if timeout > 0:
         call_kwargs["timeout"] = timeout
+    elif _safety_timeout_s() > 0:
+        # Safety ceiling: prevent infinite hangs even when user timeout is 0/disabled
+        call_kwargs["timeout"] = _safety_timeout_s()
     if api_base is not None:
         call_kwargs["api_base"] = api_base
 

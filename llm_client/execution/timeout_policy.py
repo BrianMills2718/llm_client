@@ -17,6 +17,13 @@ import os
 from typing import Any
 
 TIMEOUT_POLICY_ENV = "LLM_CLIENT_TIMEOUT_POLICY"
+SAFETY_TIMEOUT_ENV = "LLM_CLIENT_SAFETY_TIMEOUT"
+
+# Safety ceiling: maximum time any single LLM call can take, regardless of
+# timeout policy. This is NOT a request timeout (which controls expected
+# response time) — it is a dead-connection detector. No legitimate LLM call
+# takes 5 minutes without producing output. Override via LLM_CLIENT_SAFETY_TIMEOUT.
+DEFAULT_SAFETY_TIMEOUT_S = 300  # 5 minutes
 
 _logger = logging.getLogger(__name__)
 _TIMEOUT_POLICY_LOGGED = False
@@ -85,3 +92,23 @@ def normalize_timeout(
             warning_sink.append(msg)
         return 0
     return parsed
+
+
+def safety_timeout_s() -> int:
+    """Return the safety ceiling timeout in seconds.
+
+    This timeout applies even when TIMEOUT_POLICY=ban. It prevents
+    infinite hangs on dead connections. Not a request timeout —
+    a dead-connection detector.
+
+    Override via LLM_CLIENT_SAFETY_TIMEOUT env var. Set to 0 to disable
+    (not recommended).
+    """
+    raw = os.environ.get(SAFETY_TIMEOUT_ENV, "")
+    if raw:
+        try:
+            val = int(raw)
+            return max(val, 0)
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_SAFETY_TIMEOUT_S
