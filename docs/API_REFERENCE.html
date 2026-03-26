@@ -1,4 +1,4 @@
-<!-- Generated: 2026-03-26T14:22:26Z -->
+<!-- Generated: 2026-03-26T14:52:10Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -164,10 +164,10 @@
 
     <h2 id="start-here">Start Here</h2>
     <ol>
-      <li><a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/README.md">README.md</a> for installation, usage, routing, and examples.</li>
-      <li><a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/AGENTS.md">AGENTS.md</a> for repo operating rules and architectural boundaries.</li>
-      <li><a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/docs/plans/01_master-roadmap.md">docs/plans/01_master-roadmap.md</a> for the current long-term program state.</li>
-      <li><a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md">docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md</a> for the shared ecosystem boundary model.</li>
+      <li><a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/README.md">README.md</a> for installation, usage, routing, and examples.</li>
+      <li><a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/AGENTS.md">AGENTS.md</a> for repo operating rules and architectural boundaries.</li>
+      <li><a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/docs/plans/01_master-roadmap.md">docs/plans/01_master-roadmap.md</a> for the current long-term program state.</li>
+      <li><a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md">docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md</a> for the shared ecosystem boundary model.</li>
     </ol>
 
     
@@ -6807,6 +6807,22 @@ normalization rules:
   </div>
 </details>
 
+<details class="symbol" id="module-llm_client-execution-timeout_policy-safety_timeout_s">
+  <summary><code>safety_timeout_s</code> <span class="sig">() -&gt; int</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Return the safety ceiling timeout in seconds.</p>
+    <p class="meta">Source: <code>llm_client.execution.timeout_policy</code> functions</p>
+    <pre class="doc">Return the safety ceiling timeout in seconds.
+
+This timeout applies even when TIMEOUT_POLICY=ban. It prevents
+infinite hangs on dead connections. Not a request timeout —
+a dead-connection detector.
+
+Override via LLM_CLIENT_SAFETY_TIMEOUT env var. Set to 0 to disable
+(not recommended).</pre>
+  </div>
+</details>
+
 <details class="symbol" id="module-llm_client-execution-timeout_policy-timeout_policy_label">
   <summary><code>timeout_policy_label</code> <span class="sig">() -&gt; str</span></summary>
   <div class="symbol-body">
@@ -6833,7 +6849,9 @@ normalization rules:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>TIMEOUT_POLICY_ENV</code></td><td><code>&#x27;LLM_CLIENT_TIMEOUT_POLICY&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>DEFAULT_SAFETY_TIMEOUT_S</code></td><td><code>300</code></td><td>int</td></tr>
+<tr><td><code>SAFETY_TIMEOUT_ENV</code></td><td><code>&#x27;LLM_CLIENT_SAFETY_TIMEOUT&#x27;</code></td><td>str</td></tr>
+<tr><td><code>TIMEOUT_POLICY_ENV</code></td><td><code>&#x27;LLM_CLIENT_TIMEOUT_POLICY&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
@@ -8710,11 +8728,11 @@ Raises:
 
     <h2 id="source-truth">Source Of Truth</h2>
     <ol>
-      <li><a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/pyproject.toml">pyproject.toml</a> is authoritative for package metadata and extras.</li>
+      <li><a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/pyproject.toml">pyproject.toml</a> is authoritative for package metadata and extras.</li>
       <li>Module docstrings and public function signatures are authoritative for code behavior.</li>
       <li>The roadmap and ADRs are authoritative for architectural boundaries.</li>
     </ol>
-    <p class="summary">Canonical markdown companion: <a href="file:///home/brian/projects/llm_client/worktrees/plan-safety-timeout/docs/API_REFERENCE.md">docs/API_REFERENCE.md</a>.</p>
+    <p class="summary">Canonical markdown companion: <a href="file:///home/brian/projects/llm_client/worktrees/fix-real-timeout/docs/API_REFERENCE.md">docs/API_REFERENCE.md</a>.</p>
   </main>
 </body>
 </html>
