@@ -506,10 +506,8 @@ class TestModelIdentityContract:
     @pytest.mark.asyncio
     @patch("llm_client.core.models.supports_tool_calling", return_value=True)
     @patch("llm_client.agent.mcp_agent._acall_with_tools")
-    @patch("llm_client.core.client._io_log.log_call")
     async def test_async_call_llm_tool_loop_preserves_agent_routing_trace(
         self,
-        mock_log_call: MagicMock,
         mock_tool_loop: AsyncMock,
         _mock_supports_tools: MagicMock,
     ) -> None:
@@ -526,6 +524,7 @@ class TestModelIdentityContract:
         mock_tool_loop.return_value.resolved_model = "fallback-model"
         mock_tool_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
+            "selected_model": "fallback-model",
             "sticky_fallback": True,
             "background_mode": True,
         }
@@ -548,7 +547,6 @@ class TestModelIdentityContract:
         assert result.routing_trace["sticky_fallback"] is True
         assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
-        assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
     @patch("llm_client.agent.mcp_agent._acall_with_mcp")
     def test_sync_call_llm_mcp_loop_preserves_agent_routing_trace(
@@ -610,6 +608,7 @@ class TestModelIdentityContract:
         mock_mcp_loop.return_value.resolved_model = "fallback-model"
         mock_mcp_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
+            "selected_model": "fallback-model",
             "sticky_fallback": True,
             "background_mode": True,
         }

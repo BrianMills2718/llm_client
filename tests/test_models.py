@@ -229,6 +229,7 @@ class TestPerformanceDemotion:
         self._insert_calls("openrouter/openai/gpt-5", "extraction", 5, 10)
         self._insert_calls("openrouter/deepseek/deepseek-chat", "extraction", 5, 10)
         self._insert_calls("openrouter/openai/gpt-5-mini", "extraction", 5, 10)
+        self._insert_calls("openrouter/openai/gpt-5.4-mini", "extraction", 5, 10)
         self._insert_calls("openrouter/x-ai/grok-4.1-fast", "extraction", 5, 10)
 
         model = get_model("extraction", available_only=False)

@@ -514,7 +514,12 @@ def _coerce_model_kwargs_for_execution(
     if _is_agent_model(current_model):
         return {k: v for k, v in kwargs.items() if k not in internal_removed}
 
-    removed = sorted(k for k in kwargs if k in _AGENT_ONLY_KWARGS)
+    # max_turns/max_tool_calls are valid for non-agent models when using
+    # MCP/python_tools (they control the tool-call loop, not the agent SDK).
+    # This mirrors the exemption in _validate_execution_contract.
+    has_tool_loop = any(k in kwargs for k in ("mcp_servers", "mcp_sessions", "python_tools"))
+    strip_set = _AGENT_ONLY_KWARGS - {"max_turns", "max_tool_calls"} if has_tool_loop else _AGENT_ONLY_KWARGS
+    removed = sorted(k for k in kwargs if k in strip_set)
     all_removed = sorted(set([*internal_removed, *removed]))
     if not all_removed:
         return kwargs

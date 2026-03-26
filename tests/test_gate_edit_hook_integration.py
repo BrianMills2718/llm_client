@@ -57,11 +57,12 @@ def test_gate_edit_hook_blocks_missing_reads_in_strict_mode() -> None:
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required by gate-edit.sh")
-def test_gate_edit_hook_warn_mode_allows_with_context_output() -> None:
+def test_gate_edit_hook_warn_mode_blocks_missing_reads() -> None:
+    # gate-edit.sh no longer distinguishes warn vs strict — it always blocks
+    # when required docs have not been read.
     proc = _run_gate_hook(file_path="llm_client/client.py", mode="warn", reads=[])
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert '"hookSpecificOutput"' in proc.stdout
-    assert "Read gate warning for" in proc.stdout
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert '"decision": "block"' in proc.stdout
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required by gate-edit.sh")
