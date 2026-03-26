@@ -8,12 +8,15 @@ without changing caller-facing signatures.
 
 from __future__ import annotations
 
+import asyncio
+
 from importlib import import_module
 from typing import Any, Callable, cast
 
 from llm_client.core.client import AsyncCachePolicy, CachePolicy, ExecutionMode, Hooks, LLMCallResult, RetryPolicy
 from llm_client.core.config import ClientConfig
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
+from llm_client.execution.timeout_policy import safety_timeout_s as _safety_timeout_s
 
 _client: Any = import_module("llm_client.core.client")
 
@@ -825,7 +828,17 @@ async def _acall_llm_impl(
                 )
             elif use_responses:
                 async with _rate_limit.aacquire(current_model):
-                    response = await litellm.aresponses(**call_kwargs)
+                    _ceil = _safety_timeout_s()
+                    try:
+                        response = await asyncio.wait_for(
+                            litellm.aresponses(**call_kwargs),
+                            timeout=_ceil if _ceil > 0 else None,
+                        )
+                    except asyncio.TimeoutError:
+                        raise TimeoutError(
+                            f"LLM responses call timed out after {_ceil}s safety ceiling "
+                            f"(model={current_model})"
+                        )
                 response = await _maybe_apoll_background_response(
                     response,
                     api_base=current_api_base,
@@ -835,7 +848,17 @@ async def _acall_llm_impl(
                 result = _build_result_from_responses(response, current_model, warnings=_warnings)
             else:
                 async with _rate_limit.aacquire(current_model):
-                    response = await litellm.acompletion(**call_kwargs)
+                    _ceil = _safety_timeout_s()
+                    try:
+                        response = await asyncio.wait_for(
+                            litellm.acompletion(**call_kwargs),
+                            timeout=_ceil if _ceil > 0 else None,
+                        )
+                    except asyncio.TimeoutError:
+                        raise TimeoutError(
+                            f"LLM call timed out after {_ceil}s safety ceiling "
+                            f"(model={current_model})"
+                        )
                 result = _build_result_from_response(response, current_model, warnings=_warnings)
             if attempt > 0:
                 logger.info("acall_llm succeeded after %d retries", attempt)

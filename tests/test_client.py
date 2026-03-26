@@ -254,7 +254,8 @@ class TestCallLLM:
             max_budget=0,
         )
         kwargs = mock_comp.call_args.kwargs
-        assert "timeout" not in kwargs
+        # Safety ceiling is applied even when user timeout is banned
+        assert kwargs.get("timeout") == 300  # DEFAULT_SAFETY_TIMEOUT_S
         assert any("TIMEOUT_DISABLED[call_llm]" in w for w in result.warnings)
 
 
@@ -378,7 +379,8 @@ class TestAcallLLM:
             max_budget=0,
         )
         kwargs = mock_acomp.call_args.kwargs
-        assert "timeout" not in kwargs
+        # Safety ceiling is applied even when user timeout is banned
+        assert kwargs.get("timeout") == 300  # DEFAULT_SAFETY_TIMEOUT_S
         assert any("TIMEOUT_DISABLED[acall_llm]" in w for w in result.warnings)
 
     @pytest.mark.asyncio

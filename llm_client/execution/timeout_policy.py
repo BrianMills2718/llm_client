@@ -112,3 +112,43 @@ def safety_timeout_s() -> int:
         except (TypeError, ValueError):
             pass
     return DEFAULT_SAFETY_TIMEOUT_S
+
+
+# ---------------------------------------------------------------------------
+# IPv4 forcing for providers with IPv6 routing issues (Gemini on WSL2)
+# ---------------------------------------------------------------------------
+
+_IPV4_FORCED = False
+IPV4_FORCE_ENV = "LLM_CLIENT_FORCE_IPV4"
+
+
+def force_ipv4_if_configured() -> bool:
+    """Force IPv4-only DNS resolution if LLM_CLIENT_FORCE_IPV4=1.
+
+    Gemini API endpoints resolve to IPv6 addresses that experience routing
+    problems on WSL2, causing socket-level hangs that bypass all Python-level
+    timeouts. This patches socket.getaddrinfo to filter out IPv6 results.
+
+    Safe to call multiple times — only patches once.
+    Returns True if IPv4 forcing was activated.
+    """
+    global _IPV4_FORCED  # noqa: PLW0603
+    if _IPV4_FORCED:
+        return True
+
+    raw = os.environ.get(IPV4_FORCE_ENV, "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return False
+
+    import socket
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _ipv4_only(*args: Any, **kwargs: Any) -> list:
+        results = _original_getaddrinfo(*args, **kwargs)
+        ipv4 = [r for r in results if r[0] == socket.AF_INET]
+        return ipv4 if ipv4 else results  # Fall back to original if no IPv4
+
+    socket.getaddrinfo = _ipv4_only  # type: ignore[assignment]
+    _IPV4_FORCED = True
+    _logger.info("IPv4-only DNS resolution enabled (LLM_CLIENT_FORCE_IPV4=1)")
+    return True

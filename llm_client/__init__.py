@@ -268,6 +268,10 @@ from llm_client.core.client import (
     strip_fences,
 )
 from llm_client.core.data_types import TurnEvent
+
+# Apply IPv4 forcing if configured (prevents Gemini WSL2 IPv6 hangs)
+from llm_client.execution.timeout_policy import force_ipv4_if_configured as _force_ipv4
+_force_ipv4()
 from llm_client.rubric_registry import (
     Category as RubricCategory,
     Dimension as RubricDimension,
