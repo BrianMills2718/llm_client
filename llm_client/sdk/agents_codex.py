@@ -390,13 +390,22 @@ def _estimate_codex_cost(model: str, usage: Any) -> float:
     """Estimate USD cost from Codex Usage via litellm. Approximate."""
     _, underlying = _agents_mod()._parse_agent_model(model)
     lookup_model = underlying or "gpt-4o"  # best guess for bare "codex"
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    if input_tokens == 0 and output_tokens == 0:
+        return 0.0
     try:
         import litellm
-        cost = litellm.completion_cost(
+        # Build a minimal response object that litellm.completion_cost expects
+        mock_response = litellm.ModelResponse(
             model=lookup_model,
-            prompt_tokens=getattr(usage, "input_tokens", 0),
-            completion_tokens=getattr(usage, "output_tokens", 0),
+            usage=litellm.Usage(
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+            ),
         )
+        cost = litellm.completion_cost(completion_response=mock_response)
         return float(cost)
     except Exception as exc:
         logger.warning("Codex cost extraction failed (returning 0.0): %s", exc)
