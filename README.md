@@ -154,6 +154,43 @@ export ANTHROPIC_API_KEY=sk-ant-...    # Direct Anthropic
 | `LLM_CLIENT_TIMEOUT_POLICY` | `allow` | `ban` to disable all per-call timeouts |
 | `LLM_CLIENT_LOG_ENABLED` | `1` | Disable logging with `0` |
 
+### Tool-call observability
+
+Non-LLM tool calls (retrieval, fetch, extraction) can be logged alongside LLM calls:
+
+```python
+from llm_client import log_tool_call
+
+log_tool_call(
+    tool_name="search_entities",
+    operation="retrieval",
+    result_count=15,
+    task="graph_building",
+    trace_id="demo/tools",
+)
+```
+
+```bash
+python -m llm_client tools --group-by tool_name --days 7
+```
+
+### Rubric scoring
+
+```python
+from llm_client import load_rubric, score_categorical
+
+rubric = load_rubric("extraction_quality")
+score = score_categorical(rubric, {"completeness": "good", "accuracy": "excellent"})
+```
+
+### Log maintenance
+
+```bash
+python scripts/log_maintenance.py stats             # Show log sizes and date ranges
+python scripts/log_maintenance.py rotate --days 7    # Compress logs older than 7 days
+python scripts/log_maintenance.py cleanup --days 90  # Delete logs older than 90 days
+```
+
 ## Using from another project
 
 ```bash

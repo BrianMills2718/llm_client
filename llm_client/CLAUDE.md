@@ -23,9 +23,17 @@ Read these first when working under `llm_client/`:
 | [`utils/`](utils/) | Cost, git, OpenRouter, rate limiting |
 | [`observability/`](observability/) | Event, run, and query adapters around `io_log` |
 | [`cli/`](cli/) | CLI command modules for runtime and observability inspection |
+| [`workflow/`](workflow/) | LangGraph-backed durable workflow layer (builder, config, context) |
+
+**Root-level modules** (not in subdirectories):
+- `io_log.py` — JSONL + SQLite observability persistence
+- `foundation.py` — Foundation event types and contracts
+- `prompt_assets.py` / `prompts.py` — Prompt rendering engine
+- `rubric_registry.py` — Categorical rubric loading and scoring
+- `litellm_observer_callback.py` — LiteLLM callback for unmigrated projects
+- `experiment_summary.py` — Shared experiment bookkeeping
 
 Prompt assets live in `~/projects/prompts/` (external, shared across projects).
-The `render_prompt()` engine and `prompt_assets.py` resolution logic live here.
 Override with `LLM_CLIENT_PROMPT_ASSET_ROOT` env var.
 
 ## Working Rules
