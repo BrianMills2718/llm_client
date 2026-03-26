@@ -1,6 +1,6 @@
 # Plan #20: Runtime Durability Follow-Ups From Grounded Research
 
-**Status:** In Progress
+**Status:** Completed
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -110,10 +110,24 @@ benchmark-oriented consumers do not need bespoke safety policy to:
 - answer “what was the last completed LLM call?”, “what tool calls ran?”, and
   “where did retries/errors happen?” without custom SQL each time
 
+**Completed 2026-03-26**
+- added `summarize_trace()` in `llm_client/observability/query.py`
+- extended `python -m llm_client traces --trace-id ...` to render one compact
+  cross-table summary
+- taught the helper to roll up trace families like
+  `pipeline/<root-trace>/...`, matching grounded-research’s real trace shape
+- verified with isolated logger tests plus a real grounded-research benchmark DB
+
 ### Step 4: Verify against the grounded-research-triggered use case
 
 - replay the diagnostic questions raised by the UBI benchmark runs
 - confirm the shared helpers answer them directly from the DB/log surface
+
+**Completed 2026-03-26**
+- verified the helper against
+  `grounded-research/output/ubi_dense_dedup_eval/llm_observability.db`
+- confirmed it answers the downstream questions directly:
+  call counts, last completed LLM call, last tool call, and trace-family rollup
 
 ---
 
@@ -139,11 +153,11 @@ benchmark-oriented consumers do not need bespoke safety policy to:
 
 ## Acceptance Criteria
 
-- [ ] Concurrent observability writes no longer kill normal long-running consumer workloads
-- [ ] Long structured calls have shared finite-timeout defaults or one equivalent shared runtime policy
-- [ ] One `trace_id` can be summarized across `llm_calls` and `tool_calls` without ad hoc SQL
-- [ ] Existing logger/runtime tests still pass
-- [ ] The grounded-research-triggered failure modes are documented as resolved or explicitly reclassified
+- [x] Concurrent observability writes no longer kill normal long-running consumer workloads
+- [x] Long structured calls have shared finite-timeout defaults or one equivalent shared runtime policy
+- [x] One `trace_id` can be summarized across `llm_calls` and `tool_calls` without ad hoc SQL
+- [x] Existing logger/runtime tests still pass
+- [x] The grounded-research-triggered failure modes are documented as resolved or explicitly reclassified
 
 ---
 

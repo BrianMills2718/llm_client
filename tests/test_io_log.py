@@ -8,18 +8,37 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from llm_client import io_log
 from llm_client.observability.tool_calls import ToolCallResult, log_tool_call
+from llm_client.observability.query import summarize_trace
 
 
 def _today_jsonl(tmp_path: Path, stem: str) -> Path:
     """Return the expected dated JSONL path for today inside the test log dir."""
     today = date.today().isoformat()
     return tmp_path / "test_project" / "test_project_llm_client_data" / f"{stem}_{today}.jsonl"
+
+
+def _mock_result(
+    *,
+    content: str = "hello",
+    usage: dict[str, Any] | None = None,
+    cost: float = 0.0,
+    finish_reason: str = "stop",
+) -> MagicMock:
+    """Build a lightweight LLM result object for logger tests."""
+
+    return MagicMock(
+        content=content,
+        usage=usage or {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        cost=cost,
+        finish_reason=finish_reason,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +77,10 @@ def _isolate_io_log(tmp_path):
 
 class TestLogCall:
     def test_writes_jsonl(self, tmp_path):
-        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "total_tokens": 20}, cost=0.001, finish_reason="stop")
+        result = _mock_result(
+            usage={"prompt_tokens": 10, "total_tokens": 20},
+            cost=0.001,
+        )
         io_log.log_call(model="gpt-5", result=result, latency_s=1.5, task="test_task")
 
         log_file = _today_jsonl(tmp_path, "calls")
@@ -70,7 +92,10 @@ class TestLogCall:
         assert record["latency_s"] == 1.5
 
     def test_writes_sqlite(self, tmp_path):
-        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, cost=0.002, finish_reason="stop")
+        result = _mock_result(
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            cost=0.002,
+        )
         io_log.log_call(model="gpt-5", result=result, latency_s=2.0, task="sql_test")
 
         db = sqlite3.connect(str(tmp_path / "test.db"))
@@ -90,7 +115,7 @@ class TestLogCall:
         assert not log_file.exists()
 
     def test_trace_id_jsonl(self, tmp_path):
-        result = MagicMock(content="hi", usage={}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={})
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_abc")
 
         log_file = _today_jsonl(tmp_path, "calls")
@@ -98,7 +123,7 @@ class TestLogCall:
         assert record["trace_id"] == "trace_abc"
 
     def test_trace_id_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_xyz")
 
         db = sqlite3.connect(str(tmp_path / "test.db"))
@@ -107,7 +132,7 @@ class TestLogCall:
         db.close()
 
     def test_prompt_ref_logged_to_jsonl_and_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         io_log.log_call(
             model="gpt-5",
             result=result,
@@ -126,7 +151,7 @@ class TestLogCall:
         db.close()
 
     def test_call_snapshot_logged_to_jsonl_and_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         call_snapshot = {
             "snapshot_version": 1,
             "public_api": "call_llm",
@@ -165,6 +190,112 @@ class TestLogCall:
         row = db.execute("SELECT error FROM llm_calls").fetchone()
         assert row[0] == "boom"
         db.close()
+
+    def test_trace_summary_includes_tool_and_llm_calls(self, tmp_path):
+        trace_id = "trace.summary"
+        io_log.log_call(
+            model="gpt-5-mini",
+            result=_mock_result(cost=0.12),
+            latency_s=1.25,
+            caller="call_llm_structured",
+            task="summary.test",
+            trace_id=trace_id,
+        )
+        io_log.log_call(
+            model="gpt-5-mini",
+            error=RuntimeError("timeout"),
+            latency_s=3.5,
+            caller="call_llm_structured",
+            task="summary.test",
+            trace_id=trace_id,
+        )
+        log_tool_call(
+            ToolCallResult(
+                tool_name="open_web_retrieval",
+                call_id="tool-search-1",
+                operation="search",
+                provider="brave",
+                target="ubi pilots",
+                status="succeeded",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=220,
+                task="summary.test",
+                trace_id=trace_id,
+                result_count=8,
+            )
+        )
+        log_tool_call(
+            ToolCallResult(
+                tool_name="open_web_retrieval",
+                call_id="tool-fetch-1",
+                operation="fetch",
+                provider="httpx",
+                target="https://example.com/report",
+                status="failed",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=840,
+                task="summary.test",
+                trace_id=trace_id,
+                error_type="ReadTimeout",
+                error_message="timed out",
+            )
+        )
+
+        summary = summarize_trace(trace_id)
+
+        assert summary is not None
+        assert summary["trace_id"] == trace_id
+        assert summary["llm_calls"] == 2
+        assert summary["tool_calls"] == 2
+        assert summary["llm_errors"] == 1
+        assert summary["tool_failures"] == 1
+        assert summary["last_completed_llm_call"]["caller"] == "call_llm_structured"
+        assert summary["last_tool_call"]["operation"] == "fetch"
+        assert [event["kind"] for event in summary["timeline"]] == [
+            "llm_call",
+            "llm_call",
+            "tool_call",
+            "tool_call",
+        ]
+
+    def test_trace_summary_rolls_up_trace_family(self, tmp_path):
+        io_log.log_call(
+            model="gpt-5-mini",
+            result=_mock_result(cost=0.05),
+            latency_s=0.8,
+            caller="call_llm_structured",
+            task="summary.family",
+            trace_id="pipeline/root123/Alpha",
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        log_tool_call(
+            ToolCallResult(
+                call_id="tool-family-1",
+                tool_name="open_web_retrieval",
+                operation="search",
+                provider="brave",
+                target="ubi",
+                status="succeeded",
+                started_at=now,
+                ended_at=now,
+                duration_ms=180,
+                task="summary.family",
+                trace_id="pipeline/root123/verify/D-1/search/D-1",
+                result_count=4,
+            )
+        )
+
+        summary = summarize_trace("root123")
+
+        assert summary is not None
+        assert summary["llm_calls"] == 1
+        assert summary["tool_calls"] == 1
+        assert summary["matched_trace_ids"] == [
+            "pipeline/root123/Alpha",
+            "pipeline/root123/verify/D-1/search/D-1",
+        ]
 
 
 # ---------------------------------------------------------------------------

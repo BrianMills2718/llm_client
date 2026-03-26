@@ -1442,6 +1442,7 @@ from llm_client.observability.query import (
     get_completed_traces,
     get_trace_tree,
     lookup_result,
+    summarize_trace,
 )
 
 

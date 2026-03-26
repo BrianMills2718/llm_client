@@ -16,6 +16,20 @@ from typing import Any
 import llm_client.io_log as _io_log
 
 
+def _trace_family_match(candidate: Any, trace_id: str) -> bool:
+    """Return True when one stored trace belongs to the requested trace family."""
+
+    if not isinstance(candidate, str) or not candidate:
+        return False
+    if candidate == trace_id:
+        return True
+    if candidate.startswith(trace_id + "/"):
+        return True
+    if f"/{trace_id}/" in candidate:
+        return True
+    return candidate.endswith(f"/{trace_id}")
+
+
 def lookup_result(trace_id: str) -> dict[str, Any] | None:
     """Look up a successful LLM call by trace_id."""
     db = _io_log._get_db()
@@ -182,6 +196,126 @@ def get_trace_tree(
         )
 
     return result
+
+
+def summarize_trace(trace_id: str) -> dict[str, Any] | None:
+    """Return one compact cross-table summary for a trace.
+
+    The goal is diagnosis, not replay fidelity. The summary answers the common
+    questions that surfaced during grounded-research benchmark debugging:
+    which LLM calls ran, which tool calls ran, what failed, and what completed
+    last without requiring bespoke SQL each time.
+    """
+
+    db = _io_log._get_db()
+    if db is None:
+        return None
+
+    like_family = f"%/{trace_id}/%"
+    like_suffix = f"%/{trace_id}"
+    prefix = f"{trace_id}/%"
+
+    llm_rows = db.execute(
+        """
+        SELECT trace_id, timestamp, model, caller, task, error, latency_s, finish_reason,
+               COALESCE(marginal_cost, cost), total_tokens
+        FROM llm_calls
+        WHERE trace_id = ?
+           OR trace_id LIKE ?
+           OR trace_id LIKE ?
+           OR trace_id LIKE ?
+        ORDER BY timestamp ASC, id ASC
+        """,
+        (trace_id, prefix, like_family, like_suffix),
+    ).fetchall()
+    tool_rows = db.execute(
+        """
+        SELECT trace_id, timestamp, tool_name, operation, provider, status, task, target,
+               duration_ms, error_type, error_message, cost, result_count
+        FROM tool_calls
+        WHERE trace_id = ?
+           OR trace_id LIKE ?
+           OR trace_id LIKE ?
+           OR trace_id LIKE ?
+        ORDER BY timestamp ASC, id ASC
+        """,
+        (trace_id, prefix, like_family, like_suffix),
+    ).fetchall()
+
+    llm_rows = [row for row in llm_rows if _trace_family_match(row[0], trace_id)]
+    tool_rows = [row for row in tool_rows if _trace_family_match(row[0], trace_id)]
+
+    if not llm_rows and not tool_rows:
+        return None
+
+    llm_events = [
+        {
+            "kind": "llm_call",
+            "trace_id": row[0],
+            "timestamp": row[1],
+            "model": row[2],
+            "caller": row[3],
+            "task": row[4],
+            "error": row[5],
+            "latency_s": row[6],
+            "finish_reason": row[7],
+            "cost": row[8],
+            "total_tokens": row[9],
+        }
+        for row in llm_rows
+    ]
+    tool_events = [
+        {
+            "kind": "tool_call",
+            "trace_id": row[0],
+            "timestamp": row[1],
+            "tool_name": row[2],
+            "operation": row[3],
+            "provider": row[4],
+            "status": row[5],
+            "task": row[6],
+            "target": row[7],
+            "duration_ms": row[8],
+            "error_type": row[9],
+            "error_message": row[10],
+            "cost": row[11],
+            "result_count": row[12],
+        }
+        for row in tool_rows
+    ]
+    timeline = sorted(
+        llm_events + tool_events,
+        key=lambda item: (str(item.get("timestamp") or ""), item["kind"]),
+    )
+
+    last_completed_llm = next(
+        (
+            event for event in reversed(llm_events)
+            if not event["error"]
+        ),
+        None,
+    )
+    last_tool_call = tool_events[-1] if tool_events else None
+
+    total_llm_cost = sum(float(event["cost"] or 0.0) for event in llm_events)
+    total_tool_cost = sum(float(event["cost"] or 0.0) for event in tool_events)
+    total_tokens = sum(int(event["total_tokens"] or 0) for event in llm_events)
+
+    return {
+        "trace_id": trace_id,
+        "llm_calls": len(llm_events),
+        "tool_calls": len(tool_events),
+        "llm_errors": sum(1 for event in llm_events if event["error"]),
+        "tool_failures": sum(1 for event in tool_events if event["status"] == "failed"),
+        "total_cost": total_llm_cost + total_tool_cost,
+        "total_tokens": total_tokens,
+        "first_timestamp": timeline[0]["timestamp"],
+        "last_timestamp": timeline[-1]["timestamp"],
+        "matched_trace_ids": sorted({event["trace_id"] for event in timeline}),
+        "last_completed_llm_call": last_completed_llm,
+        "last_tool_call": last_tool_call,
+        "timeline": timeline,
+    }
 
 
 def _current_host_name() -> str | None:
