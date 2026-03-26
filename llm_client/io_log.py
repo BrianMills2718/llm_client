@@ -270,6 +270,9 @@ def log_call(
     prompt_ref: str | None = None,
     call_snapshot: dict[str, Any] | None = None,
     call_fingerprint: str | None = None,
+    error_type: str | None = None,
+    execution_path: str | None = None,
+    retry_count: int | None = None,
 ) -> None:
     """Append one call record with optional prompt asset identity.
 
@@ -281,8 +284,13 @@ def log_call(
         d = _log_dir()
         d.mkdir(parents=True, exist_ok=True)
 
-        # Extract fields from result if available
+        # Extract fields from result if available.
+        # When a call fails with a validation error that carries the raw
+        # response, store it so we can diagnose whether the model produced
+        # bad output or our processing mangled it.
         response_content = None
+        if error is not None and hasattr(error, "raw_content"):
+            response_content = getattr(error, "raw_content", None)
         usage = None
         cost = None
         cost_source = None
@@ -344,6 +352,9 @@ def log_call(
             "prompt_ref": prompt_ref,
             "call_snapshot": call_snapshot,
             "call_fingerprint": call_fingerprint,
+            "error_type": error_type or (type(error).__name__ if error else None),
+            "execution_path": execution_path,
+            "retry_count": retry_count,
         }
         _append_jsonl(d, "calls", record)
 
@@ -368,6 +379,9 @@ def log_call(
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
             call_fingerprint=call_fingerprint,
+            error_type=error_type or (type(error).__name__ if error else None),
+            execution_path=execution_path,
+            retry_count=retry_count,
         )
     except Exception:
         # Never break LLM calls for logging
@@ -722,6 +736,14 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     if "call_snapshot" not in llm_cols:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN call_snapshot TEXT")
 
+    if "error_type" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN error_type TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_error_type ON llm_calls(error_type)")
+    if "execution_path" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN execution_path TEXT")
+    if "retry_count" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN retry_count INTEGER")
+
     # task_scores: add git_commit if missing
     scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
     if scores_cols and "git_commit" not in scores_cols:
@@ -799,6 +821,9 @@ def _write_call_to_db(
     prompt_ref: str | None = None,
     call_snapshot: dict[str, Any] | None = None,
     call_fingerprint: str | None = None,
+    error_type: str | None = None,
+    execution_path: str | None = None,
+    retry_count: int | None = None,
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:
@@ -812,8 +837,9 @@ def _write_call_to_db(
                 prompt_tokens, completion_tokens, total_tokens,
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
                 finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
-                call_fingerprint, call_snapshot)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                call_fingerprint, call_snapshot,
+                error_type, execution_path, retry_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp, _get_project(), model,
                 json.dumps(messages, default=str) if messages else None,
@@ -823,6 +849,7 @@ def _write_call_to_db(
                 finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
                 call_fingerprint,
                 json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
+                error_type, execution_path, retry_count,
             ),
         )
         db.commit()
