@@ -19,25 +19,27 @@
       "api_key_env": "GEMINI_API_KEY",
       "context": 1000000,
       "cost": 1.13,
-      "intelligence": 46,
+      "intelligence": 30,
       "litellm_id": "gemini/gemini-3-flash-preview",
       "name": "gemini-3-flash",
       "provider": "google",
       "speed": 207,
       "structured_output": true,
       "tags": [
-        "mid-tier"
+        "mid-tier",
+        "structured-output-degraded-2026-03-25",
+        "demoted-broken-structured-output"
       ]
     },
     {
       "api_key_env": "GEMINI_API_KEY",
       "context": 1000000,
       "cost": 0.68,
-      "intelligence": 34,
+      "intelligence": 36,
       "litellm_id": "gemini/gemini-2.5-flash",
       "name": "gemini-2.5-flash",
       "provider": "google",
-      "speed": 152,
+      "speed": 190,
       "structured_output": true,
       "tags": [
         "free-tier"
