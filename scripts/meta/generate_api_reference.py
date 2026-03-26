@@ -597,8 +597,11 @@ def render_root_surface(root_doc: ModuleDoc) -> str:
 
 def render_markdown_index(root_doc: ModuleDoc, module_docs: list[ModuleDoc]) -> str:
     """Render the concise markdown index that points at the HTML docs."""
+    from datetime import datetime, timezone
+    gen_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         "# API Reference",
+        f"<!-- Generated: {gen_ts} -->",
         "",
         "Generated from package docstrings and typed signatures.",
         "",
@@ -642,6 +645,8 @@ def render_markdown_index(root_doc: ModuleDoc, module_docs: list[ModuleDoc]) -> 
 
 def render_html(root_doc: ModuleDoc, module_docs: list[ModuleDoc]) -> str:
     """Render the full browser documentation page as HTML."""
+    from datetime import datetime, timezone
+    _html_gen_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     toc_items = [
         '<li><a href="#start-here">Start Here</a></li>',
         '<li><a href="#root-surface">Package Root Surface</a></li>',
@@ -662,7 +667,8 @@ def render_html(root_doc: ModuleDoc, module_docs: list[ModuleDoc]) -> str:
             )
         )
 
-    return f"""<!doctype html>
+    return f"""<!-- Generated: {_html_gen_ts} -->
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">

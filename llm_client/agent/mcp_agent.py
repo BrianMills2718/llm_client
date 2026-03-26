@@ -743,6 +743,7 @@ async def _acall_with_mcp(
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
+    error_budget: "AgentErrorBudget | None" = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run an MCP tool-calling agent loop with any litellm model.
@@ -799,24 +800,35 @@ async def _acall_with_mcp(
                 require_tool_reasoning=require_tool_reasoning,
             )
 
-        final_content, final_finish_reason = await _agent_loop(
-            model, messages, openai_tools,
-            agent_result,
-            _mcp_executor,
-            max_turns,
-            max_tool_calls,
-            require_tool_reasoning,
-            tool_result_max_length,
-            max_message_chars,
-            enforce_tool_contracts,
-            progressive_tool_disclosure,
-            suppress_control_loop_calls,
-            tool_contracts,
-            initial_artifacts,
-            initial_bindings,
-            timeout,
-            kwargs,
-        )
+        try:
+            final_content, final_finish_reason = await _agent_loop(
+                model, messages, openai_tools,
+                agent_result,
+                _mcp_executor,
+                max_turns,
+                max_tool_calls,
+                require_tool_reasoning,
+                tool_result_max_length,
+                max_message_chars,
+                enforce_tool_contracts,
+                progressive_tool_disclosure,
+                suppress_control_loop_calls,
+                tool_contracts,
+                initial_artifacts,
+                initial_bindings,
+                timeout,
+                kwargs,
+
+                error_budget=error_budget,
+            )
+        except asyncio.CancelledError:
+            final_finish_reason = "cancelled"
+            logger.info(
+                "Agent loop cancelled — returning partial result "
+                "(turns=%d, tool_calls=%d)",
+                agent_result.turns,
+                len(agent_result.tool_calls),
+            )
         total_cost = sum(r.latency_s for r in agent_result.tool_calls)  # placeholder; real cost tracked below
 
     elif mcp_servers is not None:
@@ -842,24 +854,35 @@ async def _acall_with_mcp(
                     require_tool_reasoning=require_tool_reasoning,
                 )
 
-            final_content, final_finish_reason = await _agent_loop(
-                model, messages, openai_tools,
-                agent_result,
-                _mcp_executor,
-                max_turns,
-                max_tool_calls,
-                require_tool_reasoning,
-                tool_result_max_length,
-                max_message_chars,
-                enforce_tool_contracts,
-                progressive_tool_disclosure,
-                suppress_control_loop_calls,
-                tool_contracts,
-                initial_artifacts,
-                initial_bindings,
-                timeout,
-                kwargs,
-            )
+            try:
+                final_content, final_finish_reason = await _agent_loop(
+                    model, messages, openai_tools,
+                    agent_result,
+                    _mcp_executor,
+                    max_turns,
+                    max_tool_calls,
+                    require_tool_reasoning,
+                    tool_result_max_length,
+                    max_message_chars,
+                    enforce_tool_contracts,
+                    progressive_tool_disclosure,
+                    suppress_control_loop_calls,
+                    tool_contracts,
+                    initial_artifacts,
+                    initial_bindings,
+                    timeout,
+                    kwargs,
+
+                    error_budget=error_budget,
+                )
+            except asyncio.CancelledError:
+                final_finish_reason = "cancelled"
+                logger.info(
+                    "Agent loop cancelled — returning partial result "
+                    "(turns=%d, tool_calls=%d)",
+                    agent_result.turns,
+                    len(agent_result.tool_calls),
+                )
     else:
         raise ValueError("Either mcp_servers or mcp_sessions must be provided")
 
@@ -891,6 +914,7 @@ async def _acall_with_mcp(
     )
 
 
+from llm_client.agent.agent_contracts import AgentErrorBudget
 from llm_client.agent.mcp_turn_execution import _agent_loop as _agent_loop
 
 
@@ -916,6 +940,7 @@ async def _acall_with_tools(
     initial_artifacts: list[str] | tuple[str, ...] | None = DEFAULT_INITIAL_ARTIFACTS,
     initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
+    error_budget: "AgentErrorBudget | None" = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run a tool-calling agent loop with direct Python functions.
@@ -957,24 +982,35 @@ async def _acall_with_tools(
             require_tool_reasoning=require_tool_reasoning,
         )
 
-    final_content, final_finish_reason = await _agent_loop(
-        model, messages, openai_tools,
-        agent_result,
-        _direct_executor,
-        max_turns,
-        max_tool_calls,
-        require_tool_reasoning,
-        tool_result_max_length,
-        max_message_chars,
-        enforce_tool_contracts,
-        progressive_tool_disclosure,
-        suppress_control_loop_calls,
-        tool_contracts,
-        initial_artifacts,
-        initial_bindings,
-        timeout,
-        kwargs,
-    )
+    try:
+        final_content, final_finish_reason = await _agent_loop(
+            model, messages, openai_tools,
+            agent_result,
+            _direct_executor,
+            max_turns,
+            max_tool_calls,
+            require_tool_reasoning,
+            tool_result_max_length,
+            max_message_chars,
+            enforce_tool_contracts,
+            progressive_tool_disclosure,
+            suppress_control_loop_calls,
+            tool_contracts,
+            initial_artifacts,
+            initial_bindings,
+            timeout,
+            kwargs,
+
+            error_budget=error_budget,
+        )
+    except asyncio.CancelledError:
+        final_finish_reason = "cancelled"
+        logger.info(
+            "Agent loop cancelled — returning partial result "
+            "(turns=%d, tool_calls=%d)",
+            agent_result.turns,
+            len(agent_result.tool_calls),
+        )
 
     usage = _build_agent_usage(agent_result)
     resolved_model = agent_result.metadata.get("resolved_model")

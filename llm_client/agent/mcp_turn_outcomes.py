@@ -316,7 +316,7 @@ def _process_turn_outcomes(
         parsed = _parse_record_result_json(record)
         if parsed is not None:
             status = str(parsed.get("status", "")).strip().lower()
-            if status and status not in {"submitted", "ok", "success"}:
+            if status and status not in {"submitted", "submitted_with_warning", "ok", "success"}:
                 submit_error_this_turn = True
                 validation_payload = parsed.get("validation_error")
                 reason_code = ""
@@ -359,6 +359,26 @@ def _process_turn_outcomes(
         if submit_needs_new_evidence_signal and not new_evidence_this_turn:
             submit_requires_new_evidence = True
             submit_evidence_digest_at_last_failure = evidence_digest_after_turn
+
+        # Generic repeated-rejection suppression: after 3+ consecutive identical
+        # rejections for any reason_code, force evidence gate even if the validator
+        # didn't explicitly request it. This breaks submit -> rejected -> submit
+        # churn loops that waste turns without progress.
+        if not submit_requires_new_evidence:
+            max_reason_count = max(submit_validation_reason_counts.values(), default=0) if submit_validation_reason_counts else 0
+            # Also count total submit failures (including ValueError-style rejections
+            # like refusal text, empty answer) by checking the overall call count
+            # vs success ratio: if submit_answer_call_count_delta > 0 and none
+            # succeeded, and we already had 3+ failed reasons, activate the gate.
+            if max_reason_count >= 3:
+                submit_requires_new_evidence = True
+                submit_evidence_digest_at_last_failure = evidence_digest_after_turn
+                logger.info(
+                    "Repeated submit rejection detected (max_count=%d) — "
+                    "activating evidence gate to break churn loop",
+                    max_reason_count,
+                )
+
         evidence_fix_hint = (
             " Validator requires NEW evidence refs before retry. "
             "Run at least one non-control evidence tool call that yields new "
