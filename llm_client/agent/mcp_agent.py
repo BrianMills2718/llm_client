@@ -822,12 +822,14 @@ async def _acall_with_mcp(
                 error_budget=error_budget,
             )
         except asyncio.CancelledError:
+            final_content = agent_result.metadata.get("last_content", "")
             final_finish_reason = "cancelled"
             logger.info(
                 "Agent loop cancelled — returning partial result "
-                "(turns=%d, tool_calls=%d)",
+                "(turns=%d, tool_calls=%d, content_len=%d)",
                 agent_result.turns,
                 len(agent_result.tool_calls),
+                len(final_content),
             )
         total_cost = sum(r.latency_s for r in agent_result.tool_calls)  # placeholder; real cost tracked below
 
@@ -1004,12 +1006,14 @@ async def _acall_with_tools(
             error_budget=error_budget,
         )
     except asyncio.CancelledError:
+        final_content = agent_result.metadata.get("last_content", "")
         final_finish_reason = "cancelled"
         logger.info(
             "Agent loop cancelled — returning partial result "
-            "(turns=%d, tool_calls=%d)",
+            "(turns=%d, tool_calls=%d, content_len=%d)",
             agent_result.turns,
             len(agent_result.tool_calls),
+            len(final_content),
         )
 
     usage = _build_agent_usage(agent_result)

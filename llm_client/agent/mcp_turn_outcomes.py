@@ -360,7 +360,7 @@ def _process_turn_outcomes(
             submit_requires_new_evidence = True
             submit_evidence_digest_at_last_failure = evidence_digest_after_turn
 
-        # Generic repeated-rejection suppression: after 3+ consecutive identical
+        # Generic repeated-rejection suppression: after 3+ cumulative identical
         # rejections for any reason_code, force evidence gate even if the validator
         # didn't explicitly request it. This breaks submit -> rejected -> submit
         # churn loops that waste turns without progress.
