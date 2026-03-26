@@ -1,4 +1,4 @@
-<!-- Generated: 2026-03-26T15:47:36Z -->
+<!-- Generated: 2026-03-26T17:10:11Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -186,7 +186,7 @@ Usage:
 
     # Sync
     result = call_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo&quot;,
         trace_id=&quot;init/sync&quot;,
@@ -212,7 +212,7 @@ Usage:
 
     # Batch (concurrent)
     results = call_llm_batch(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [msgs1, msgs2, msgs3],
         max_concurrent=5,
         task=&quot;demo_batch&quot;,
@@ -222,7 +222,7 @@ Usage:
 
     # Streaming
     for chunk in stream_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo_stream&quot;,
         trace_id=&quot;init/stream&quot;,
@@ -234,7 +234,7 @@ Usage:
     from llm_client import acall_llm, astream_llm
 
     result = await acall_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo_async&quot;,
         trace_id=&quot;init/async&quot;,
@@ -4846,8 +4846,8 @@ Features:
 - finish_reason + raw_response on every result
 
 Supported providers (just change the model string):
-    call_llm(&quot;gpt-4o&quot;, messages)                     # OpenAI
-    call_llm(&quot;gpt-5-mini&quot;, messages)                 # OpenAI (Responses API)
+    call_llm(&quot;gpt-5&quot;, messages)                       # OpenAI
+    call_llm(&quot;gpt-5-mini&quot;, messages)                 # OpenAI
     call_llm(&quot;anthropic/claude-sonnet-4-5-20250929&quot;, messages)  # Anthropic
     call_llm(&quot;gemini/gemini-2.0-flash&quot;, messages)     # Google
     call_llm(&quot;mistral/mistral-large&quot;, messages)       # Mistral
@@ -4872,7 +4872,7 @@ Full provider list: https://docs.litellm.ai/docs/providers</pre>
 Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
 Args:
-    model: Model name (e.g., &quot;gpt-4o&quot;, &quot;gpt-5-mini&quot;,
+    model: Model name (e.g., &quot;gpt-5-mini&quot;,
            &quot;anthropic/claude-sonnet-4-5-20250929&quot;,
            &quot;claude-code&quot;, &quot;claude-code/opus&quot;)
     messages: Chat messages in OpenAI format
@@ -5065,7 +5065,7 @@ If ``fallback_models`` is provided, when all retries are exhausted for
 one model the next model in the list is tried automatically.
 
 Args:
-    model: Model name (e.g., &quot;gpt-4o&quot;, &quot;gpt-5-mini&quot;,
+    model: Model name (e.g., &quot;gpt-5-mini&quot;,
            &quot;anthropic/claude-sonnet-4-5-20250929&quot;,
            &quot;gemini/gemini-2.0-flash&quot;, &quot;claude-code&quot;,
            &quot;claude-code/opus&quot;)
@@ -5236,7 +5236,7 @@ the next model in the list is tried.
 
 Example::
 
-    stream = stream_llm(&quot;gpt-4o&quot;, messages)
+    stream = stream_llm(&quot;gpt-5-mini&quot;, messages)
     for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()
@@ -5337,7 +5337,7 @@ access these via ``_client.xxx`` continue to work unchanged.</pre>
     <pre class="doc">Strip markdown code fences from LLM response content.
 
 Useful when calling call_llm() and parsing JSON manually:
-    result = call_llm(&quot;gpt-4o&quot;, messages)
+    result = call_llm(&quot;gpt-5-mini&quot;, messages)
     clean = strip_fences(result.content)
     data = json.loads(clean)</pre>
   </div>
@@ -5657,7 +5657,7 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
     from llm_client.core.errors import LLMRateLimitError, LLMQuotaExhaustedError
 
     try:
-        result = await acall_llm(&quot;gpt-4o&quot;, messages)
+        result = await acall_llm(&quot;gpt-5-mini&quot;, messages)
     except LLMQuotaExhaustedError:
         # Switch provider or abort — retrying won&#x27;t help
         ...
@@ -6614,7 +6614,7 @@ Example::
         after_call=lambda result: print(f&quot;Got {len(result.content)} chars&quot;),
         on_error=lambda err, attempt: print(f&quot;Attempt {attempt} failed: {err}&quot;),
     )
-    result = call_llm(&quot;gpt-4o&quot;, messages, hooks=hooks)
+    result = call_llm(&quot;gpt-5-mini&quot;, messages, hooks=hooks)
 
 Attributes:
     before_call: ``(model, messages, kwargs) -&gt; None``. Fired before each
@@ -6635,8 +6635,8 @@ Attributes:
 Create once and pass to multiple calls for consistent behaviour::
 
     policy = RetryPolicy(max_retries=5, base_delay=0.5, on_retry=my_logger)
-    call_llm(&quot;gpt-4o&quot;, msgs, retry=policy)
-    call_llm(&quot;gpt-4o&quot;, msgs2, retry=policy)
+    call_llm(&quot;gpt-5-mini&quot;, msgs, retry=policy)
+    call_llm(&quot;gpt-5-mini&quot;, msgs2, retry=policy)
 
 When ``retry`` is provided it **overrides** the individual retry params
 (``num_retries``, ``base_delay``, ``max_delay``, ``retry_on``,
@@ -6727,7 +6727,7 @@ client.py at runtime to avoid circular imports during module extraction.</pre>
 
 Example::
 
-    stream = await astream_llm(&quot;gpt-4o&quot;, messages)
+    stream = await astream_llm(&quot;gpt-5-mini&quot;, messages)
     async for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()
@@ -6745,7 +6745,7 @@ Example::
 
 Example::
 
-    stream = stream_llm(&quot;gpt-4o&quot;, messages)
+    stream = stream_llm(&quot;gpt-5-mini&quot;, messages)
     for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()

@@ -10,7 +10,7 @@ Usage:
 
     # Sync
     result = call_llm(
-        "gpt-4o",
+        "gpt-5-mini",
         [{"role": "user", "content": "Hello"}],
         task="demo",
         trace_id="init/sync",
@@ -36,7 +36,7 @@ Usage:
 
     # Batch (concurrent)
     results = call_llm_batch(
-        "gpt-4o",
+        "gpt-5-mini",
         [msgs1, msgs2, msgs3],
         max_concurrent=5,
         task="demo_batch",
@@ -46,7 +46,7 @@ Usage:
 
     # Streaming
     for chunk in stream_llm(
-        "gpt-4o",
+        "gpt-5-mini",
         [{"role": "user", "content": "Hello"}],
         task="demo_stream",
         trace_id="init/stream",
@@ -58,7 +58,7 @@ Usage:
     from llm_client import acall_llm, astream_llm
 
     result = await acall_llm(
-        "gpt-4o",
+        "gpt-5-mini",
         [{"role": "user", "content": "Hello"}],
         task="demo_async",
         trace_id="init/async",

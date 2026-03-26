@@ -387,9 +387,29 @@ def _build_codex_options(
 
 
 def _estimate_codex_cost(model: str, usage: Any) -> float:
-    """Estimate USD cost from Codex Usage via litellm. Approximate."""
+    """Codex SDK is subscription-based -- actual API cost is always 0.
+
+    Logs an estimated-equivalent cost for reference (what this would cost
+    at pay-per-token rates) but returns 0.0 for budget enforcement.
+    """
+    estimated = _estimate_equivalent_cost(model, usage)
+    if estimated > 0:
+        logger.info(
+            "Codex estimated-equivalent cost: $%.4f (subscription -- actual: $0.00)",
+            estimated,
+        )
+    return 0.0
+
+
+def _estimate_equivalent_cost(model: str, usage: Any) -> float:
+    """Estimate what Codex tokens would cost at pay-per-token rates.
+
+    For reference/logging only -- not used for budget enforcement.
+    Returns 0.0 if the underlying model is unknown or tokens are zero.
+    """
     _, underlying = _agents_mod()._parse_agent_model(model)
-    lookup_model = underlying or "gpt-4o"  # best guess for bare "codex"
+    if not underlying:
+        return 0.0  # can't estimate without knowing the model
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
     if input_tokens == 0 and output_tokens == 0:
@@ -398,7 +418,7 @@ def _estimate_codex_cost(model: str, usage: Any) -> float:
         import litellm
         # Build a minimal response object that litellm.completion_cost expects
         mock_response = litellm.ModelResponse(
-            model=lookup_model,
+            model=underlying,
             usage=litellm.Usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
@@ -408,7 +428,7 @@ def _estimate_codex_cost(model: str, usage: Any) -> float:
         cost = litellm.completion_cost(completion_response=mock_response)
         return float(cost)
     except Exception as exc:
-        logger.warning("Codex cost extraction failed (returning 0.0): %s", exc)
+        logger.warning("Codex equivalent-cost estimation failed: %s", exc)
         return 0.0
 
 

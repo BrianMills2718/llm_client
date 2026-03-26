@@ -430,7 +430,7 @@ def strip_fences(content: str) -> str:
     """Strip markdown code fences from LLM response content.
 
     Useful when calling call_llm() and parsing JSON manually:
-        result = call_llm("gpt-4o", messages)
+        result = call_llm("gpt-5-mini", messages)
         clean = strip_fences(result.content)
         data = json.loads(clean)
     """

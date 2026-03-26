@@ -5,7 +5,7 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
     from llm_client.core.errors import LLMRateLimitError, LLMQuotaExhaustedError
 
     try:
-        result = await acall_llm("gpt-4o", messages)
+        result = await acall_llm("gpt-5-mini", messages)
     except LLMQuotaExhaustedError:
         # Switch provider or abort — retrying won't help
         ...

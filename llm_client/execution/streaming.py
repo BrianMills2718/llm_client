@@ -24,7 +24,7 @@ class LLMStream:
 
     Example::
 
-        stream = stream_llm("gpt-4o", messages)
+        stream = stream_llm("gpt-5-mini", messages)
         for chunk in stream:
             print(chunk, end="", flush=True)
         print()
@@ -144,7 +144,7 @@ class AsyncLLMStream:
 
     Example::
 
-        stream = await astream_llm("gpt-4o", messages)
+        stream = await astream_llm("gpt-5-mini", messages)
         async for chunk in stream:
             print(chunk, end="", flush=True)
         print()

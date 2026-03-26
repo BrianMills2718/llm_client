@@ -340,8 +340,8 @@ class RetryPolicy:
     Create once and pass to multiple calls for consistent behaviour::
 
         policy = RetryPolicy(max_retries=5, base_delay=0.5, on_retry=my_logger)
-        call_llm("gpt-4o", msgs, retry=policy)
-        call_llm("gpt-4o", msgs2, retry=policy)
+        call_llm("gpt-5-mini", msgs, retry=policy)
+        call_llm("gpt-5-mini", msgs2, retry=policy)
 
     When ``retry`` is provided it **overrides** the individual retry params
     (``num_retries``, ``base_delay``, ``max_delay``, ``retry_on``,
@@ -384,7 +384,7 @@ class Hooks:
             after_call=lambda result: print(f"Got {len(result.content)} chars"),
             on_error=lambda err, attempt: print(f"Attempt {attempt} failed: {err}"),
         )
-        result = call_llm("gpt-4o", messages, hooks=hooks)
+        result = call_llm("gpt-5-mini", messages, hooks=hooks)
 
     Attributes:
         before_call: ``(model, messages, kwargs) -> None``. Fired before each

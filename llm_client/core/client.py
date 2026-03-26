@@ -25,8 +25,8 @@ Features:
 - finish_reason + raw_response on every result
 
 Supported providers (just change the model string):
-    call_llm("gpt-4o", messages)                     # OpenAI
-    call_llm("gpt-5-mini", messages)                 # OpenAI (Responses API)
+    call_llm("gpt-5", messages)                       # OpenAI
+    call_llm("gpt-5-mini", messages)                 # OpenAI
     call_llm("anthropic/claude-sonnet-4-5-20250929", messages)  # Anthropic
     call_llm("gemini/gemini-2.0-flash", messages)     # Google
     call_llm("mistral/mistral-large", messages)       # Mistral
@@ -448,7 +448,7 @@ def call_llm(
     one model the next model in the list is tried automatically.
 
     Args:
-        model: Model name (e.g., "gpt-4o", "gpt-5-mini",
+        model: Model name (e.g., "gpt-5-mini",
                "anthropic/claude-sonnet-4-5-20250929",
                "gemini/gemini-2.0-flash", "claude-code",
                "claude-code/opus")
@@ -707,7 +707,7 @@ async def acall_llm(
     Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
     Args:
-        model: Model name (e.g., "gpt-4o", "gpt-5-mini",
+        model: Model name (e.g., "gpt-5-mini",
                "anthropic/claude-sonnet-4-5-20250929",
                "claude-code", "claude-code/opus")
         messages: Chat messages in OpenAI format
@@ -1214,7 +1214,7 @@ def stream_llm(
 
     Example::
 
-        stream = stream_llm("gpt-4o", messages)
+        stream = stream_llm("gpt-5-mini", messages)
         for chunk in stream:
             print(chunk, end="", flush=True)
         print()
