@@ -1,0 +1,78 @@
+name: research_quality
+version: "1.0"
+description: "Evaluate quality of research output — reports, evidence collections, investigations"
+dimensions:
+  - name: completeness
+    description: "Does the output address all aspects of the query?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: comprehensive
+        description: "All aspects of the query addressed, no obvious gaps"
+        score: 1.0
+      - name: partial
+        description: "Core question answered but notable sub-questions or angles missed"
+        score: 0.5
+      - name: superficial
+        description: "Only scratches the surface, major aspects unaddressed"
+        score: 0.0
+
+  - name: evidence_quality
+    description: "Are claims supported by cited, verifiable evidence?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: well_sourced
+        description: "All key claims cite specific, verifiable sources; no unsupported assertions"
+        score: 1.0
+      - name: partially_sourced
+        description: "Some claims sourced, but others lack citations or cite weak sources"
+        score: 0.5
+      - name: unsourced
+        description: "Most claims lack citations, heavy speculation or hallucination"
+        score: 0.0
+
+  - name: source_diversity
+    description: "Does it draw from multiple independent sources?"
+    weight: 0.7
+    scale: categorical
+    categories:
+      - name: diverse
+        description: "Multiple independent sources across different types (gov, news, academic)"
+        score: 1.0
+      - name: narrow
+        description: "Relies heavily on one source type or a small set of sources"
+        score: 0.4
+      - name: single_source
+        description: "Essentially one source rephrased"
+        score: 0.0
+
+  - name: actionability
+    description: "Does the output provide concrete, specific findings?"
+    weight: 0.8
+    scale: categorical
+    categories:
+      - name: actionable
+        description: "Specific names, dates, amounts, relationships — a reader can act on this"
+        score: 1.0
+      - name: directional
+        description: "General findings but lacks the specifics needed for action"
+        score: 0.5
+      - name: vague
+        description: "Generic statements that could apply to any topic"
+        score: 0.0
+
+  - name: coherence
+    description: "Is the output well-organized and internally consistent?"
+    weight: 0.6
+    scale: categorical
+    categories:
+      - name: coherent
+        description: "Clear structure, logical flow, no contradictions"
+        score: 1.0
+      - name: mostly_coherent
+        description: "Generally readable but some disorganization or minor contradictions"
+        score: 0.6
+      - name: incoherent
+        description: "Disorganized, contradictory, hard to follow"
+        score: 0.0

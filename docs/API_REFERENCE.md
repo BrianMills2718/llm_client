@@ -27,7 +27,7 @@ Browser view: [API_REFERENCE.html](API_REFERENCE.html)
 
 ## Module Catalog
 
-Generated from 108 importable modules under `llm_client`.
+Generated from 109 importable modules under `llm_client`.
 
 Open the HTML file for the full module-by-module docs surface.
 

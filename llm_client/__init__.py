@@ -267,6 +267,13 @@ from llm_client.core.client import (
     strip_fences,
 )
 from llm_client.core.data_types import TurnEvent
+from llm_client.rubric_registry import (
+    Category as RubricCategory,
+    Dimension as RubricDimension,
+    Rubric as CategoricalRubric,
+    RubricRegistry,
+    load_rubric as load_categorical_rubric,
+)
 
 _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "LLMAuthError",
@@ -339,6 +346,11 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "list_models",
     "query_performance",
     "render_prompt",
+    "RubricCategory",
+    "RubricDimension",
+    "CategoricalRubric",
+    "RubricRegistry",
+    "load_categorical_rubric",
 )
 
 _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (

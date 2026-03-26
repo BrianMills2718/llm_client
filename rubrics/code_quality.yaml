@@ -1,0 +1,63 @@
+name: code_quality
+version: "1.0"
+description: "Evaluate quality of generated, refactored, or repaired code"
+dimensions:
+  - name: correctness
+    description: "Does the code work correctly for the intended purpose?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: correct
+        description: "Handles all specified requirements and edge cases, would pass tests"
+        score: 1.0
+      - name: mostly_correct
+        description: "Core logic works but misses edge cases or has minor bugs"
+        score: 0.6
+      - name: broken
+        description: "Fundamental logic errors, would fail basic tests"
+        score: 0.0
+
+  - name: simplicity
+    description: "Is this the simplest solution that works?"
+    weight: 0.8
+    scale: categorical
+    categories:
+      - name: simple
+        description: "Minimal, clear, no unnecessary abstraction or indirection"
+        score: 1.0
+      - name: adequate
+        description: "Some unnecessary complexity but not egregious"
+        score: 0.5
+      - name: over_engineered
+        description: "Premature abstractions, unused flexibility, hard to follow"
+        score: 0.0
+
+  - name: style
+    description: "Does it follow conventions and read clearly?"
+    weight: 0.6
+    scale: categorical
+    categories:
+      - name: idiomatic
+        description: "Follows language and project conventions, good naming, clear intent"
+        score: 1.0
+      - name: acceptable
+        description: "Readable but inconsistent naming or minor convention violations"
+        score: 0.5
+      - name: poor
+        description: "Hard to read, inconsistent style, misleading names"
+        score: 0.0
+
+  - name: safety
+    description: "Are there security, resource, or error-handling issues?"
+    weight: 0.8
+    scale: categorical
+    categories:
+      - name: safe
+        description: "No security issues, resources properly managed, errors handled appropriately"
+        score: 1.0
+      - name: minor_issues
+        description: "Small gaps — an unclosed resource, a broad exception catch"
+        score: 0.5
+      - name: unsafe
+        description: "Security vulnerabilities, resource leaks, silent error swallowing"
+        score: 0.0

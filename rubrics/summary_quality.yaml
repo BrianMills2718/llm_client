@@ -1,0 +1,63 @@
+name: summary_quality
+version: "1.0"
+description: "Evaluate quality of text summarization output"
+dimensions:
+  - name: faithfulness
+    description: "Does the summary accurately represent the source material?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: faithful
+        description: "All statements in the summary are supported by the source, no distortions"
+        score: 1.0
+      - name: mostly_faithful
+        description: "Minor inaccuracies or slight exaggerations but core meaning preserved"
+        score: 0.6
+      - name: unfaithful
+        description: "Contains hallucinated facts, misrepresents the source, or adds unsupported claims"
+        score: 0.0
+
+  - name: coverage
+    description: "Does the summary capture the key points?"
+    weight: 0.9
+    scale: categorical
+    categories:
+      - name: complete
+        description: "All major points and essential details captured"
+        score: 1.0
+      - name: partial
+        description: "Main point captured but important supporting details missing"
+        score: 0.5
+      - name: incomplete
+        description: "Misses the main point or omits critical information"
+        score: 0.0
+
+  - name: conciseness
+    description: "Is the summary appropriately concise without losing essential information?"
+    weight: 0.7
+    scale: categorical
+    categories:
+      - name: concise
+        description: "Every sentence earns its place, no redundancy or filler"
+        score: 1.0
+      - name: adequate
+        description: "Some redundancy or unnecessary detail but not excessive"
+        score: 0.5
+      - name: verbose
+        description: "Excessive repetition, filler phrases, or unnecessary tangents"
+        score: 0.0
+
+  - name: salience
+    description: "Does it prioritize the most important information?"
+    weight: 0.7
+    scale: categorical
+    categories:
+      - name: well_prioritized
+        description: "Leads with the most important findings, buries nothing critical"
+        score: 1.0
+      - name: adequate
+        description: "Important info present but buried or poorly ordered"
+        score: 0.5
+      - name: poor_prioritization
+        description: "Leads with trivia, buries the lede, inverted importance ordering"
+        score: 0.0

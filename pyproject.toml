@@ -37,7 +37,7 @@ llm-cost = "llm_client.__main__:main"
 include = ["llm_client*"]
 
 [tool.setuptools.package-data]
-llm_client = ["prompts/*.yaml", "prompt_assets/**/*.yaml", "data/*.json"]
+llm_client = ["prompts/*.yaml", "prompt_assets/**/*.yaml", "data/*.json", "../rubrics/*.yaml"]
 
 [tool.mypy]
 python_version = "3.12"

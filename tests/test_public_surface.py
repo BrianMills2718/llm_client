@@ -23,7 +23,7 @@ def test_grouped_exports_flatten_to_public_surface_without_duplicates() -> None:
 
     assert len(flattened) == len(set(flattened))
     assert llm_client.__all__ == flattened
-    assert len(llm_client.__all__) == 101
+    assert len(flattened) == 108
 
     assert "call_llm" in llm_client._CORE_SUBSTRATE_EXPORTS
     assert "compare_call_snapshots" in llm_client._CORE_SUBSTRATE_EXPORTS

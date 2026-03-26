@@ -1,0 +1,63 @@
+name: extraction_quality
+version: "1.0"
+description: "Evaluate quality of entity/relationship extraction from text"
+dimensions:
+  - name: completeness
+    description: "Are all key entities and relationships captured from the source?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: complete
+        description: "All key entities and relationships present, nothing important missed"
+        score: 1.0
+      - name: partial
+        description: "Some entities or relationships missing but core structure captured"
+        score: 0.5
+      - name: incomplete
+        description: "Major entities or relationships missing, significant gaps"
+        score: 0.0
+
+  - name: accuracy
+    description: "Are extracted facts correct and faithful to the source?"
+    weight: 1.0
+    scale: categorical
+    categories:
+      - name: accurate
+        description: "All extracted facts match the source material, no hallucinations"
+        score: 1.0
+      - name: mostly_accurate
+        description: "Minor errors or imprecisions that don't change core meaning"
+        score: 0.7
+      - name: inaccurate
+        description: "Significant factual errors, hallucinated entities or relationships"
+        score: 0.0
+
+  - name: schema_conformance
+    description: "Does the output conform to the required schema types and constraints?"
+    weight: 0.8
+    scale: categorical
+    categories:
+      - name: conformant
+        description: "All fields valid, correct types, valid relationships, no violations"
+        score: 1.0
+      - name: minor_violations
+        description: "Small deviations — missing optional fields, minor type coercions needed"
+        score: 0.6
+      - name: non_conformant
+        description: "Required fields missing, wrong types, invalid relationships"
+        score: 0.0
+
+  - name: disambiguation
+    description: "Are ambiguous references resolved correctly without duplicates?"
+    weight: 0.7
+    scale: categorical
+    categories:
+      - name: resolved
+        description: "All ambiguous references correctly disambiguated, no duplicate entities"
+        score: 1.0
+      - name: partially_resolved
+        description: "Some duplicate entities or unresolved coreferences remain"
+        score: 0.5
+      - name: unresolved
+        description: "Pervasive duplicates, same entity appears under multiple names"
+        score: 0.0
