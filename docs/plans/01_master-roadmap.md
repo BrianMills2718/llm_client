@@ -182,8 +182,7 @@ stable enough that package-boundary churn is low.
 Programs A–E are complete. The library is in **maintenance mode**.
 
 **Active work:**
-- Plan 16 (Remove Compatibility Stubs) — only remaining cleanup with real value
-- Plan 18 (Agent Loop Error Budget) — solves the 318-call pathology
+- Plan 20 (Runtime Durability Follow-Ups From Grounded Research) — evidence-driven durability and diagnostics follow-up from a real downstream benchmark program
 
 **Cancelled:**
 - Plan 15 (Centralize Defaults) — pure refactoring, no consumer value
@@ -192,10 +191,16 @@ Programs A–E are complete. The library is in **maintenance mode**.
 **Deferred:**
 - Plan 19 (Agent Planning & Working Memory) — well-designed but large scope, not blocking
 
-**Completed this session (2026-03-25):**
+**Completed recently:**
 - Module reorganization (Plan 12) landed; 29 stubs remain for Plan 16
 - Prompt assets externalized to `~/projects/prompts/`
 - LiteLLM observer callback added for unmigrated projects
 - Repo decluttered: README 1002→169 lines, stale docs archived, guides created
 - Makefile rewritten as consumer observability interface
 - ADR-0008 superseded (task_graph/experiment_eval extracted)
+
+**Why Plan 20 exists despite maintenance mode:**
+
+- grounded-research needed app-local `LLM_CLIENT_DB_PATH` isolation and explicit
+  long-call timeout policy to finish its benchmark runs
+- those are substrate concerns with cross-project value, not one-off app quirks
