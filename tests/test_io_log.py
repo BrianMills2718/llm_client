@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from llm_client import io_log
+from llm_client.observability.tool_calls import ToolCallResult, log_tool_call
 
 
 def _today_jsonl(tmp_path: Path, stem: str) -> Path:
@@ -259,6 +260,86 @@ class TestLogEmbedding:
         io_log.log_embedding(model="x", input_count=1, input_chars=10)
         log_file = _today_jsonl(tmp_path, "embeddings")
         assert not log_file.exists()
+
+
+class TestLogToolCall:
+    def test_writes_jsonl(self, tmp_path):
+        log_tool_call(
+            ToolCallResult(
+                call_id="toolcall_1",
+                tool_name="open_web_retrieval",
+                operation="fetch",
+                provider="httpx",
+                target="https://example.com/page",
+                status="succeeded",
+                started_at="2026-03-25T00:00:00+00:00",
+                ended_at="2026-03-25T00:00:01+00:00",
+                duration_ms=1000,
+                attempt=1,
+                task="collect",
+                trace_id="trace_tool_1",
+                metrics={"http_status": 200},
+            )
+        )
+
+        log_file = _today_jsonl(tmp_path, "tool_calls")
+        assert log_file.exists()
+        record = json.loads(log_file.read_text().strip())
+        assert record["tool_name"] == "open_web_retrieval"
+        assert record["operation"] == "fetch"
+        assert record["provider"] == "httpx"
+        assert record["trace_id"] == "trace_tool_1"
+        assert record["metrics"]["http_status"] == 200
+
+    def test_writes_sqlite(self, tmp_path):
+        log_tool_call(
+            ToolCallResult(
+                call_id="toolcall_2",
+                tool_name="open_web_retrieval",
+                operation="search",
+                provider="brave",
+                target="query:ubi",
+                status="failed",
+                started_at="2026-03-25T00:00:00+00:00",
+                ended_at="2026-03-25T00:00:02+00:00",
+                duration_ms=2000,
+                attempt=2,
+                task="collect",
+                trace_id="trace_tool_2",
+                metrics={"top_k": 10},
+                error_type="ProviderUnavailableError",
+                error_message="boom",
+            )
+        )
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        row = db.execute(
+            "SELECT call_id, tool_name, operation, provider, status, duration_ms, attempt, trace_id, metrics, error_type, error_message FROM tool_calls"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "toolcall_2"
+        assert row[1] == "open_web_retrieval"
+        assert row[2] == "search"
+        assert row[3] == "brave"
+        assert row[4] == "failed"
+        assert row[5] == 2000
+        assert row[6] == 2
+        assert row[7] == "trace_tool_2"
+        assert json.loads(row[8])["top_k"] == 10
+        assert row[9] == "ProviderUnavailableError"
+        assert row[10] == "boom"
+        db.close()
+
+    def test_started_status_rejects_final_fields(self):
+        with pytest.raises(ValueError):
+            ToolCallResult(
+                call_id="toolcall_3",
+                tool_name="open_web_retrieval",
+                operation="extract",
+                status="started",
+                started_at="2026-03-25T00:00:00+00:00",
+                ended_at="2026-03-25T00:00:01+00:00",
+            )
 
 
 # ---------------------------------------------------------------------------

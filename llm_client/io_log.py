@@ -511,6 +511,79 @@ def log_foundation_event(
         logger.debug("io_log.log_foundation_event failed", exc_info=True)
 
 
+def log_tool_call_record(
+    *,
+    call_id: str,
+    tool_name: str,
+    operation: str,
+    status: Literal["started", "succeeded", "failed"],
+    started_at: str,
+    provider: str | None = None,
+    target: str | None = None,
+    ended_at: str | None = None,
+    duration_ms: int | None = None,
+    attempt: int = 1,
+    task: str | None = None,
+    trace_id: str | None = None,
+    metrics: dict[str, Any] | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Append one non-LLM tool-call observability record.
+
+    This mirrors ``log_call``: dual-write to JSONL and SQLite, and never raise
+    into product code.
+    """
+
+    if not _enabled:
+        return
+    try:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        record = {
+            "timestamp": timestamp,
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "operation": operation,
+            "provider": provider,
+            "target": target,
+            "status": status,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_ms": duration_ms,
+            "attempt": attempt,
+            "task": task,
+            "trace_id": trace_id,
+            "metrics": metrics or {},
+            "error_type": error_type,
+            "error_message": error_message,
+        }
+
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        _append_jsonl(d, "tool_calls", record)
+
+        _write_tool_call_to_db(
+            timestamp=timestamp,
+            call_id=call_id,
+            tool_name=tool_name,
+            operation=operation,
+            provider=provider,
+            target=target,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_ms=duration_ms,
+            attempt=attempt,
+            task=task,
+            trace_id=trace_id,
+            metrics=metrics or {},
+            error_type=error_type,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.debug("io_log.log_tool_call_record failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # SQLite observability database
 # ---------------------------------------------------------------------------
@@ -654,6 +727,27 @@ CREATE TABLE IF NOT EXISTS foundation_events (
     task TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    project TEXT,
+    call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    provider TEXT,
+    target TEXT,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    duration_ms INTEGER,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    task TEXT,
+    trace_id TEXT,
+    metrics TEXT,
+    error_type TEXT,
+    error_message TEXT
+);
+
 CREATE TABLE IF NOT EXISTS interventions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     intervention_id TEXT NOT NULL UNIQUE,
@@ -718,6 +812,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_fevent_event_id ON foundation_events(event
 CREATE INDEX IF NOT EXISTS idx_fevent_run_id ON foundation_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_trace_id ON foundation_events(trace_id);
 CREATE INDEX IF NOT EXISTS idx_fevent_event_type ON foundation_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_timestamp ON tool_calls(timestamp);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_call_id ON tool_calls(call_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_name ON tool_calls(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_operation ON tool_calls(operation);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_provider ON tool_calls(provider);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_status ON tool_calls(status);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_task ON tool_calls(task);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_trace_id ON tool_calls(trace_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_interv_id ON interventions(intervention_id);
 CREATE INDEX IF NOT EXISTS idx_interv_project ON interventions(project);
 CREATE INDEX IF NOT EXISTS idx_interv_dataset ON interventions(dataset);
@@ -801,6 +903,20 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     if item_cols and "trace_id" not in item_cols:
         conn.execute("ALTER TABLE experiment_items ADD COLUMN trace_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_expri_trace_id ON experiment_items(trace_id)")
+
+    tool_call_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_calls)").fetchall()}
+    if tool_call_cols and "task" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN task TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_task ON tool_calls(task)")
+    if tool_call_cols and "trace_id" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN trace_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_trace_id ON tool_calls(trace_id)")
+    if tool_call_cols and "metrics" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN metrics TEXT")
+    if tool_call_cols and "error_type" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN error_type TEXT")
+    if tool_call_cols and "error_message" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN error_message TEXT")
 
     conn.commit()
 
@@ -957,6 +1073,60 @@ def _write_foundation_event_to_db(
         db.commit()
     except Exception:
         logger.debug("io_log._write_foundation_event_to_db failed", exc_info=True)
+
+
+def _write_tool_call_to_db(
+    *,
+    timestamp: str,
+    call_id: str,
+    tool_name: str,
+    operation: str,
+    status: str,
+    started_at: str,
+    provider: str | None,
+    target: str | None,
+    ended_at: str | None,
+    duration_ms: int | None,
+    attempt: int,
+    task: str | None,
+    trace_id: str | None,
+    metrics: dict[str, Any],
+    error_type: str | None,
+    error_message: str | None,
+) -> None:
+    """Insert a tool-call record into SQLite. Never raises."""
+
+    try:
+        db = _get_db()
+        db.execute(
+            """INSERT INTO tool_calls
+               (timestamp, project, call_id, tool_name, operation, provider, target,
+                status, started_at, ended_at, duration_ms, attempt, task, trace_id,
+                metrics, error_type, error_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                timestamp,
+                _get_project(),
+                call_id,
+                tool_name,
+                operation,
+                provider,
+                target,
+                status,
+                started_at,
+                ended_at,
+                duration_ms,
+                attempt,
+                task,
+                trace_id,
+                json.dumps(metrics, default=str),
+                error_type,
+                error_message,
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug("io_log._write_tool_call_to_db failed", exc_info=True)
 
 
 def import_jsonl(jsonl_path: str | Path, table: str = "llm_calls") -> int:
