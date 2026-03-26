@@ -390,6 +390,9 @@ def _log_call_event(
     error_type: str | None = None,
     execution_path: str | None = None,
     retry_count: int | None = None,
+    schema_hash: str | None = None,
+    response_format_type: str | None = None,
+    validation_errors: str | None = None,
 ) -> None:
     """Write one observability record for an LLM call."""
     from llm_client.observability.replay import snapshot_fingerprint as _snapshot_fingerprint
@@ -412,6 +415,9 @@ def _log_call_event(
         error_type=error_type,
         execution_path=execution_path,
         retry_count=retry_count,
+        schema_hash=schema_hash,
+        response_format_type=response_format_type,
+        validation_errors=validation_errors,
     )
 
 

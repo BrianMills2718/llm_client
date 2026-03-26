@@ -273,6 +273,9 @@ def log_call(
     error_type: str | None = None,
     execution_path: str | None = None,
     retry_count: int | None = None,
+    schema_hash: str | None = None,
+    response_format_type: str | None = None,
+    validation_errors: str | None = None,
 ) -> None:
     """Append one call record with optional prompt asset identity.
 
@@ -355,6 +358,9 @@ def log_call(
             "error_type": error_type or (type(error).__name__ if error else None),
             "execution_path": execution_path,
             "retry_count": retry_count,
+            "schema_hash": schema_hash,
+            "response_format_type": response_format_type,
+            "validation_errors": validation_errors,
         }
         _append_jsonl(d, "calls", record)
 
@@ -382,6 +388,9 @@ def log_call(
             error_type=error_type or (type(error).__name__ if error else None),
             execution_path=execution_path,
             retry_count=retry_count,
+            schema_hash=schema_hash,
+            response_format_type=response_format_type,
+            validation_errors=validation_errors,
         )
     except Exception:
         # Never break LLM calls for logging
@@ -743,6 +752,12 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN execution_path TEXT")
     if "retry_count" not in llm_cols:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN retry_count INTEGER")
+    if "schema_hash" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN schema_hash TEXT")
+    if "response_format_type" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN response_format_type TEXT")
+    if "validation_errors" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN validation_errors TEXT")
 
     # task_scores: add git_commit if missing
     scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
@@ -824,6 +839,9 @@ def _write_call_to_db(
     error_type: str | None = None,
     execution_path: str | None = None,
     retry_count: int | None = None,
+    schema_hash: str | None = None,
+    response_format_type: str | None = None,
+    validation_errors: str | None = None,
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:

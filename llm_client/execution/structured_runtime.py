@@ -260,6 +260,8 @@ def _call_llm_structured_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            execution_path="agent_sdk",
+            retry_count=0,
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -307,6 +309,8 @@ def _call_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="responses_api",
+                    retry_count=0,
                 )
                 return reparsed, cached_result
 
@@ -389,6 +393,8 @@ def _call_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="responses_api",
+                    retry_count=attempt,
                 )
                 return parsed, llm_result
 
@@ -506,6 +512,8 @@ def _call_llm_structured_impl(
                         trace_id=trace_id,
                         prompt_ref=prompt_ref,
                         call_snapshot=call_snapshot,
+                        execution_path="native_schema",
+                        retry_count=attempt,
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -630,6 +638,8 @@ def _call_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="instructor",
+                    retry_count=attempt,
                 )
                 return parsed, llm_result
 
@@ -683,6 +693,8 @@ def _call_llm_structured_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            execution_path="error",
+            retry_count=None,
         )
         raise wrap_error(e) from e
 
@@ -832,6 +844,8 @@ async def _acall_llm_structured_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            execution_path="agent_sdk",
+            retry_count=0,
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -879,6 +893,8 @@ async def _acall_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="responses_api",
+                    retry_count=0,
                 )
                 return reparsed, cached_result
 
@@ -961,6 +977,8 @@ async def _acall_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="responses_api",
+                    retry_count=attempt,
                 )
                 return parsed, llm_result
 
@@ -1078,6 +1096,8 @@ async def _acall_llm_structured_impl(
                         trace_id=trace_id,
                         prompt_ref=prompt_ref,
                         call_snapshot=call_snapshot,
+                        execution_path="native_schema",
+                        retry_count=attempt,
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -1202,6 +1222,8 @@ async def _acall_llm_structured_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    execution_path="instructor",
+                    retry_count=attempt,
                 )
                 return parsed, llm_result
 
@@ -1255,5 +1277,7 @@ async def _acall_llm_structured_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            execution_path="error",
+            retry_count=None,
         )
         raise wrap_error(e) from e
