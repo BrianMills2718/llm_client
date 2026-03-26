@@ -159,6 +159,12 @@ from llm_client.agent.mcp_loop_summary import _apply_agent_loop_summary
 from llm_client.agent.mcp_turn_model import _run_turn_model_stage
 from llm_client.agent.mcp_turn_outcomes import _process_turn_outcomes
 from llm_client.agent.agent_contracts import AgentErrorBudget, ErrorBudgetState
+from llm_client.agent.agent_planning import (
+    PlanningConfig,
+    PlanState,
+    build_plan_tools,
+    execute_plan_tool,
+)
 from llm_client.agent.mcp_turn_tools import _process_tool_calls_turn
 from llm_client.agent.mcp_state import (  # noqa: F401  re-exported
     ADOPTION_PROFILE_ENFORCE_ENV as ADOPTION_PROFILE_ENFORCE_ENV,
@@ -428,6 +434,7 @@ async def _agent_loop(
     timeout: int = 60,
     kwargs: dict[str, Any] | None = None,
     error_budget: "AgentErrorBudget | None" = None,
+    planning_config: "PlanningConfig | None" = None,
 ) -> tuple[str, str]:
     """Core agent loop shared by MCP, direct-tool, and session-pool paths.
 
@@ -506,6 +513,13 @@ async def _agent_loop(
     # Error budget tracking
     _error_budget = error_budget if error_budget is not None else AgentErrorBudget()
     _budget_state = ErrorBudgetState(budget=_error_budget)
+
+    # Planning state
+    _planning_config = planning_config or PlanningConfig(enabled=False)
+    _plan_state = PlanState()
+    if _planning_config.enabled:
+        plan_tools = build_plan_tools(_plan_state, _planning_config)
+        openai_tools = plan_tools + list(openai_tools)  # plan tools first
     handle_input_resolution_count = 0
     handle_input_resolved_artifact_count = 0
     autofilled_tool_reasoning_calls = 0
@@ -702,6 +716,20 @@ async def _agent_loop(
         kwargs["max_completion_tokens"] = max(1024, max_completion_default)
 
     for turn in range(max_turns):
+        # Inject plan context if a plan exists
+        if _plan_state.has_plan and _planning_config.auto_inject_context:
+            plan_ctx = _plan_state.format_context(
+                max_chars=_planning_config.max_context_chars,
+                fmt=_planning_config.context_format,
+            )
+            if plan_ctx:
+                # Replace existing plan context message or insert new one
+                _plan_tag = "[PLAN PROGRESS:"
+                messages = [
+                    m for m in messages
+                    if not (isinstance(m.get("content"), str) and _plan_tag in m["content"])
+                ]
+                messages.insert(1, {"role": "user", "content": plan_ctx})  # after system prompt
         if max_tool_calls is not None:
             budgeted_calls_used = _count_budgeted_records(agent_result.tool_calls)
             remaining_tool_calls = max_tool_calls - budgeted_calls_used
@@ -1127,6 +1155,7 @@ async def _agent_loop(
 
         # Always include budget summary in metadata for observability
         agent_result.metadata["error_budget"] = _budget_state.summary()
+        agent_result.metadata["planning"] = _plan_state.summary()
 
         logger.debug(
             "Agent turn %d/%d: %d tool calls (budget: %d/%d turns, %d/%d errors)",

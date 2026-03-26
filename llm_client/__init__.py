@@ -213,6 +213,7 @@ if _TYPE_CHECKING:
     # Relocated (Plan #17): git_utils, scoring, experiment_eval, task_graph, analyzer
 
 from llm_client.agent.agent_contracts import AgentErrorBudget
+from llm_client.agent.agent_planning import PlanningConfig
 from llm_client.agent.mcp_agent import (
     DEFAULT_ENFORCE_TOOL_CONTRACTS,
     DEFAULT_INITIAL_ARTIFACTS,
