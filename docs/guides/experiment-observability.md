@@ -78,7 +78,7 @@ python -m llm_client adoption --run-id-prefix nightly_ --since 2026-02-20 \
 ## Eval helpers
 
 ```python
-from llm_client.experiment_eval import (
+from prompt_eval.experiment_eval import (
     build_gate_signals,
     extract_agent_outcome,
     summarize_agent_outcomes,

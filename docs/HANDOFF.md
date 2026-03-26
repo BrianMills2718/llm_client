@@ -129,3 +129,59 @@ TODOs added to each project's ISSUES.md.
 
 - **All personal repos use SSH** (`git@github.com:BrianMills2718/...`).
   `gh auth` active = `brian-steno` (work account).
+
+---
+
+## Session: 2026-03-25/26 — Strategic Review & Cleanup
+
+**Agent:** Claude Code (Opus 4.6)
+**Duration:** ~8 hours across 2 sessions
+
+### What was done
+
+#### Strategic review
+- Assessed value proposition, alternatives landscape, adoption (398 files across 26 projects)
+- Identified core value (observability, policy enforcement) vs redundant layers (retry/fallback)
+- Declared maintenance mode: stop internal cleanup, invest in consumer projects
+
+#### Repo declutter (-15,226 lines from tracked files)
+- Archived 8 stale docs + 34 meta-patterns + 6 worktree-coordination scripts
+- Rewrote README from 1002 to 169 lines
+- Created docs/guides/ (4 focused guides extracted from README)
+- Rewrote Makefile as consumer observability interface
+
+#### Infrastructure improvements
+- Externalized prompt assets to ~/projects/prompts/ (LLM_CLIENT_PROMPT_ASSET_ROOT)
+- Added LiteLLM observer callback for unmigrated projects (litellm_observer_callback.py)
+- Enabled Instructor validation re-ask (max_retries=0 → 2)
+- Added error_type, execution_path, retry_count to observability schema
+- Fixed test noise polluting observability DB (conftest.py autouse fixture)
+- Added explicit ImportError for 8 extracted functions (clear migration messages)
+
+#### Plan execution
+- Plan 16: Removed all 29 compatibility stubs, canonicalized imports
+- Plan 08: Marked Complete (subtree instructions exist)
+- Plans 15, 17: Cancelled (pure refactoring, no consumer value)
+
+#### Documentation audit
+- Superseded ADR-0008 (task_graph/experiment_eval extracted)
+- Fixed relationships.yaml stale module references
+- Updated master roadmap (replaced 80-line stale checkpoint narrative)
+- Added embed/aembed to README API table (16 functions, not 14)
+- Listed all 10 task profiles in README
+
+#### Skills created
+- /create-skill (global) — skill-making skill
+- /setup-project-makefile (projects-level) — standardized Makefile template
+
+### Known issues from this session
+- Plan 16 stub removal broke DIGIMON benchmark runner (module-level imports)
+- Plan 18 error budget wiring had syntax error in mcp_agent.py (rescued by other agent)
+- Downstream consumers need migration: DIGIMON (6 functions), agent_ontology (templates)
+- TEMPORARY migration notes added to DIGIMON and agent_ontology CLAUDE.md files
+
+### Gotchas for next agent
+- Other agents added: tool-call observability (Wave 0/1), rubric registry, workflow builder, log maintenance — these are on tool-observability-wave1 branch, not merged to main
+- Main is stable at 55497fc but tool-observability-wave1 has 7 additional commits
+- Don't re-add compatibility stubs — force consumers to use canonical paths
+- The rescue branch (rescue/2026-03-26-llm-client-mcp-agent-wip) has the broken error budget wiring — don't use it

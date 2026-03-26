@@ -1,6 +1,6 @@
 # Plan #16: Remove Compatibility Stubs
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** Medium
 **Blocked By:** 12 (module reorganization — complete)
@@ -43,7 +43,7 @@ serve no purpose.
    is via `__init__.py` and never touches the stubs.
 3. **3 downstream projects using private paths will break:** active-stack-core,
    Digimon, sam_gov already import from internal paths. They're already broken
-   by design (Plan #17 Phase 3). Don't let them block stub removal.
+   by design (the canonical import paths (stubs deleted, consumers must update)). Don't let them block stub removal.
 4. **Two already deleted:** `client_dispatch.py` and `model_detection.py`
    were removed in the code smell pass.
 

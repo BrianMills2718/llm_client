@@ -149,7 +149,7 @@ stable enough that package-boundary churn is low.
 ### Program E: Simplification and Observability Modernization
 
 **Plan:** [06_simplification-and-observability.md](./06_simplification-and-observability.md)
-**Status:** In Progress
+**Status:** Complete
 
 **Success criteria:**
 
