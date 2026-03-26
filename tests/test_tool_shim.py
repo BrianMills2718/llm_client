@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from llm_client import LLMCallResult, MCPAgentResult
-from llm_client.tool_shim import _acall_with_tool_shim, _build_tool_system_prompt
-from llm_client.tool_utils import prepare_direct_tools
+from llm_client.tools.tool_shim import _acall_with_tool_shim, _build_tool_system_prompt
+from llm_client.tools.tool_utils import prepare_direct_tools
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class TestBuildToolSystemPrompt:
 class TestToolShimLoop:
     async def test_single_tool_call_and_answer(self) -> None:
         """tool_call → final_answer in 2 turns."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 # Turn 1: call add(3, 4)
                 _make_llm_result(content=json.dumps({
@@ -130,7 +130,7 @@ class TestToolShimLoop:
 
     async def test_multi_turn_tools(self) -> None:
         """3 tool calls → final answer."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(content=json.dumps({
                     "action": "tool_call",
@@ -168,7 +168,7 @@ class TestToolShimLoop:
 
     async def test_final_answer_immediately(self) -> None:
         """Model answers without calling any tools."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.return_value = _make_llm_result(content=json.dumps({
                 "action": "final_answer",
                 "content": "42",
@@ -188,7 +188,7 @@ class TestToolShimLoop:
 
     async def test_malformed_json_recovery(self) -> None:
         """Bad JSON → error message → model retries successfully."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 # Turn 1: invalid JSON
                 _make_llm_result(content="not json at all"),
@@ -214,7 +214,7 @@ class TestToolShimLoop:
 
     async def test_unknown_tool_name(self) -> None:
         """Model calls nonexistent tool → error → model corrects."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 # Turn 1: call nonexistent tool
                 _make_llm_result(content=json.dumps({
@@ -244,7 +244,7 @@ class TestToolShimLoop:
 
     async def test_max_turns_exhausted(self) -> None:
         """Loop terminates and forces answer when max_turns reached."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             # All turns return tool calls, then the forced final answer
             tool_response = _make_llm_result(content=json.dumps({
                 "action": "tool_call",
@@ -268,7 +268,7 @@ class TestToolShimLoop:
 
     async def test_max_tool_calls_exhausted(self) -> None:
         """Loop terminates and forces answer when max_tool_calls reached."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             tool_response = _make_llm_result(content=json.dumps({
                 "action": "tool_call",
                 "tool_name": "add",
@@ -293,7 +293,7 @@ class TestToolShimLoop:
 
     async def test_unknown_action(self) -> None:
         """Unknown action → error nudge → model corrects."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(content=json.dumps({
                     "action": "think",
@@ -316,7 +316,7 @@ class TestToolShimLoop:
 
     async def test_system_message_preserved(self) -> None:
         """Tool prompt is appended to existing system message."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.return_value = _make_llm_result(content=json.dumps({
                 "action": "final_answer",
                 "content": "ok",
@@ -339,7 +339,7 @@ class TestToolShimLoop:
 
     async def test_usage_accumulates(self) -> None:
         """Usage tokens accumulate across turns."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(
                     content=json.dumps({
@@ -373,7 +373,7 @@ class TestToolShimLoop:
 
     async def test_tool_error_visible_to_model(self) -> None:
         """Tool execution error is sent back to the model as user message."""
-        with patch("llm_client.tool_shim._inner_acall_llm") as mock_acall:
+        with patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(content=json.dumps({
                     "action": "tool_call",
@@ -412,9 +412,9 @@ class TestShimRouting:
     async def test_routing_flash_lite(self) -> None:
         """acall_llm with python_tools + flash-lite model routes to shim."""
         with (
-            patch("llm_client.tool_shim._inner_acall_llm") as mock_shim_inner,
-            patch("llm_client.client._check_budget"),
-            patch("llm_client.client._io_log"),
+            patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_shim_inner,
+            patch("llm_client.core.client._check_budget"),
+            patch("llm_client.core.client._io_log"),
         ):
             mock_shim_inner.return_value = _make_llm_result(content=json.dumps({
                 "action": "final_answer",
@@ -438,9 +438,9 @@ class TestShimRouting:
     async def test_routing_normal_model(self) -> None:
         """Normal model with python_tools uses _acall_with_tools, not shim."""
         with (
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_native_inner,
-            patch("llm_client.client._check_budget"),
-            patch("llm_client.client._io_log"),
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_native_inner,
+            patch("llm_client.core.client._check_budget"),
+            patch("llm_client.core.client._io_log"),
         ):
             mock_native_inner.return_value = _make_llm_result(content="native answer")
 

@@ -32,9 +32,9 @@ def test_generator_discovers_public_package_modules() -> None:
 
     assert len(module_names) > 20
     assert "llm_client" in module_names
-    assert "llm_client.client" in module_names
+    assert "llm_client.core.client" in module_names
     assert "llm_client.io_log" in module_names
-    assert "llm_client.models" in module_names
+    assert "llm_client.core.models" in module_names
 
 
 def test_generator_emits_docstrings_and_signatures() -> None:
@@ -45,7 +45,7 @@ def test_generator_emits_docstrings_and_signatures() -> None:
 
     assert "Browser view:" in markdown_text
     assert "Generated from package docstrings and typed signatures." in markdown_text
-    assert "llm_client.client" in html_text
+    assert "llm_client.core.client" in html_text
     assert "Call any LLM. Routes by model string" in html_text
     assert "Persistent I/O logging for LLM calls and embeddings." in html_text
     assert "render_prompt" in html_text

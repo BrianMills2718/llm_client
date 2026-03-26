@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from llm_client.experiment_summary import summarize_adoption_profiles, summarize_agent_outcomes
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def _build_auto_run_provenance(*, git_commit: str | None) -> dict[str, Any]:
         "diff_categories": [],
     }
     try:
-        from llm_client.git_utils import classify_diff_files, get_working_tree_files, is_git_dirty
+        from llm_client.utils.git_utils import classify_diff_files, get_working_tree_files, is_git_dirty
 
         changed_files = get_working_tree_files()
         provenance["git_dirty"] = is_git_dirty()
@@ -77,7 +77,7 @@ def start_run(
     _io_log._start_run_timer(run_id)
 
     if git_commit is None:
-        from llm_client.git_utils import get_git_head
+        from llm_client.utils.git_utils import get_git_head
 
         git_commit = get_git_head()
 

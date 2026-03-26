@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from llm_client.context_budget import (
+from llm_client.agent.context_budget import (
     CONTEXT_BUDGET_TOOL_NAME,
     ContextBudget,
     compute_context_budget,

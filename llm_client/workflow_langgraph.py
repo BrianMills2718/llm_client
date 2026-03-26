@@ -18,8 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm_client.client import call_llm
-from llm_client.models import get_model
+from llm_client.core.client import call_llm
+from llm_client.core.models import get_model
 from llm_client.prompts import render_prompt
 
 logger = logging.getLogger(__name__)

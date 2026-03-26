@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 
 
 def lookup_result(trace_id: str) -> dict[str, Any] | None:

@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def log_intervention(
 
     if git_commit is None:
         try:
-            from llm_client.git_utils import get_git_head
+            from llm_client.utils.git_utils import get_git_head
 
             git_commit = get_git_head()
         except Exception:

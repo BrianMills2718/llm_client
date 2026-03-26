@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_client.timeout_policy import normalize_timeout
+from llm_client.execution.timeout_policy import normalize_timeout
 
 
 def test_normalize_timeout_ban_appends_warning_and_zeroes_timeout(

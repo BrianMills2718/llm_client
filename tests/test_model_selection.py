@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from llm_client.model_selection import (
+from llm_client.core.model_selection import (
     resolve_model_chain,
     resolve_model_selection,
     strict_model_policy,
@@ -13,7 +13,7 @@ from llm_client.model_selection import (
 
 def test_resolve_model_selection_uses_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "llm_client.model_selection.get_model",
+        "llm_client.core.model_selection.get_model",
         lambda task, available_only=False, use_performance=True: f"resolved::{task}",
     )
 
@@ -51,7 +51,7 @@ def test_resolve_model_chain_resolves_primary_and_fallback_tasks(
             "budget_extraction": "openrouter/deepseek/deepseek-chat",
         }[task]
 
-    monkeypatch.setattr("llm_client.model_selection.get_model", fake_get_model)
+    monkeypatch.setattr("llm_client.core.model_selection.get_model", fake_get_model)
 
     chain = resolve_model_chain(
         "extraction",

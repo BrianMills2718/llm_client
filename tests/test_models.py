@@ -1,4 +1,4 @@
-"""Tests for llm_client.models — registry, task selection, performance tracking."""
+"""Tests for llm_client.core.models — registry, task selection, performance tracking."""
 
 import json
 import os
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from llm_client.models import (
+from llm_client.core.models import (
     _DEFAULT_CONFIG,
     _apply_performance_overlay,
     _PACKAGED_DEFAULT_CONFIG_PATH,
@@ -99,7 +99,7 @@ class TestGetModel:
         with patch.dict(os.environ, {"LLM_CLIENT_MODELS_CONFIG": "/nonexistent"}):
             _reset_config()
         # Override the config cache directly
-        from llm_client import models as m
+        from llm_client.core import models as m
         m._config_cache = {
             "models": _DEFAULT_CONFIG["models"],
             "tasks": {

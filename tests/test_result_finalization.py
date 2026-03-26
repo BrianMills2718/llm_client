@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from llm_client.client import LLMCallResult
+from llm_client.core.client import LLMCallResult
 from llm_client.result_finalization import cache_hit_view, finalize_result
 from llm_client.result_metadata import warning_record
 

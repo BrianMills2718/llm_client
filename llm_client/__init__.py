@@ -120,7 +120,7 @@ def _load_api_keys() -> int:
 
 _load_api_keys()
 
-from llm_client.errors import (
+from llm_client.core.errors import (
     LLMAuthError,
     LLMConfigurationError,
     LLMCapabilityError,
@@ -176,14 +176,14 @@ from llm_client.observability import (
     replay_call_snapshot,
     start_run,
 )
-from llm_client.models import (
+from llm_client.core.models import (
     ModelInfo,
     TaskProfile,
     get_model,
     list_models,
     query_performance,
 )
-from llm_client.model_selection import (
+from llm_client.core.model_selection import (
     ResolvedModelChain,
     ResolvedModelSelection,
     resolve_model_chain,
@@ -232,10 +232,10 @@ from llm_client.tools.tool_utils import (
     prepare_direct_tools,
 )
 
-from llm_client.config import ClientConfig
-from llm_client.routing import CallRequest, ResolvedCallPlan, resolve_call
+from llm_client.core.config import ClientConfig
+from llm_client.core.routing import CallRequest, ResolvedCallPlan, resolve_call
 
-from llm_client.client import (
+from llm_client.core.client import (
     AsyncCachePolicy,
     AsyncLLMStream,
     CachePolicy,
@@ -266,7 +266,7 @@ from llm_client.client import (
     stream_llm_with_tools,
     strip_fences,
 )
-from llm_client.data_types import TurnEvent
+from llm_client.core.data_types import TurnEvent
 
 _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "LLMAuthError",

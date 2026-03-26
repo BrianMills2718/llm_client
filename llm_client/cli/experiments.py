@@ -60,7 +60,7 @@ def _evaluate_adoption_gate(
 
 def _cmd_experiments_trace(args: argparse.Namespace) -> None:
     """Show step-by-step tool chain for a specific experiment item."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     run_id, item_id = args.trace
     items = io_log.get_run_items(run_id)
@@ -261,7 +261,7 @@ def _render_tool_details(tool_details: list[dict[str, Any] | None]) -> None:
 
 def cmd_experiments(args: argparse.Namespace) -> None:
     """Dispatch experiment CLI actions from an argparse namespace."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     if getattr(args, "compare_cohorts", None) is not None:
         _cmd_experiments_compare_cohorts(args)
@@ -342,7 +342,7 @@ def cmd_experiments(args: argparse.Namespace) -> None:
 
 
 def _cmd_experiments_compare_cohorts(args: argparse.Namespace) -> None:
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     condition_ids = args.compare_cohorts if args.compare_cohorts else None
     try:
@@ -421,7 +421,7 @@ def _cmd_experiments_compare_cohorts(args: argparse.Namespace) -> None:
 
 
 def _cmd_experiments_compare(args: argparse.Namespace) -> None:
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     try:
         result = io_log.compare_runs(args.compare)
@@ -515,8 +515,8 @@ def _cmd_experiments_compare(args: argparse.Namespace) -> None:
 
 
 def _cmd_experiments_compare_diff(args: argparse.Namespace) -> None:
-    from llm_client import io_log
-    from llm_client.git_utils import classify_diff_files, get_diff_files
+    import llm_client.io_log as io_log
+    from llm_client.utils.git_utils import classify_diff_files, get_diff_files
 
     base_run_id, cand_run_id = args.compare_diff
     base_run = io_log.get_run(base_run_id)
@@ -570,7 +570,7 @@ def _cmd_experiments_compare_diff(args: argparse.Namespace) -> None:
 
 
 def _cmd_experiments_detail(args: argparse.Namespace) -> None:
-    from llm_client import io_log
+    import llm_client.io_log as io_log
     from llm_client.experiment_eval import (
         build_gate_signals,
         evaluate_gate_policy,

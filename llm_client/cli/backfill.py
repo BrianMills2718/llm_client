@@ -9,7 +9,7 @@ from llm_client.cli.common import get_db_path
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     db_path = get_db_path()
 

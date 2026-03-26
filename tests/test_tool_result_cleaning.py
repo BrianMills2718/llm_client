@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.tool_result_cleaning import (
+from llm_client.tools.tool_result_cleaning import (
     clean_result,
     clean_tool_output,
     strip_html_tags,

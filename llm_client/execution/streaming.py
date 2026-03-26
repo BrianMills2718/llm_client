@@ -77,7 +77,7 @@ class LLMStream:
 
     def _finalize(self) -> None:
         # Deferred import to avoid circular dependencies during module extraction.
-        from llm_client import client as _client
+        from llm_client.core import client as _client
 
         content = "".join(self._chunks_text)
         usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -197,7 +197,7 @@ class AsyncLLMStream:
 
     def _finalize(self) -> None:
         # Deferred import to avoid circular dependencies during module extraction.
-        from llm_client import client as _client
+        from llm_client.core import client as _client
 
         content = "".join(self._chunks_text)
         usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

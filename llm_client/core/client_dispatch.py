@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable
 
 from pydantic import BaseModel
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 from llm_client.execution.call_contracts import (
     ExecutionMode,
     _DEPRECATED_MODEL_EXCEPTIONS,

@@ -1240,7 +1240,7 @@ def log_score(
     try:
         # Auto-capture git commit if not provided
         if git_commit is None:
-            from llm_client.git_utils import get_git_head
+            from llm_client.utils.git_utils import get_git_head
 
             git_commit = get_git_head()
 

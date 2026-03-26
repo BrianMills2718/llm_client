@@ -17,8 +17,8 @@ from llm_client import (
     call_llm_structured,
     stream_llm,
 )
-from llm_client.config import ClientConfig
-from llm_client.mcp_agent import _acall_with_tools
+from llm_client.core.config import ClientConfig
+from llm_client.agent.mcp_agent import _acall_with_tools
 
 
 def _mock_response(
@@ -65,8 +65,8 @@ class _StructuredPayload(BaseModel):
 
 
 class TestModelIdentityContract:
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.completion")
     def test_sync_identity_fields_with_explicit_routing_off(
         self,
         mock_completion: MagicMock,
@@ -91,8 +91,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-4"]
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.completion")
     def test_sync_identity_fields_with_explicit_routing_on(
         self,
         mock_completion: MagicMock,
@@ -118,8 +118,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["normalized_from"] == "gpt-4"
         assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.completion")
     def test_sync_fallback_trace_shows_switch_and_reason(
         self,
         mock_completion: MagicMock,
@@ -155,8 +155,8 @@ class TestModelIdentityContract:
         assert any("FALLBACK: openrouter/openai/gpt-4" in w for w in (result.warnings or []))
 
     @pytest.mark.asyncio
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     async def test_async_identity_fields_with_explicit_routing_off(
         self,
         mock_acompletion: AsyncMock,
@@ -181,8 +181,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-4"]
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.responses")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.responses")
     def test_structured_identity_fields_with_explicit_routing_off(
         self,
         mock_responses: MagicMock,
@@ -209,9 +209,9 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-5"]
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.core.client.litellm.completion")
     def test_structured_identity_fields_with_explicit_routing_on(
         self,
         mock_completion: MagicMock,
@@ -241,8 +241,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
 
     @pytest.mark.asyncio
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.aresponses", new_callable=AsyncMock)
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.aresponses", new_callable=AsyncMock)
     async def test_async_structured_identity_fields_with_explicit_routing_off(
         self,
         mock_aresponses: AsyncMock,
@@ -269,9 +269,9 @@ class TestModelIdentityContract:
         assert result.routing_trace["routing_policy"] == "openrouter_off"
         assert result.routing_trace["attempted_models"] == ["gpt-5"]
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.core.client.litellm.completion")
     def test_structured_fallback_chain_records_attempted_models(
         self,
         mock_completion: MagicMock,
@@ -310,9 +310,9 @@ class TestModelIdentityContract:
         assert any(w.startswith("FALLBACK:") for w in (result.warnings or []))
 
     @pytest.mark.asyncio
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.supports_response_schema", return_value=True)
-    @patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     async def test_async_structured_fallback_chain_records_attempted_models(
         self,
         mock_acompletion: AsyncMock,
@@ -350,8 +350,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
         assert any(w.startswith("FALLBACK:") for w in (result.warnings or []))
 
-    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.core.client.litellm.completion")
     def test_stream_identity_fields_with_explicit_routing_off(
         self,
         mock_completion: MagicMock,
@@ -379,8 +379,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["attempted_models"] == ["gpt-4"]
 
     @pytest.mark.asyncio
-    @patch("llm_client.client.litellm.stream_chunk_builder", return_value=None)
-    @patch("llm_client.client.litellm.acompletion")
+    @patch("llm_client.core.client.litellm.stream_chunk_builder", return_value=None)
+    @patch("llm_client.core.client.litellm.acompletion")
     async def test_async_stream_identity_fields_with_explicit_routing_on(
         self,
         mock_acompletion: AsyncMock,
@@ -436,13 +436,13 @@ class TestModelIdentityContract:
 
         with (
             patch(
-                "llm_client.tool_utils.prepare_direct_tools",
+                "llm_client.tools.tool_utils.prepare_direct_tools",
                 return_value=(
                     {"noop": lambda: "ok"},
                     [{"type": "function", "function": {"name": "noop"}}],
                 ),
             ),
-            patch("llm_client.mcp_agent._agent_loop", side_effect=fake_agent_loop),
+            patch("llm_client.agent.mcp_agent._agent_loop", side_effect=fake_agent_loop),
         ):
             result = await _acall_with_tools(
                 "requested-model",
@@ -457,9 +457,9 @@ class TestModelIdentityContract:
         assert result.routing_trace["attempted_models"] == ["requested-model", "fallback-model"]
         assert result.routing_trace["sticky_fallback"] is True
 
-    @patch("llm_client.models.supports_tool_calling", return_value=True)
-    @patch("llm_client.mcp_agent._acall_with_tools")
-    @patch("llm_client.client._io_log.log_call")
+    @patch("llm_client.core.models.supports_tool_calling", return_value=True)
+    @patch("llm_client.agent.mcp_agent._acall_with_tools")
+    @patch("llm_client.core.client._io_log.log_call")
     def test_sync_call_llm_tool_loop_preserves_agent_routing_trace(
         self,
         mock_log_call: MagicMock,
@@ -504,9 +504,9 @@ class TestModelIdentityContract:
         assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
     @pytest.mark.asyncio
-    @patch("llm_client.models.supports_tool_calling", return_value=True)
-    @patch("llm_client.mcp_agent._acall_with_tools")
-    @patch("llm_client.client._io_log.log_call")
+    @patch("llm_client.core.models.supports_tool_calling", return_value=True)
+    @patch("llm_client.agent.mcp_agent._acall_with_tools")
+    @patch("llm_client.core.client._io_log.log_call")
     async def test_async_call_llm_tool_loop_preserves_agent_routing_trace(
         self,
         mock_log_call: MagicMock,
@@ -550,7 +550,7 @@ class TestModelIdentityContract:
         assert result.routing_trace["selected_model"] == "fallback-model"
         assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
-    @patch("llm_client.mcp_agent._acall_with_mcp")
+    @patch("llm_client.agent.mcp_agent._acall_with_mcp")
     def test_sync_call_llm_mcp_loop_preserves_agent_routing_trace(
         self,
         mock_mcp_loop: MagicMock,
@@ -592,7 +592,7 @@ class TestModelIdentityContract:
         assert result.routing_trace["selected_model"] == "fallback-model"
 
     @pytest.mark.asyncio
-    @patch("llm_client.mcp_agent._acall_with_mcp")
+    @patch("llm_client.agent.mcp_agent._acall_with_mcp")
     async def test_async_call_llm_mcp_loop_preserves_agent_routing_trace(
         self,
         mock_mcp_loop: AsyncMock,
@@ -633,8 +633,8 @@ class TestModelIdentityContract:
         assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.completion")
     def test_explicit_config_still_controls_routing_policy(
         self,
         mock_completion: MagicMock,
@@ -661,8 +661,8 @@ class TestModelIdentityContract:
         assert result.resolved_model == "gpt-4"
         assert result.execution_model == "gpt-4"
 
-    @patch("llm_client.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
+    @patch("llm_client.core.client.litellm.completion")
     def test_warning_records_include_stable_model_code(
         self,
         mock_completion: MagicMock,

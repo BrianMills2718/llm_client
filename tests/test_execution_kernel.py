@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from llm_client.execution_kernel import (
+from llm_client.execution.execution_kernel import (
     run_async_with_fallback,
     run_async_with_retry,
     run_sync_with_fallback,

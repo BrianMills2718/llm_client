@@ -27,7 +27,7 @@ from typing import Any, Literal, NoReturn
 
 import litellm
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 from llm_client.core.errors import (
     LLMBudgetExceededError,
     LLMCapabilityError,
@@ -126,8 +126,8 @@ def require_tags(
     if max_budget is None:
         auto_warnings.append("AUTO_TAG: max_budget=0 (unlimited)")
 
-    _io_log.enforce_feature_profile(resolved_task, caller="llm_client.client")
-    _io_log.enforce_experiment_context(resolved_task, caller="llm_client.client")
+    _io_log.enforce_feature_profile(resolved_task, caller="llm_client.core.client")
+    _io_log.enforce_experiment_context(resolved_task, caller="llm_client.core.client")
     return resolved_task, resolved_trace_id, resolved_max_budget, auto_warnings
 
 

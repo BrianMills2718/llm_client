@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 from llm_client.observability.context import (
     ActiveFeatureProfile as _ActiveFeatureProfile,
     activate_feature_profile as _activate_feature_profile,

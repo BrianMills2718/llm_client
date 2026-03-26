@@ -45,7 +45,7 @@ from llm_client import (
     stream_llm,
     stream_llm_with_tools,
 )
-from llm_client.errors import LLMError
+from llm_client.core.errors import LLMError
 
 
 def _header(name: str) -> None:

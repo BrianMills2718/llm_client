@@ -1,7 +1,7 @@
 """Unit tests for pure routing/config resolution."""
 
-from llm_client.config import ClientConfig
-from llm_client.routing import CallRequest, resolve_api_base_for_model, resolve_call
+from llm_client.core.config import ClientConfig
+from llm_client.core.routing import CallRequest, resolve_api_base_for_model, resolve_call
 
 
 def test_resolve_call_openrouter_normalizes_and_deduplicates() -> None:

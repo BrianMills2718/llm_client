@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from llm_client.deferred_tools import (
+from llm_client.agent.deferred_tools import (
     SEARCH_TOOL_NAME,
     DeferredToolRegistry,
     build_deferred_metrics,

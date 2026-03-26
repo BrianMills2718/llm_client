@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-import llm_client.client as _client_mod
+import llm_client.core.client as _client_mod
 
 _client: Any = _client_mod
 

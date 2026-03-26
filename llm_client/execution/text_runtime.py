@@ -15,7 +15,7 @@ from llm_client.core.client import AsyncCachePolicy, CachePolicy, ExecutionMode,
 from llm_client.core.config import ClientConfig
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 
-_client: Any = import_module("llm_client.client")
+_client: Any = import_module("llm_client.core.client")
 
 
 def _call_llm_impl(

@@ -1,11 +1,11 @@
-"""Tests for llm_client.errors — error classification and wrapping."""
+"""Tests for llm_client.core.errors — error classification and wrapping."""
 
 from __future__ import annotations
 
 import pytest
 import litellm
 
-from llm_client.errors import (
+from llm_client.core.errors import (
     LLMAuthError,
     LLMConfigurationError,
     LLMContentFilterError,

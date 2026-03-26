@@ -1,4 +1,4 @@
-"""Tests for llm_client.rate_limit — per-provider concurrency limiting."""
+"""Tests for llm_client.utils.rate_limit — per-provider concurrency limiting."""
 
 import asyncio
 import threading
@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from llm_client import rate_limit as rl
-from llm_client.rate_limit import (
+import llm_client.utils.rate_limit as rl
+from llm_client.utils.rate_limit import (
     _get_provider,
     aacquire,
     acquire,

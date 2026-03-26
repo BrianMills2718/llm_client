@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from llm_client.agent_contracts import (
+from llm_client.agent.agent_contracts import (
     _capability_requirement_from_raw,
     _normalize_tool_contracts,
     _validate_tool_contract_call,
 )
-from llm_client.agent_disclosure import (
+from llm_client.agent.agent_disclosure import (
     _deficit_labels_from_hidden_entries,
     _disclosure_message,
     _disclosure_reason_from_entry,

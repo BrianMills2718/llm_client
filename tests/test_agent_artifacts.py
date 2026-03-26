@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from llm_client.agent_artifacts import (
+from llm_client.agent.agent_artifacts import (
     _build_active_artifact_context_content,
     _runtime_artifact_read_result,
     _tool_evidence_pointer_labels,

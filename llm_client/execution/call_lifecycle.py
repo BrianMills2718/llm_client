@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 from llm_client.core.errors import LLMError
 from llm_client.foundation import (
     coerce_run_id as _coerce_foundation_run_id,

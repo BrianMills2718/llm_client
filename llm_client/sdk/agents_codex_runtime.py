@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def _codex_mod() -> Any:
     """Lazy import ``agents_codex`` so runtime helpers can call shared adapters."""
 
-    import llm_client.agents_codex as _codex
+    import llm_client.sdk.agents_codex as _codex
 
     return _codex
 

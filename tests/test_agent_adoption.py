@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm_client.agent_adoption import (
+from llm_client.agent.agent_adoption import (
     DEFAULT_ADOPTION_PROFILE,
     assess_adoption_profile,
     assess_tool_registry_quality,

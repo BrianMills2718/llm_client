@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def get_db_path() -> Path:
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     return io_log._db_path
 

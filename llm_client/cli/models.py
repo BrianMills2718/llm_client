@@ -11,7 +11,7 @@ import os
 import sys
 from typing import Any
 
-from llm_client.models import (
+from llm_client.core.models import (
     ModelInfo,
     TaskProfile,
     _load_config,

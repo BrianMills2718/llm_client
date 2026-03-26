@@ -17,7 +17,7 @@ import statistics
 from datetime import date
 from typing import Any
 
-from llm_client import io_log as _io_log
+import llm_client.io_log as _io_log
 from llm_client.experiment_summary import summarize_adoption_profiles, summarize_agent_outcomes
 
 

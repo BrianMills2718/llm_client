@@ -53,7 +53,7 @@ _CODEX_TRANSPORT_ENV = "LLM_CLIENT_CODEX_TRANSPORT"
 
 def _agents_mod() -> Any:
     """Lazy import of llm_client.agents to break circular dependency."""
-    import llm_client.agents as _m
+    import llm_client.sdk.agents as _m
     return _m
 
 
@@ -727,7 +727,7 @@ async def _acall_codex_via_cli(
 def _runtime_mod() -> Any:
     """Lazy import of ``agents_codex_runtime`` to keep wrappers monkeypatchable."""
 
-    import llm_client.agents_codex_runtime as _runtime
+    import llm_client.sdk.agents_codex_runtime as _runtime
 
     return _runtime
 
@@ -1207,7 +1207,7 @@ class AsyncCodexStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
-        from llm_client import io_log as _io_log
+        import llm_client.io_log as _io_log
         _io_log.log_call(
             model=self._model, messages=self._messages, result=self._result,
             latency_s=time.monotonic() - self._t0,

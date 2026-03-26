@@ -1,6 +1,6 @@
 """Focused regression tests for public-call lifecycle emission.
 
-These tests isolate the wrapper boundary in ``llm_client.client`` and prove
+These tests isolate the wrapper boundary in ``llm_client.core.client`` and prove
 that the public text/structured entrypoints emit lifecycle events again after
 the wrapper-side liveness logic was restored.
 """
@@ -15,8 +15,9 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
-from llm_client import client, io_log
-from llm_client.data_types import LLMCallResult
+from llm_client.core import client
+import llm_client.io_log as io_log
+from llm_client.core.data_types import LLMCallResult
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +133,7 @@ def test_call_llm_structured_emits_started_and_completed_lifecycle(monkeypatch: 
         return parsed, result
 
     monkeypatch.setattr(
-        "llm_client.structured_runtime._call_llm_structured_impl",
+        "llm_client.execution.structured_runtime._call_llm_structured_impl",
         _fake_impl,
     )
 
@@ -169,11 +170,11 @@ def test_stream_llm_emits_started_progress_completed_lifecycle(
 
     # mock-ok: keeps provider out of the test while validating lifecycle.
     monkeypatch.setattr(
-        "llm_client.client.litellm.stream_chunk_builder",
+        "llm_client.core.client.litellm.stream_chunk_builder",
         lambda chunks: None,
     )
     monkeypatch.setattr(
-        "llm_client.client.litellm.completion",
+        "llm_client.core.client.litellm.completion",
         lambda **kwargs: iter([_mock_stream_chunk("hello")]),
     )
 
@@ -215,10 +216,10 @@ def test_stream_llm_emits_failed_lifecycle_on_iteration_error(monkeypatch: pytes
             return _mock_stream_chunk("part")
 
     monkeypatch.setattr(
-        "llm_client.client.litellm.stream_chunk_builder",
+        "llm_client.core.client.litellm.stream_chunk_builder",
         lambda chunks: None,
     )
-    monkeypatch.setattr("llm_client.client.litellm.completion", lambda **kwargs: _FailingStream())
+    monkeypatch.setattr("llm_client.core.client.litellm.completion", lambda **kwargs: _FailingStream())
 
     stream = client.stream_llm(
         "gpt-4",
@@ -261,7 +262,7 @@ async def test_acall_llm_structured_emits_failed_lifecycle(monkeypatch: pytest.M
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
-        "llm_client.structured_runtime._acall_llm_structured_impl",
+        "llm_client.execution.structured_runtime._acall_llm_structured_impl",
         _fake_impl,
     )
 
@@ -301,10 +302,10 @@ async def test_astream_llm_emits_started_progress_completed_lifecycle(
         return _MockAsyncStream([_mock_stream_chunk("hello")])
 
     monkeypatch.setattr(
-        "llm_client.client.litellm.stream_chunk_builder",
+        "llm_client.core.client.litellm.stream_chunk_builder",
         lambda chunks: None,
     )
-    monkeypatch.setattr("llm_client.client.litellm.acompletion", _stream)
+    monkeypatch.setattr("llm_client.core.client.litellm.acompletion", _stream)
 
     stream = await client.astream_llm(
         "gpt-4",
@@ -341,10 +342,10 @@ async def test_astream_llm_emits_failed_lifecycle_on_iteration_error(
         return _MockAsyncStream([_mock_stream_chunk("part")], fail_after=True)
 
     monkeypatch.setattr(
-        "llm_client.client.litellm.stream_chunk_builder",
+        "llm_client.core.client.litellm.stream_chunk_builder",
         lambda chunks: None,
     )
-    monkeypatch.setattr("llm_client.client.litellm.acompletion", _stream)
+    monkeypatch.setattr("llm_client.core.client.litellm.acompletion", _stream)
 
     stream = await client.astream_llm(
         "gpt-4",

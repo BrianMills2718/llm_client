@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from llm_client.client import LLMCallResult
+from llm_client.core.client import LLMCallResult
 from llm_client.result_metadata import (
     annotate_result_identity,
     build_routing_trace,

@@ -34,7 +34,7 @@ from llm_client import (
     acall_llm,
     call_llm,
 )
-from llm_client.mcp_agent import (
+from llm_client.agent.mcp_agent import (
     MCP_LOOP_KWARGS,
     _build_active_artifact_context_content,
     _clear_old_tool_results_for_context,
@@ -486,7 +486,7 @@ class TestFailureTaxonomy:
     }
 
     def test_runtime_event_codes_match_canonical_failure_set(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         runtime_codes = {
             value
@@ -527,7 +527,7 @@ class TestFailureTaxonomy:
         event_code: str,
         expected_class: str,
     ) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         primary, _secondary = mcp_agent._classify_failure_signals(
             failure_event_codes=[event_code],
@@ -539,7 +539,7 @@ class TestFailureTaxonomy:
         assert primary == expected_class
 
     def test_first_terminal_failure_event_code_prefers_earliest_terminal_event(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         first_terminal = mcp_agent._first_terminal_failure_event_code(
             [
@@ -551,7 +551,7 @@ class TestFailureTaxonomy:
         assert first_terminal == "CONTROL_CHURN_THRESHOLD_EXCEEDED"
 
     def test_submit_forced_accept_codes_are_informational(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         for event_code in (
             "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION",
@@ -572,7 +572,7 @@ class TestFailureTaxonomy:
             assert first_terminal is None
 
     def test_provider_credits_exhausted_classification(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         is_provider, event_code, classification, retryable = (
             mcp_agent._provider_failure_classification(
@@ -591,7 +591,7 @@ class TestFailureTaxonomy:
 
 class TestLaneClosureAnalysis:
     def test_lane_closure_detects_unresolved_requirements(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         normalized = mcp_agent._normalize_tool_contracts(
             {
@@ -613,7 +613,7 @@ class TestLaneClosureAnalysis:
         assert analysis["unresolved_tools"][0]["tool"] == "relationship_onehop"
 
     def test_lane_closure_resolves_via_conversion_tool(self) -> None:
-        import llm_client.mcp_agent as mcp_agent
+        import llm_client.agent.mcp_agent as mcp_agent
 
         normalized = mcp_agent._normalize_tool_contracts(
             {
@@ -703,8 +703,8 @@ class TestAcallWithMcp:
         ))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             # Setup MCP mocks
             mock_stdio = AsyncMock()
@@ -723,7 +723,7 @@ class TestAcallWithMcp:
             # LLM returns text answer
             mock_acall.return_value = _make_llm_result(content="Paris", finish_reason="stop")
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "What is the capital of France?"}],
@@ -765,8 +765,8 @@ class TestAcallWithMcp:
         ))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -780,7 +780,7 @@ class TestAcallWithMcp:
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_acall.return_value = _make_llm_result(content="Paris", finish_reason="stop")
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "What is the capital of France?"}],
@@ -802,7 +802,7 @@ class TestAcallWithMcp:
             tools=[_make_tool("search")],
         ))
 
-        with patch("llm_client.mcp_agent._import_mcp") as mock_import:
+        with patch("llm_client.agent.mcp_agent._import_mcp") as mock_import:
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
             mock_stdio.__aexit__ = AsyncMock(return_value=False)
@@ -814,7 +814,7 @@ class TestAcallWithMcp:
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             with pytest.raises(ValueError, match="ADOPTION_PROFILE_VIOLATION\\[strict\\]"):
                 await _acall_with_mcp(
                     "test-model",
@@ -825,10 +825,10 @@ class TestAcallWithMcp:
                 )
 
     async def test_strict_adoption_profile_warns_for_nontrivial_direct_tool_quality(self) -> None:
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.return_value = _make_llm_result(content="done", finish_reason="stop")
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
 
             result = await _acall_with_tools(
                 "test-model",
@@ -861,8 +861,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -889,7 +889,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="Paris"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -939,8 +939,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -964,7 +964,7 @@ class TestAcallWithMcp:
             # max_turns=2: 2 loop iterations + 1 final call = 3 calls total
             mock_acall.side_effect = [tool_call_result, tool_call_result, final_result]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -987,8 +987,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1009,7 +1009,7 @@ class TestAcallWithMcp:
             final_result = _make_llm_result(content="forced by tool budget")
             mock_acall.side_effect = [tool_call_result, final_result]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1034,8 +1034,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1060,7 +1060,7 @@ class TestAcallWithMcp:
                 ),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1091,8 +1091,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1118,7 +1118,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="fallback final answer", model="fallback-model"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1161,8 +1161,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1189,7 +1189,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="forced by retrieval budget"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1214,8 +1214,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1238,7 +1238,7 @@ class TestAcallWithMcp:
             )
             mock_acall.side_effect = [tool_call_result, provider_empty_exc, provider_empty_exc]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1274,8 +1274,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1299,7 +1299,7 @@ class TestAcallWithMcp:
             parse_exc = Exception("JSON parse error in finalization payload")
             mock_acall.side_effect = [tool_call_result, provider_empty_exc, parse_exc]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1329,8 +1329,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1363,7 +1363,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="final answer via fallback", model="fallback-model"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1397,9 +1397,9 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
-            patch("llm_client.mcp_agent.validate_foundation_event", side_effect=ValueError("schema mismatch")),
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent.validate_foundation_event", side_effect=ValueError("schema mismatch")),
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1421,7 +1421,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             with pytest.raises(RuntimeError, match="FOUNDATION_EVENT_INVALID"):
                 await _acall_with_mcp(
                     "test-model",
@@ -1440,8 +1440,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1463,7 +1463,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer after rejection"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1512,8 +1512,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1542,7 +1542,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer after schema rejection"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1570,8 +1570,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1596,7 +1596,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer after contract rejection"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1638,8 +1638,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1664,7 +1664,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="binding conflict handled"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1705,8 +1705,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1739,7 +1739,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1798,8 +1798,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1832,7 +1832,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1894,8 +1894,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1928,7 +1928,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -1972,8 +1972,8 @@ class TestAcallWithMcp:
         mock_session.call_tool = AsyncMock(return_value=_make_tool_result("result"))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -1998,7 +1998,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="capability mismatch handled"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -2037,7 +2037,7 @@ class TestAcallWithMcp:
         mock_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -2050,7 +2050,7 @@ class TestAcallWithMcp:
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             with pytest.raises(ValueError, match="No tools discovered"):
                 await _acall_with_mcp(
                     "test-model",
@@ -2067,8 +2067,8 @@ class TestAcallWithMcp:
         ))
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -2090,7 +2090,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -2113,8 +2113,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -2136,7 +2136,7 @@ class TestAcallWithMcp:
                 _make_llm_result(content="answer"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -2158,8 +2158,8 @@ class TestAcallWithMcp:
         )
 
         with (
-            patch("llm_client.mcp_agent._import_mcp") as mock_import,
-            patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall,
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
         ):
             mock_stdio = AsyncMock()
             mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
@@ -2188,7 +2188,7 @@ class TestAcallWithMcp:
                 ),
             ]
 
-            from llm_client.mcp_agent import _acall_with_mcp
+            from llm_client.agent.mcp_agent import _acall_with_mcp
             result = await _acall_with_mcp(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -2213,7 +2213,7 @@ class TestRouting:
     @pytest.mark.asyncio
     async def test_non_agent_with_mcp_routes_to_loop(self) -> None:
         """Non-agent model + mcp_servers → MCP agent loop."""
-        with patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop:
+        with patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop:
             mock_loop.return_value = _make_llm_result(content="answer")
 
             result = await acall_llm(
@@ -2239,8 +2239,8 @@ class TestRouting:
     async def test_agent_model_with_mcp_skips_loop(self) -> None:
         """Agent model + mcp_servers → existing agent SDK path (not MCP loop)."""
         with (
-            patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop,
-            patch("llm_client.agents._route_acall") as mock_route,
+            patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop,
+            patch("llm_client.sdk.agents._route_acall") as mock_route,
         ):
             mock_route.return_value = _make_llm_result(content="agent answer")
 
@@ -2260,7 +2260,7 @@ class TestRouting:
     async def test_no_mcp_servers_normal_routing(self) -> None:
         """No mcp_servers → normal litellm routing."""
         with (
-            patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop,
+            patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop,
             patch("litellm.acompletion") as mock_completion,
         ):
             mock_msg = MagicMock()
@@ -2290,7 +2290,7 @@ class TestRouting:
 
     def test_sync_call_llm_with_mcp(self) -> None:
         """Sync call_llm with mcp_servers routes to MCP loop."""
-        with patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop:
+        with patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop:
             mock_loop.return_value = _make_llm_result(content="sync answer")
 
             result = call_llm(
@@ -2308,7 +2308,7 @@ class TestRouting:
     @pytest.mark.asyncio
     async def test_mcp_kwargs_popped_from_inner_calls(self) -> None:
         """MCP-specific kwargs don't leak to inner acall_llm."""
-        with patch("llm_client.mcp_agent._acall_with_mcp") as mock_loop:
+        with patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop:
             mock_loop.return_value = _make_llm_result(content="answer")
 
             await acall_llm(
@@ -2347,7 +2347,7 @@ class TestAgentDiagnostics:
 
     async def test_sticky_fallback(self) -> None:
         """When inner call returns a different model (fallback), remaining turns use it."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         call_count = 0
 
@@ -2379,7 +2379,7 @@ class TestAgentDiagnostics:
 
         agent_result = MCPAgentResult()
 
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2403,7 +2403,7 @@ class TestAgentDiagnostics:
 
     async def test_warnings_propagated_from_turns(self) -> None:
         """Per-turn warnings from inner acall_llm accumulate in MCPAgentResult."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         async def mock_executor(tc, ml):
             records = [MCPToolCallRecord(server="s", tool="t", arguments={}, result="ok")]
@@ -2422,7 +2422,7 @@ class TestAgentDiagnostics:
 
         agent_result = MCPAgentResult()
 
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=results):
             await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2444,12 +2444,12 @@ class TestAgentDiagnostics:
 
     async def test_models_used_tracked(self) -> None:
         """models_used set tracks all models that responded."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         result = _make_llm_result(content="ok", model="gemini/gemini-2.5-flash")
         agent_result = MCPAgentResult()
 
-        with patch("llm_client.mcp_agent._inner_acall_llm", return_value=result):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", return_value=result):
             await _agent_loop(
                 "gemini/gemini-2.5-flash",
                 [{"role": "user", "content": "q"}],
@@ -2469,7 +2469,7 @@ class TestAgentDiagnostics:
 
     async def test_progressive_tool_disclosure_filters_then_unlocks(self) -> None:
         """Only composable tools are exposed per turn; newly-produced artifacts unlock others."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         observed_tool_surfaces: list[list[str]] = []
 
@@ -2529,7 +2529,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2561,7 +2561,7 @@ class TestAgentDiagnostics:
 
     async def test_runtime_artifact_read_reopens_typed_artifact_handles(self) -> None:
         """Typed artifacts can be reopened explicitly by artifact_id without another external tool call."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         observed_tool_surfaces: list[list[str]] = []
         executor_call_count = 0
@@ -2646,7 +2646,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2694,7 +2694,7 @@ class TestAgentDiagnostics:
 
     async def test_handle_input_contract_injects_resolved_artifacts_for_consumer_tool(self) -> None:
         """Declarative handle inputs can resolve artifact handles into injected executor args."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_calls: list[dict[str, Any]] = []
 
@@ -2805,7 +2805,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2833,7 +2833,7 @@ class TestAgentDiagnostics:
 
     async def test_handle_input_contract_rejects_unknown_artifact_handle(self) -> None:
         """Handle-aware contracts should reject unknown artifact handles before executor runs."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         async def mock_inner_acall(model, messages, **kwargs):
             if not any(msg.get("role") == "tool" for msg in messages if isinstance(msg, dict)):
@@ -2871,7 +2871,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2901,7 +2901,7 @@ class TestAgentDiagnostics:
 
     async def test_progressive_disclosure_reports_bounded_unavailable_reasons(self) -> None:
         """Disclosure adds bounded unavailable reason guidance and tracks overhead metadata."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         observed_tools: list[list[str]] = []
 
@@ -2938,7 +2938,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -2977,7 +2977,7 @@ class TestAgentDiagnostics:
 
     async def test_progressive_disclosure_suggests_repair_tools(self) -> None:
         """Unavailable guidance includes legal conversion/repair tool hints."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         async def mock_inner_acall(model, messages, **kwargs):
             return _make_llm_result(content="done")
@@ -3003,7 +3003,7 @@ class TestAgentDiagnostics:
         }
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=mock_inner_acall):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3036,7 +3036,7 @@ class TestAgentDiagnostics:
 
     async def test_context_tool_result_clearing_emits_metadata(self) -> None:
         """Older tool results are proactively cleared and surfaced in metadata counters."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         llm_results = [
             _make_llm_result(
@@ -3067,7 +3067,7 @@ class TestAgentDiagnostics:
             )
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3095,7 +3095,7 @@ class TestAgentDiagnostics:
 
     async def test_submit_answer_enforced_when_tool_available(self) -> None:
         """When submit_answer exists, plain-text response is nudged into explicit submission."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         llm_results = [
             _make_llm_result(content="June 1982"),
@@ -3130,7 +3130,7 @@ class TestAgentDiagnostics:
             )
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3159,7 +3159,7 @@ class TestAgentDiagnostics:
 
     async def test_required_submit_not_attempted_is_policy_failure(self) -> None:
         """If submit_answer is available but never called, classify as required-submit policy failure."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         llm_results = [
             _make_llm_result(content="June 1982", finish_reason="stop"),
@@ -3169,7 +3169,7 @@ class TestAgentDiagnostics:
             return ([], [])
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3198,7 +3198,7 @@ class TestAgentDiagnostics:
 
     async def test_autofill_reasoning_for_todo_write(self) -> None:
         """todo_write missing tool_reasoning is auto-filled and executed in strict mode."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         observed_tool_calls: list[dict[str, Any]] = []
 
@@ -3222,7 +3222,7 @@ class TestAgentDiagnostics:
         ]
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3251,7 +3251,7 @@ class TestAgentDiagnostics:
 
     async def test_retrieval_stagnation_forces_final_answer(self) -> None:
         """Repeated evidence calls with unchanged evidence digest trigger retrieval stagnation fuse."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_call_count = 0
 
@@ -3314,7 +3314,7 @@ class TestAgentDiagnostics:
         ]
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3339,7 +3339,7 @@ class TestAgentDiagnostics:
 
     async def test_retrieval_stagnation_observe_does_not_force_final(self) -> None:
         """Observe mode logs stagnation but allows the loop to continue."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_call_count = 0
 
@@ -3413,7 +3413,7 @@ class TestAgentDiagnostics:
         ]
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],
@@ -3443,7 +3443,7 @@ class TestAgentDiagnostics:
 
     async def test_submit_retry_requires_new_evidence_signal(self) -> None:
         """If submit validation requires new evidence, suppress resubmit until evidence tool succeeds."""
-        from llm_client.mcp_agent import MCPAgentResult, _agent_loop
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_call_count = 0
 
@@ -3553,7 +3553,7 @@ class TestAgentDiagnostics:
         ]
 
         agent_result = MCPAgentResult()
-        with patch("llm_client.mcp_agent._inner_acall_llm", side_effect=llm_results):
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
             content, finish = await _agent_loop(
                 "test-model",
                 [{"role": "user", "content": "q"}],

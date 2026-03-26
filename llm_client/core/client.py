@@ -57,8 +57,8 @@ from pydantic import BaseModel
 litellm.enable_json_schema_validation = True
 
 from llm_client.core.config import ClientConfig
-from llm_client import io_log as _io_log
-from llm_client import rate_limit as _rate_limit
+import llm_client.io_log as _io_log
+import llm_client.utils.rate_limit as _rate_limit
 from llm_client.execution.call_contracts import (
     AGENT_RETRY_SAFE_ENV,
     ExecutionMode,

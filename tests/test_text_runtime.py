@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from llm_client import LRUCache
-from llm_client.text_runtime import _acall_llm_impl, _call_llm_impl
+from llm_client.execution.text_runtime import _acall_llm_impl, _call_llm_impl
 
 
 def _mock_response(content: str = "Hello!") -> MagicMock:
@@ -34,8 +34,8 @@ def _explicit_test_runtime_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
 
 
-@patch("llm_client.client.litellm.completion_cost", return_value=0.001)
-@patch("llm_client.client.litellm.completion")
+@patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
+@patch("llm_client.core.client.litellm.completion")
 def test_text_runtime_sync_preserves_cache_and_identity_contracts(
     mock_comp: MagicMock,
     _mock_cost: MagicMock,
@@ -59,8 +59,8 @@ def test_text_runtime_sync_preserves_cache_and_identity_contracts(
 
 
 @pytest.mark.asyncio
-@patch("llm_client.client.litellm.completion_cost", return_value=0.001)
-@patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
+@patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
+@patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
 async def test_text_runtime_async_preserves_cache_and_identity_contracts(
     mock_acompletion: AsyncMock,
     _mock_cost: MagicMock,

@@ -7,7 +7,7 @@ kwargs must stay JSON-serializable and must not receive those private values.
 
 from __future__ import annotations
 
-from llm_client.client import _prepare_call_kwargs
+from llm_client.core.client import _prepare_call_kwargs
 
 
 def test_prepare_call_kwargs_strips_internal_runtime_objects() -> None:

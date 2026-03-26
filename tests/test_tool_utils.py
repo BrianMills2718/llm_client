@@ -25,7 +25,7 @@ from llm_client import (
     lint_tool_registry,
     prepare_direct_tools,
 )
-from llm_client.tool_utils import execute_direct_tool_calls
+from llm_client.tools.tool_utils import execute_direct_tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -459,10 +459,10 @@ def _make_llm_result(
 class TestAcallWithTools:
     async def test_single_turn_no_tool_calls(self) -> None:
         """LLM answers immediately without calling tools."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.return_value = _make_llm_result(content="42")
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "What is 6*7?"}],
@@ -478,7 +478,7 @@ class TestAcallWithTools:
 
     async def test_tool_call_then_answer(self) -> None:
         """LLM calls add tool, gets result, then answers."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 # Turn 1: call add(3, 4)
                 _make_llm_result(tool_calls=[{
@@ -493,7 +493,7 @@ class TestAcallWithTools:
                 _make_llm_result(content="The answer is 7"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "What is 3+4?"}],
@@ -513,7 +513,7 @@ class TestAcallWithTools:
 
     async def test_async_tool_call(self) -> None:
         """Async tool functions work correctly."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(tool_calls=[{
                     "id": "call_1",
@@ -526,7 +526,7 @@ class TestAcallWithTools:
                 _make_llm_result(content="Paris is the capital"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "Search for Paris"}],
@@ -540,7 +540,7 @@ class TestAcallWithTools:
 
     async def test_tool_error_propagates_to_llm(self) -> None:
         """Tool errors become tool messages so the LLM can see them."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(tool_calls=[{
                     "id": "call_1",
@@ -553,7 +553,7 @@ class TestAcallWithTools:
                 _make_llm_result(content="The tool failed"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "Do something"}],
@@ -567,7 +567,7 @@ class TestAcallWithTools:
             assert "RuntimeError" in result.raw_response.tool_calls[0].error
 
     async def test_empty_tools_raises(self) -> None:
-        from llm_client.mcp_agent import _acall_with_tools
+        from llm_client.agent.mcp_agent import _acall_with_tools
         with pytest.raises(ValueError, match="empty"):
             await _acall_with_tools(
                 "test-model",
@@ -579,7 +579,7 @@ class TestAcallWithTools:
 
     async def test_usage_accumulates(self) -> None:
         """Usage tokens accumulate across turns."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(
                     tool_calls=[{
@@ -596,7 +596,7 @@ class TestAcallWithTools:
                 ),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "1+2?"}],
@@ -611,14 +611,14 @@ class TestAcallWithTools:
 
     async def test_max_turns_forces_answer(self) -> None:
         """max_turns exhaustion triggers final answer without tools."""
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             tool_call = _make_llm_result(tool_calls=[{
                 "id": "c1", "type": "function",
                 "function": {"name": "add", "arguments": '{"a": 1, "b": 1}'},
             }])
             mock_acall.side_effect = [tool_call, tool_call, _make_llm_result(content="forced")]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -632,7 +632,7 @@ class TestAcallWithTools:
             assert result.raw_response.turns == 3  # 2 loop + 1 forced
 
     async def test_metadata_counts_arg_validation_rejections(self) -> None:
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(tool_calls=[{
                     "id": "c1", "type": "function",
@@ -641,7 +641,7 @@ class TestAcallWithTools:
                 _make_llm_result(content="done"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -656,7 +656,7 @@ class TestAcallWithTools:
             assert agent.metadata["tool_arg_coercions"] == 0
 
     async def test_direct_tools_path_uses_compliance_gate(self) -> None:
-        with patch("llm_client.mcp_agent._inner_acall_llm") as mock_acall:
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall:
             mock_acall.side_effect = [
                 _make_llm_result(tool_calls=[{
                     "id": "c1",
@@ -666,7 +666,7 @@ class TestAcallWithTools:
                 _make_llm_result(content="done"),
             ]
 
-            from llm_client.mcp_agent import _acall_with_tools
+            from llm_client.agent.mcp_agent import _acall_with_tools
             result = await _acall_with_tools(
                 "test-model",
                 [{"role": "user", "content": "Q"}],
@@ -688,8 +688,8 @@ class TestAcallWithTools:
 
     async def test_shim_path_uses_compliance_gate_schema_reject(self) -> None:
         with (
-            patch("llm_client.models.supports_tool_calling", return_value=False),
-            patch("llm_client.tool_shim._inner_acall_llm") as mock_acall,
+            patch("llm_client.core.models.supports_tool_calling", return_value=False),
+            patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall,
         ):
             mock_acall.side_effect = [
                 _make_llm_result(
@@ -731,8 +731,8 @@ class TestAcallWithTools:
 
     async def test_shim_path_rejects_binding_conflict_pre_execution(self) -> None:
         with (
-            patch("llm_client.models.supports_tool_calling", return_value=False),
-            patch("llm_client.tool_shim._inner_acall_llm") as mock_acall,
+            patch("llm_client.core.models.supports_tool_calling", return_value=False),
+            patch("llm_client.tools.tool_shim._inner_acall_llm") as mock_acall,
         ):
             mock_acall.side_effect = [
                 _make_llm_result(
@@ -783,7 +783,7 @@ class TestAcallWithTools:
 class TestPythonToolsRouting:
     async def test_routes_to_tool_loop(self) -> None:
         """python_tools on non-agent model → direct tool loop."""
-        with patch("llm_client.mcp_agent._acall_with_tools") as mock_loop:
+        with patch("llm_client.agent.mcp_agent._acall_with_tools") as mock_loop:
             mock_loop.return_value = _make_llm_result(content="answer")
 
             from llm_client import acall_llm

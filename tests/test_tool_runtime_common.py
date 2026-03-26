@@ -7,8 +7,8 @@ helpers without importing one another's runtime modules.
 
 from __future__ import annotations
 
-import llm_client.mcp_agent as mcp_agent
-from llm_client.tool_runtime_common import (
+import llm_client.agent.mcp_agent as mcp_agent
+from llm_client.tools.tool_runtime_common import (
     MCPAgentResult,
     MCPToolCallRecord,
     append_input_examples_to_description,

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from llm_client import LLMCallResult
-from llm_client.mcp_agent import (
+from llm_client.agent.mcp_agent import (
     acall_with_mcp_runtime,
     acall_with_python_tools_runtime,
 )
@@ -32,7 +32,7 @@ def _make_result() -> LLMCallResult:
 @pytest.mark.asyncio
 async def test_acall_with_mcp_runtime_delegates_to_private_loop() -> None:
     """The MCP adapter should call the existing private loop implementation."""
-    with patch("llm_client.mcp_agent._acall_with_mcp", new_callable=AsyncMock) as mock_loop:
+    with patch("llm_client.agent.mcp_agent._acall_with_mcp", new_callable=AsyncMock) as mock_loop:
         mock_loop.return_value = _make_result()
         result = await acall_with_mcp_runtime(
             "gemini/gemini-2.5-flash",
@@ -54,7 +54,7 @@ async def test_acall_with_mcp_runtime_delegates_to_private_loop() -> None:
 async def test_acall_with_python_tools_runtime_delegates_to_private_loop() -> None:
     """The direct-tool adapter should call the existing private tool loop."""
     tool = object()
-    with patch("llm_client.mcp_agent._acall_with_tools", new_callable=AsyncMock) as mock_loop:
+    with patch("llm_client.agent.mcp_agent._acall_with_tools", new_callable=AsyncMock) as mock_loop:
         mock_loop.return_value = _make_result()
         result = await acall_with_python_tools_runtime(
             "gemini/gemini-2.5-flash",

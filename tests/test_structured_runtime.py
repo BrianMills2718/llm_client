@@ -11,8 +11,8 @@ import pytest
 from pydantic import BaseModel
 
 from llm_client import LRUCache
-from llm_client.errors import LLMCapabilityError
-from llm_client.structured_runtime import _acall_llm_structured_impl, _call_llm_structured_impl
+from llm_client.core.errors import LLMCapabilityError
+from llm_client.execution.structured_runtime import _acall_llm_structured_impl, _call_llm_structured_impl
 
 
 class _City(BaseModel):
@@ -40,9 +40,9 @@ def _explicit_test_runtime_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
 
 
-@patch("llm_client.client.litellm.completion_cost", return_value=0.001)
-@patch("llm_client.client.litellm.supports_response_schema", return_value=True)
-@patch("llm_client.client.litellm.completion")
+@patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
+@patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
+@patch("llm_client.core.client.litellm.completion")
 def test_structured_runtime_sync_preserves_cache_and_identity_contracts(
     mock_comp: MagicMock,
     _mock_supports_schema: MagicMock,
@@ -85,9 +85,9 @@ def test_structured_runtime_sync_preserves_cache_and_identity_contracts(
 
 
 @pytest.mark.asyncio
-@patch("llm_client.client.litellm.completion_cost", return_value=0.001)
-@patch("llm_client.client.litellm.supports_response_schema", return_value=True)
-@patch("llm_client.client.litellm.acompletion", new_callable=AsyncMock)
+@patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
+@patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
+@patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
 async def test_structured_runtime_async_preserves_cache_and_identity_contracts(
     mock_acompletion: AsyncMock,
     _mock_supports_schema: MagicMock,
@@ -129,9 +129,9 @@ async def test_structured_runtime_async_preserves_cache_and_identity_contracts(
     assert meta2.routing_trace["attempted_models"] == ["gpt-4"]
 
 
-@patch("llm_client.client.litellm.supports_response_schema", return_value=True)
+@patch("llm_client.core.client.litellm.supports_response_schema", return_value=True)
 @patch(
-    "llm_client.client.litellm.completion",
+    "llm_client.core.client.litellm.completion",
     side_effect=RuntimeError(
         "Invalid schema for response_format 'City': extra required key 'name' "
         "(invalid_json_schema)"
@@ -157,7 +157,7 @@ def test_structured_runtime_sync_raises_capability_error_for_gpt5_schema_rejecti
 
 @pytest.mark.asyncio
 @patch(
-    "llm_client.client.litellm.aresponses",
+    "llm_client.core.client.litellm.aresponses",
     new_callable=AsyncMock,
     side_effect=RuntimeError(
         "Invalid schema for response_format 'City': extra required key 'name' "

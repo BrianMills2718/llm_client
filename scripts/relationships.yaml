@@ -6,11 +6,11 @@ required_reading:
 
 couplings:
   - sources:
-      - llm_client/client.py
-      - llm_client/*_runtime.py
-      - llm_client/execution_kernel.py
-      - llm_client/routing.py
-      - llm_client/config.py
+      - llm_client/core/client.py
+      - llm_client/execution/*_runtime.py
+      - llm_client/execution/execution_kernel.py
+      - llm_client/core/routing.py
+      - llm_client/core/config.py
     docs:
       - docs/adr/0001-model-identity-v0.md
       - docs/adr/0002-routing-config-precedence.md
@@ -23,10 +23,10 @@ couplings:
     required_reading: true
 
   - sources:
-      - llm_client/mcp_agent.py
+      - llm_client/agent/mcp_agent.py
       - llm_client/foundation.py
-      - llm_client/agents.py
-      - llm_client/tool_shim.py
+      - llm_client/sdk/agents.py
+      - llm_client/tools/tool_shim.py
     docs:
       - docs/adr/0005-reason-code-registry-governance.md
       - docs/adr/0006-actor-id-issuance-policy.md

@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-import llm_client.agents as agents_mod
-import llm_client.agents_codex as agents_codex_mod
+import llm_client.sdk.agents as agents_mod
+import llm_client.sdk.agents_codex as agents_codex_mod
 from llm_client import (
     Hooks,
     LLMCallResult,
@@ -40,7 +40,7 @@ from llm_client import (
     stream_llm,
     stream_llm_with_tools,
 )
-from llm_client.agents import (
+from llm_client.sdk.agents import (
     _build_agent_options,
     _build_codex_cli_command,
     _messages_to_agent_prompt,
@@ -48,8 +48,8 @@ from llm_client.agents import (
     _parse_agent_model,
     _result_from_codex,
 )
-from llm_client.errors import LLMError, LLMTransientError
-from llm_client.client import _is_agent_model
+from llm_client.core.errors import LLMError, LLMTransientError
+from llm_client.core.client import _is_agent_model
 
 
 @pytest.fixture(autouse=True)
@@ -369,7 +369,7 @@ def _mock_agent_sdk(monkeypatch):
     fake_mod = _make_fake_sdk_module()
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_mod)
     # Also clear the cached lazy import in agents module if it was previously imported
-    import llm_client.agents as agents_mod
+    import llm_client.sdk.agents as agents_mod
     # Force re-import on next call by invalidating any cached references
     for attr in ("query", "AssistantMessage", "ResultMessage", "TextBlock", "ToolUseBlock",
                   "ToolResultBlock", "UserMessage", "ClaudeAgentOptions"):
@@ -532,7 +532,7 @@ class TestOnTurnCallback:
         assert isinstance(result, LLMCallResult)
         assert len(events) == 1
         ev = events[0]
-        from llm_client.data_types import TurnEvent
+        from llm_client.core.data_types import TurnEvent
         assert isinstance(ev, TurnEvent)
         assert ev.turn >= 1
         assert ev.elapsed_s >= 0.0
@@ -651,8 +651,8 @@ class TestAgentFallback:
         mock_resp.usage.total_tokens = 15
 
         with (
-            patch("llm_client.client.litellm.completion", return_value=mock_resp),
-            patch("llm_client.client.litellm.completion_cost", return_value=0.001),
+            patch("llm_client.core.client.litellm.completion", return_value=mock_resp),
+            patch("llm_client.core.client.litellm.completion_cost", return_value=0.001),
         ):
             result = call_llm(
                 "claude-code",
@@ -1609,8 +1609,8 @@ class TestCodexFallback:
         mock_resp.usage.total_tokens = 15
 
         with (
-            patch("llm_client.client.litellm.completion", return_value=mock_resp),
-            patch("llm_client.client.litellm.completion_cost", return_value=0.001),
+            patch("llm_client.core.client.litellm.completion", return_value=mock_resp),
+            patch("llm_client.core.client.litellm.completion_cost", return_value=0.001),
         ):
             result = call_llm(
                 "codex",
@@ -1882,7 +1882,7 @@ class TestCodexMcpServers:
         """_create_codex_home generates a valid config.toml."""
         from pathlib import Path
 
-        from llm_client.agents import _cleanup_tmp, _create_codex_home
+        from llm_client.sdk.agents import _cleanup_tmp, _create_codex_home
 
         servers = {
             "my-server": {
@@ -1912,7 +1912,7 @@ class TestCodexMcpServers:
 
     def test_prepare_codex_mcp_passthrough(self) -> None:
         """No mcp_servers → kwargs unchanged, no tmp_dir."""
-        from llm_client.agents import _prepare_codex_mcp
+        from llm_client.sdk.agents import _prepare_codex_mcp
 
         kwargs = {"sandbox_mode": "workspace-write"}
         out, tmp = _prepare_codex_mcp(kwargs)
@@ -1923,7 +1923,7 @@ class TestCodexMcpServers:
         """mcp_servers → creates codex_home, removes mcp_servers from kwargs."""
         from pathlib import Path
 
-        from llm_client.agents import _cleanup_tmp, _prepare_codex_mcp
+        from llm_client.sdk.agents import _cleanup_tmp, _prepare_codex_mcp
 
         kwargs = {
             "sandbox_mode": "workspace-write",
@@ -1940,7 +1940,7 @@ class TestCodexMcpServers:
 
     def test_prepare_codex_mcp_rejects_both(self) -> None:
         """Cannot specify both mcp_servers and codex_home."""
-        from llm_client.agents import _prepare_codex_mcp
+        from llm_client.sdk.agents import _prepare_codex_mcp
 
         kwargs = {
             "codex_home": "/some/path",
@@ -1982,12 +1982,12 @@ class TestCodexMcpServers:
 
     def test_cleanup_tmp_handles_none(self) -> None:
         """_cleanup_tmp(None) is a no-op."""
-        from llm_client.agents import _cleanup_tmp
+        from llm_client.sdk.agents import _cleanup_tmp
 
         _cleanup_tmp(None)  # should not raise
 
     def test_cleanup_tmp_handles_missing(self) -> None:
         """_cleanup_tmp with nonexistent path doesn't raise."""
-        from llm_client.agents import _cleanup_tmp
+        from llm_client.sdk.agents import _cleanup_tmp
 
         _cleanup_tmp("/tmp/this_does_not_exist_12345")  # should not raise

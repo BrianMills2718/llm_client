@@ -67,7 +67,7 @@ def _run_gate(
     ],
 )
 def test_required_reading_gate_modes(mode: str, expected_rc: int, expected_fragment: str) -> None:
-    proc = _run_gate(target_file="llm_client/client.py", mode=mode, reads=[])
+    proc = _run_gate(target_file="llm_client/core/client.py", mode=mode, reads=[])
     assert proc.returncode == expected_rc, proc.stdout + proc.stderr
     if expected_fragment:
         assert expected_fragment in proc.stdout
@@ -81,13 +81,13 @@ def test_uncoupled_file_defaults_to_strict_mode() -> None:
 
 def test_client_coupling_includes_background_polling_adr() -> None:
     assert "docs/adr/0009-long-thinking-background-polling.md" in _required_docs_for(
-        "llm_client/client.py"
+        "llm_client/core/client.py"
     )
 
 
 def test_coupled_file_passes_when_required_docs_are_read() -> None:
     proc = _run_gate(
-        target_file="llm_client/client.py",
-        reads=_required_docs_for("llm_client/client.py"),
+        target_file="llm_client/core/client.py",
+        reads=_required_docs_for("llm_client/core/client.py"),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm_client.agent_outcomes import (
+from llm_client.agent.agent_outcomes import (
     EVENT_CODE_PROVIDER_EMPTY,
     EVENT_CODE_REQUIRED_SUBMIT_NOT_ACCEPTED,
     _classify_failure_signals,

@@ -35,7 +35,7 @@ def _get_item_metrics(item: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_trace_diff(args: argparse.Namespace) -> None:
     """Side-by-side trace comparison for the same item across two runs."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
     from llm_client.cli.experiments import _render_conversation_trace
 
     item_id, run_a, run_b = args.trace_diff
@@ -73,7 +73,7 @@ def cmd_trace_diff(args: argparse.Namespace) -> None:
 
 def cmd_breakdown(args: argparse.Namespace) -> None:
     """Show accuracy breakdown by item_id prefix (e.g. 2hop/3hop/4hop)."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     run_id = args.breakdown
     items = io_log.get_run_items(run_id)
@@ -115,7 +115,7 @@ def cmd_breakdown(args: argparse.Namespace) -> None:
 
 def cmd_degradation(args: argparse.Namespace) -> None:
     """Show rolling accuracy within a run to detect performance degradation."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     run_id = args.degradation
     items = io_log.get_run_items(run_id)
@@ -145,7 +145,7 @@ def cmd_degradation(args: argparse.Namespace) -> None:
 
 def cmd_tool_analytics(args: argparse.Namespace) -> None:
     """Show tool usage frequency and pass/fail correlation for a run."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     run_id = args.tool_analytics
     items = io_log.get_run_items(run_id)
@@ -200,7 +200,7 @@ def cmd_tool_analytics(args: argparse.Namespace) -> None:
 
 def cmd_failure_patterns(args: argparse.Namespace) -> None:
     """Find common patterns in failing traces."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     run_id = args.failure_patterns
     items = io_log.get_run_items(run_id)
@@ -278,7 +278,7 @@ def cmd_failure_patterns(args: argparse.Namespace) -> None:
 
 def cmd_interventions(args: argparse.Namespace) -> None:
     """List logged interventions."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     interventions = io_log.get_interventions(
         project=getattr(args, "project", None),
@@ -321,7 +321,7 @@ def cmd_interventions(args: argparse.Namespace) -> None:
 
 def cmd_log_intervention(args: argparse.Namespace) -> None:
     """Log a new intervention from CLI args."""
-    from llm_client import io_log
+    import llm_client.io_log as io_log
 
     iid = io_log.log_intervention(
         description=args.log_intervention[0],

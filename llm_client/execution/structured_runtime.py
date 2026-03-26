@@ -23,7 +23,7 @@ import json as _json
 
 T = TypeVar("T", bound=BaseModel)
 
-_client: Any = import_module("llm_client.client")
+_client: Any = import_module("llm_client.core.client")
 
 
 class _StructuredValidationRetry(Exception):

@@ -1,4 +1,4 @@
-"""Tests for llm_client.tool_registry — PTC tool callable registry.
+"""Tests for llm_client.tools.tool_registry — PTC tool callable registry.
 
 Covers registration, lookup, listing, clearing, bulk registration from lists,
 and the execute_tool_chain code-execution surface (including chaining,
@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import pytest
 
-from llm_client.tool_registry import (
+from llm_client.tools.tool_registry import (
     clear_registry,
     execute_tool_chain,
     get_tool_callable,

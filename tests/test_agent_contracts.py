@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_client.agent_contracts import (
+from llm_client.agent.agent_contracts import (
     _analyze_lane_closure,
     _effective_contract_requirements,
     _normalize_tool_contracts,

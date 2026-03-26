@@ -441,7 +441,7 @@ async def _agent_loop(
 
     Returns (final_content, final_finish_reason).
     """
-    from llm_client import mcp_agent as _mcp_agent
+    from llm_client.agent import mcp_agent as _mcp_agent
 
     _build_agent_usage = _mcp_agent._build_agent_usage
     _foundation_schema_strict_enabled = _mcp_agent._foundation_schema_strict_enabled
@@ -577,7 +577,7 @@ async def _agent_loop(
     foundation_events_logged = 0
     _io_log: Any | None = None
     try:
-        from llm_client import io_log as _io_log_module  # local import to avoid module-cycle hazards
+        import llm_client.io_log as _io_log_module  # local import to avoid module-cycle hazards
         _io_log = _io_log_module
         active_run_id = _io_log_module.get_active_experiment_run_id()
     except Exception:
@@ -674,7 +674,7 @@ async def _agent_loop(
         try:
             _io_log.log_foundation_event(
                 event=validated,
-                caller="llm_client.mcp_agent",
+                caller="llm_client.agent.mcp_agent",
                 task=task,
                 trace_id=trace_id,
             )

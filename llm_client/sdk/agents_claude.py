@@ -509,7 +509,7 @@ class AsyncAgentStream:
         )
         if self._hooks and self._hooks.after_call:
             self._hooks.after_call(self._result)
-        from llm_client import io_log as _io_log
+        import llm_client.io_log as _io_log
         _io_log.log_call(
             model=self._model, messages=self._messages, result=self._result,
             latency_s=time.monotonic() - self._t0,

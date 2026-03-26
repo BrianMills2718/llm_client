@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from llm_client.client import LLMCallResult
+from llm_client.core.client import LLMCallResult
 from llm_client.workflow_langgraph import (
     DRAFT_PROMPT_REF,
     REVISION_PROMPT_REF,

@@ -1,10 +1,10 @@
 """Tests for observability defaults and agent retry safety switches."""
 
-from llm_client.call_contracts import (
+from llm_client.execution.call_contracts import (
     agent_retry_safe_enabled,
     require_tags,
 )
-from llm_client.client import _build_model_chain
+from llm_client.core.client import _build_model_chain
 
 
 def test_require_tags_defaults_when_not_strict(monkeypatch) -> None:
