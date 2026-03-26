@@ -580,7 +580,7 @@ def _call_llm_structured_impl(
                 kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
-            call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+            call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 2}
 
             def _invoke_instructor_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 parsed, completion_response = client.chat.completions.create_with_completion(
@@ -1152,7 +1152,7 @@ async def _acall_llm_structured_impl(
                 kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
-            call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 0}
+            call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 2}
 
             async def _invoke_instructor_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 parsed, completion_response = await client.chat.completions.create_with_completion(
