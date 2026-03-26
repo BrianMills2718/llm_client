@@ -68,8 +68,28 @@ def resolve_evidence_span(
             start_char=start, end_char=end, text=quoted_text, match_method="exact",
         )
     if len(exact_matches) > 1:
-        logger.debug("evidence span has %d exact matches (ambiguous): %r", len(exact_matches), quoted_text[:50])
-        # Ambiguous — fall through to normalized matching which might disambiguate.
+        # Ambiguous exact matches — use hint offsets to disambiguate if available.
+        if hint_start is not None:
+            for start, end in exact_matches:
+                if start == hint_start:
+                    return ResolvedSpan(
+                        start_char=start, end_char=end, text=quoted_text, match_method="exact",
+                    )
+            # Hint didn't match any exact occurrence — pick the closest.
+            closest = min(exact_matches, key=lambda m: abs(m[0] - hint_start))
+            return ResolvedSpan(
+                start_char=closest[0], end_char=closest[1], text=quoted_text, match_method="exact",
+            )
+        # No hints — pick the first occurrence (best we can do).
+        logger.info(
+            "evidence span has %d exact matches, picking first: %r",
+            len(exact_matches),
+            quoted_text[:50],
+        )
+        start, end = exact_matches[0]
+        return ResolvedSpan(
+            start_char=start, end_char=end, text=quoted_text, match_method="exact",
+        )
 
     # Strategy 2: Whitespace-normalized match.
     # Collapse runs of whitespace in both source and quoted text, then find
