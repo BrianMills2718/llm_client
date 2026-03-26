@@ -49,32 +49,31 @@ if [[ -n "$GENERATOR" ]]; then
     fi
 fi
 
-# 2. Doc-coupling check (if script exists)
+# 2. Generated API reference sync (regenerate before coupling check)
+# This must run BEFORE doc-coupling so generated docs are staged when
+# the coupling check compares against origin.
+API_REFERENCE_GEN=$(find_script "generate_api_reference.py")
+if [[ -n "$API_REFERENCE_GEN" ]]; then
+    STAGED_API=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(llm_client/.*\.py|docs/API_REFERENCE\.(md|html)|scripts/meta/generate_api_reference\.py|scripts/doc_coupling\.yaml)$' || true)
+    if [[ -n "$STAGED_API" ]]; then
+        echo "Regenerating API reference docs..."
+        # Regenerate and stage instead of check-only — avoids race condition
+        # where --check compares disk state against staged Python changes.
+        python "$API_REFERENCE_GEN" --write 2>/dev/null || true
+        git add docs/API_REFERENCE.md docs/API_REFERENCE.html 2>/dev/null || true
+    fi
+fi
+
+# 3. Doc-coupling check (after API docs regenerated)
 DOC_COUPLING=$(find_script "check_doc_coupling.py")
 if [[ -n "$DOC_COUPLING" ]]; then
     echo "Checking doc-code coupling..."
-    if ! python "$DOC_COUPLING" --strict 2>/dev/null; then
+    if ! python "$DOC_COUPLING" --staged --strict 2>/dev/null; then
         echo ""
         echo "ERROR: Doc-coupling violation detected!"
         echo "Run 'python $DOC_COUPLING --suggest' to see which docs to update."
         echo ""
         exit 1
-    fi
-fi
-
-# 3. Generated API reference sync (if generator exists)
-API_REFERENCE_GEN=$(find_script "generate_api_reference.py")
-if [[ -n "$API_REFERENCE_GEN" ]]; then
-    STAGED_API=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(llm_client/.*\.py|docs/API_REFERENCE\.(md|html)|scripts/meta/generate_api_reference\.py|scripts/doc_coupling\.yaml)$' || true)
-    if [[ -n "$STAGED_API" ]]; then
-        echo "Checking API reference docs..."
-        if ! python "$API_REFERENCE_GEN" --check 2>/dev/null; then
-            echo ""
-            echo "ERROR: API reference docs are out of sync!"
-            echo "Run 'python $API_REFERENCE_GEN --write' to regenerate them."
-            echo ""
-            exit 1
-        fi
     fi
 fi
 
