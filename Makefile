@@ -102,25 +102,27 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
-.PHONY: test test-quick check install
+.PHONY: test test-verbose test-integration lint typecheck check install
 
-test:  ## Run full test suite
-	@pytest tests/ -q --tb=short
+test:  ## Run all tests
+	python -m pytest tests/ -q
 
-test-quick:  ## Run tests (minimal output)
-	@pytest tests/ -q --tb=no
+test-verbose:  ## Run tests with verbose output
+	python -m pytest tests/ -v
 
-check:  ## Run tests + mypy
-	@echo "Running tests..."
-	@pytest tests/ -q --tb=short
-	@echo ""
-	@echo "Running mypy..."
-	@mypy llm_client --ignore-missing-imports
-	@echo ""
-	@echo "All checks passed!"
+test-integration:  ## Run integration tests (requires LLM_CLIENT_INTEGRATION=1)
+	LLM_CLIENT_INTEGRATION=1 python -m pytest tests/ -v -m integration
 
-install:  ## Install llm_client in editable mode
-	@pip install -e .
+lint:  ## Run ruff linter
+	ruff check llm_client/ tests/
+
+typecheck:  ## Run mypy type checking
+	mypy --strict llm_client/
+
+check: lint typecheck test  ## Run all quality checks
+
+install:  ## Install in editable mode with dev deps
+	pip install -e ".[dev]"
 
 # ─── Maintenance ─────────────────────────────────────────────────────────────
 
@@ -150,15 +152,15 @@ log-cleanup:  ## Archive old JSONL logs (ARCHIVE_DAYS=90, DELETE_DAYS= optional,
 
 .PHONY: help
 
-help:  ## Show this help
+help:  ## Show all targets
 	@echo "llm_client — runtime substrate for multi-provider LLM calls"
+	@echo ""
+	@echo "Development:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(test|lint|typecheck|check|install)' | \
+		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Observability:"
 	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(cost|errors|recent|traces|summary)' | \
-		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Development:"
-	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(test|check|install)' | \
 		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Maintenance:"
