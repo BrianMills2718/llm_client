@@ -294,6 +294,16 @@ def log_call(
         response_content = None
         if error is not None and hasattr(error, "raw_content"):
             response_content = getattr(error, "raw_content", None)
+        if error is not None and hasattr(error, "validation_error"):
+            try:
+                ve = getattr(error, "validation_error")
+                if hasattr(ve, "errors"):
+                    validation_errors = json.dumps(
+                        [{"loc": list(e.get("loc", ())), "msg": e.get("msg", "")} for e in ve.errors()[:10]],
+                        default=str,
+                    )
+            except Exception:
+                pass  # observability must not break execution
         usage = None
         cost = None
         cost_source = None
@@ -856,8 +866,9 @@ def _write_call_to_db(
                 cost, cost_source, billing_mode, marginal_cost, cache_hit,
                 finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
                 call_fingerprint, call_snapshot,
-                error_type, execution_path, retry_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                error_type, execution_path, retry_count,
+                schema_hash, response_format_type, validation_errors)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp, _get_project(), model,
                 json.dumps(messages, default=str) if messages else None,
@@ -868,6 +879,7 @@ def _write_call_to_db(
                 call_fingerprint,
                 json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
                 error_type, execution_path, retry_count,
+                schema_hash, response_format_type, validation_errors,
             ),
         )
         db.commit()

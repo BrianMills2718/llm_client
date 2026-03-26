@@ -18,6 +18,9 @@ from llm_client.core.errors import LLMCapabilityError
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 from pydantic import BaseModel, ValidationError
 
+import hashlib as _hashlib
+import json as _json
+
 T = TypeVar("T", bound=BaseModel)
 
 _client: Any = import_module("llm_client.client")
@@ -441,6 +444,9 @@ def _call_llm_structured_impl(
                 kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
+            _schema_hash = _hashlib.sha256(
+                _json.dumps(schema, sort_keys=True).encode()
+            ).hexdigest()[:16]
             base_kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
@@ -1025,6 +1031,9 @@ async def _acall_llm_structured_impl(
                 kwargs=public_kwargs,
                 warning_sink=_warnings,
             )
+            _schema_hash_async = _hashlib.sha256(
+                _json.dumps(schema, sort_keys=True).encode()
+            ).hexdigest()[:16]
             base_kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
