@@ -446,4 +446,23 @@ def __getattr__(name: str) -> object:
     """
     if name in _DEPRECATED_TOP_LEVEL_EXPORTS:
         return _load_deprecated_top_level_export(name)
+
+    # Explicit migration messages for functions extracted to other packages
+    _EXTRACTED_FUNCTIONS: dict[str, str] = {
+        "triage_items": "prompt_eval.experiment_eval",
+        "run_deterministic_checks_for_items": "prompt_eval.experiment_eval",
+        "review_items_with_rubric": "prompt_eval.experiment_eval",
+        "load_gate_policy": "prompt_eval.experiment_eval",
+        "build_gate_signals": "prompt_eval.experiment_eval",
+        "evaluate_gate_policy": "prompt_eval.experiment_eval",
+        "load_agent_spec": "project-meta (scripts/meta/agent_spec.py)",
+        "experiment_run": "prompt_eval.experiment_eval",
+    }
+    if name in _EXTRACTED_FUNCTIONS:
+        new_home = _EXTRACTED_FUNCTIONS[name]
+        raise ImportError(
+            f"{name!r} was extracted from llm_client to {new_home}. "
+            f"Update your import to: from {new_home} import {name}"
+        )
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

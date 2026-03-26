@@ -2144,7 +2144,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2161,7 +2161,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2170,7 +2170,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2189,39 +2189,15 @@ Returns:
 
 
 
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
-  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Validated human review payload used to resume the workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
-    
-  </div>
-</details>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
-  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
-    
-  </div>
-</details>
-
-
-
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
