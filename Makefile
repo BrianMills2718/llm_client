@@ -39,7 +39,7 @@ errors:  ## Error breakdown by model (DAYS=7, PROJECT= optional)
 	rows = db.execute(f\"\"\"SELECT model, COUNT(*) as total, \
 		SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors, \
 		ROUND(100.0 * SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) / COUNT(*), 1) as error_pct \
-		FROM llm_calls WHERE timestamp >= ? {pf} \
+		FROM llm_calls WHERE task != 'test' AND timestamp >= ? {pf} \
 		GROUP BY model ORDER BY errors DESC LIMIT 20\"\"\", (cutoff,)).fetchall(); \
 	print(f\"{'Model':<55} {'Total':>7} {'Errors':>7} {'Rate':>7}\"); \
 	print('-' * 80); \
@@ -58,7 +58,7 @@ recent:  ## Last N calls (LIMIT=20, PROJECT= optional)
 		ROUND(COALESCE(marginal_cost, cost), 4) as cost, \
 		total_tokens, ROUND(latency_s, 1) as latency, \
 		CASE WHEN error IS NOT NULL THEN 'ERR' ELSE 'ok' END as status \
-		FROM llm_calls {pf} ORDER BY timestamp DESC LIMIT $(LIMIT)\"\"\").fetchall(); \
+		FROM llm_calls WHERE task != 'test' {pf} ORDER BY timestamp DESC LIMIT $(LIMIT)\"\"\").fetchall(); \
 	print(f\"{'Time':<20} {'Model':<40} {'Task':<25} {'Cost':>8} {'Tokens':>8} {'Lat':>6} {'St':>4}\"); \
 	print('-' * 115); \
 	[print(f'{r[0][11:19]:<20} {(r[1] or \"?\")[:39]:<40} {(r[2] or \"-\")[:24]:<25} \$${ r[3] or 0:>7.4f} {r[4] or 0:>8} {r[5] or 0:>5.1f}s {r[6]:>4}') for r in rows]"
@@ -80,7 +80,7 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 		SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END), \
 		COUNT(DISTINCT project), COUNT(DISTINCT model), \
 		COALESCE(SUM(total_tokens), 0) \
-		FROM llm_calls WHERE timestamp >= ?\"\"\", (cutoff,)).fetchone(); \
+		FROM llm_calls WHERE task != 'test' AND timestamp >= ?\"\"\", (cutoff,)).fetchone(); \
 	print(f'  Calls:    {r[0]:,}'); \
 	print(f'  Spend:    \$${r[1]:,.2f}'); \
 	print(f'  Errors:   {r[2]:,} ({100*r[2]/r[0] if r[0] else 0:.1f}%)'); \
@@ -91,13 +91,13 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 	print('Top projects by spend:'); \
 	rows = db.execute(\"\"\"SELECT COALESCE(project,'unknown'), \
 		ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 2), COUNT(*) \
-		FROM llm_calls WHERE timestamp >= ? GROUP BY project ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
+		FROM llm_calls WHERE task != 'test' AND timestamp >= ? GROUP BY project ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
 	[print(f'  \$${r[1]:>8.2f}  {r[2]:>6} calls  {r[0]}') for r in rows]; \
 	print(); \
 	print('Top models by spend:'); \
 	rows = db.execute(\"\"\"SELECT model, \
 		ROUND(COALESCE(SUM(COALESCE(marginal_cost, cost)), 0), 2), COUNT(*) \
-		FROM llm_calls WHERE timestamp >= ? GROUP BY model ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
+		FROM llm_calls WHERE task != 'test' AND timestamp >= ? GROUP BY model ORDER BY 2 DESC LIMIT 5\"\"\", (cutoff,)).fetchall(); \
 	[print(f'  \$${r[1]:>8.2f}  {r[2]:>6} calls  {r[0]}') for r in rows]"
 
 # ─── Development ─────────────────────────────────────────────────────────────
