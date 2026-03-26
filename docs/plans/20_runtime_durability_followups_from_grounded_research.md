@@ -96,6 +96,14 @@ benchmark-oriented consumers do not need bespoke safety policy to:
   avoid indefinite stalls
 - ensure retries/timeouts are logged with consistent semantics
 
+**Completed 2026-03-26**
+- added env-backed shared request-timeout defaults in
+  `llm_client/execution/timeout_policy.py`
+- set structured public call surfaces to inherit a longer finite default when
+  the caller omits `timeout=`
+- preserved explicit per-call timeout overrides unchanged
+- verified with focused timeout-policy tests and public structured-wrapper tests
+
 ### Step 3: Add trace-level query helpers for `llm_calls` + `tool_calls`
 
 - expose a compact way to inspect one `trace_id`
