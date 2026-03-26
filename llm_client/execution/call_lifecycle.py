@@ -27,7 +27,7 @@ from llm_client.foundation import (
     new_event_id as _new_foundation_event_id,
     now_iso as _foundation_now_iso,
 )
-from llm_client.execution.timeout_policy import timeout_policy_label as _timeout_policy_label
+from llm_client.execution.timeout_policy import safety_timeout_s as _safety_timeout_s, timeout_policy_label as _timeout_policy_label
 
 logger = logging.getLogger(__name__)
 
@@ -125,15 +125,24 @@ def _llm_lifecycle_error_type(error: Exception) -> str:
 
 
 def _provider_timeout_for_lifecycle(timeout: Any) -> int:
-    """Compute the effective provider-timeout value for lifecycle observability."""
+    """Compute the effective provider-timeout value for lifecycle observability.
 
+    When timeout policy is 'ban', user-specified timeouts are ignored but the
+    safety ceiling still applies to prevent infinite hangs on dead connections.
+    """
     if _timeout_policy_label() == "ban":
-        return 0
+        # User timeout is banned, but safety ceiling still applies
+        return _safety_timeout_s()
     try:
         parsed = int(timeout)
     except (TypeError, ValueError):
-        return 0
-    return max(parsed, 0)
+        parsed = 0
+    effective = max(parsed, 0)
+    # Ensure safety ceiling is never exceeded
+    safety = _safety_timeout_s()
+    if safety > 0 and (effective == 0 or effective > safety):
+        effective = safety
+    return effective
 
 
 def _normalize_lifecycle_seconds(value: Any, *, default: float) -> float:
