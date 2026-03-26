@@ -119,15 +119,28 @@ def safety_timeout_s() -> int:
 # ---------------------------------------------------------------------------
 
 _IPV4_FORCED = False
+
+
+def _is_wsl2() -> bool:
+    """Detect WSL2 environment via /proc/version."""
+    try:
+        with open("/proc/version", "r") as f:
+            return "microsoft" in f.read().lower()
+    except (OSError, IOError):
+        return False
+
 IPV4_FORCE_ENV = "LLM_CLIENT_FORCE_IPV4"
 
 
 def force_ipv4_if_configured() -> bool:
-    """Force IPv4-only DNS resolution if LLM_CLIENT_FORCE_IPV4=1.
+    """Force IPv4-only DNS resolution if LLM_CLIENT_FORCE_IPV4=1 or on WSL2.
 
     Gemini API endpoints resolve to IPv6 addresses that experience routing
     problems on WSL2, causing socket-level hangs that bypass all Python-level
     timeouts. This patches socket.getaddrinfo to filter out IPv6 results.
+
+    Auto-enables on WSL2 (detected via /proc/version) unless explicitly
+    disabled with LLM_CLIENT_FORCE_IPV4=0.
 
     Safe to call multiple times — only patches once.
     Returns True if IPv4 forcing was activated.
@@ -137,7 +150,17 @@ def force_ipv4_if_configured() -> bool:
         return True
 
     raw = os.environ.get(IPV4_FORCE_ENV, "").strip().lower()
-    if raw not in {"1", "true", "yes", "on"}:
+
+    # Explicit opt-out
+    if raw in {"0", "false", "no", "off"}:
+        return False
+
+    # Explicit opt-in
+    if raw in {"1", "true", "yes", "on"}:
+        pass  # Fall through to activation
+    elif _is_wsl2():
+        _logger.info("WSL2 detected — auto-enabling IPv4-only DNS (set %s=0 to disable)", IPV4_FORCE_ENV)
+    else:
         return False
 
     import socket
