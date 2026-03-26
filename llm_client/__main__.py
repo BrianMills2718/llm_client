@@ -9,6 +9,7 @@ Usage:
     python -m llm_client adoption
     python -m llm_client backfill
     python -m llm_client tool-lint
+    python -m llm_client tools
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from llm_client.cli.models import register_parser as register_models_parser
 from llm_client.cli.replay import register_parser as register_replay_parser
 from llm_client.cli.scores import register_parser as register_scores_parser
 from llm_client.cli.tool_lint import register_parser as register_tool_lint_parser
+from llm_client.cli.tools import register_parser as register_tools_parser
 from llm_client.cli.traces import register_parser as register_traces_parser
 
 
@@ -43,6 +45,7 @@ def main() -> None:
     register_adoption_parser(subparsers)
     register_backfill_parser(subparsers)
     register_tool_lint_parser(subparsers)
+    register_tools_parser(subparsers)
 
     args = parser.parse_args()
     handler = getattr(args, "handler", None)

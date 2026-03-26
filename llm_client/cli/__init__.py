@@ -6,6 +6,7 @@ from llm_client.cli.cost import cmd_cost, register_parser as register_cost_parse
 from llm_client.cli.experiments import cmd_experiments, register_parser as register_experiments_parser
 from llm_client.cli.scores import cmd_scores, register_parser as register_scores_parser
 from llm_client.cli.tool_lint import cmd_tool_lint, register_parser as register_tool_lint_parser
+from llm_client.cli.tools import cmd_tools, register_parser as register_tools_parser
 from llm_client.cli.traces import cmd_traces, register_parser as register_traces_parser
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "cmd_experiments",
     "cmd_scores",
     "cmd_tool_lint",
+    "cmd_tools",
     "cmd_traces",
     "register_adoption_parser",
     "register_backfill_parser",
@@ -22,5 +24,6 @@ __all__ = [
     "register_experiments_parser",
     "register_scores_parser",
     "register_tool_lint_parser",
+    "register_tools_parser",
     "register_traces_parser",
 ]

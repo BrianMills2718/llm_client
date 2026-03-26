@@ -528,11 +528,22 @@ def log_tool_call_record(
     metrics: dict[str, Any] | None = None,
     error_type: str | None = None,
     error_message: str | None = None,
+    # Wave 1: size tracking and data-loss detection
+    result_count: int | None = None,
+    cost: float | None = None,
+    raw_size: int = 0,
+    processed_size: int = 0,
+    query_json: dict[str, Any] | None = None,
+    data_loss_warning: bool = False,
 ) -> None:
     """Append one non-LLM tool-call observability record.
 
     This mirrors ``log_call``: dual-write to JSONL and SQLite, and never raise
     into product code.
+
+    Wave 1 adds ``result_count``, ``cost``, ``raw_size``, ``processed_size``,
+    ``query_json``, and ``data_loss_warning`` for size tracking and automated
+    data-loss detection.
     """
 
     if not _enabled:
@@ -556,6 +567,12 @@ def log_tool_call_record(
             "metrics": metrics or {},
             "error_type": error_type,
             "error_message": error_message,
+            "result_count": result_count,
+            "cost": cost,
+            "raw_size": raw_size,
+            "processed_size": processed_size,
+            "query_json": query_json,
+            "data_loss_warning": data_loss_warning,
         }
 
         d = _log_dir()
@@ -579,6 +596,12 @@ def log_tool_call_record(
             metrics=metrics or {},
             error_type=error_type,
             error_message=error_message,
+            result_count=result_count,
+            cost=cost,
+            raw_size=raw_size,
+            processed_size=processed_size,
+            query_json=query_json,
+            data_loss_warning=data_loss_warning,
         )
     except Exception:
         logger.debug("io_log.log_tool_call_record failed", exc_info=True)
@@ -745,7 +768,13 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     trace_id TEXT,
     metrics TEXT,
     error_type TEXT,
-    error_message TEXT
+    error_message TEXT,
+    result_count INTEGER,
+    cost REAL,
+    raw_size INTEGER DEFAULT 0,
+    processed_size INTEGER DEFAULT 0,
+    query_json TEXT,
+    data_loss_warning INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS interventions (
@@ -820,6 +849,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_provider ON tool_calls(provider);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_status ON tool_calls(status);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_task ON tool_calls(task);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_trace_id ON tool_calls(trace_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_data_loss ON tool_calls(data_loss_warning);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_interv_id ON interventions(intervention_id);
 CREATE INDEX IF NOT EXISTS idx_interv_project ON interventions(project);
 CREATE INDEX IF NOT EXISTS idx_interv_dataset ON interventions(dataset);
@@ -917,6 +947,20 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tool_calls ADD COLUMN error_type TEXT")
     if tool_call_cols and "error_message" not in tool_call_cols:
         conn.execute("ALTER TABLE tool_calls ADD COLUMN error_message TEXT")
+    # Wave 1: size tracking and data-loss detection
+    if tool_call_cols and "result_count" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN result_count INTEGER")
+    if tool_call_cols and "cost" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN cost REAL")
+    if tool_call_cols and "raw_size" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN raw_size INTEGER DEFAULT 0")
+    if tool_call_cols and "processed_size" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN processed_size INTEGER DEFAULT 0")
+    if tool_call_cols and "query_json" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN query_json TEXT")
+    if tool_call_cols and "data_loss_warning" not in tool_call_cols:
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN data_loss_warning INTEGER DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_data_loss ON tool_calls(data_loss_warning)")
 
     conn.commit()
 
@@ -1093,6 +1137,13 @@ def _write_tool_call_to_db(
     metrics: dict[str, Any],
     error_type: str | None,
     error_message: str | None,
+    # Wave 1: size tracking and data-loss detection
+    result_count: int | None = None,
+    cost: float | None = None,
+    raw_size: int = 0,
+    processed_size: int = 0,
+    query_json: dict[str, Any] | None = None,
+    data_loss_warning: bool = False,
 ) -> None:
     """Insert a tool-call record into SQLite. Never raises."""
 
@@ -1102,8 +1153,9 @@ def _write_tool_call_to_db(
             """INSERT INTO tool_calls
                (timestamp, project, call_id, tool_name, operation, provider, target,
                 status, started_at, ended_at, duration_ms, attempt, task, trace_id,
-                metrics, error_type, error_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                metrics, error_type, error_message, result_count, cost, raw_size,
+                processed_size, query_json, data_loss_warning)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 timestamp,
                 _get_project(),
@@ -1122,6 +1174,12 @@ def _write_tool_call_to_db(
                 json.dumps(metrics, default=str),
                 error_type,
                 error_message,
+                result_count,
+                cost,
+                raw_size,
+                processed_size,
+                json.dumps(query_json, default=str) if query_json else None,
+                1 if data_loss_warning else 0,
             ),
         )
         db.commit()
