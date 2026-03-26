@@ -44,6 +44,7 @@ from llm_client.observability.replay import (
     get_call_snapshot,
     replay_call_snapshot,
 )
+from llm_client.observability.tool_calls import ToolCallResult, log_tool_call
 
 __all__ = [
     "ActiveFeatureProfile",
@@ -78,8 +79,10 @@ __all__ = [
     "log_embedding",
     "log_experiment_aggregate",
     "log_foundation_event",
+    "log_tool_call",
     "log_item",
     "lookup_result",
     "replay_call_snapshot",
     "start_run",
+    "ToolCallResult",
 ]
