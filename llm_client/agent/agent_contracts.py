@@ -1316,11 +1316,12 @@ class ErrorBudgetState:
     def record_error(self, model: str, error: str | Exception) -> str:
         """Record a failed turn. Returns the error classification.
 
-        Raises BudgetExhaustedError if any budget limit is exceeded.
+        Classifications: 'non_recoverable', 'recoverable', 'unknown'.
         """
         self.total_turns += 1
         self.total_errors += 1
         classification = classify_error(error)
+        self._last_classification = classification
 
         consecutive = self.consecutive_errors_by_model.get(model, 0) + 1
         self.consecutive_errors_by_model[model] = consecutive
@@ -1339,6 +1340,18 @@ class ErrorBudgetState:
         if self.total_errors >= self.budget.max_total_errors:
             return True, f"max_total_errors ({self.budget.max_total_errors}) exceeded"
 
+        # Non-recoverable error on last turn → stop immediately
+        if getattr(self, "_last_classification", None) == "non_recoverable":
+            return True, f"non_recoverable error from {self._last_model}"
+
+        # Consecutive errors from same model → stop (model can't handle this)
+        if self._last_model and self.should_skip_model(self._last_model):
+            return True, (
+                f"max_consecutive_errors_per_model "
+                f"({self.budget.max_consecutive_errors_per_model}) "
+                f"exceeded for {self._last_model}"
+            )
+
         return False, ""
 
     def should_skip_model(self, model: str) -> bool:
@@ -1353,5 +1366,8 @@ class ErrorBudgetState:
             "total_errors": self.total_errors,
             "budget_max_turns": self.budget.max_agent_turns,
             "budget_max_errors": self.budget.max_total_errors,
+            "budget_max_consecutive": self.budget.max_consecutive_errors_per_model,
             "consecutive_errors_by_model": dict(self.consecutive_errors_by_model),
+            "last_model": self._last_model,
+            "last_classification": getattr(self, "_last_classification", None),
         }

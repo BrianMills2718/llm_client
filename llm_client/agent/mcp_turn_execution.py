@@ -1122,7 +1122,11 @@ async def _agent_loop(
                 budget_reason, _budget_state.total_turns, _budget_state.total_errors,
             )
             agent_result.warnings.append(f"error_budget_exhausted: {budget_reason}")
+            agent_result.metadata["error_budget"] = _budget_state.summary()
             break
+
+        # Always include budget summary in metadata for observability
+        agent_result.metadata["error_budget"] = _budget_state.summary()
 
         logger.debug(
             "Agent turn %d/%d: %d tool calls (budget: %d/%d turns, %d/%d errors)",
