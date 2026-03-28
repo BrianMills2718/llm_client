@@ -96,6 +96,7 @@ from llm_client.execution.call_contracts import (
     require_tags as _require_tags,
 )
 from llm_client.execution.timeout_policy import (
+    default_timeout_for_caller as _default_timeout_for_caller,
     normalize_timeout as _normalize_timeout,
 )
 from llm_client.execution.execution_kernel import (
@@ -527,7 +528,7 @@ def call_llm_structured(
     messages: list[dict[str, Any]],
     response_model: type[T],
     *,
-    timeout: int = 60,
+    timeout: int | None = None,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
@@ -553,7 +554,8 @@ def call_llm_structured(
         model: Model name
         messages: Chat messages in OpenAI format
         response_model: Pydantic model class to extract
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds. When omitted, shared structured-call
+            runtime policy supplies a longer finite default.
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
@@ -574,22 +576,25 @@ def call_llm_structured(
     """
     from llm_client.execution.structured_runtime import _call_llm_structured_impl
 
+    resolved_timeout = timeout
+    if resolved_timeout is None:
+        resolved_timeout = _default_timeout_for_caller(caller="call_llm_structured")
     envelope = _prepare_public_call_envelope(
         caller="call_llm_structured",
-        timeout=timeout,
+        timeout=resolved_timeout,
         kwargs=kwargs,
     )
     return _run_sync_public_call(
         model=model,
         call_kind="structured",
         caller="call_llm_structured",
-        timeout=timeout,
+        timeout=resolved_timeout,
         envelope=envelope,
         invoke=lambda runtime_kwargs: _call_llm_structured_impl(
             model,
             messages,
             response_model,
-            timeout=timeout,
+            timeout=resolved_timeout,
             num_retries=num_retries,
             reasoning_effort=reasoning_effort,
             api_base=api_base,
@@ -776,7 +781,7 @@ async def acall_llm_structured(
     messages: list[dict[str, Any]],
     response_model: type[T],
     *,
-    timeout: int = 60,
+    timeout: int | None = None,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
@@ -802,7 +807,8 @@ async def acall_llm_structured(
         model: Model name
         messages: Chat messages in OpenAI format
         response_model: Pydantic model class to extract
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds. When omitted, shared structured-call
+            runtime policy supplies a longer finite default.
         num_retries: Number of retries on failure
         reasoning_effort: Reasoning effort level (Claude models only)
         api_base: Optional API base URL (e.g., for OpenRouter)
@@ -823,22 +829,25 @@ async def acall_llm_structured(
     """
     from llm_client.execution.structured_runtime import _acall_llm_structured_impl
 
+    resolved_timeout = timeout
+    if resolved_timeout is None:
+        resolved_timeout = _default_timeout_for_caller(caller="acall_llm_structured")
     envelope = _prepare_public_call_envelope(
         caller="acall_llm_structured",
-        timeout=timeout,
+        timeout=resolved_timeout,
         kwargs=kwargs,
     )
     return await _run_async_public_call(
         model=model,
         call_kind="structured",
         caller="acall_llm_structured",
-        timeout=timeout,
+        timeout=resolved_timeout,
         envelope=envelope,
         invoke=lambda runtime_kwargs: _acall_llm_structured_impl(
             model,
             messages,
             response_model,
-            timeout=timeout,
+            timeout=resolved_timeout,
             num_retries=num_retries,
             reasoning_effort=reasoning_effort,
             api_base=api_base,
@@ -1068,7 +1077,7 @@ async def acall_llm_structured_batch(
     return_exceptions: bool = False,
     on_item_complete: Callable[[int, tuple[T, LLMCallResult]], None] | None = None,
     on_item_error: Callable[[int, Exception], None] | None = None,
-    timeout: int = 60,
+    timeout: int | None = None,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,
@@ -1130,7 +1139,7 @@ def call_llm_structured_batch(
     return_exceptions: bool = False,
     on_item_complete: Callable[[int, tuple[T, LLMCallResult]], None] | None = None,
     on_item_error: Callable[[int, Exception], None] | None = None,
-    timeout: int = 60,
+    timeout: int | None = None,
     num_retries: int = 2,
     reasoning_effort: str | None = None,
     api_base: str | None = None,

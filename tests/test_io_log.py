@@ -4,20 +4,41 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from llm_client import io_log
 from llm_client.observability.tool_calls import ToolCallResult, log_tool_call
+from llm_client.observability.query import summarize_trace
 
 
 def _today_jsonl(tmp_path: Path, stem: str) -> Path:
     """Return the expected dated JSONL path for today inside the test log dir."""
     today = date.today().isoformat()
     return tmp_path / "test_project" / "test_project_llm_client_data" / f"{stem}_{today}.jsonl"
+
+
+def _mock_result(
+    *,
+    content: str = "hello",
+    usage: dict[str, Any] | None = None,
+    cost: float = 0.0,
+    finish_reason: str = "stop",
+) -> MagicMock:
+    """Build a lightweight LLM result object for logger tests."""
+
+    return MagicMock(
+        content=content,
+        usage=usage or {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        cost=cost,
+        finish_reason=finish_reason,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +77,10 @@ def _isolate_io_log(tmp_path):
 
 class TestLogCall:
     def test_writes_jsonl(self, tmp_path):
-        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "total_tokens": 20}, cost=0.001, finish_reason="stop")
+        result = _mock_result(
+            usage={"prompt_tokens": 10, "total_tokens": 20},
+            cost=0.001,
+        )
         io_log.log_call(model="gpt-5", result=result, latency_s=1.5, task="test_task")
 
         log_file = _today_jsonl(tmp_path, "calls")
@@ -68,7 +92,10 @@ class TestLogCall:
         assert record["latency_s"] == 1.5
 
     def test_writes_sqlite(self, tmp_path):
-        result = MagicMock(content="hello", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, cost=0.002, finish_reason="stop")
+        result = _mock_result(
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            cost=0.002,
+        )
         io_log.log_call(model="gpt-5", result=result, latency_s=2.0, task="sql_test")
 
         db = sqlite3.connect(str(tmp_path / "test.db"))
@@ -88,7 +115,7 @@ class TestLogCall:
         assert not log_file.exists()
 
     def test_trace_id_jsonl(self, tmp_path):
-        result = MagicMock(content="hi", usage={}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={})
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_abc")
 
         log_file = _today_jsonl(tmp_path, "calls")
@@ -96,7 +123,7 @@ class TestLogCall:
         assert record["trace_id"] == "trace_abc"
 
     def test_trace_id_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_xyz")
 
         db = sqlite3.connect(str(tmp_path / "test.db"))
@@ -105,7 +132,7 @@ class TestLogCall:
         db.close()
 
     def test_prompt_ref_logged_to_jsonl_and_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         io_log.log_call(
             model="gpt-5",
             result=result,
@@ -124,7 +151,7 @@ class TestLogCall:
         db.close()
 
     def test_call_snapshot_logged_to_jsonl_and_sqlite(self, tmp_path):
-        result = MagicMock(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2}, cost=0.0, finish_reason="stop")
+        result = _mock_result(content="hi", usage={"prompt_tokens": 1, "total_tokens": 2})
         call_snapshot = {
             "snapshot_version": 1,
             "public_api": "call_llm",
@@ -163,6 +190,112 @@ class TestLogCall:
         row = db.execute("SELECT error FROM llm_calls").fetchone()
         assert row[0] == "boom"
         db.close()
+
+    def test_trace_summary_includes_tool_and_llm_calls(self, tmp_path):
+        trace_id = "trace.summary"
+        io_log.log_call(
+            model="gpt-5-mini",
+            result=_mock_result(cost=0.12),
+            latency_s=1.25,
+            caller="call_llm_structured",
+            task="summary.test",
+            trace_id=trace_id,
+        )
+        io_log.log_call(
+            model="gpt-5-mini",
+            error=RuntimeError("timeout"),
+            latency_s=3.5,
+            caller="call_llm_structured",
+            task="summary.test",
+            trace_id=trace_id,
+        )
+        log_tool_call(
+            ToolCallResult(
+                tool_name="open_web_retrieval",
+                call_id="tool-search-1",
+                operation="search",
+                provider="brave",
+                target="ubi pilots",
+                status="succeeded",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=220,
+                task="summary.test",
+                trace_id=trace_id,
+                result_count=8,
+            )
+        )
+        log_tool_call(
+            ToolCallResult(
+                tool_name="open_web_retrieval",
+                call_id="tool-fetch-1",
+                operation="fetch",
+                provider="httpx",
+                target="https://example.com/report",
+                status="failed",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                ended_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=840,
+                task="summary.test",
+                trace_id=trace_id,
+                error_type="ReadTimeout",
+                error_message="timed out",
+            )
+        )
+
+        summary = summarize_trace(trace_id)
+
+        assert summary is not None
+        assert summary["trace_id"] == trace_id
+        assert summary["llm_calls"] == 2
+        assert summary["tool_calls"] == 2
+        assert summary["llm_errors"] == 1
+        assert summary["tool_failures"] == 1
+        assert summary["last_completed_llm_call"]["caller"] == "call_llm_structured"
+        assert summary["last_tool_call"]["operation"] == "fetch"
+        assert [event["kind"] for event in summary["timeline"]] == [
+            "llm_call",
+            "llm_call",
+            "tool_call",
+            "tool_call",
+        ]
+
+    def test_trace_summary_rolls_up_trace_family(self, tmp_path):
+        io_log.log_call(
+            model="gpt-5-mini",
+            result=_mock_result(cost=0.05),
+            latency_s=0.8,
+            caller="call_llm_structured",
+            task="summary.family",
+            trace_id="pipeline/root123/Alpha",
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        log_tool_call(
+            ToolCallResult(
+                call_id="tool-family-1",
+                tool_name="open_web_retrieval",
+                operation="search",
+                provider="brave",
+                target="ubi",
+                status="succeeded",
+                started_at=now,
+                ended_at=now,
+                duration_ms=180,
+                task="summary.family",
+                trace_id="pipeline/root123/verify/D-1/search/D-1",
+                result_count=4,
+            )
+        )
+
+        summary = summarize_trace("root123")
+
+        assert summary is not None
+        assert summary["llm_calls"] == 1
+        assert summary["tool_calls"] == 1
+        assert summary["matched_trace_ids"] == [
+            "pipeline/root123/Alpha",
+            "pipeline/root123/verify/D-1/search/D-1",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +498,114 @@ class TestSQLiteDB:
         row = db.execute("PRAGMA busy_timeout").fetchone()
         assert row is not None
         assert row[0] == 5000
+
+    def test_get_db_uses_wal_journal_mode(self, tmp_path):
+        db = io_log._get_db()
+        row = db.execute("PRAGMA journal_mode").fetchone()
+        assert row is not None
+        assert str(row[0]).lower() == "wal"
+
+    def test_log_call_retries_through_transient_external_db_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLM_CLIENT_DB_BUSY_TIMEOUT_MS", "10")
+        monkeypatch.setenv("LLM_CLIENT_DB_LOCK_RETRIES", "6")
+        monkeypatch.setenv("LLM_CLIENT_DB_LOCK_RETRY_DELAY_MS", "50")
+
+        io_log._db_conn = None
+        io_log.log_call(
+            model="gpt-5",
+            result=MagicMock(
+                content="seed",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                cost=0.0,
+                finish_reason="stop",
+            ),
+            latency_s=0.1,
+            task="seed",
+        )
+
+        lock_ready = threading.Event()
+
+        def _hold_external_write_lock() -> None:
+            lock_conn = sqlite3.connect(str(tmp_path / "test.db"), timeout=0.01, isolation_level=None)
+            lock_conn.execute("PRAGMA journal_mode = WAL")
+            lock_conn.execute("BEGIN IMMEDIATE")
+            lock_ready.set()
+            time.sleep(0.15)
+            lock_conn.rollback()
+            lock_conn.close()
+
+        holder = threading.Thread(target=_hold_external_write_lock)
+        holder.start()
+        lock_ready.wait(timeout=1.0)
+        io_log._db_conn = None
+
+        result = MagicMock(
+            content="hello",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            cost=0.002,
+            finish_reason="stop",
+        )
+        io_log.log_call(model="gpt-5", result=result, latency_s=2.0, task="sql_test")
+        holder.join()
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        rows = db.execute("SELECT task FROM llm_calls ORDER BY id").fetchall()
+        assert [row[0] for row in rows] == ["seed", "sql_test"]
+        db.close()
+
+    def test_concurrent_log_call_and_tool_call_share_connection_safely(self, tmp_path):
+        def _log_text_call(i: int) -> None:
+            io_log.log_call(
+                model="gpt-5",
+                result=MagicMock(
+                    content=f"content-{i}",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    cost=0.0,
+                    finish_reason="stop",
+                ),
+                latency_s=0.01,
+                task=f"text-{i}",
+                trace_id="trace-concurrent",
+            )
+
+        def _log_tool(i: int) -> None:
+            log_tool_call(
+                ToolCallResult(
+                    call_id=f"tool-{i}",
+                    tool_name="open_web_retrieval",
+                    operation="fetch",
+                    provider="httpx",
+                    target=f"https://example.com/{i}",
+                    status="succeeded",
+                    started_at="2026-03-25T00:00:00+00:00",
+                    ended_at="2026-03-25T00:00:01+00:00",
+                    duration_ms=1000,
+                    attempt=1,
+                    task="collect",
+                    trace_id="trace-concurrent",
+                    metrics={"index": i},
+                )
+            )
+
+        threads = [
+            threading.Thread(target=_log_text_call, args=(i,))
+            for i in range(10)
+        ] + [
+            threading.Thread(target=_log_tool, args=(i,))
+            for i in range(10)
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        llm_count = db.execute("SELECT COUNT(*) FROM llm_calls").fetchone()[0]
+        tool_count = db.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0]
+        assert llm_count == 10
+        assert tool_count == 10
+        db.close()
 
     def test_indexes_created(self, tmp_path):
         db = io_log._get_db()

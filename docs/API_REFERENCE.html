@@ -1,4 +1,4 @@
-<!-- Generated: 2026-03-26T15:47:36Z -->
+<!-- Generated: 2026-03-28T20:47:50Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -164,10 +164,10 @@
 
     <h2 id="start-here">Start Here</h2>
     <ol>
-      <li><a href="file:///home/brian/projects/llm_client/README.md">README.md</a> for installation, usage, routing, and examples.</li>
-      <li><a href="file:///home/brian/projects/llm_client/AGENTS.md">AGENTS.md</a> for repo operating rules and architectural boundaries.</li>
-      <li><a href="file:///home/brian/projects/llm_client/docs/plans/01_master-roadmap.md">docs/plans/01_master-roadmap.md</a> for the current long-term program state.</li>
-      <li><a href="file:///home/brian/projects/llm_client/docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md">docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md</a> for the shared ecosystem boundary model.</li>
+      <li><a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/README.md">README.md</a> for installation, usage, routing, and examples.</li>
+      <li><a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/AGENTS.md">AGENTS.md</a> for repo operating rules and architectural boundaries.</li>
+      <li><a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/docs/plans/01_master-roadmap.md">docs/plans/01_master-roadmap.md</a> for the current long-term program state.</li>
+      <li><a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md">docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md</a> for the shared ecosystem boundary model.</li>
     </ol>
 
     
@@ -186,7 +186,7 @@ Usage:
 
     # Sync
     result = call_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo&quot;,
         trace_id=&quot;init/sync&quot;,
@@ -212,7 +212,7 @@ Usage:
 
     # Batch (concurrent)
     results = call_llm_batch(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [msgs1, msgs2, msgs3],
         max_concurrent=5,
         task=&quot;demo_batch&quot;,
@@ -222,7 +222,7 @@ Usage:
 
     # Streaming
     for chunk in stream_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo_stream&quot;,
         trace_id=&quot;init/stream&quot;,
@@ -234,7 +234,7 @@ Usage:
     from llm_client import acall_llm, astream_llm
 
     result = await acall_llm(
-        &quot;gpt-4o&quot;,
+        &quot;gpt-5-mini&quot;,
         [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
         task=&quot;demo_async&quot;,
         trace_id=&quot;init/async&quot;,
@@ -293,11 +293,11 @@ This module re-exports ``load_agent_spec`` so that in-package imports
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-agent_spec-load_agent_spec">
-  <summary><code>load_agent_spec</code> <span class="sig">(spec: Union[str, pathlib.Path, Mapping[str, Any]]) -&gt; tuple[dict[str, typing.Any], dict[str, typing.Any]]</span></summary>
+  <summary><code>load_agent_spec</code> <span class="sig">(*_args, **_kwargs)</span></summary>
   <div class="symbol-body">
-    <p class="summary">Load + validate AgentSpec and return (spec, summary).</p>
-    <p class="meta">Source: <code>scripts.meta.agent_spec</code> functions</p>
-    <pre class="doc">Load + validate AgentSpec and return (spec, summary).</pre>
+    <p class="summary">No docstring available.</p>
+    <p class="meta">Source: <code>llm_client.agent_spec</code> functions</p>
+    <pre class="doc">No docstring available.</pre>
   </div>
 </details>
 
@@ -2711,7 +2711,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2728,7 +2728,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2737,7 +2737,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -2756,39 +2756,15 @@ Returns:
 
 
 
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
-  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Validated human review payload used to resume the workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
-    
-  </div>
-</details>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
-  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
-    
-  </div>
-</details>
-
-
-
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
@@ -4846,8 +4822,8 @@ Features:
 - finish_reason + raw_response on every result
 
 Supported providers (just change the model string):
-    call_llm(&quot;gpt-4o&quot;, messages)                     # OpenAI
-    call_llm(&quot;gpt-5-mini&quot;, messages)                 # OpenAI (Responses API)
+    call_llm(&quot;gpt-5&quot;, messages)                       # OpenAI
+    call_llm(&quot;gpt-5-mini&quot;, messages)                 # OpenAI
     call_llm(&quot;anthropic/claude-sonnet-4-5-20250929&quot;, messages)  # Anthropic
     call_llm(&quot;gemini/gemini-2.0-flash&quot;, messages)     # Google
     call_llm(&quot;mistral/mistral-large&quot;, messages)       # Mistral
@@ -4872,7 +4848,7 @@ Full provider list: https://docs.litellm.ai/docs/providers</pre>
 Accepts both sync ``CachePolicy`` and async ``AsyncCachePolicy`` caches.
 
 Args:
-    model: Model name (e.g., &quot;gpt-4o&quot;, &quot;gpt-5-mini&quot;,
+    model: Model name (e.g., &quot;gpt-5-mini&quot;,
            &quot;anthropic/claude-sonnet-4-5-20250929&quot;,
            &quot;claude-code&quot;, &quot;claude-code/opus&quot;)
     messages: Chat messages in OpenAI format
@@ -5065,7 +5041,7 @@ If ``fallback_models`` is provided, when all retries are exhausted for
 one model the next model in the list is tried automatically.
 
 Args:
-    model: Model name (e.g., &quot;gpt-4o&quot;, &quot;gpt-5-mini&quot;,
+    model: Model name (e.g., &quot;gpt-5-mini&quot;,
            &quot;anthropic/claude-sonnet-4-5-20250929&quot;,
            &quot;gemini/gemini-2.0-flash&quot;, &quot;claude-code&quot;,
            &quot;claude-code/opus&quot;)
@@ -5236,7 +5212,7 @@ the next model in the list is tried.
 
 Example::
 
-    stream = stream_llm(&quot;gpt-4o&quot;, messages)
+    stream = stream_llm(&quot;gpt-5-mini&quot;, messages)
     for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()
@@ -5337,7 +5313,7 @@ access these via ``_client.xxx`` continue to work unchanged.</pre>
     <pre class="doc">Strip markdown code fences from LLM response content.
 
 Useful when calling call_llm() and parsing JSON manually:
-    result = call_llm(&quot;gpt-4o&quot;, messages)
+    result = call_llm(&quot;gpt-5-mini&quot;, messages)
     clean = strip_fences(result.content)
     data = json.loads(clean)</pre>
   </div>
@@ -5657,7 +5633,7 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
     from llm_client.core.errors import LLMRateLimitError, LLMQuotaExhaustedError
 
     try:
-        result = await acall_llm(&quot;gpt-4o&quot;, messages)
+        result = await acall_llm(&quot;gpt-5-mini&quot;, messages)
     except LLMQuotaExhaustedError:
         # Switch provider or abort — retrying won&#x27;t help
         ...
@@ -6614,7 +6590,7 @@ Example::
         after_call=lambda result: print(f&quot;Got {len(result.content)} chars&quot;),
         on_error=lambda err, attempt: print(f&quot;Attempt {attempt} failed: {err}&quot;),
     )
-    result = call_llm(&quot;gpt-4o&quot;, messages, hooks=hooks)
+    result = call_llm(&quot;gpt-5-mini&quot;, messages, hooks=hooks)
 
 Attributes:
     before_call: ``(model, messages, kwargs) -&gt; None``. Fired before each
@@ -6635,8 +6611,8 @@ Attributes:
 Create once and pass to multiple calls for consistent behaviour::
 
     policy = RetryPolicy(max_retries=5, base_delay=0.5, on_retry=my_logger)
-    call_llm(&quot;gpt-4o&quot;, msgs, retry=policy)
-    call_llm(&quot;gpt-4o&quot;, msgs2, retry=policy)
+    call_llm(&quot;gpt-5-mini&quot;, msgs, retry=policy)
+    call_llm(&quot;gpt-5-mini&quot;, msgs2, retry=policy)
 
 When ``retry`` is provided it **overrides** the individual retry params
 (``num_retries``, ``base_delay``, ``max_delay``, ``retry_on``,
@@ -6727,7 +6703,7 @@ client.py at runtime to avoid circular imports during module extraction.</pre>
 
 Example::
 
-    stream = await astream_llm(&quot;gpt-4o&quot;, messages)
+    stream = await astream_llm(&quot;gpt-5-mini&quot;, messages)
     async for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()
@@ -6745,7 +6721,7 @@ Example::
 
 Example::
 
-    stream = stream_llm(&quot;gpt-4o&quot;, messages)
+    stream = stream_llm(&quot;gpt-5-mini&quot;, messages)
     for chunk in stream:
         print(chunk, end=&quot;&quot;, flush=True)
     print()
@@ -8543,7 +8519,9 @@ Raises:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>END</code></td><td><code>&#x27;__end__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>START</code></td><td><code>&#x27;__start__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
@@ -8770,11 +8748,11 @@ Raises:
 
     <h2 id="source-truth">Source Of Truth</h2>
     <ol>
-      <li><a href="file:///home/brian/projects/llm_client/pyproject.toml">pyproject.toml</a> is authoritative for package metadata and extras.</li>
+      <li><a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/pyproject.toml">pyproject.toml</a> is authoritative for package metadata and extras.</li>
       <li>Module docstrings and public function signatures are authoritative for code behavior.</li>
       <li>The roadmap and ADRs are authoritative for architectural boundaries.</li>
     </ol>
-    <p class="summary">Canonical markdown companion: <a href="file:///home/brian/projects/llm_client/docs/API_REFERENCE.md">docs/API_REFERENCE.md</a>.</p>
+    <p class="summary">Canonical markdown companion: <a href="file:///home/brian/projects/_worktrees/llm_client-plan20-merge/docs/API_REFERENCE.md">docs/API_REFERENCE.md</a>.</p>
   </main>
 </body>
 </html>

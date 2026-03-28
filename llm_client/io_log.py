@@ -45,8 +45,13 @@ _project: str | None = os.environ.get("LLM_CLIENT_PROJECT")
 _db_path: Path = Path(os.environ.get("LLM_CLIENT_DB_PATH", str(Path.home() / "projects" / "data" / "llm_observability.db")))
 _db_conn: sqlite3.Connection | None = None
 _db_lock = threading.Lock()
+_db_write_lock = threading.Lock()
 _DB_BUSY_TIMEOUT_MS_ENV = "LLM_CLIENT_DB_BUSY_TIMEOUT_MS"
 _DEFAULT_DB_BUSY_TIMEOUT_MS = 5000
+_DB_LOCK_RETRIES_ENV = "LLM_CLIENT_DB_LOCK_RETRIES"
+_DEFAULT_DB_LOCK_RETRIES = 6
+_DB_LOCK_RETRY_DELAY_MS_ENV = "LLM_CLIENT_DB_LOCK_RETRY_DELAY_MS"
+_DEFAULT_DB_LOCK_RETRY_DELAY_MS = 250
 _run_timer_lock = threading.Lock()
 _run_timers: dict[str, dict[str, Any]] = {}
 from llm_client.observability.context import (
@@ -92,6 +97,24 @@ def _get_db_busy_timeout_ms() -> int:
     if raw.strip().isdigit():
         return max(0, int(raw.strip()))
     return _DEFAULT_DB_BUSY_TIMEOUT_MS
+
+
+def _get_db_lock_retries() -> int:
+    """Return configured retry count for transient SQLite lock failures."""
+
+    raw = os.environ.get(_DB_LOCK_RETRIES_ENV, "")
+    if raw.strip().isdigit():
+        return max(0, int(raw.strip()))
+    return _DEFAULT_DB_LOCK_RETRIES
+
+
+def _get_db_lock_retry_delay_ms() -> int:
+    """Return base retry delay for transient SQLite lock failures."""
+
+    raw = os.environ.get(_DB_LOCK_RETRY_DELAY_MS_ENV, "")
+    if raw.strip().isdigit():
+        return max(1, int(raw.strip()))
+    return _DEFAULT_DB_LOCK_RETRY_DELAY_MS
 
 
 def _dated_jsonl_path(directory: Path, stem: str) -> Path:
@@ -979,10 +1002,50 @@ def _get_db() -> sqlite3.Connection:
             timeout=busy_timeout_ms / 1000.0,
         )
         _db_conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        _db_conn.execute("PRAGMA journal_mode = WAL")
+        _db_conn.execute("PRAGMA synchronous = NORMAL")
         _db_conn.executescript(_TABLES_SQL)
         _migrate_db(_db_conn)
         _db_conn.executescript(_INDEXES_SQL)
         return _db_conn
+
+
+def _is_db_locked_error(exc: BaseException) -> bool:
+    """Return True when the exception is a transient SQLite lock failure."""
+
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
+def _run_db_write(write_fn: Any) -> None:
+    """Execute one SQLite write with bounded retry on transient lock errors."""
+
+    retries = _get_db_lock_retries()
+    base_delay_ms = _get_db_lock_retry_delay_ms()
+    attempt = 0
+    while True:
+        try:
+            with _db_write_lock:
+                db = _get_db()
+                write_fn(db)
+                db.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            if _db_conn is not None:
+                try:
+                    _db_conn.rollback()
+                except sqlite3.Error:
+                    logger.debug("io_log._run_db_write rollback failed", exc_info=True)
+            if not _is_db_locked_error(exc) or attempt >= retries:
+                raise
+            delay_s = (base_delay_ms * (attempt + 1)) / 1000.0
+            logger.debug(
+                "io_log._run_db_write retrying after lock failure (%d/%d) in %.3fs",
+                attempt + 1,
+                retries,
+                delay_s,
+            )
+            time.sleep(delay_s)
+            attempt += 1
 
 
 def _write_call_to_db(
@@ -1015,34 +1078,35 @@ def _write_call_to_db(
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:
-        db = _get_db()
         prompt_tokens = (usage or {}).get("prompt_tokens")
         completion_tokens = (usage or {}).get("completion_tokens")
         total_tokens = (usage or {}).get("total_tokens")
-        db.execute(
-            """INSERT INTO llm_calls
-               (timestamp, project, model, messages, response,
-                prompt_tokens, completion_tokens, total_tokens,
-                cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
-                call_fingerprint, call_snapshot,
-                error_type, execution_path, retry_count,
-                schema_hash, response_format_type, validation_errors)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                timestamp, _get_project(), model,
-                json.dumps(messages, default=str) if messages else None,
-                response,
-                prompt_tokens, completion_tokens, total_tokens,
-                cost, cost_source, billing_mode, marginal_cost, cache_hit,
-                finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
-                call_fingerprint,
-                json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
-                error_type, execution_path, retry_count,
-                schema_hash, response_format_type, validation_errors,
-            ),
-        )
-        db.commit()
+        def _write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO llm_calls
+                   (timestamp, project, model, messages, response,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    cost, cost_source, billing_mode, marginal_cost, cache_hit,
+                    finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
+                    call_fingerprint, call_snapshot,
+                    error_type, execution_path, retry_count,
+                    schema_hash, response_format_type, validation_errors)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp, _get_project(), model,
+                    json.dumps(messages, default=str) if messages else None,
+                    response,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    cost, cost_source, billing_mode, marginal_cost, cache_hit,
+                    finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
+                    call_fingerprint,
+                    json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
+                    error_type, execution_path, retry_count,
+                    schema_hash, response_format_type, validation_errors,
+                ),
+            )
+
+        _run_db_write(_write)
     except Exception:
         logger.debug("io_log._write_call_to_db failed", exc_info=True)
 
@@ -1064,22 +1128,23 @@ def _write_embedding_to_db(
 ) -> None:
     """Insert an embedding record into SQLite. Never raises."""
     try:
-        db = _get_db()
         prompt_tokens = (usage or {}).get("prompt_tokens")
         total_tokens = (usage or {}).get("total_tokens")
-        db.execute(
-            """INSERT INTO embeddings
-               (timestamp, project, model, input_count, input_chars, dimensions,
-                prompt_tokens, total_tokens, cost, latency_s, error, caller, task, trace_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                timestamp, _get_project(), model,
-                input_count, input_chars, dimensions,
-                prompt_tokens, total_tokens,
-                cost, latency_s, error, caller, task, trace_id,
-            ),
-        )
-        db.commit()
+        def _write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO embeddings
+                   (timestamp, project, model, input_count, input_chars, dimensions,
+                    prompt_tokens, total_tokens, cost, latency_s, error, caller, task, trace_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp, _get_project(), model,
+                    input_count, input_chars, dimensions,
+                    prompt_tokens, total_tokens,
+                    cost, latency_s, error, caller, task, trace_id,
+                ),
+            )
+
+        _run_db_write(_write)
     except Exception:
         logger.debug("io_log._write_embedding_to_db failed", exc_info=True)
 
@@ -1097,24 +1162,25 @@ def _write_foundation_event_to_db(
 ) -> None:
     """Insert a foundation event into SQLite. Never raises."""
     try:
-        db = _get_db()
-        db.execute(
-            """INSERT INTO foundation_events
-               (timestamp, project, run_id, trace_id, event_id, event_type, payload, caller, task)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                timestamp,
-                _get_project(),
-                run_id,
-                trace_id,
-                event_id,
-                event_type,
-                json.dumps(payload, default=str),
-                caller,
-                task,
-            ),
-        )
-        db.commit()
+        def _write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO foundation_events
+                   (timestamp, project, run_id, trace_id, event_id, event_type, payload, caller, task)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp,
+                    _get_project(),
+                    run_id,
+                    trace_id,
+                    event_id,
+                    event_type,
+                    json.dumps(payload, default=str),
+                    caller,
+                    task,
+                ),
+            )
+
+        _run_db_write(_write)
     except Exception:
         logger.debug("io_log._write_foundation_event_to_db failed", exc_info=True)
 
@@ -1148,41 +1214,42 @@ def _write_tool_call_to_db(
     """Insert a tool-call record into SQLite. Never raises."""
 
     try:
-        db = _get_db()
-        db.execute(
-            """INSERT INTO tool_calls
-               (timestamp, project, call_id, tool_name, operation, provider, target,
-                status, started_at, ended_at, duration_ms, attempt, task, trace_id,
-                metrics, error_type, error_message, result_count, cost, raw_size,
-                processed_size, query_json, data_loss_warning)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                timestamp,
-                _get_project(),
-                call_id,
-                tool_name,
-                operation,
-                provider,
-                target,
-                status,
-                started_at,
-                ended_at,
-                duration_ms,
-                attempt,
-                task,
-                trace_id,
-                json.dumps(metrics, default=str),
-                error_type,
-                error_message,
-                result_count,
-                cost,
-                raw_size,
-                processed_size,
-                json.dumps(query_json, default=str) if query_json else None,
-                1 if data_loss_warning else 0,
-            ),
-        )
-        db.commit()
+        def _write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO tool_calls
+                   (timestamp, project, call_id, tool_name, operation, provider, target,
+                    status, started_at, ended_at, duration_ms, attempt, task, trace_id,
+                    metrics, error_type, error_message, result_count, cost, raw_size,
+                    processed_size, query_json, data_loss_warning)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    timestamp,
+                    _get_project(),
+                    call_id,
+                    tool_name,
+                    operation,
+                    provider,
+                    target,
+                    status,
+                    started_at,
+                    ended_at,
+                    duration_ms,
+                    attempt,
+                    task,
+                    trace_id,
+                    json.dumps(metrics, default=str),
+                    error_type,
+                    error_message,
+                    result_count,
+                    cost,
+                    raw_size,
+                    processed_size,
+                    json.dumps(query_json, default=str) if query_json else None,
+                    1 if data_loss_warning else 0,
+                ),
+            )
+
+        _run_db_write(_write)
     except Exception:
         logger.debug("io_log._write_tool_call_to_db failed", exc_info=True)
 
@@ -1375,6 +1442,7 @@ from llm_client.observability.query import (
     get_completed_traces,
     get_trace_tree,
     lookup_result,
+    summarize_trace,
 )
 
 

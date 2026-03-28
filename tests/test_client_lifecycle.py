@@ -163,6 +163,99 @@ def test_call_llm_structured_emits_started_and_completed_lifecycle(monkeypatch: 
     assert completed["progress_event_count"] == 1
 
 
+def test_call_llm_structured_uses_shared_default_timeout_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured wrappers should apply the shared finite default timeout."""
+
+    seen: dict[str, Any] = {}
+
+    # mock-ok: verifies wrapper timeout resolution without provider calls.
+    def _fake_impl(
+        model: str,
+        messages: list[dict[str, Any]],
+        response_model: type[BaseModel],
+        **kwargs: Any,
+    ) -> tuple[BaseModel, LLMCallResult]:
+        seen["timeout"] = kwargs["timeout"]
+        parsed = response_model(label="ok")
+        result = LLMCallResult(
+            content=parsed.model_dump_json(),
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model=model,
+            resolved_model=model,
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=[],
+            cost_source="computed",
+        )
+        return parsed, result
+
+    monkeypatch.setattr(
+        "llm_client.execution.structured_runtime._call_llm_structured_impl",
+        _fake_impl,
+    )
+
+    client.call_llm_structured(
+        "gemini/gemini-2.5-flash",
+        [{"role": "user", "content": "hello"}],
+        _ResponseModel,
+        task="test.lifecycle",
+        trace_id="trace.lifecycle.default_timeout",
+        max_budget=0.1,
+    )
+
+    assert seen["timeout"] == 180
+
+
+def test_call_llm_structured_preserves_explicit_timeout_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit timeout override should beat the shared structured default."""
+
+    seen: dict[str, Any] = {}
+
+    # mock-ok: verifies wrapper timeout resolution without provider calls.
+    def _fake_impl(
+        model: str,
+        messages: list[dict[str, Any]],
+        response_model: type[BaseModel],
+        **kwargs: Any,
+    ) -> tuple[BaseModel, LLMCallResult]:
+        seen["timeout"] = kwargs["timeout"]
+        parsed = response_model(label="ok")
+        result = LLMCallResult(
+            content=parsed.model_dump_json(),
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            cost=0.0,
+            model=model,
+            resolved_model=model,
+            finish_reason="stop",
+            raw_response={"ok": True},
+            warnings=[],
+            cost_source="computed",
+        )
+        return parsed, result
+
+    monkeypatch.setattr(
+        "llm_client.execution.structured_runtime._call_llm_structured_impl",
+        _fake_impl,
+    )
+
+    client.call_llm_structured(
+        "gemini/gemini-2.5-flash",
+        [{"role": "user", "content": "hello"}],
+        _ResponseModel,
+        timeout=45,
+        task="test.lifecycle",
+        trace_id="trace.lifecycle.override_timeout",
+        max_budget=0.1,
+    )
+
+    assert seen["timeout"] == 45
+
+
 def test_stream_llm_emits_started_progress_completed_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
