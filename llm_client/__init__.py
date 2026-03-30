@@ -268,6 +268,13 @@ from llm_client.core.client import (
     strip_fences,
 )
 from llm_client.core.data_types import TurnEvent
+from llm_client.parsing_utils import (
+    TruncatedOutputError,
+    check_truncation,
+    extract_json,
+    safe_json_loads,
+    strip_control_chars,
+)
 
 # Apply IPv4 forcing if configured (prevents Gemini WSL2 IPv6 hangs)
 from llm_client.execution.timeout_policy import force_ipv4_if_configured as _force_ipv4
@@ -388,6 +395,11 @@ _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
     "callable_to_openai_tool",
     "prepare_direct_tools",
     "strip_fences",
+    "strip_control_chars",
+    "extract_json",
+    "safe_json_loads",
+    "check_truncation",
+    "TruncatedOutputError",
 )
 
 # Relocated modules removed (Plan #17). Difficulty stays (control plane).

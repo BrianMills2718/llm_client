@@ -20,10 +20,41 @@ from pydantic import BaseModel, ValidationError
 
 import hashlib as _hashlib
 import json as _json
+import logging as _logging
+
+from llm_client.parsing_utils import safe_json_loads as _safe_json_loads
 
 T = TypeVar("T", bound=BaseModel)
 
 _client: Any = import_module("llm_client.core.client")
+_structured_logger = _logging.getLogger("llm_client.structured_runtime")
+
+
+def _robust_validate_json(response_model: type[T], raw_content: str) -> T:
+    """Parse and validate JSON from LLM output with best-effort extraction.
+
+    Tries ``model_validate_json`` first (fast path).  If that fails due to
+    JSON decoding issues (control characters, fenced markdown, etc.), falls
+    back to ``safe_json_loads`` + ``model_validate`` which strips control
+    chars, extracts JSON from fences/prose, and uses ``strict=False``.
+
+    Pydantic ``ValidationError`` (schema mismatch) is never swallowed -- only
+    JSON-level failures trigger the fallback.
+    """
+    try:
+        return response_model.model_validate_json(raw_content)
+    except ValidationError:
+        # Schema validation error -- don't mask with fallback
+        raise
+    except Exception:
+        # JSON decoding or other parse failure -- try robust extraction
+        _structured_logger.debug(
+            "model_validate_json failed on raw content (%d chars), "
+            "falling back to safe_json_loads",
+            len(raw_content),
+        )
+        parsed_data = _safe_json_loads(raw_content)
+        return response_model.model_validate(parsed_data)
 
 
 class _StructuredValidationRetry(Exception):
@@ -356,7 +387,7 @@ def _call_llm_structured_impl(
                 raw_content = getattr(response, "output_text", None) or ""
                 if not raw_content.strip():
                     raise ValueError("Empty content from LLM (responses API structured)")
-                parsed = response_model.model_validate_json(raw_content)
+                parsed = _robust_validate_json(response_model, raw_content)
                 usage = _extract_responses_usage(response)
                 cost, cost_source = _parse_cost_result(
                     _compute_responses_cost(response, usage),
@@ -476,7 +507,7 @@ def _call_llm_structured_impl(
                     if not raw_content.strip():
                         raise ValueError("Empty content from LLM (native JSON schema structured)")
                     try:
-                        parsed = response_model.model_validate_json(raw_content)
+                        parsed = _robust_validate_json(response_model, raw_content)
                     except ValidationError as ve:
                         retry_exc = _StructuredValidationRetry(raw_content, ve)
                         _pending_repair_message = _build_validation_repair_message(retry_exc)
@@ -943,7 +974,7 @@ async def _acall_llm_structured_impl(
                 raw_content = getattr(response, "output_text", None) or ""
                 if not raw_content.strip():
                     raise ValueError("Empty content from LLM (responses API structured)")
-                parsed = response_model.model_validate_json(raw_content)
+                parsed = _robust_validate_json(response_model, raw_content)
                 usage = _extract_responses_usage(response)
                 cost, cost_source = _parse_cost_result(
                     _compute_responses_cost(response, usage),
@@ -1063,7 +1094,7 @@ async def _acall_llm_structured_impl(
                     if not raw_content.strip():
                         raise ValueError("Empty content from LLM (native JSON schema structured)")
                     try:
-                        parsed = response_model.model_validate_json(raw_content)
+                        parsed = _robust_validate_json(response_model, raw_content)
                     except ValidationError as ve:
                         retry_exc = _StructuredValidationRetry(raw_content, ve)
                         _pending_repair_message_async = _build_validation_repair_message(retry_exc)
