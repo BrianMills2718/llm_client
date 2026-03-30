@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from llm_client.execution.timeout_policy import normalize_timeout
+from llm_client.execution.timeout_policy import (
+    default_timeout_for_caller,
+    normalize_timeout,
+)
 
 
 def test_normalize_timeout_ban_appends_warning_and_zeroes_timeout(
@@ -38,3 +41,21 @@ def test_normalize_timeout_negative_values_clamp_to_zero(monkeypatch) -> None:
 
     assert normalized == 0
     assert warnings == []
+
+
+def test_default_timeout_for_structured_calls_is_finite(monkeypatch) -> None:
+    """Structured calls should inherit a longer finite shared default."""
+
+    monkeypatch.delenv("LLM_CLIENT_DEFAULT_TIMEOUT", raising=False)
+    monkeypatch.delenv("LLM_CLIENT_DEFAULT_STRUCTURED_TIMEOUT", raising=False)
+
+    assert default_timeout_for_caller(caller="call_llm_structured") == 180
+    assert default_timeout_for_caller(caller="acall_llm_structured") == 180
+
+
+def test_default_timeout_for_structured_calls_honors_env_override(monkeypatch) -> None:
+    """Structured default timeout should stay configurable from env."""
+
+    monkeypatch.setenv("LLM_CLIENT_DEFAULT_STRUCTURED_TIMEOUT", "240")
+
+    assert default_timeout_for_caller(caller="call_llm_structured") == 240

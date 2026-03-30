@@ -18,6 +18,11 @@ from typing import Any
 
 TIMEOUT_POLICY_ENV = "LLM_CLIENT_TIMEOUT_POLICY"
 SAFETY_TIMEOUT_ENV = "LLM_CLIENT_SAFETY_TIMEOUT"
+DEFAULT_TIMEOUT_ENV = "LLM_CLIENT_DEFAULT_TIMEOUT"
+DEFAULT_STRUCTURED_TIMEOUT_ENV = "LLM_CLIENT_DEFAULT_STRUCTURED_TIMEOUT"
+
+DEFAULT_TIMEOUT_S = 60
+DEFAULT_STRUCTURED_TIMEOUT_S = 180
 
 # Safety ceiling: maximum time any single LLM call can take, regardless of
 # timeout policy. This is NOT a request timeout (which controls expected
@@ -62,6 +67,34 @@ def log_timeout_policy_once(
         caller,
     )
     _TIMEOUT_POLICY_LOGGED = True
+
+
+def _env_timeout(name: str, default: int) -> int:
+    """Read one env-backed timeout default conservatively."""
+
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, 0)
+
+
+def default_timeout_for_caller(*, caller: str) -> int:
+    """Return the shared default request timeout for one public call surface.
+
+    Structured extraction/arbitration calls legitimately run longer than plain
+    text completions, so they get a longer finite default. This keeps the
+    default policy shared and explicit instead of forcing each consumer to add
+    app-local timeouts just to prevent indefinite stalls.
+    """
+
+    base_default = _env_timeout(DEFAULT_TIMEOUT_ENV, DEFAULT_TIMEOUT_S)
+    if "structured" in caller:
+        return _env_timeout(DEFAULT_STRUCTURED_TIMEOUT_ENV, DEFAULT_STRUCTURED_TIMEOUT_S)
+    return base_default
 
 
 def normalize_timeout(

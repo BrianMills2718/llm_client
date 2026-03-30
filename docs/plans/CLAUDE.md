@@ -20,12 +20,13 @@ Track all implementation work here.
 | 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | ✅ Complete | 11 |
 | 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | ✅ Complete | 12 |
 | 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | ✅ Complete | - |
-| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | ❓ Cancelled | - |
+| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | ❓  | - |
 | 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | ✅ Complete | 12 |
-| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | Low | ❓ Cancelled | - |
+| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | Low | ❓  | - |
 | 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | ✅ Complete | - |
 | 19 | [Agent Planning and Working Memory](19_agent_planning_and_working_memory.md) | High | ✅ Complete | - |
 | 20 | [Makefile and Requirements](20_makefile_and_requirements.md) | Medium | ✅ Complete | - |
+| 21 | [Runtime Durability Follow-Ups From Grounded Research](21_runtime_durability_followups_from_grounded_research.md) | High | ✅ Complete | - |
 
 
 ## Status Key
