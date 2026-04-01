@@ -1,9 +1,7 @@
 """Tests for llm_client.io_log — JSONL logging, embedding logging, SQLite DB."""
 
 import json
-import os
 import sqlite3
-import tempfile
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -1269,11 +1267,40 @@ class TestConfigure:
         # Force a connection
         _ = io_log._get_db()
         assert io_log._db_conn is not None
-        old_conn = io_log._db_conn
 
         new_db = tmp_path / "new.db"
         io_log.configure(db_path=new_db)
         assert io_log._db_conn is None
+
+
+class TestActiveRunProgressSummary:
+    def test_active_run_progress_summary_reports_latest_stage_and_last_progress(self, tmp_path):
+        run_id = io_log.start_run(dataset="MuSiQue", model="gpt-5", task="digimon.graph_build")
+        io_log.log_run_stage(run_id, stage="initialize", message="Preparing build")
+        io_log.log_run_progress(
+            run_id,
+            stage="build_er_graph",
+            total=20,
+            completed=5,
+            failed=0,
+            progress_unit="chunks",
+            checkpoint_ref="results/MuSiQue/er_graph/_checkpoint_processed.json",
+        )
+
+        active = io_log.get_active_run_progress(project="test_project")
+        assert len(active) == 1
+        summary = active[0]
+        assert summary["run_id"] == run_id
+        assert summary["project"] == "test_project"
+        assert summary["dataset"] == "MuSiQue"
+        assert summary["task"] == "digimon.graph_build"
+        assert summary["stage"] == "build_er_graph"
+        assert summary["completed"] == 5
+        assert summary["failed"] == 0
+        assert summary["progress_unit"] == "chunks"
+        assert summary["last_progress_at"] is not None
+        assert summary["last_event_at"] >= summary["started_at"]
+        assert summary["stagnated"] is False
 
 
 # ---------------------------------------------------------------------------

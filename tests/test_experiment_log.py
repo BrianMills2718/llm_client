@@ -1009,6 +1009,97 @@ class TestManagedExperimentContext:
         assert io_log.get_active_experiment_run_id() is None
 
 
+class TestRunProgressObservability:
+    def test_run_progress_events_persist_and_query_latest_status(self, tmp_path):
+        rid = io_log.start_run(dataset="MuSiQue", model="gpt-5", task="digimon.graph_build")
+
+        io_log.log_run_stage(
+            rid,
+            stage="build_er_graph",
+            message="Starting ER graph build",
+            metadata={"graph_profile": "tkg"},
+        )
+        io_log.log_run_progress(
+            rid,
+            stage="build_er_graph",
+            total=10,
+            completed=4,
+            failed=1,
+            progress_unit="chunks",
+            avg_latency_s=2.5,
+            checkpoint_ref="results/MuSiQue/er_graph/_checkpoint_processed.json",
+            metadata={"batch": 1},
+        )
+
+        db = sqlite3.connect(str(tmp_path / "test.db"))
+        rows = db.execute(
+            """SELECT event_type, stage, total, completed, failed, progress_unit, checkpoint_ref
+               FROM experiment_run_progress_events
+               WHERE run_id = ?
+               ORDER BY id ASC""",
+            (rid,),
+        ).fetchall()
+        db.close()
+
+        assert rows == [
+            ("run_stage", "build_er_graph", None, None, None, None, None),
+            (
+                "run_progress",
+                "build_er_graph",
+                10,
+                4,
+                1,
+                "chunks",
+                "results/MuSiQue/er_graph/_checkpoint_processed.json",
+            ),
+        ]
+
+        jsonl = tmp_path / "test_project" / "test_project_llm_client_data" / "experiments.jsonl"
+        records = [json.loads(line) for line in jsonl.read_text().strip().split("\n")]
+        progress_records = [record for record in records if record["type"] in {"run_stage", "run_progress"}]
+        assert [record["type"] for record in progress_records] == ["run_stage", "run_progress"]
+
+        active = io_log.get_active_run_progress()
+        assert len(active) == 1
+        assert active[0]["run_id"] == rid
+        assert active[0]["dataset"] == "MuSiQue"
+        assert active[0]["task"] == "digimon.graph_build"
+        assert active[0]["stage"] == "build_er_graph"
+        assert active[0]["total"] == 10
+        assert active[0]["completed"] == 4
+        assert active[0]["failed"] == 1
+        assert active[0]["progress_unit"] == "chunks"
+        assert active[0]["checkpoint_ref"] == "results/MuSiQue/er_graph/_checkpoint_processed.json"
+        assert active[0]["last_progress_at"] is not None
+        assert active[0]["stagnated"] is False
+
+    def test_run_stage_and_stagnation_events_update_active_status(self, tmp_path):
+        rid = io_log.start_run(dataset="MuSiQue", model="gpt-5", task="digimon.graph_build")
+
+        io_log.log_run_stage(rid, stage="build_er_graph", message="Building graph")
+        io_log.mark_run_stagnated(
+            rid,
+            stage="build_er_graph",
+            reason="No checkpoint movement in 30 minutes",
+            metadata={"processed": 200},
+        )
+
+        active = io_log.get_active_run_progress()
+        assert len(active) == 1
+        assert active[0]["stagnated"] is True
+        assert active[0]["stagnation_reason"] == "No checkpoint movement in 30 minutes"
+        assert active[0]["stage"] == "build_er_graph"
+
+        io_log.log_run_stage(rid, stage="build_entity_vdb", message="Resumed on next phase")
+        active = io_log.get_active_run_progress()
+        assert len(active) == 1
+        assert active[0]["stagnated"] is False
+        assert active[0]["stage"] == "build_entity_vdb"
+
+        io_log.finish_run(run_id=rid)
+        assert io_log.get_active_run_progress() == []
+
+
 class TestExperimentEnforcement:
     def test_enforcement_warns_without_active_context(self, tmp_path, caplog):
         io_log.configure_experiment_enforcement(mode="warn", task_patterns=["benchmark"])

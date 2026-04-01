@@ -27,7 +27,7 @@ Track all implementation work here.
 | 19 | [Agent Planning and Working Memory](19_agent_planning_and_working_memory.md) | High | ✅ Complete | - |
 | 20 | [Makefile and Requirements](20_makefile_and_requirements.md) | Medium | ✅ Complete | - |
 | 21 | [Runtime Durability Follow-Ups From Grounded Research](21_runtime_durability_followups_from_grounded_research.md) | High | ✅ Complete | - |
-| 22 | [Long-Running Run Progress Observability](22_long_running_run_progress_observability.md) | High | 📋 Planned | DIGIMON graph-build integration |
+| 22 | [Long-Running Run Progress Observability](22_long_running_run_progress_observability.md) | High | 🚧 In Progress | DIGIMON graph-build integration |
 
 
 ## Status Key

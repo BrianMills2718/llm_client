@@ -7,6 +7,7 @@ This module re-exports ``load_agent_spec`` so that in-package imports
 from __future__ import annotations
 
 import logging
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -26,12 +27,23 @@ except ImportError:
     try:
         from scripts.meta.agent_spec import load_agent_spec  # type: ignore[import-untyped]
     except ImportError as exc:
-        _import_err = exc
+        try:
+            _spec = importlib.util.spec_from_file_location(
+                "project_meta_agent_spec",
+                _PROJECT_META_SCRIPTS / "agent_spec.py",
+            )
+            if _spec is None or _spec.loader is None:
+                raise ImportError("Could not build import spec for project-meta agent_spec")
+            _module = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_module)
+            load_agent_spec = _module.load_agent_spec  # type: ignore[attr-defined]
+        except Exception as fallback_exc:
+            _import_err = fallback_exc if isinstance(fallback_exc, ImportError) else exc
 
-        def load_agent_spec(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-            raise ImportError(
-                "agent_spec was extracted from llm_client to project-meta/scripts/meta/ "
-                "(Plan #17). Ensure ~/projects/project-meta exists."
-            ) from _import_err
+            def load_agent_spec(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+                raise ImportError(
+                    "agent_spec was extracted from llm_client to project-meta/scripts/meta/ "
+                    "(Plan #17). Ensure ~/projects/project-meta exists."
+                ) from _import_err
 
 __all__ = ["load_agent_spec"]

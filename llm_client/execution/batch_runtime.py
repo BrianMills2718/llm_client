@@ -81,6 +81,31 @@ class BatchProgressTracker:
             "completion_rate": round(self.completion_rate, 4),
         }
 
+    def emit_run_progress(
+        self,
+        *,
+        run_id: str,
+        stage: str | None = None,
+        progress_unit: str | None = None,
+        checkpoint_ref: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist the current tracker snapshot through shared run observability."""
+
+        from llm_client.observability.experiments import log_run_progress
+
+        log_run_progress(
+            run_id,
+            stage=stage,
+            total=self.total,
+            completed=self.completed,
+            failed=self.errored,
+            progress_unit=progress_unit,
+            avg_latency_s=self.avg_latency_s,
+            checkpoint_ref=checkpoint_ref,
+            metadata=metadata,
+        )
+
 if TYPE_CHECKING:
     from llm_client.core.config import ClientConfig
     from llm_client.core.client import (
@@ -117,6 +142,11 @@ async def acall_llm_batch_impl(
     # Plan #14: batch progress & stagnation
     progress_interval: int = 100,
     on_batch_progress: Callable[[BatchProgressTracker], None] | None = None,
+    progress_run_id: str | None = None,
+    progress_stage: str | None = None,
+    progress_unit: str | None = "items",
+    progress_checkpoint_ref: str | None = None,
+    progress_metadata: dict[str, Any] | None = None,
     stagnation_window: int = 5,
     abort_on_stagnation: bool = False,
     item_timeout_s: float | None = None,
@@ -147,6 +177,14 @@ async def acall_llm_batch_impl(
         done = tracker.completed + tracker.errored
         if done > 0 and done % progress_interval == 0:
             logger.info("Batch progress: %s", tracker.summary())
+            if progress_run_id is not None:
+                tracker.emit_run_progress(
+                    run_id=progress_run_id,
+                    stage=progress_stage,
+                    progress_unit=progress_unit,
+                    checkpoint_ref=progress_checkpoint_ref,
+                    metadata=progress_metadata,
+                )
             if on_batch_progress is not None:
                 on_batch_progress(tracker)
 
@@ -224,6 +262,14 @@ async def acall_llm_batch_impl(
         await asyncio.gather(*tasks, return_exceptions=return_exceptions),
     )
     logger.info("Batch complete: %s", tracker.summary())
+    if progress_run_id is not None:
+        tracker.emit_run_progress(
+            run_id=progress_run_id,
+            stage=progress_stage,
+            progress_unit=progress_unit,
+            checkpoint_ref=progress_checkpoint_ref,
+            metadata=progress_metadata,
+        )
     if on_batch_progress is not None:
         on_batch_progress(tracker)
     return results
@@ -253,6 +299,11 @@ def call_llm_batch_impl(
     config: ClientConfig | None = None,
     progress_interval: int = 100,
     on_batch_progress: Callable[[BatchProgressTracker], None] | None = None,
+    progress_run_id: str | None = None,
+    progress_stage: str | None = None,
+    progress_unit: str | None = "items",
+    progress_checkpoint_ref: str | None = None,
+    progress_metadata: dict[str, Any] | None = None,
     stagnation_window: int = 5,
     abort_on_stagnation: bool = False,
     item_timeout_s: float | None = None,
@@ -280,11 +331,16 @@ def call_llm_batch_impl(
         on_fallback=on_fallback,
         hooks=hooks,
         config=config,
-        progress_interval=progress_interval,
-        on_batch_progress=on_batch_progress,
-        stagnation_window=stagnation_window,
-        abort_on_stagnation=abort_on_stagnation,
-        item_timeout_s=item_timeout_s,
+                progress_interval=progress_interval,
+                on_batch_progress=on_batch_progress,
+                progress_run_id=progress_run_id,
+                progress_stage=progress_stage,
+                progress_unit=progress_unit,
+                progress_checkpoint_ref=progress_checkpoint_ref,
+                progress_metadata=progress_metadata,
+                stagnation_window=stagnation_window,
+                abort_on_stagnation=abort_on_stagnation,
+                item_timeout_s=item_timeout_s,
         **kwargs,
     )
     try:
