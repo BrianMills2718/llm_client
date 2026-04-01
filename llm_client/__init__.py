@@ -232,6 +232,13 @@ from llm_client.tools.tool_utils import (
     lint_tool_registry,
     prepare_direct_tools,
 )
+from llm_client.tools.decorator import (
+    ToolInfo,
+    ToolRegistry as ToolDecoratorRegistry,
+    ToolResult,
+    registry as tool_registry,
+    tool,
+)
 
 from llm_client.core.config import ClientConfig
 from llm_client.core.routing import CallRequest, ResolvedCallPlan, resolve_call
@@ -363,6 +370,11 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "CategoricalRubric",
     "RubricRegistry",
     "load_categorical_rubric",
+    "tool",
+    "ToolResult",
+    "ToolInfo",
+    "ToolDecoratorRegistry",
+    "tool_registry",
 )
 
 _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
