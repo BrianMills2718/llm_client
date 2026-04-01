@@ -11,6 +11,11 @@ meta_process:
     enabled: true
   worktrees:
     enabled: true
+  capability_ownership:
+    enabled: true
+    source_of_record: docs/plans/05_eval-boundary-cleanup.md
+    shared_registry_required: true
+    source_project: llm_client
   commits:
     require_prefix: true
     valid_prefixes:
