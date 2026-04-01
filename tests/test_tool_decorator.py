@@ -2,16 +2,18 @@
 
 Covers:
 - Decorator wraps async functions correctly
+- Decorator wraps sync functions correctly
 - ToolResult returned on success with correct fields
 - ToolResult returned on error (no exception propagation)
 - Registry auto-populates on decoration
 - registry.list_all() returns registered tools
 - registry.list_by_domain() filters correctly
+- registry.has() checks existence
 - ToolResult has correct latency_s (non-zero for real work)
 - Already-ToolResult return values pass through
-- Sync functions raise helpful TypeError
 - trace_id and task kwargs flow through
 - ToolInfo validates cost_tier
+- ToolInfo captures input_type and output_type
 - Registry rejects duplicate names
 - Registry clear works
 - _tool_info attached to wrapper
@@ -154,20 +156,62 @@ class TestToolDecoratorErrors:
 
 
 # ---------------------------------------------------------------------------
-# Test: sync function rejection
+# Test: sync function support
 # ---------------------------------------------------------------------------
 
 
-class TestSyncRejection:
-    """Sync functions get a helpful TypeError at decoration time."""
+class TestSyncFunctionSupport:
+    """The @tool decorator wraps sync functions and returns ToolResult."""
 
-    def test_sync_function_raises_type_error(self) -> None:
-        """Decorating a sync function raises TypeError."""
-        with pytest.raises(TypeError, match="@tool requires an async function"):
+    def test_sync_function_returns_tool_result(self) -> None:
+        """Decorating a sync function returns ToolResult on call."""
 
-            @tool(name="sync_bad")
-            def sync_func() -> str:
-                return "nope"
+        @tool(name="sync_echo")
+        def sync_echo(text: str) -> str:
+            return f"sync:{text}"
+
+        result = asyncio.run(sync_echo(text="hello"))
+        assert isinstance(result, ToolResult)
+        assert result.success is True
+        assert result.data == "sync:hello"
+        assert result.tool_name == "sync_echo"
+
+    def test_sync_function_error_handling(self) -> None:
+        """Sync function exceptions are caught and wrapped in ToolResult."""
+
+        @tool(name="sync_fail")
+        def sync_fail() -> str:
+            raise ValueError("sync error")
+
+        result = asyncio.run(sync_fail())
+        assert result.success is False
+        assert result.error == "sync error"
+        assert result.error_type == "ValueError"
+
+    def test_sync_function_registered(self) -> None:
+        """Sync functions are registered in the global registry."""
+
+        @tool(name="sync_reg")
+        def sync_reg() -> str:
+            return "ok"
+
+        assert "sync_reg" in registry
+        info = registry.get("sync_reg")
+        assert info is not None
+        assert info.name == "sync_reg"
+
+    def test_sync_function_latency_recorded(self) -> None:
+        """Sync functions have latency_s recorded."""
+        import time as _time
+
+        @tool(name="sync_slow")
+        def sync_slow() -> str:
+            _time.sleep(0.03)
+            return "done"
+
+        result = asyncio.run(sync_slow())
+        assert result.success is True
+        assert result.latency_s >= 0.02
 
 
 # ---------------------------------------------------------------------------
@@ -433,3 +477,72 @@ class TestToolRegistryStandalone:
 
         custom.clear()
         assert len(custom) == 0
+
+    def test_has_method(self) -> None:
+        """has() returns True for registered tools, False otherwise."""
+        custom = ToolRegistry()
+        info = ToolInfo(
+            name="check_me",
+            domain="test",
+            description="test",
+            cost_tier="free",
+            func=lambda: None,
+        )
+        assert custom.has("check_me") is False
+        custom.register(info)
+        assert custom.has("check_me") is True
+        assert custom.has("missing") is False
+
+
+# ---------------------------------------------------------------------------
+# Test: ToolInfo input_type and output_type
+# ---------------------------------------------------------------------------
+
+
+class TestToolInfoTypes:
+    """ToolInfo captures input_type and output_type from annotations."""
+
+    def test_output_type_captured(self) -> None:
+        """output_type is extracted from return annotation when it's a concrete type."""
+
+        @tool(name="typed_return")
+        async def typed_return() -> str:
+            return "ok"
+
+        info = registry.get("typed_return")
+        assert info is not None
+        assert info.output_type is str
+
+    def test_input_type_captured_single_param(self) -> None:
+        """input_type is extracted when function has a single typed parameter."""
+
+        @tool(name="single_input")
+        async def single_input(query: str) -> str:
+            return query
+
+        info = registry.get("single_input")
+        assert info is not None
+        assert info.input_type is str
+
+    def test_input_type_none_for_multi_params(self) -> None:
+        """input_type is None when function has multiple parameters."""
+
+        @tool(name="multi_input")
+        async def multi_input(a: str, b: int) -> str:
+            return f"{a}{b}"
+
+        info = registry.get("multi_input")
+        assert info is not None
+        assert info.input_type is None
+
+    def test_types_default_to_none(self) -> None:
+        """input_type and output_type default to None when not annotated."""
+
+        @tool(name="untyped")
+        async def untyped():
+            return "ok"
+
+        info = registry.get("untyped")
+        assert info is not None
+        assert info.input_type is None
+        assert info.output_type is None
