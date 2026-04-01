@@ -167,4 +167,66 @@ help:  ## Show all targets
 	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(api-docs|models|log-)' | \
 		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
+	@echo "Worktrees:"
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(worktree|worktree-list|worktree-remove)' | \
+		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo ""
 	@echo "Options: DAYS=7 PROJECT= LIMIT=20 MAX_SIZE_MB=100 ARCHIVE_DAYS=90 DRY_RUN= DELETE_DAYS="
+
+# >>> META-PROCESS WORKTREE TARGETS >>>
+WORKTREE_CREATE_SCRIPT := scripts/meta/worktree-coordination/create_worktree.py
+WORKTREE_REMOVE_SCRIPT := scripts/meta/worktree-coordination/safe_worktree_remove.py
+WORKTREE_CLAIMS_SCRIPT := scripts/meta/worktree-coordination/check_claims.py
+WORKTREE_DIR ?= $(shell python "$(WORKTREE_CREATE_SCRIPT)" --repo-root . --print-default-worktree-dir)
+WORKTREE_DEFAULT_REMOTE_REF ?= $(shell git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@')
+WORKTREE_START_POINT ?= $(if $(WORKTREE_DEFAULT_REMOTE_REF),$(WORKTREE_DEFAULT_REMOTE_REF),HEAD)
+
+.PHONY: worktree worktree-list worktree-remove
+
+worktree:  ## Create claimed worktree (BRANCH=name TASK="..." [PLAN=N])
+ifndef BRANCH
+	$(error BRANCH is required. Usage: make worktree BRANCH=plan-42-feature TASK="Describe the task")
+endif
+ifndef TASK
+	$(error TASK is required. Usage: make worktree BRANCH=plan-42-feature TASK="Describe the task")
+endif
+	@if [ ! -f "$(WORKTREE_CREATE_SCRIPT)" ]; then \
+		echo "Missing worktree coordination module: $(WORKTREE_CREATE_SCRIPT)"; \
+		echo "Install the full meta-process worktree-coordination module before using make worktree."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(WORKTREE_CLAIMS_SCRIPT)" ]; then \
+		echo "Missing worktree coordination module: $(WORKTREE_CLAIMS_SCRIPT)"; \
+		echo "Install the full meta-process worktree-coordination module before using make worktree."; \
+		exit 1; \
+	fi
+	@python "$(WORKTREE_CLAIMS_SCRIPT)" --claim --id "$(BRANCH)" --task "$(TASK)" $(if $(PLAN),--plan $(PLAN),)
+	@mkdir -p "$(WORKTREE_DIR)"
+	@if ! python "$(WORKTREE_CREATE_SCRIPT)" --repo-root . --path "$(WORKTREE_DIR)/$(BRANCH)" --branch "$(BRANCH)" --start-point "$(WORKTREE_START_POINT)"; then \
+		python "$(WORKTREE_CLAIMS_SCRIPT)" --release --id "$(BRANCH)" --force >/dev/null 2>&1 || true; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "Worktree created at $(WORKTREE_DIR)/$(BRANCH)"
+	@echo "Claim created for branch $(BRANCH)"
+
+worktree-list:  ## Show claimed worktree coordination status
+	@if [ ! -f "$(WORKTREE_CLAIMS_SCRIPT)" ]; then \
+		echo "Missing worktree coordination module: $(WORKTREE_CLAIMS_SCRIPT)"; \
+		echo "Install the full meta-process worktree-coordination module before using make worktree-list."; \
+		exit 1; \
+	fi
+	@python "$(WORKTREE_CLAIMS_SCRIPT)" --list
+
+worktree-remove:  ## Safely remove worktree for BRANCH=name
+ifndef BRANCH
+	$(error BRANCH is required. Usage: make worktree-remove BRANCH=plan-42-feature)
+endif
+	@if [ ! -f "$(WORKTREE_REMOVE_SCRIPT)" ]; then \
+		echo "Missing worktree coordination module: $(WORKTREE_REMOVE_SCRIPT)"; \
+		echo "Install the full meta-process worktree-coordination module before using make worktree-remove."; \
+		exit 1; \
+	fi
+	@python "$(WORKTREE_REMOVE_SCRIPT)" "$(WORKTREE_DIR)/$(BRANCH)"
+	@python "$(WORKTREE_CLAIMS_SCRIPT)" --release --id "$(BRANCH)" --force >/dev/null 2>&1 || true
+# <<< META-PROCESS WORKTREE TARGETS <<<

@@ -9,6 +9,25 @@ tokens, latency, and trace context — automatically. No call escapes without
 declaring what it's for (`task`), where it fits (`trace_id`), and how much it
 can spend (`max_budget`).
 
+Repo-local ownership and boundary posture now live in
+[docs/ops/CAPABILITY_DECOMPOSITION.md](docs/ops/CAPABILITY_DECOMPOSITION.md).
+Use that doc when you need the current source of record for what `llm_client`
+owns versus what it intentionally consumes from `prompt_eval`, `project-meta`,
+or project repos.
+
+## Governed workflow
+
+`llm_client` now exposes sanctioned worktree coordination through its Makefile:
+
+```bash
+make worktree BRANCH=plan-22-example TASK="Describe the task" PLAN=22
+make worktree-list
+make worktree-remove BRANCH=plan-22-example
+```
+
+Those entrypoints should be preferred over ad hoc local worktree commands when
+doing bounded implementation work in this repo.
+
 ## Install
 
 ```bash
@@ -206,5 +225,6 @@ from llm_client import call_llm
 - [MCP agent contracts](docs/guides/mcp-agent-contracts.md) — tool-chain enforcement, progressive disclosure, artifact handles
 - [Codex integration](docs/guides/codex-integration.md) — process isolation, transport fallback, billing modes
 - [Experiment observability](docs/guides/experiment-observability.md) — runs, items, CLI, adoption gates
+- [Capability decomposition](docs/ops/CAPABILITY_DECOMPOSITION.md) — repo-local ownership and boundary source of record
 - [API reference](docs/API_REFERENCE.md) — full generated reference
 - [Architecture decisions](docs/adr/) — ADRs for routing, identity, observability boundaries

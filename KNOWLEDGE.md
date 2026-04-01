@@ -29,3 +29,19 @@ Issues found:
    (gemini-2.5-flash vs gemini-3-flash-preview). Parameterize or update.
 4. test_public_surface.py expects 118 exports, actual is 120. Trivial fix.
 5. Gate-edit hook test overly strict on doc files. Gate should skip non-source.
+
+### 2026-04-01 — codex — best-practice
+
+**When a shared-infrastructure repo already has a registry row, the next
+truthful step is a repo-local ownership source and sanctioned workflow
+alignment, not more project-meta prose.**
+
+The `llm_client` rollout showed a sharper failure mode than bootstrap-minimal
+repos: the shared registry already knew about llm_client, but the repo still
+lacked its own ownership source of record and its declared sanctioned worktree
+policy did not match the actual Makefile/scripts surface.
+
+Practical rule:
+
+- if a shared repo is already registry-covered, add the local capability source
+  and align declared workflow policy before expanding the registry further
