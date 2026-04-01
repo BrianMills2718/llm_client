@@ -271,6 +271,25 @@ def _emit_llm_call_lifecycle_event(
         trace_id=trace_id,
     )
 
+    # Terminal-visible logging so humans can observe in-flight calls
+    if elapsed_s is not None:
+        elapsed_str = f"{elapsed_s:.0f}s"
+        if phase == "stalled":
+            logger.warning(
+                "[llm_client] STALL: %s call to %s running for %s (task=%s, trace=%s)",
+                call_kind, requested_model, elapsed_str, task, trace_id,
+            )
+        elif phase == "heartbeat" and elapsed_s >= 60:
+            logger.info(
+                "[llm_client] In-flight: %s call to %s for %s (task=%s)",
+                call_kind, requested_model, elapsed_str, task,
+            )
+        elif phase == "failed":
+            logger.warning(
+                "[llm_client] FAILED: %s call to %s after %s (task=%s)",
+                call_kind, requested_model, elapsed_str, task,
+            )
+
 
 class _SyncLLMCallHeartbeatMonitor:
     """Emit lifecycle updates for one sync call, including real progress when available."""
