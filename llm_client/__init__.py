@@ -234,9 +234,11 @@ from llm_client.tools.tool_utils import (
 )
 from llm_client.tools.decorator import (
     ToolInfo,
-    ToolRegistry as ToolDecoratorRegistry,
+    ToolRegistry,
+    ToolRegistry as ToolDecoratorRegistry,  # backwards compat alias
     ToolResult,
-    registry as tool_registry,
+    registry,
+    registry as tool_registry,  # backwards compat alias
     tool,
 )
 
@@ -373,6 +375,8 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "tool",
     "ToolResult",
     "ToolInfo",
+    "ToolRegistry",
+    "registry",
     "ToolDecoratorRegistry",
     "tool_registry",
 )

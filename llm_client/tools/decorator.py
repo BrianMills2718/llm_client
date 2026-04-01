@@ -1,9 +1,12 @@
 """@tool decorator: ToolResult envelope, observability logging, and registry.
 
-Wraps any async function so it:
+Wraps any sync or async function so it:
 1. Returns a ToolResult envelope (success/failure, data, latency, error info)
 2. Logs the call to llm_client's observability backend
 3. Registers itself in a global ToolRegistry for discovery
+
+Supports both sync and async functions. The decorated function always returns
+an async wrapper that produces a ToolResult.
 
 Usage::
 
@@ -13,6 +16,10 @@ Usage::
     async def fetch_page(url: str) -> str:
         ...
         return html
+
+    @tool(name="compute", domain="math", description="Pure computation", cost_tier="free")
+    def compute(x: int) -> int:
+        return x * 2
 
     result = await fetch_page(url="https://example.com")
     assert isinstance(result, ToolResult)
@@ -29,7 +36,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, get_type_hints
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -79,6 +86,8 @@ class ToolInfo:
     description: str
     cost_tier: str  # free | cheap | moderate | expensive
     func: Callable[..., Any]
+    input_type: type | None = None
+    output_type: type | None = None
 
     def __post_init__(self) -> None:
         """Validate cost_tier is one of the allowed values."""
@@ -124,6 +133,10 @@ class ToolRegistry:
             key=lambda t: t.name,
         )
 
+    def has(self, name: str) -> bool:
+        """Check whether a tool with *name* is registered."""
+        return name in self._tools
+
     def clear(self) -> None:
         """Remove all registered tools. Primarily for testing."""
         self._tools.clear()
@@ -146,38 +159,54 @@ def tool(
     description: str = "",
     cost_tier: str = "cheap",
 ) -> Callable[..., Any]:
-    """Decorator that wraps an async function with ToolResult, observability, and registration.
+    """Decorator that wraps a sync or async function with ToolResult, observability, and registration.
 
     The decorated function will:
     - Return a ``ToolResult`` envelope instead of a raw value
     - Catch all exceptions and wrap them in ``ToolResult(success=False, ...)``
     - Log each call to the observability backend via ``log_tool_call``
     - Register itself in the global ``registry`` on decoration
+    - Extract ``input_type`` and ``output_type`` from type annotations
+
+    Supports both ``def`` and ``async def`` functions. The wrapper is always
+    async, so callers always ``await`` the result regardless of the underlying
+    function type.
 
     Args:
         name: Unique tool name for the registry and observability.
         domain: Logical grouping (e.g. "web", "government", "social").
         description: Human-readable description. Falls back to docstring.
         cost_tier: One of "free", "cheap", "moderate", "expensive".
-
-    Raises:
-        TypeError: If the decorated function is not async.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        if not asyncio.iscoroutinefunction(func):
-            raise TypeError(
-                f"@tool requires an async function, but {func.__name__!r} is sync. "
-                "Use 'async def' instead."
-            )
+        is_async = asyncio.iscoroutinefunction(func)
 
         desc = description or (func.__doc__ or "").strip().split("\n")[0]
+
+        # Extract type hints for registry metadata.
+        # Use get_type_hints to resolve stringified annotations
+        # from `from __future__ import annotations`.
+        try:
+            hints = get_type_hints(func)
+        except Exception:
+            hints = {}
+        input_type_hint = None
+        output_type_hint = hints.get("return")
+        # For input type, use the first non-return annotation if there's
+        # a single Pydantic-style input parameter
+        param_hints = {k: v for k, v in hints.items() if k != "return"}
+        if len(param_hints) == 1:
+            input_type_hint = next(iter(param_hints.values()))
+
         info = ToolInfo(
             name=name,
             domain=domain,
             description=desc,
             cost_tier=cost_tier,
             func=func,
+            input_type=input_type_hint if isinstance(input_type_hint, type) else None,
+            output_type=output_type_hint if isinstance(output_type_hint, type) else None,
         )
         registry.register(info)
 
@@ -192,7 +221,10 @@ def tool(
             result: ToolResult[Any] | None = None
 
             try:
-                raw = await func(*args, **kwargs)
+                if is_async:
+                    raw = await func(*args, **kwargs)
+                else:
+                    raw = func(*args, **kwargs)
                 latency = time.monotonic() - start
 
                 # If the function already returns a ToolResult, enrich it
