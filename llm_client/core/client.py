@@ -50,6 +50,8 @@ from typing import Any, Callable, TypeVar
 import litellm
 from pydantic import BaseModel
 
+from data_contracts import boundary
+
 # Enable post-generation JSON Schema validation. Providers only enforce
 # structural constraints (type, required, enum) at decode time. Value-level
 # constraints (minProperties, minLength, pattern, minimum) are NOT enforced.
@@ -407,6 +409,14 @@ async def _aretrieve_background_response(
 # ---------------------------------------------------------------------------
 
 
+@boundary(
+    name="llm_client.call_llm",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 def call_llm(
     model: str,
     messages: list[dict[str, Any]],
@@ -523,6 +533,14 @@ def call_llm(
     )
 
 
+@boundary(
+    name="llm_client.call_llm_structured",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 def call_llm_structured(
     model: str,
     messages: list[dict[str, Any]],
@@ -614,6 +632,14 @@ def call_llm_structured(
     )
 
 
+@boundary(
+    name="llm_client.call_llm_with_tools",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 def call_llm_with_tools(
     model: str,
     messages: list[dict[str, Any]],
@@ -686,6 +712,14 @@ def call_llm_with_tools(
 # ---------------------------------------------------------------------------
 
 
+@boundary(
+    name="llm_client.acall_llm",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 async def acall_llm(
     model: str,
     messages: list[dict[str, Any]],
@@ -776,6 +810,14 @@ async def acall_llm(
     )
 
 
+@boundary(
+    name="llm_client.acall_llm_structured",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 async def acall_llm_structured(
     model: str,
     messages: list[dict[str, Any]],
@@ -867,6 +909,14 @@ async def acall_llm_structured(
     )
 
 
+@boundary(
+    name="llm_client.acall_llm_with_tools",
+    version="1.0.0",
+    producer="llm_client",
+    consumers=["research_v3", "onto-canon6", "grounded-research", "open_web_retrieval"],
+    validate_input=False,
+    validate_output=False,
+)
 async def acall_llm_with_tools(
     model: str,
     messages: list[dict[str, Any]],
