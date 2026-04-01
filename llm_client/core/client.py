@@ -1554,3 +1554,27 @@ async def aembed(
         trace_id=trace_id,
         **kwargs,
     )
+
+
+# ---------------------------------------------------------------------------
+# Register Pydantic output schemas for @boundary-decorated functions.
+#
+# LLMCallResult is a dataclass (not a Pydantic model) so the @boundary
+# decorator cannot auto-extract a JSON schema from the return type hint.
+# We inject the schema from a parallel Pydantic model after decoration so
+# the contract registry has a complete output schema for every boundary.
+# ---------------------------------------------------------------------------
+
+from llm_client.schemas import LLMCallResultSchema  # noqa: E402
+
+_LLM_RESULT_SCHEMA = LLMCallResultSchema.model_json_schema()
+
+for _fn in (
+    call_llm,
+    call_llm_structured,
+    call_llm_with_tools,
+    acall_llm,
+    acall_llm_structured,
+    acall_llm_with_tools,
+):
+    _fn._boundary_info.output_schema = _LLM_RESULT_SCHEMA  # type: ignore[attr-defined]

@@ -1,7 +1,8 @@
 # ADR 0014: Call Replay And Divergence Diagnosis Boundary
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-03-22
+Last verified: 2026-03-31
 
 ## Context
 

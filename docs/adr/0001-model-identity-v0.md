@@ -1,7 +1,8 @@
 # ADR 0001: Model Identity Contract v0
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-02-22
+Last verified: 2026-03-31
 
 ## Context
 
