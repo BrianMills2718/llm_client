@@ -1,7 +1,8 @@
 # ADR 0002: Routing and Config Precedence
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-02-22
+Last verified: 2026-03-31
 
 ## Context
 

@@ -243,6 +243,10 @@ from llm_client.tools.decorator import (
 from llm_client.core.config import ClientConfig
 from llm_client.core.routing import CallRequest, ResolvedCallPlan, resolve_call
 
+from llm_client.schemas import (
+    EmbeddingResultSchema,
+    LLMCallResultSchema,
+)
 from llm_client.core.client import (
     AsyncCachePolicy,
     AsyncLLMStream,
@@ -311,8 +315,10 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "AsyncLLMStream",
     "CachePolicy",
     "EmbeddingResult",
+    "EmbeddingResultSchema",
     "Hooks",
     "LLMCallResult",
+    "LLMCallResultSchema",
     "LLMStream",
     "LRUCache",
     "TurnEvent",

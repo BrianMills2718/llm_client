@@ -1,7 +1,8 @@
 # ADR 0004: Fixed `result.model` Semantics
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-02-23
+Last verified: 2026-03-31
 
 ## Context
 
