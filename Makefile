@@ -107,6 +107,9 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 test:  ## Run all tests
 	python -m pytest tests/ -q
 
+test-quick:  ## Run tests (minimal output)
+	python -m pytest tests/ -q --tb=no
+
 test-verbose:  ## Run tests with verbose output
 	python -m pytest tests/ -v
 
