@@ -70,7 +70,7 @@ def test_schema_covers_all_dataclass_fields():
 
 def test_registry_has_output_schemas():
     """The global contract registry has output schemas for all llm_client boundaries."""
-    llm_boundaries = registry.list_by_project("llm_client")
+    llm_boundaries = registry.list_by_producer("llm_client")
     assert len(llm_boundaries) >= 6
 
     for info in llm_boundaries:
