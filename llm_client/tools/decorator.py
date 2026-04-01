@@ -79,6 +79,8 @@ class ToolInfo:
     description: str
     cost_tier: str  # free | cheap | moderate | expensive
     func: Callable[..., Any]
+    input_type: type | None = None
+    output_type: type | None = None
 
     def __post_init__(self) -> None:
         """Validate cost_tier is one of the allowed values."""
@@ -145,6 +147,7 @@ def tool(
     domain: str = "general",
     description: str = "",
     cost_tier: str = "cheap",
+    result_type: type | None = None,
 ) -> Callable[..., Any]:
     """Decorator that wraps an async function with ToolResult, observability, and registration.
 
@@ -172,12 +175,40 @@ def tool(
             )
 
         desc = description or (func.__doc__ or "").strip().split("\n")[0]
+        # Extract input/output types from function signature
+        _input_type = None
+        _output_type = None
+        try:
+            import typing
+            hints = typing.get_type_hints(func)
+            # First Pydantic param as input type
+            for param_name, param_type in hints.items():
+                if param_name == "return":
+                    continue
+                if hasattr(param_type, "model_json_schema"):
+                    _input_type = param_type
+                    break
+            # Return type — unwrap ToolResult[T] if present
+            ret = hints.get("return")
+            if ret is not None:
+                origin = getattr(ret, "__origin__", None)
+                if origin is ToolResult:
+                    args = getattr(ret, "__args__", ())
+                    if args:
+                        _output_type = args[0]
+                elif hasattr(ret, "model_json_schema"):
+                    _output_type = ret
+        except Exception:
+            pass
+
         info = ToolInfo(
             name=name,
             domain=domain,
             description=desc,
             cost_tier=cost_tier,
             func=func,
+            input_type=_input_type,
+            output_type=_output_type or result_type,
         )
         registry.register(info)
 
