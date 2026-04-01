@@ -744,6 +744,23 @@ CREATE TABLE IF NOT EXISTS experiment_items (
     UNIQUE(run_id, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS experiment_run_progress_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    stage TEXT,
+    message TEXT,
+    total INTEGER,
+    completed INTEGER,
+    failed INTEGER,
+    progress_unit TEXT,
+    avg_latency_s REAL,
+    checkpoint_ref TEXT,
+    metadata TEXT,
+    reason TEXT
+);
+
 CREATE TABLE IF NOT EXISTS experiment_aggregates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     aggregate_id TEXT NOT NULL UNIQUE,
@@ -852,6 +869,9 @@ CREATE INDEX IF NOT EXISTS idx_expr_condition_seed ON experiment_runs(condition_
 CREATE INDEX IF NOT EXISTS idx_expri_run_id ON experiment_items(run_id);
 CREATE INDEX IF NOT EXISTS idx_expri_item_id ON experiment_items(item_id);
 CREATE INDEX IF NOT EXISTS idx_expri_trace_id ON experiment_items(trace_id);
+CREATE INDEX IF NOT EXISTS idx_exprprog_run_id ON experiment_run_progress_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_exprprog_timestamp ON experiment_run_progress_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_exprprog_event_type ON experiment_run_progress_events(event_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_expagg_aggregate_id ON experiment_aggregates(aggregate_id);
 CREATE INDEX IF NOT EXISTS idx_expagg_project ON experiment_aggregates(project);
 CREATE INDEX IF NOT EXISTS idx_expagg_dataset ON experiment_aggregates(dataset);
@@ -1438,6 +1458,7 @@ def _query_api() -> Any:
 
 
 from llm_client.observability.query import (
+    get_active_run_progress,
     get_active_llm_calls,
     get_completed_traces,
     get_trace_tree,
@@ -1513,6 +1534,9 @@ from llm_client.observability.experiments import (
     get_runs,
     log_experiment_aggregate,
     log_item,
+    log_run_progress,
+    log_run_stage,
+    mark_run_stagnated,
 )
 
 

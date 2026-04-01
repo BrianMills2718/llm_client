@@ -9,8 +9,6 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-import math
-import statistics
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -196,6 +194,267 @@ def start_run(
         logger.debug("observability.experiments.start_run DB write failed", exc_info=True)
 
     return run_id
+
+
+def _validate_run_id(run_id: str) -> str:
+    """Return a non-empty run id or raise a truthful error."""
+
+    normalized = run_id.strip()
+    if not normalized:
+        raise ValueError("run_id must be a non-empty string")
+    return normalized
+
+
+def _normalize_optional_stage(stage: str | None) -> str | None:
+    """Normalize an optional stage label."""
+
+    if stage is None:
+        return None
+    normalized = stage.strip()
+    if not normalized:
+        raise ValueError("stage must be non-empty when provided")
+    return normalized
+
+
+def _normalize_optional_message(message: str | None) -> str | None:
+    """Normalize an optional message payload."""
+
+    if message is None:
+        return None
+    normalized = message.strip()
+    return normalized or None
+
+
+def _validate_optional_nonnegative_int(name: str, value: int | None) -> int | None:
+    """Validate that an optional integer counter is non-negative."""
+
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return int(value)
+
+
+def _validate_optional_nonnegative_float(name: str, value: float | None) -> float | None:
+    """Validate that an optional float value is non-negative."""
+
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return float(value)
+
+
+def _normalize_optional_text(name: str, value: str | None) -> str | None:
+    """Normalize an optional text field and reject empty strings."""
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{name} must be non-empty when provided")
+    return normalized
+
+
+def _serialize_progress_event(
+    *,
+    event_type: Literal["run_stage", "run_progress", "run_stagnated"],
+    run_id: str,
+    stage: str | None,
+    message: str | None,
+    total: int | None,
+    completed: int | None,
+    failed: int | None,
+    progress_unit: str | None,
+    avg_latency_s: float | None,
+    checkpoint_ref: str | None,
+    metadata: dict[str, Any] | None,
+    reason: str | None,
+) -> dict[str, Any]:
+    """Build one normalized run-progress event payload."""
+
+    normalized_run_id = _validate_run_id(run_id)
+    normalized_stage = _normalize_optional_stage(stage)
+    normalized_message = _normalize_optional_message(message)
+    normalized_total = _validate_optional_nonnegative_int("total", total)
+    normalized_completed = _validate_optional_nonnegative_int("completed", completed)
+    normalized_failed = _validate_optional_nonnegative_int("failed", failed)
+    if (
+        normalized_total is not None
+        and normalized_completed is not None
+        and normalized_completed > normalized_total
+    ):
+        raise ValueError("completed cannot exceed total")
+    if (
+        normalized_total is not None
+        and normalized_failed is not None
+        and normalized_failed > normalized_total
+    ):
+        raise ValueError("failed cannot exceed total")
+    if (
+        normalized_total is not None
+        and normalized_completed is not None
+        and normalized_failed is not None
+        and normalized_completed + normalized_failed > normalized_total
+    ):
+        raise ValueError("completed + failed cannot exceed total")
+    normalized_progress_unit = _normalize_optional_text("progress_unit", progress_unit)
+    normalized_checkpoint_ref = _normalize_optional_text("checkpoint_ref", checkpoint_ref)
+    normalized_reason = _normalize_optional_text("reason", reason)
+    normalized_avg_latency = _validate_optional_nonnegative_float(
+        "avg_latency_s",
+        avg_latency_s,
+    )
+    normalized_metadata = dict(metadata) if metadata is not None else None
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "type": event_type,
+        "run_id": normalized_run_id,
+        "timestamp": timestamp,
+        "stage": normalized_stage,
+        "message": normalized_message,
+        "total": normalized_total,
+        "completed": normalized_completed,
+        "failed": normalized_failed,
+        "progress_unit": normalized_progress_unit,
+        "avg_latency_s": (
+            round(normalized_avg_latency, 3)
+            if normalized_avg_latency is not None
+            else None
+        ),
+        "checkpoint_ref": normalized_checkpoint_ref,
+        "metadata": normalized_metadata,
+        "reason": normalized_reason,
+    }
+
+
+def _persist_run_progress_event(event: dict[str, Any]) -> None:
+    """Persist one run-progress event to both SQLite and JSONL."""
+
+    try:
+        d = _io_log._log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "experiments.jsonl", "a") as f:
+            f.write(json.dumps(event, default=str) + "\n")
+    except Exception:
+        logger.debug(
+            "observability.experiments._persist_run_progress_event JSONL write failed",
+            exc_info=True,
+        )
+
+    try:
+        db = _io_log._get_db()
+        db.execute(
+            """INSERT INTO experiment_run_progress_events
+               (run_id, timestamp, event_type, stage, message, total, completed,
+                failed, progress_unit, avg_latency_s, checkpoint_ref, metadata, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event["run_id"],
+                event["timestamp"],
+                event["type"],
+                event["stage"],
+                event["message"],
+                event["total"],
+                event["completed"],
+                event["failed"],
+                event["progress_unit"],
+                event["avg_latency_s"],
+                event["checkpoint_ref"],
+                json.dumps(event["metadata"], default=str) if event["metadata"] else None,
+                event["reason"],
+            ),
+        )
+        db.commit()
+    except Exception:
+        logger.debug(
+            "observability.experiments._persist_run_progress_event DB write failed",
+            exc_info=True,
+        )
+
+
+def log_run_stage(
+    run_id: str,
+    *,
+    stage: str,
+    message: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Persist a named stage transition for an existing run."""
+
+    event = _serialize_progress_event(
+        event_type="run_stage",
+        run_id=run_id,
+        stage=stage,
+        message=message,
+        total=None,
+        completed=None,
+        failed=None,
+        progress_unit=None,
+        avg_latency_s=None,
+        checkpoint_ref=None,
+        metadata=metadata,
+        reason=None,
+    )
+    _persist_run_progress_event(event)
+
+
+def log_run_progress(
+    run_id: str,
+    *,
+    stage: str | None = None,
+    total: int | None = None,
+    completed: int | None = None,
+    failed: int | None = None,
+    progress_unit: str | None = None,
+    avg_latency_s: float | None = None,
+    checkpoint_ref: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Persist a numeric progress snapshot for an existing run."""
+
+    event = _serialize_progress_event(
+        event_type="run_progress",
+        run_id=run_id,
+        stage=stage,
+        message=None,
+        total=total,
+        completed=completed,
+        failed=failed,
+        progress_unit=progress_unit,
+        avg_latency_s=avg_latency_s,
+        checkpoint_ref=checkpoint_ref,
+        metadata=metadata,
+        reason=None,
+    )
+    _persist_run_progress_event(event)
+
+
+def mark_run_stagnated(
+    run_id: str,
+    *,
+    stage: str | None = None,
+    reason: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Persist an explicit stagnation event for an existing run."""
+
+    event = _serialize_progress_event(
+        event_type="run_stagnated",
+        run_id=run_id,
+        stage=stage,
+        message=None,
+        total=None,
+        completed=None,
+        failed=None,
+        progress_unit=None,
+        avg_latency_s=None,
+        checkpoint_ref=None,
+        metadata=metadata,
+        reason=reason,
+    )
+    _persist_run_progress_event(event)
 
 
 def log_item(
@@ -991,4 +1250,3 @@ from llm_client.observability.comparison import (  # noqa: E402, F401
     compare_cohorts,
     compare_runs,
 )
-

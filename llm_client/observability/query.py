@@ -136,6 +136,113 @@ def get_cost(
     return total
 
 
+def _decode_optional_json_object(payload: Any) -> dict[str, Any]:
+    """Decode one optional JSON object payload conservatively."""
+
+    if payload is None:
+        return {}
+    try:
+        decoded = json.loads(payload) if isinstance(payload, str) else payload
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def get_active_run_progress(project: str | None = None) -> list[dict[str, Any]]:
+    """Return the latest known progress state for active experiment runs."""
+
+    db = _io_log._get_db()
+    if db is None:
+        return []
+
+    clauses = ["status = 'running'"]
+    params: list[Any] = []
+    if project is not None:
+        clauses.append("project = ?")
+        params.append(project)
+    where = " AND ".join(clauses)
+
+    runs = db.execute(
+        f"""SELECT run_id, timestamp, project, dataset, model, provenance, status
+            FROM experiment_runs
+            WHERE {where}
+            ORDER BY timestamp DESC""",  # noqa: S608
+        params,
+    ).fetchall()
+
+    if not runs:
+        return []
+
+    run_ids = [row[0] for row in runs]
+    placeholders = ",".join("?" for _ in run_ids)
+    event_rows = db.execute(
+        f"""SELECT run_id, timestamp, event_type, stage, message, total, completed,
+                   failed, progress_unit, avg_latency_s, checkpoint_ref, metadata, reason
+            FROM experiment_run_progress_events
+            WHERE run_id IN ({placeholders})
+            ORDER BY id ASC""",  # noqa: S608
+        run_ids,
+    ).fetchall()
+
+    latest_event_by_run: dict[str, dict[str, Any]] = {}
+    latest_progress_by_run: dict[str, dict[str, Any]] = {}
+    latest_progress_at_by_run: dict[str, str] = {}
+    for row in event_rows:
+        run_id = row[0]
+        record = {
+            "timestamp": row[1],
+            "event_type": row[2],
+            "stage": row[3],
+            "message": row[4],
+            "total": row[5],
+            "completed": row[6],
+            "failed": row[7],
+            "progress_unit": row[8],
+            "avg_latency_s": row[9],
+            "checkpoint_ref": row[10],
+            "metadata": _decode_optional_json_object(row[11]),
+            "reason": row[12],
+        }
+        latest_event_by_run[run_id] = record
+        if row[2] == "run_progress":
+            latest_progress_by_run[run_id] = record
+            latest_progress_at_by_run[run_id] = row[1]
+
+    summaries: list[dict[str, Any]] = []
+    for run_id, started_at, project_name, dataset, model, provenance_text, status in runs:
+        provenance = _decode_optional_json_object(provenance_text)
+        latest = latest_event_by_run.get(run_id, {})
+        latest_progress = latest_progress_by_run.get(run_id, {})
+        summaries.append(
+            {
+                "run_id": run_id,
+                "project": project_name,
+                "dataset": dataset,
+                "model": model,
+                "task": provenance.get("task"),
+                "status": status,
+                "started_at": started_at,
+                "last_event_at": latest.get("timestamp", started_at),
+                "stage": latest.get("stage"),
+                "message": latest.get("message"),
+                "total": latest_progress.get("total"),
+                "completed": latest_progress.get("completed"),
+                "failed": latest_progress.get("failed"),
+                "progress_unit": latest_progress.get("progress_unit"),
+                "avg_latency_s": latest_progress.get("avg_latency_s"),
+                "checkpoint_ref": (
+                    latest.get("checkpoint_ref") or latest_progress.get("checkpoint_ref")
+                ),
+                "last_progress_at": latest_progress_at_by_run.get(run_id),
+                "stagnated": latest.get("event_type") == "run_stagnated",
+                "stagnation_reason": latest.get("reason"),
+                "metadata": latest.get("metadata") or None,
+            }
+        )
+
+    return summaries
+
+
 def get_trace_tree(
     trace_prefix: str,
     *,

@@ -1,6 +1,6 @@
 # Plan #22: Long-Running Run Progress Observability
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from llm_client import io_log
 from llm_client.execution.batch_runtime import BatchProgressTracker
 
 
@@ -69,6 +71,67 @@ class TestBatchProgressTracker:
         assert s["completed"] == 1
         assert s["errored"] == 1
         assert s["pending"] == 8
+
+    def test_emit_run_progress_persists_snapshot(self, tmp_path):
+        old_enabled = io_log._enabled
+        old_root = io_log._data_root
+        old_project = io_log._project
+        old_db_path = io_log._db_path
+        old_db_conn = io_log._db_conn
+        old_run_timers = dict(io_log._run_timers)
+        active_token = io_log._active_experiment_run_id.set(None)
+        old_enforcement_mode = os.environ.get("LLM_CLIENT_EXPERIMENT_ENFORCEMENT")
+        old_task_patterns = os.environ.get("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS")
+
+        io_log._enabled = True
+        io_log._data_root = tmp_path
+        io_log._project = "batch_test_project"
+        io_log._db_path = tmp_path / "test.db"
+        io_log._db_conn = None
+        io_log._run_timers.clear()
+
+        try:
+            run_id = io_log.start_run(dataset="batch_case", model="gpt-5", task="batch.progress")
+            tracker = BatchProgressTracker(total=10)
+            tracker.record_completion(1.0)
+            tracker.record_error(ValueError("x"))
+
+            tracker.emit_run_progress(
+                run_id=run_id,
+                stage="batch_phase",
+                progress_unit="items",
+                checkpoint_ref="checkpoint.json",
+                metadata={"source": "test"},
+            )
+
+            active = io_log.get_active_run_progress()
+            assert len(active) == 1
+            assert active[0]["run_id"] == run_id
+            assert active[0]["stage"] == "batch_phase"
+            assert active[0]["total"] == 10
+            assert active[0]["completed"] == 1
+            assert active[0]["failed"] == 1
+            assert active[0]["progress_unit"] == "items"
+            assert active[0]["checkpoint_ref"] == "checkpoint.json"
+        finally:
+            io_log._enabled = old_enabled
+            io_log._data_root = old_root
+            io_log._project = old_project
+            io_log._db_path = old_db_path
+            if io_log._db_conn is not None:
+                io_log._db_conn.close()
+            io_log._db_conn = old_db_conn
+            io_log._run_timers.clear()
+            io_log._run_timers.update(old_run_timers)
+            io_log._active_experiment_run_id.reset(active_token)
+            if old_enforcement_mode is None:
+                os.environ.pop("LLM_CLIENT_EXPERIMENT_ENFORCEMENT", None)
+            else:
+                os.environ["LLM_CLIENT_EXPERIMENT_ENFORCEMENT"] = old_enforcement_mode
+            if old_task_patterns is None:
+                os.environ.pop("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS", None)
+            else:
+                os.environ["LLM_CLIENT_EXPERIMENT_TASK_PATTERNS"] = old_task_patterns
 
 
 # ---------------------------------------------------------------------------
@@ -170,3 +233,65 @@ async def test_item_timeout():
 
     assert len(results) == 1
     assert isinstance(results[0], (TimeoutError, asyncio.TimeoutError))
+
+
+def test_tracker_can_emit_run_progress_snapshots(tmp_path):
+    """Tracker snapshots can persist through the shared run-progress contract."""
+    old_enabled = io_log._enabled
+    old_root = io_log._data_root
+    old_project = io_log._project
+    old_db_path = io_log._db_path
+    old_db_conn = io_log._db_conn
+    old_run_timers = dict(io_log._run_timers)
+    active_token = io_log._active_experiment_run_id.set(None)
+    old_enforcement_mode = os.environ.get("LLM_CLIENT_EXPERIMENT_ENFORCEMENT")
+    old_task_patterns = os.environ.get("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS")
+
+    io_log._enabled = True
+    io_log._data_root = tmp_path
+    io_log._project = "batch_progress_test"
+    io_log._db_path = tmp_path / "test.db"
+    io_log._db_conn = None
+    io_log._run_timers.clear()
+
+    try:
+        run_id = io_log.start_run(dataset="batch", model="gpt-5", task="llm_client.batch")
+        tracker = BatchProgressTracker(total=8)
+        tracker.record_completion(1.0)
+        tracker.record_completion(2.0)
+        tracker.record_error(ValueError("oops"))
+        tracker.emit_run_progress(
+            run_id=run_id,
+            stage="batch_execute",
+            progress_unit="items",
+            metadata={"source": "tracker"},
+        )
+
+        active = io_log.get_active_run_progress(project="batch_progress_test")
+        assert len(active) == 1
+        assert active[0]["run_id"] == run_id
+        assert active[0]["stage"] == "batch_execute"
+        assert active[0]["total"] == 8
+        assert active[0]["completed"] == 2
+        assert active[0]["failed"] == 1
+        assert active[0]["progress_unit"] == "items"
+        assert active[0]["metadata"] == {"source": "tracker"}
+    finally:
+        io_log._enabled = old_enabled
+        io_log._data_root = old_root
+        io_log._project = old_project
+        io_log._db_path = old_db_path
+        if io_log._db_conn is not None:
+            io_log._db_conn.close()
+        io_log._db_conn = old_db_conn
+        io_log._run_timers.clear()
+        io_log._run_timers.update(old_run_timers)
+        io_log._active_experiment_run_id.reset(active_token)
+        if old_enforcement_mode is None:
+            os.environ.pop("LLM_CLIENT_EXPERIMENT_ENFORCEMENT", None)
+        else:
+            os.environ["LLM_CLIENT_EXPERIMENT_ENFORCEMENT"] = old_enforcement_mode
+        if old_task_patterns is None:
+            os.environ.pop("LLM_CLIENT_EXPERIMENT_TASK_PATTERNS", None)
+        else:
+            os.environ["LLM_CLIENT_EXPERIMENT_TASK_PATTERNS"] = old_task_patterns
