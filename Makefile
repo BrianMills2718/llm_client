@@ -170,12 +170,12 @@ help:  ## Show all targets
 	@echo "Options: DAYS=7 PROJECT= LIMIT=20 MAX_SIZE_MB=100 ARCHIVE_DAYS=90 DRY_RUN= DELETE_DAYS="
 
 # >>> META-PROCESS WORKTREE TARGETS >>>
-WORKTREE_DIR ?= ../$(notdir $(CURDIR))_worktrees
-WORKTREE_DEFAULT_REMOTE_REF ?= $(shell git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@')
-WORKTREE_START_POINT ?= $(if $(WORKTREE_DEFAULT_REMOTE_REF),$(WORKTREE_DEFAULT_REMOTE_REF),HEAD)
 WORKTREE_CREATE_SCRIPT := scripts/meta/worktree-coordination/create_worktree.py
 WORKTREE_REMOVE_SCRIPT := scripts/meta/worktree-coordination/safe_worktree_remove.py
 WORKTREE_CLAIMS_SCRIPT := scripts/meta/worktree-coordination/check_claims.py
+WORKTREE_DIR ?= $(shell python "$(WORKTREE_CREATE_SCRIPT)" --repo-root . --print-default-worktree-dir)
+WORKTREE_DEFAULT_REMOTE_REF ?= $(shell git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@')
+WORKTREE_START_POINT ?= $(if $(WORKTREE_DEFAULT_REMOTE_REF),$(WORKTREE_DEFAULT_REMOTE_REF),HEAD)
 
 .PHONY: worktree worktree-list worktree-remove
 

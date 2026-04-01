@@ -58,8 +58,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for worktree creation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=".", help="Git repo root")
-    parser.add_argument("--path", required=True, help="Path for the new worktree")
-    parser.add_argument("--branch", required=True, help="Branch to create or attach")
+    parser.add_argument("--path", help="Path for the new worktree")
+    parser.add_argument("--branch", help="Branch to create or attach")
     parser.add_argument(
         "--start-point",
         default="HEAD",
@@ -81,6 +81,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Emit structured JSON output",
     )
+    parser.add_argument(
+        "--print-default-worktree-dir",
+        action="store_true",
+        help="Print the canonical default *_worktrees directory for the repo and exit.",
+    )
     return parser.parse_args(argv)
 
 
@@ -99,6 +104,27 @@ def branch_exists(repo_root: Path, branch: str) -> bool:
     """Return whether a local branch already exists in the target repo."""
     result = run_git(["show-ref", "--verify", f"refs/heads/{branch}"], cwd=repo_root)
     return result.returncode == 0
+
+
+def resolve_main_repo_root(repo_root: Path) -> Path:
+    """Resolve the canonical main repo root from either a root checkout or worktree."""
+    result = run_git(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo_root,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Unable to resolve canonical repo root from git common dir:\n"
+            f"{result.stderr or result.stdout}".strip()
+        )
+    git_common_dir = Path(result.stdout.strip())
+    return git_common_dir.parent
+
+
+def get_default_worktree_dir(repo_root: Path) -> Path:
+    """Return the canonical repo-level *_worktrees directory for this repo."""
+    main_repo_root = resolve_main_repo_root(repo_root.resolve())
+    return main_repo_root.parent / f"{main_repo_root.name}_worktrees"
 
 
 def parse_status_porcelain(
@@ -319,6 +345,22 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point for safe worktree creation."""
     args = parse_args(argv)
     repo_root = Path(args.repo_root).expanduser().resolve()
+    if args.print_default_worktree_dir:
+        default_dir = get_default_worktree_dir(repo_root)
+        if args.json:
+            print(json.dumps({"default_worktree_dir": str(default_dir)}, indent=2))
+        else:
+            print(default_dir)
+        return 0
+
+    if not args.path or not args.branch:
+        missing = []
+        if not args.path:
+            missing.append("--path")
+        if not args.branch:
+            missing.append("--branch")
+        raise SystemExit(f"Missing required arguments for worktree creation: {', '.join(missing)}")
+
     worktree_path = Path(args.path).expanduser().resolve()
     try:
         result = create_worktree(
