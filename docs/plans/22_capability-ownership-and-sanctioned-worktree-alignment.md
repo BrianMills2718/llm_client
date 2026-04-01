@@ -1,6 +1,6 @@
 # Plan 22: Capability Ownership And Sanctioned Worktree Alignment
 
-**Status:** In Progress
+**Status:** ✅ Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** 21
@@ -67,6 +67,9 @@ declared worktree policy can remain partly imaginary.
 - `Makefile` (modify)
 - `meta-process.yaml` (modify)
 - `scripts/CLAUDE.md` (modify)
+- `scripts/meta/worktree-coordination/check_claims.py` (create)
+- `scripts/meta/worktree-coordination/create_worktree.py` (create)
+- `scripts/meta/worktree-coordination/safe_worktree_remove.py` (create)
 - `docs/ops/CAPABILITY_DECOMPOSITION.md` (create)
 - `KNOWLEDGE.md` (modify)
 
@@ -113,12 +116,12 @@ declared worktree policy can remain partly imaginary.
 
 ## Acceptance Criteria
 
-- [ ] `llm_client` declares repo-local capability ownership with a real source
+- [x] `llm_client` declares repo-local capability ownership with a real source
       of record
-- [ ] README and local workflow docs make that ownership source discoverable
-- [ ] the repo's declared sanctioned worktree policy matches the actual
+- [x] README and local workflow docs make that ownership source discoverable
+- [x] the repo's declared sanctioned worktree policy matches the actual
       Makefile/scripts surface
-- [ ] the shared installer path was used first or an explicit bounded gap was
+- [x] the shared installer path was used first or an explicit bounded gap was
       recorded if it could not fully repair the worktree surface
 
 ---
@@ -127,3 +130,14 @@ declared worktree policy can remain partly imaginary.
 
 - this plan intentionally stops at the repo boundary; the matching shared
   registry and canonical-source updates happen under `project-meta` Plan 46
+
+## Verification Notes
+
+- `python ~/projects/project-meta/scripts/meta/audit_governed_repo.py --repo-root . --json`
+  - `status = PASS`
+  - `capability_ownership.declared = true`
+  - `worktree_entrypoints.targets_present.worktree = true`
+- `python scripts/meta/sync_plan_status.py --check`
+- `python scripts/check_markdown_links.py README.md CLAUDE.md docs/plans/CLAUDE.md docs/plans/22_capability-ownership-and-sanctioned-worktree-alignment.md docs/ops/CAPABILITY_DECOMPOSITION.md scripts/CLAUDE.md KNOWLEDGE.md`
+- `make help | rg 'worktree'`
+- `make worktree-list`
