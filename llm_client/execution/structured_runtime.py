@@ -296,6 +296,7 @@ def _call_llm_structured_impl(
             call_snapshot=call_snapshot,
             execution_path="agent_sdk",
             retry_count=0,
+            response_format_type="agent_sdk",
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -345,6 +346,7 @@ def _call_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="responses_api",
                     retry_count=0,
+                    response_format_type="json_schema",
                 )
                 return reparsed, cached_result
 
@@ -355,6 +357,9 @@ def _call_llm_structured_impl(
 
         if _is_responses_api_model(current_model):
             schema = _strict_json_schema(response_model.model_json_schema())
+            _responses_schema_hash = _hashlib.sha256(
+                _json.dumps(schema, sort_keys=True).encode()
+            ).hexdigest()[:16]
             resp_kwargs = _prepare_responses_kwargs(
                 current_model,
                 messages,
@@ -429,6 +434,8 @@ def _call_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="responses_api",
                     retry_count=attempt,
+                    schema_hash=_responses_schema_hash,
+                    response_format_type="responses_api",
                 )
                 return parsed, llm_result
 
@@ -551,6 +558,8 @@ def _call_llm_structured_impl(
                         call_snapshot=call_snapshot,
                         execution_path="native_schema",
                         retry_count=attempt,
+                        schema_hash=_schema_hash,
+                        response_format_type="json_schema",
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -626,6 +635,9 @@ def _call_llm_structured_impl(
                 warning_sink=_warnings,
             )
             call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 2}
+            _instructor_schema_hash = _hashlib.sha256(
+                _json.dumps(response_model.model_json_schema(), sort_keys=True).encode()
+            ).hexdigest()[:16]
 
             def _invoke_instructor_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 parsed, completion_response = client.chat.completions.create_with_completion(
@@ -677,6 +689,8 @@ def _call_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="instructor",
                     retry_count=attempt,
+                    schema_hash=_instructor_schema_hash,
+                    response_format_type="instructor",
                 )
                 return parsed, llm_result
 
@@ -883,6 +897,7 @@ async def _acall_llm_structured_impl(
             call_snapshot=call_snapshot,
             execution_path="agent_sdk",
             retry_count=0,
+            response_format_type="agent_sdk",
         )
         return cast(T, parsed), llm_result
     r = _effective_retry(retry, num_retries, base_delay, max_delay, retry_on, on_retry)
@@ -932,6 +947,7 @@ async def _acall_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="responses_api",
                     retry_count=0,
+                    response_format_type="json_schema",
                 )
                 return reparsed, cached_result
 
@@ -942,6 +958,9 @@ async def _acall_llm_structured_impl(
 
         if _is_responses_api_model(current_model):
             schema = _strict_json_schema(response_model.model_json_schema())
+            _responses_schema_hash_async = _hashlib.sha256(
+                _json.dumps(schema, sort_keys=True).encode()
+            ).hexdigest()[:16]
             resp_kwargs = _prepare_responses_kwargs(
                 current_model,
                 messages,
@@ -1016,6 +1035,8 @@ async def _acall_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="responses_api",
                     retry_count=attempt,
+                    schema_hash=_responses_schema_hash_async,
+                    response_format_type="responses_api",
                 )
                 return parsed, llm_result
 
@@ -1138,6 +1159,8 @@ async def _acall_llm_structured_impl(
                         call_snapshot=call_snapshot,
                         execution_path="native_schema",
                         retry_count=attempt,
+                        schema_hash=_schema_hash_async,
+                        response_format_type="json_schema",
                     )
                     return parsed, llm_result
                 except Exception as exc:
@@ -1213,6 +1236,9 @@ async def _acall_llm_structured_impl(
                 warning_sink=_warnings,
             )
             call_kwargs = {**base_kwargs, "response_model": response_model, "max_retries": 2}
+            _instructor_schema_hash_async = _hashlib.sha256(
+                _json.dumps(response_model.model_json_schema(), sort_keys=True).encode()
+            ).hexdigest()[:16]
 
             async def _invoke_instructor_attempt(attempt: int) -> tuple[T, LLMCallResult]:
                 parsed, completion_response = await client.chat.completions.create_with_completion(
@@ -1264,6 +1290,8 @@ async def _acall_llm_structured_impl(
                     call_snapshot=call_snapshot,
                     execution_path="instructor",
                     retry_count=attempt,
+                    schema_hash=_instructor_schema_hash_async,
+                    response_format_type="instructor",
                 )
                 return parsed, llm_result
 
