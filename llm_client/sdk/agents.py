@@ -8,9 +8,10 @@ Supports:
 - Structured output (_route_call_structured / _route_acall_structured)
 - Streaming (_route_stream / _route_astream)
 
-Agent models are detected by prefix:
+Agent models are detected by prefix or naming pattern:
 - "claude-code" or "claude-code/<model>" → Claude Agent SDK
 - "codex" or "codex/<model>" → Codex SDK
+- "gpt-5.3-codex", "gpt-5.1-codex-mini", etc. → Codex SDK (family pattern)
 - "openai-agents/<model>" → Reserved (NotImplementedError)
 """
 
@@ -26,6 +27,7 @@ from typing import Any, Awaitable, Callable, TypeVar, cast
 from pydantic import BaseModel
 
 from llm_client.core.client import Hooks, LLMCallResult
+from llm_client.execution.call_contracts import _is_codex_family_model
 from llm_client.execution.timeout_policy import normalize_timeout as _normalize_timeout
 
 _T = TypeVar("_T")
@@ -56,6 +58,8 @@ def _parse_agent_model(model: str) -> tuple[str, str | None]:
         "claude-code/opus"    → ("claude-code", "opus")
         "codex"               → ("codex", None)
         "codex/gpt-5"         → ("codex", "gpt-5")
+        "gpt-5.3-codex"      → ("codex", "gpt-5.3-codex")
+        "gpt-5.1-codex-mini" → ("codex", "gpt-5.1-codex-mini")
         "openai-agents/gpt-5" → ("openai-agents", "gpt-5")
     """
     if "/" in model:
@@ -65,6 +69,11 @@ def _parse_agent_model(model: str) -> tuple[str, str | None]:
     # Support Codex aliases like "codex-mini-latest" as shorthand for
     # sdk=codex, underlying_model=codex-mini-latest.
     if lower in _CODEX_AGENT_ALIASES:
+        return ("codex", model)
+    # Recognize Codex-family models by naming pattern (e.g. gpt-5.3-codex,
+    # gpt-5.1-codex-mini). These are Codex SDK models that don't use the
+    # "codex/" prefix convention.
+    if _is_codex_family_model(model):
         return ("codex", model)
     return (lower, None)
 

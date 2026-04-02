@@ -105,6 +105,9 @@ def test_agent_models_always_available():
     assert _is_model_available("claude-code") is True
     assert _is_model_available("codex/gpt-5.3-codex") is True
     assert _is_model_available("claude-code/opus") is True
+    # Codex-family models (bare, without codex/ prefix) should also be available
+    assert _is_model_available("gpt-5.3-codex") is True
+    assert _is_model_available("gpt-5.1-codex-mini") is True
 
 
 # --- model floors ---

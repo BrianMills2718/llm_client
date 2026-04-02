@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.core.config import ClientConfig, RoutingPolicy
+from llm_client.execution.call_contracts import _is_codex_family_model
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,10 @@ def normalize_model_for_policy(model: str, policy: RoutingPolicy) -> str:
     if lower.startswith(("openrouter/", "gemini/")):
         return raw
     if lower.startswith(("codex", "claude-code", "openai-agents")):
+        return raw
+    # Codex-family models (e.g. gpt-5.3-codex) must not be normalized
+    # through OpenRouter — they route to the Codex SDK.
+    if _is_codex_family_model(raw):
         return raw
     if _is_image_generation_model(raw):
         return raw

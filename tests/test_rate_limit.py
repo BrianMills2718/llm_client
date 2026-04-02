@@ -64,6 +64,12 @@ class TestProviderDetection:
         assert _get_provider("codex") == "agent"
         assert _get_provider("claude-code/opus") == "agent"
 
+    def test_codex_family_models(self):
+        """Codex-family models (gpt-5.3-codex etc.) are agents, not openai."""
+        assert _get_provider("gpt-5.3-codex") == "agent"
+        assert _get_provider("gpt-5.1-codex-mini") == "agent"
+        assert _get_provider("gpt-5.1-codex-max") == "agent"
+
     def test_unknown_default(self):
         assert _get_provider("some-unknown-model") == "default"
 
