@@ -50,14 +50,19 @@ _OPENAI_PREFIXES = ("gpt-", "o1-", "o3", "o4-", "text-embedding-")
 
 def _get_provider(model: str) -> str:
     """Extract provider from a model string."""
+    # Agent models first — not rate-limited (they manage their own concurrency).
+    # Must be checked before OpenAI prefixes because Codex-family models like
+    # "gpt-5.3-codex" start with "gpt-" but route to the Codex SDK.
+    if model.startswith(("claude-code", "codex")):
+        return "agent"
+    from llm_client.execution.call_contracts import _is_codex_family_model
+    if _is_codex_family_model(model):
+        return "agent"
     for prefix, provider in _PROVIDER_PREFIXES.items():
         if model.startswith(prefix):
             return provider
     if any(model.startswith(p) for p in _OPENAI_PREFIXES):
         return "openai"
-    # Agent models — not rate-limited (they manage their own concurrency)
-    if model.startswith(("claude-code", "codex")):
-        return "agent"
     return "default"
 
 

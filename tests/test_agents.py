@@ -106,6 +106,33 @@ class TestIsAgentModel:
         assert _is_agent_model("openai-agent/gpt-5") is False
         assert _is_agent_model("codex-cli") is False
 
+    def test_codex_family_bare_model(self) -> None:
+        """Codex-family models like gpt-5.3-codex route to agent SDK."""
+        assert _is_agent_model("gpt-5.3-codex") is True
+
+    def test_codex_family_with_suffix(self) -> None:
+        """Codex-family variants with suffixes like -mini, -max."""
+        assert _is_agent_model("gpt-5.1-codex-mini") is True
+        assert _is_agent_model("gpt-5.1-codex-max") is True
+
+    def test_codex_family_older_version(self) -> None:
+        assert _is_agent_model("gpt-5.2-codex") is True
+
+    def test_codex_family_case_insensitive(self) -> None:
+        assert _is_agent_model("GPT-5.3-CODEX") is True
+        assert _is_agent_model("Gpt-5.1-Codex-Mini") is True
+
+    def test_codex_family_with_provider_prefix(self) -> None:
+        """Provider-prefixed Codex-family models are still detected."""
+        assert _is_agent_model("openai/gpt-5.3-codex") is True
+        assert _is_agent_model("openrouter/openai/gpt-5.3-codex") is True
+
+    def test_non_codex_gpt_models(self) -> None:
+        """Regular GPT models should NOT match Codex-family pattern."""
+        assert _is_agent_model("gpt-4o") is False
+        assert _is_agent_model("gpt-5-mini") is False
+        assert _is_agent_model("gpt-5.2-pro") is False
+
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -151,6 +178,14 @@ class TestCodexReasoningEffortNormalization:
 
     def test_codex_alias(self) -> None:
         assert _parse_agent_model("codex-mini-latest") == ("codex", "codex-mini-latest")
+
+    def test_codex_family_bare(self) -> None:
+        """Codex-family models parse as (codex, <full-model-name>)."""
+        assert _parse_agent_model("gpt-5.3-codex") == ("codex", "gpt-5.3-codex")
+
+    def test_codex_family_with_suffix(self) -> None:
+        assert _parse_agent_model("gpt-5.1-codex-mini") == ("codex", "gpt-5.1-codex-mini")
+        assert _parse_agent_model("gpt-5.1-codex-max") == ("codex", "gpt-5.1-codex-max")
 
 
 # ---------------------------------------------------------------------------

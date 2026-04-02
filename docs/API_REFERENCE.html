@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-02T02:43:10Z -->
+<!-- Generated: 2026-04-02T17:07:44Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -7986,9 +7986,10 @@ Supports:
 - Structured output (_route_call_structured / _route_acall_structured)
 - Streaming (_route_stream / _route_astream)
 
-Agent models are detected by prefix:
+Agent models are detected by prefix or naming pattern:
 - &quot;claude-code&quot; or &quot;claude-code/&lt;model&gt;&quot; → Claude Agent SDK
 - &quot;codex&quot; or &quot;codex/&lt;model&gt;&quot; → Codex SDK
+- &quot;gpt-5.3-codex&quot;, &quot;gpt-5.1-codex-mini&quot;, etc. → Codex SDK (family pattern)
 - &quot;openai-agents/&lt;model&gt;&quot; → Reserved (NotImplementedError)</pre>
   </div>
 </details>

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Literal, NoReturn
 
@@ -396,12 +397,32 @@ def _apply_max_tokens(model: str, call_kwargs: dict[str, Any]) -> None:
 
 _CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
 
+# Matches bare model names that belong to the Codex family but don't start
+# with the "codex/" prefix — e.g. "gpt-5.3-codex", "gpt-5.1-codex-mini".
+# The pattern looks for "-codex" at a word boundary (end of string or
+# followed by a hyphen).
+_CODEX_FAMILY_RE = re.compile(r"-codex(?:-|$)", re.IGNORECASE)
+
+
+def _is_codex_family_model(model: str) -> bool:
+    """Check if a model name belongs to the Codex family by naming pattern.
+
+    Recognizes models like ``gpt-5.3-codex``, ``gpt-5.1-codex-mini``, and
+    ``gpt-5.1-codex-max`` that use the Codex SDK but don't follow the
+    ``codex/`` prefix convention.  Provider prefixes (``openai/``,
+    ``openrouter/openai/``) are stripped before matching.
+    """
+    # Strip provider prefix to get the bare model name.
+    base = model.rsplit("/", 1)[-1].lower()
+    return bool(_CODEX_FAMILY_RE.search(base))
+
 
 def _is_agent_model(model: str) -> bool:
     """Check if model routes to an agent SDK instead of litellm.
 
     Agent models like "claude-code" or "claude-code/opus" use the Claude
     Agent SDK. "openai-agents/*" is reserved for future OpenAI Agents SDK.
+    Codex-family models (e.g. "gpt-5.3-codex") are also recognized.
     """
     lower = model.lower()
     for prefix in ("claude-code", "codex", "openai-agents"):
@@ -409,6 +430,9 @@ def _is_agent_model(model: str) -> bool:
             return True
     # Support selected Codex aliases that map to Codex agent SDK models.
     if lower in _CODEX_AGENT_ALIASES:
+        return True
+    # Recognize Codex-family models by naming pattern (e.g. gpt-5.3-codex).
+    if _is_codex_family_model(model):
         return True
     return False
 
