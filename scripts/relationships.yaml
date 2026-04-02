@@ -1,61 +1,66 @@
-# Unified relationships map for docs, governance prompts, and read-gate coupling.
-
+version: 2
+coupling_types:
+  locked:
+    action: block
+    description: Commit blocked until coupled doc also updated
+    actor: programmatic
+  generated:
+    action: regenerate
+    description: Regeneration command runs automatically when source changes
+    actor: programmatic
+  validated:
+    action: agent_verify
+    description: Agent checks if doc is actually stale; fixes or escalates
+    actor: agent
 required_reading:
   defaults:
-    - CLAUDE.md
-
+  - CLAUDE.md
 couplings:
-  - sources:
-      - llm_client/core/client.py
-      - llm_client/execution/*_runtime.py
-      - llm_client/execution/execution_kernel.py
-      - llm_client/core/routing.py
-      - llm_client/core/config.py
-    docs:
-      - docs/adr/0001-model-identity-v0.md
-      - docs/adr/0002-routing-config-precedence.md
-      - docs/adr/0003-warning-taxonomy.md
-      - docs/adr/0004-result-model-semantics-migration.md
-      - docs/adr/0009-long-thinking-background-polling.md
-      - docs/adr/0010-cross-project-runtime-substrate.md
-      - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
-    description: Core call path identity, routing, warning, and execution contracts.
-    required_reading: true
-
-  - sources:
-      - llm_client/agent/mcp_agent.py
-      - llm_client/foundation.py
-      - llm_client/sdk/agents.py
-      - llm_client/tools/tool_shim.py
-    docs:
-      - docs/adr/0005-reason-code-registry-governance.md
-      - docs/adr/0006-actor-id-issuance-policy.md
-      - docs/adr/0010-cross-project-runtime-substrate.md
-    description: MCP validation reason-code and Foundation actor identity governance.
-    required_reading: true
-
-  - sources:
-      - llm_client/io_log.py
-      - llm_client/observability/*.py
-      - llm_client/cli/replay.py
-    docs:
-      - docs/adr/0003-warning-taxonomy.md
-      - docs/adr/0007-observability-contract-boundary.md
-      - docs/adr/0010-cross-project-runtime-substrate.md
-      - docs/adr/0012-shared-data-plane-boundary.md
-      - docs/adr/0013-stream-lifecycle-heartbeat-observability.md
-      - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
-    description: Observability sink/query compatibility and warning emission surface.
-    required_reading: true
-
-  # NOTE: task_graph.py and experiment_eval.py were extracted from llm_client
-  # to project-meta and prompt_eval respectively (Plan #17, 2026-03-24).
-  # ADR-0008 is superseded. Coupling entry removed.
-
-  - sources:
-      - llm_client/prompts.py
-      - llm_client/prompts/*.yaml
-    docs:
-      - docs/adr/0011-prompt-assets-explicit-identity.md
-    description: Prompt asset identity, explicit rendering, and provenance constraints.
-    required_reading: true
+- sources:
+  - llm_client/core/client.py
+  - llm_client/execution/*_runtime.py
+  - llm_client/execution/execution_kernel.py
+  - llm_client/core/routing.py
+  - llm_client/core/config.py
+  docs:
+  - docs/adr/0001-model-identity-v0.md
+  - docs/adr/0002-routing-config-precedence.md
+  - docs/adr/0003-warning-taxonomy.md
+  - docs/adr/0004-result-model-semantics-migration.md
+  - docs/adr/0009-long-thinking-background-polling.md
+  - docs/adr/0010-cross-project-runtime-substrate.md
+  - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
+  type: locked
+  description: Core call path identity, routing, warning, and execution contracts.
+- sources:
+  - llm_client/agent/mcp_agent.py
+  - llm_client/foundation.py
+  - llm_client/sdk/agents.py
+  - llm_client/tools/tool_shim.py
+  docs:
+  - docs/adr/0005-reason-code-registry-governance.md
+  - docs/adr/0006-actor-id-issuance-policy.md
+  - docs/adr/0010-cross-project-runtime-substrate.md
+  type: locked
+  description: MCP validation reason-code and Foundation actor identity governance.
+- sources:
+  - llm_client/io_log.py
+  - llm_client/observability/*.py
+  - llm_client/cli/replay.py
+  docs:
+  - docs/adr/0003-warning-taxonomy.md
+  - docs/adr/0007-observability-contract-boundary.md
+  - docs/adr/0010-cross-project-runtime-substrate.md
+  - docs/adr/0012-shared-data-plane-boundary.md
+  - docs/adr/0013-stream-lifecycle-heartbeat-observability.md
+  - docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md
+  type: locked
+  description: Observability sink/query compatibility and warning emission surface.
+- sources:
+  - llm_client/prompts.py
+  - llm_client/prompts/*.yaml
+  docs:
+  - docs/adr/0011-prompt-assets-explicit-identity.md
+  type: locked
+  description: Prompt asset identity, explicit rendering, and provenance constraints.
+overrides: {}

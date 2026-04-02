@@ -1,0 +1,2982 @@
+{
+  "repo": "llm_client",
+  "repo_path": "/home/brian/projects/llm_client",
+  "total_edges": 425,
+  "edges": [
+    {
+      "source": "CLAUDE.md",
+      "target": "docs/plans/01_master-roadmap.md",
+      "type": "markdown_link",
+      "evidence": "1. [docs/plans/01_master-roadmap.md](docs/plans/01_master-roadmap.md)",
+      "line": 7
+    },
+    {
+      "source": "CLAUDE.md",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "2. [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md)",
+      "line": 8
+    },
+    {
+      "source": "CLAUDE.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "3. [docs/API_REFERENCE.md](docs/API_REFERENCE.md)",
+      "line": 9
+    },
+    {
+      "source": "CLAUDE.md",
+      "target": "docs/API_REFERENCE.html",
+      "type": "markdown_link",
+      "evidence": "4. [docs/API_REFERENCE.html](docs/API_REFERENCE.html) for the generated browser reference",
+      "line": 10
+    },
+    {
+      "source": "CLAUDE.md",
+      "target": "scripts/meta/generate_api_reference.py",
+      "type": "markdown_link",
+      "evidence": "5. [scripts/meta/generate_api_reference.py](scripts/meta/generate_api_reference.py) to regenerate the docs",
+      "line": 11
+    },
+    {
+      "source": "CLAUDE.md",
+      "target": ".openclaw/success-criteria.yaml",
+      "type": "markdown_link",
+      "evidence": "6. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)",
+      "line": 12
+    },
+    {
+      "source": "README.md",
+      "target": "docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "type": "markdown_link",
+      "evidence": "[docs/ops/CAPABILITY_DECOMPOSITION.md](docs/ops/CAPABILITY_DECOMPOSITION.md).",
+      "line": 13
+    },
+    {
+      "source": "README.md",
+      "target": "docs/guides/advanced-usage.md",
+      "type": "markdown_link",
+      "evidence": "- [Advanced usage](docs/guides/advanced-usage.md) \u2014 retry policies, fallback models, caching, streaming, hooks, routing ",
+      "line": 224
+    },
+    {
+      "source": "README.md",
+      "target": "docs/guides/mcp-agent-contracts.md",
+      "type": "markdown_link",
+      "evidence": "- [MCP agent contracts](docs/guides/mcp-agent-contracts.md) \u2014 tool-chain enforcement, progressive disclosure, artifact h",
+      "line": 225
+    },
+    {
+      "source": "README.md",
+      "target": "docs/guides/codex-integration.md",
+      "type": "markdown_link",
+      "evidence": "- [Codex integration](docs/guides/codex-integration.md) \u2014 process isolation, transport fallback, billing modes",
+      "line": 226
+    },
+    {
+      "source": "README.md",
+      "target": "docs/guides/experiment-observability.md",
+      "type": "markdown_link",
+      "evidence": "- [Experiment observability](docs/guides/experiment-observability.md) \u2014 runs, items, CLI, adoption gates",
+      "line": 227
+    },
+    {
+      "source": "README.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "- [API reference](docs/API_REFERENCE.md) \u2014 full generated reference",
+      "line": 229
+    },
+    {
+      "source": "README.md",
+      "target": "docs/adr",
+      "type": "markdown_link",
+      "evidence": "- [Architecture decisions](docs/adr/) \u2014 ADRs for routing, identity, observability boundaries",
+      "line": 230
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "docs/plans/01_master-roadmap.md",
+      "type": "markdown_link",
+      "evidence": "1. [docs/plans/01_master-roadmap.md](docs/plans/01_master-roadmap.md)",
+      "line": 23
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "2. [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md)",
+      "line": 24
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "3. [docs/API_REFERENCE.md](docs/API_REFERENCE.md)",
+      "line": 25
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "docs/API_REFERENCE.html",
+      "type": "markdown_link",
+      "evidence": "4. [docs/API_REFERENCE.html](docs/API_REFERENCE.html) for the generated browser reference",
+      "line": 26
+    },
+    {
+      "source": "AGENTS.md",
+      "target": "scripts/meta/generate_api_reference.py",
+      "type": "markdown_link",
+      "evidence": "5. [scripts/meta/generate_api_reference.py](scripts/meta/generate_api_reference.py) to regenerate the docs",
+      "line": 27
+    },
+    {
+      "source": "AGENTS.md",
+      "target": ".openclaw/success-criteria.yaml",
+      "type": "markdown_link",
+      "evidence": "6. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)",
+      "line": 28
+    },
+    {
+      "source": "KNOWLEDGE.md",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "1. Plan #17 (text_runtime sync/async dedup) cancelled but 400 LOC duplication",
+      "line": 23
+    },
+    {
+      "source": "meta-process.yaml",
+      "target": "docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "type": "file_path_reference",
+      "evidence": "source_of_record: docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "line": 16
+    },
+    {
+      "source": "meta-process.yaml",
+      "target": "scripts/doc_coupling.yaml",
+      "type": "file_path_reference",
+      "evidence": "config_file: scripts/doc_coupling.yaml",
+      "line": 29
+    },
+    {
+      "source": "meta-process.yaml",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "config_file: scripts/relationships.yaml",
+      "line": 34
+    },
+    {
+      "source": ".openclaw/success-criteria.yaml",
+      "target": "README.md",
+      "type": "file_path_reference",
+      "evidence": "path: README.md",
+      "line": 4
+    },
+    {
+      "source": ".openclaw/success-criteria.yaml",
+      "target": "docs/API_REFERENCE.md",
+      "type": "file_path_reference",
+      "evidence": "path: docs/API_REFERENCE.md",
+      "line": 6
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "1. [`../CLAUDE.md`](../CLAUDE.md)",
+      "line": 8
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "2. [`../docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)",
+      "line": 9
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "docs/API_REFERENCE.html",
+      "type": "markdown_link",
+      "evidence": "3. [`../docs/API_REFERENCE.html`](../docs/API_REFERENCE.html)",
+      "line": 10
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "scripts/meta/generate_api_reference.py",
+      "type": "markdown_link",
+      "evidence": "4. [`../scripts/meta/generate_api_reference.py`](../scripts/meta/generate_api_reference.py)",
+      "line": 11
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "docs/guides",
+      "type": "markdown_link",
+      "evidence": "5. [`../docs/guides/`](../docs/guides/) for advanced usage guides",
+      "line": 12
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/core",
+      "type": "markdown_link",
+      "evidence": "| [`core/`](core/) | Types, config, errors, models, dispatch hub |",
+      "line": 18
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/execution",
+      "type": "markdown_link",
+      "evidence": "| [`execution/`](execution/) | Call lifecycle, runtimes, retry, streaming |",
+      "line": 19
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/agent",
+      "type": "markdown_link",
+      "evidence": "| [`agent/`](agent/) | MCP loop, contracts, tools, turn lifecycle |",
+      "line": 20
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/sdk",
+      "type": "markdown_link",
+      "evidence": "| [`sdk/`](sdk/) | Agent SDK adapters (Claude, Codex) |",
+      "line": 21
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/tools",
+      "type": "markdown_link",
+      "evidence": "| [`tools/`](tools/) | Tool registry, result cleaning, shim, utils |",
+      "line": 22
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/utils",
+      "type": "markdown_link",
+      "evidence": "| [`utils/`](utils/) | Cost, git, OpenRouter, rate limiting |",
+      "line": 23
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/observability",
+      "type": "markdown_link",
+      "evidence": "| [`observability/`](observability/) | Event, run, and query adapters around `io_log` |",
+      "line": 24
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/cli",
+      "type": "markdown_link",
+      "evidence": "| [`cli/`](cli/) | CLI command modules for runtime and observability inspection |",
+      "line": 25
+    },
+    {
+      "source": "llm_client/CLAUDE.md",
+      "target": "llm_client/workflow",
+      "type": "markdown_link",
+      "evidence": "| [`workflow/`](workflow/) | LangGraph-backed durable workflow layer (builder, config, context) |",
+      "line": 26
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "1. [`../CLAUDE.md`](../CLAUDE.md)",
+      "line": 8
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "2. [`../docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)",
+      "line": 9
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "docs/API_REFERENCE.html",
+      "type": "markdown_link",
+      "evidence": "3. [`../docs/API_REFERENCE.html`](../docs/API_REFERENCE.html)",
+      "line": 10
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "scripts/meta/generate_api_reference.py",
+      "type": "markdown_link",
+      "evidence": "4. [`../scripts/meta/generate_api_reference.py`](../scripts/meta/generate_api_reference.py)",
+      "line": 11
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "docs/guides",
+      "type": "markdown_link",
+      "evidence": "5. [`../docs/guides/`](../docs/guides/) for advanced usage guides",
+      "line": 12
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/core",
+      "type": "markdown_link",
+      "evidence": "| [`core/`](core/) | Types, config, errors, models, dispatch hub |",
+      "line": 18
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/execution",
+      "type": "markdown_link",
+      "evidence": "| [`execution/`](execution/) | Call lifecycle, runtimes, retry, streaming |",
+      "line": 19
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/agent",
+      "type": "markdown_link",
+      "evidence": "| [`agent/`](agent/) | MCP loop, contracts, tools, turn lifecycle |",
+      "line": 20
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/sdk",
+      "type": "markdown_link",
+      "evidence": "| [`sdk/`](sdk/) | Agent SDK adapters (Claude, Codex) |",
+      "line": 21
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/tools",
+      "type": "markdown_link",
+      "evidence": "| [`tools/`](tools/) | Tool registry, result cleaning, shim, utils |",
+      "line": 22
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/utils",
+      "type": "markdown_link",
+      "evidence": "| [`utils/`](utils/) | Cost, git, OpenRouter, rate limiting |",
+      "line": 23
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/observability",
+      "type": "markdown_link",
+      "evidence": "| [`observability/`](observability/) | Event, run, and query adapters around `io_log` |",
+      "line": 24
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/cli",
+      "type": "markdown_link",
+      "evidence": "| [`cli/`](cli/) | CLI command modules for runtime and observability inspection |",
+      "line": 25
+    },
+    {
+      "source": "llm_client/AGENTS.md",
+      "target": "llm_client/workflow",
+      "type": "markdown_link",
+      "evidence": "| [`workflow/`](workflow/) | LangGraph-backed durable workflow layer (builder, config, context) |",
+      "line": 26
+    },
+    {
+      "source": "scripts/sync_plan_status.py",
+      "target": "scripts/meta/sync_plan_status.py",
+      "type": "file_path_reference",
+      "evidence": "\"\"\"Compatibility wrapper for scripts/meta/sync_plan_status.py.\"\"\"",
+      "line": 2
+    },
+    {
+      "source": "scripts/check_doc_coupling.py",
+      "target": "scripts/meta/check_doc_coupling.py",
+      "type": "file_path_reference",
+      "evidence": "- scripts/meta/check_doc_coupling.py",
+      "line": 5
+    },
+    {
+      "source": "scripts/doc_coupling.yaml",
+      "target": "scripts/meta/generate_api_reference.py",
+      "type": "file_path_reference",
+      "evidence": "- scripts/meta/generate_api_reference.py",
+      "line": 6
+    },
+    {
+      "source": "scripts/doc_coupling.yaml",
+      "target": "docs/API_REFERENCE.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/API_REFERENCE.md",
+      "line": 8
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "scripts/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "- CLAUDE.md",
+      "line": 5
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/core/client.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/core/client.py",
+      "line": 9
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/execution/execution_kernel.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/execution/execution_kernel.py",
+      "line": 11
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/core/routing.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/core/routing.py",
+      "line": 12
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/core/config.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/core/config.py",
+      "line": 13
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0001-model-identity-v0.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0001-model-identity-v0.md",
+      "line": 15
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0002-routing-config-precedence.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0002-routing-config-precedence.md",
+      "line": 16
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0003-warning-taxonomy.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0003-warning-taxonomy.md",
+      "line": 17
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0004-result-model-semantics-migration.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0004-result-model-semantics-migration.md",
+      "line": 18
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0009-long-thinking-background-polling.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0009-long-thinking-background-polling.md",
+      "line": 19
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0010-cross-project-runtime-substrate.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0010-cross-project-runtime-substrate.md",
+      "line": 20
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "line": 21
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/agent/mcp_agent.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/agent/mcp_agent.py",
+      "line": 26
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/foundation.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/foundation.py",
+      "line": 27
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/sdk/agents.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/sdk/agents.py",
+      "line": 28
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/tools/tool_shim.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/tools/tool_shim.py",
+      "line": 29
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0005-reason-code-registry-governance.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0005-reason-code-registry-governance.md",
+      "line": 31
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0006-actor-id-issuance-policy.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0006-actor-id-issuance-policy.md",
+      "line": 32
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/io_log.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/io_log.py",
+      "line": 38
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/cli/replay.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/cli/replay.py",
+      "line": 40
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0007-observability-contract-boundary.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0007-observability-contract-boundary.md",
+      "line": 43
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0012-shared-data-plane-boundary.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0012-shared-data-plane-boundary.md",
+      "line": 45
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0013-stream-lifecycle-heartbeat-observability.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0013-stream-lifecycle-heartbeat-observability.md",
+      "line": 46
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "# to project-meta and prompt_eval respectively (Plan #17, 2026-03-24).",
+      "line": 52
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "[adr:0008]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0008 is superseded. Coupling entry removed.",
+      "line": 53
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "llm_client/prompts.py",
+      "type": "file_path_reference",
+      "evidence": "- llm_client/prompts.py",
+      "line": 56
+    },
+    {
+      "source": "scripts/relationships.yaml",
+      "target": "docs/adr/0011-prompt-assets-explicit-identity.md",
+      "type": "file_path_reference",
+      "evidence": "- docs/adr/0011-prompt-assets-explicit-identity.md",
+      "line": 59
+    },
+    {
+      "source": "tests/test_required_reading_gate.py",
+      "target": "llm_client/core/client.py",
+      "type": "file_path_reference",
+      "evidence": "proc = _run_gate(target_file=\"llm_client/core/client.py\", mode=mode, reads=[])",
+      "line": 70
+    },
+    {
+      "source": "tests/test_required_reading_gate.py",
+      "target": "docs/adr/0009-long-thinking-background-polling.md",
+      "type": "file_path_reference",
+      "evidence": "assert \"docs/adr/0009-long-thinking-background-polling.md\" in _required_docs_for(",
+      "line": 83
+    },
+    {
+      "source": "tests/test_boundary_schemas.py",
+      "target": "[cross-project:data_contracts]",
+      "type": "python_import",
+      "evidence": "from data_contracts import registry",
+      "line": 13
+    },
+    {
+      "source": "tests/test_workflow_context_config.py",
+      "target": "tests/test_workflow_builder.py",
+      "type": "file_path_reference",
+      "evidence": "Builder tests that require langgraph are in test_workflow_builder.py.",
+      "line": 4
+    },
+    {
+      "source": "tests/test_gate_edit_hook_integration.py",
+      "target": "tests/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "# CLAUDE.md is a required read for all edits (required_reading_defaults).",
+      "line": 72
+    },
+    {
+      "source": "tests/test_relationships_validation.py",
+      "target": "tests/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "\"    - CLAUDE.md\",",
+      "line": 35
+    },
+    {
+      "source": "tests/test_workflow_builder.py",
+      "target": "tests/test_workflow_context_config.py",
+      "type": "file_path_reference",
+      "evidence": "Context and config tests that don't require langgraph are in test_workflow_context_config.py.",
+      "line": 4
+    },
+    {
+      "source": ".claude/active-work.yaml",
+      "target": "[plan:#23]",
+      "type": "plan_reference",
+      "evidence": "task: 'Merge Codex model recognition fix + Plan #23 sync to main'",
+      "line": 32
+    },
+    {
+      "source": "docs/API_REFERENCE.md",
+      "target": "docs/API_REFERENCE.html",
+      "type": "markdown_link",
+      "evidence": "Browser view: [API_REFERENCE.html](API_REFERENCE.html)",
+      "line": 6
+    },
+    {
+      "source": "docs/API_REFERENCE.md",
+      "target": "README.md",
+      "type": "markdown_link",
+      "evidence": "1. [README.md](../README.md) for installation, usage, routing, and examples.",
+      "line": 10
+    },
+    {
+      "source": "docs/API_REFERENCE.md",
+      "target": "AGENTS.md",
+      "type": "markdown_link",
+      "evidence": "2. [AGENTS.md](../AGENTS.md) for repo operating rules and architectural boundaries.",
+      "line": 11
+    },
+    {
+      "source": "docs/API_REFERENCE.md",
+      "target": "docs/plans/01_master-roadmap.md",
+      "type": "markdown_link",
+      "evidence": "3. [docs/plans/01_master-roadmap.md](plans/01_master-roadmap.md) for the current long-term program state.",
+      "line": 12
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "### Plan #17: llm_client consolidation (COMPLETE)",
+      "line": 12
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[adr:2026]",
+      "type": "adr_reference",
+      "evidence": "- Relocated 7 governance modules to proper homes per ADR-2026-03-22:",
+      "line": 13
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#12]",
+      "type": "plan_reference",
+      "evidence": "### Plan #12: Module reorganization (COMPLETE)",
+      "line": 22
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#14]",
+      "type": "plan_reference",
+      "evidence": "### Plan #14: Batch progress & stagnation (COMPLETE)",
+      "line": 27
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#13]",
+      "type": "plan_reference",
+      "evidence": "### Plan #13: SDK adapter investigation (COMPLETE \u2014 no change needed)",
+      "line": 31
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#8]",
+      "type": "plan_reference",
+      "evidence": "- Plan #8: subtree CLAUDE.md for 6 new subdirectories",
+      "line": 39
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#15]",
+      "type": "plan_reference",
+      "evidence": "- Plan #15 step 1: ClientConfig default fields added",
+      "line": 40
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[plan:#16]",
+      "type": "plan_reference",
+      "evidence": "### Plan #16: Remove remaining 29 compatibility stubs",
+      "line": 70
+    },
+    {
+      "source": "docs/HANDOFF.md",
+      "target": "[adr:0008]",
+      "type": "adr_reference",
+      "evidence": "- Superseded ADR-0008 (task_graph/experiment_eval extracted)",
+      "line": 167
+    },
+    {
+      "source": "llm_client/observability/comparison.py",
+      "target": "llm_client/observability/experiments.py",
+      "type": "file_path_reference",
+      "evidence": "Extracted from ``experiments.py`` to separate the analysis concern from",
+      "line": 8
+    },
+    {
+      "source": "llm_client/agent/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/agent/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/agent/mcp_contracts.py",
+      "target": "llm_client/agent/mcp_agent.py",
+      "type": "file_path_reference",
+      "evidence": "public names are re-exported from mcp_agent.py for backward compatibility.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/cli/experiments_analytics.py",
+      "target": "llm_client/cli/experiments.py",
+      "type": "file_path_reference",
+      "evidence": "Imported and dispatched from experiments.py.",
+      "line": 4
+    },
+    {
+      "source": "llm_client/core/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/core/model_detection.py",
+      "target": "llm_client/core/client.py",
+      "type": "file_path_reference",
+      "evidence": "and provider-specific behavior. Extracted from client.py for concern",
+      "line": 4
+    },
+    {
+      "source": "llm_client/core/data_types.py",
+      "target": "llm_client/core/client.py",
+      "type": "file_path_reference",
+      "evidence": "This module is a leaf dependency \u2014 it must not import from client.py",
+      "line": 7
+    },
+    {
+      "source": "llm_client/core/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/core/client_dispatch.py",
+      "target": "llm_client/core/client.py",
+      "type": "file_path_reference",
+      "evidence": "the public ``client.py`` entrypoints and the per-transport runtime modules:",
+      "line": 4
+    },
+    {
+      "source": "llm_client/tools/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/tools/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/execution/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/execution/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/utils/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/utils/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/sdk/CLAUDE.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/sdk/agents.py",
+      "target": "llm_client/sdk/agents_claude.py",
+      "type": "file_path_reference",
+      "evidence": "# Re-exports from agents_claude.py (backward compatibility)",
+      "line": 316
+    },
+    {
+      "source": "llm_client/sdk/agents.py",
+      "target": "llm_client/sdk/agents_codex.py",
+      "type": "file_path_reference",
+      "evidence": "# Re-exports from agents_codex.py (backward compatibility)",
+      "line": 334
+    },
+    {
+      "source": "llm_client/sdk/AGENTS.md",
+      "target": "llm_client/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "Read [`../CLAUDE.md`](../CLAUDE.md) for package-level context.",
+      "line": 5
+    },
+    {
+      "source": "llm_client/sdk/agents_claude.py",
+      "target": "llm_client/sdk/agents.py",
+      "type": "file_path_reference",
+      "evidence": "This module is an implementation detail of agents.py. All public names are",
+      "line": 7
+    },
+    {
+      "source": "llm_client/sdk/agents_codex.py",
+      "target": "llm_client/sdk/agents.py",
+      "type": "file_path_reference",
+      "evidence": "This module is an implementation detail of agents.py. All public names are",
+      "line": 7
+    },
+    {
+      "source": "scripts/meta/file_context.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "\"\"\"Load and print context relationships for files from scripts/relationships.yaml.",
+      "line": 2
+    },
+    {
+      "source": "scripts/meta/complete_plan.py",
+      "target": "scripts/check_doc_coupling.py",
+      "type": "file_path_reference",
+      "evidence": "[sys.executable, \"scripts/check_doc_coupling.py\", \"--strict\"],",
+      "line": 270
+    },
+    {
+      "source": "scripts/meta/complete_plan.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "\"\"\"Update plan status in CLAUDE.md index.",
+      "line": 390
+    },
+    {
+      "source": "scripts/meta/generate_quiz.py",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "\"context\": \"ADR-0003\"",
+      "line": 176
+    },
+    {
+      "source": "scripts/meta/validate_relationships.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "default=\"scripts/relationships.yaml\",",
+      "line": 132
+    },
+    {
+      "source": "scripts/meta/check_required_reading.py",
+      "target": ".claude/hooks/gate-edit.sh",
+      "type": "file_path_reference",
+      "evidence": "Used by `.claude/hooks/gate-edit.sh`.",
+      "line": 4
+    },
+    {
+      "source": "scripts/meta/check_required_reading.py",
+      "target": ".claude/hooks/track-reads.sh",
+      "type": "file_path_reference",
+      "evidence": "current session (tracked by `.claude/hooks/track-reads.sh`).",
+      "line": 6
+    },
+    {
+      "source": "scripts/meta/check_required_reading.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "\"config_file\": \"scripts/relationships.yaml\",",
+      "line": 27
+    },
+    {
+      "source": "scripts/meta/check_required_reading.py",
+      "target": "meta-process.yaml",
+      "type": "file_path_reference",
+      "evidence": "meta_config = _load_yaml_dict(repo_root / \"meta-process.yaml\")",
+      "line": 100
+    },
+    {
+      "source": "scripts/meta/check_required_reading.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "docs.add(\"CLAUDE.md\")",
+      "line": 154
+    },
+    {
+      "source": "scripts/meta/sync_plan_status.py",
+      "target": "scripts/sync_plan_status.py",
+      "type": "file_path_reference",
+      "evidence": "python scripts/sync_plan_status.py --check",
+      "line": 6
+    },
+    {
+      "source": "scripts/meta/sync_plan_status.py",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "2. Index table in docs/plans/CLAUDE.md",
+      "line": 19
+    },
+    {
+      "source": "scripts/meta/sync_plan_status.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "INDEX_FILE = PLANS_DIR / \"CLAUDE.md\"",
+      "line": 31
+    },
+    {
+      "source": "scripts/meta/pr_auto.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "\"?? .claude/active-work.yaml\",",
+      "line": 27
+    },
+    {
+      "source": "scripts/meta/check_doc_coupling.py",
+      "target": "scripts/check_doc_coupling.py",
+      "type": "file_path_reference",
+      "evidence": "python scripts/check_doc_coupling.py [--base BASE_REF] [--suggest]",
+      "line": 5
+    },
+    {
+      "source": "scripts/meta/check_doc_coupling.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "# New unified format: scripts/relationships.yaml",
+      "line": 49
+    },
+    {
+      "source": "scripts/meta/check_doc_coupling.py",
+      "target": "scripts/doc_coupling.yaml",
+      "type": "file_path_reference",
+      "evidence": "legacy = Path(\"scripts/doc_coupling.yaml\")",
+      "line": 68
+    },
+    {
+      "source": "scripts/meta/check_doc_coupling.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "# Plain filenames like \"CLAUDE.md\" must match the full path to avoid",
+      "line": 142
+    },
+    {
+      "source": "scripts/meta/check_doc_coupling.py",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "# false positives where docs/plans/CLAUDE.md matches root CLAUDE.md.",
+      "line": 143
+    },
+    {
+      "source": "scripts/meta/check_plan_blockers.py",
+      "target": "scripts/sync_plan_status.py",
+      "type": "file_path_reference",
+      "evidence": "print(\"\\nFixes applied. Run 'python scripts/sync_plan_status.py --sync' to update index.\")",
+      "line": 261
+    },
+    {
+      "source": "scripts/meta/parse_plan.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "2. Active claim from .claude/active-work.yaml",
+      "line": 76
+    },
+    {
+      "source": "scripts/meta/create_plan.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "INDEX_PATH = PLANS_DIR / \"CLAUDE.md\"",
+      "line": 25
+    },
+    {
+      "source": "scripts/meta/create_plan.py",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "raise ValueError(f\"Plan #{plan_number} already exists in docs/plans/CLAUDE.md\")",
+      "line": 71
+    },
+    {
+      "source": "scripts/meta/validate_plan.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "default=\"scripts/relationships.yaml\",",
+      "line": 456
+    },
+    {
+      "source": "scripts/meta/generate_api_reference.py",
+      "target": "docs/API_REFERENCE.md",
+      "type": "file_path_reference",
+      "evidence": "* ``docs/API_REFERENCE.md`` as a compact markdown index that links to the HTML",
+      "line": 10
+    },
+    {
+      "source": "scripts/meta/generate_api_reference.py",
+      "target": "pyproject.toml",
+      "type": "file_path_reference",
+      "evidence": "\"1. `pyproject.toml` is authoritative for package metadata and extras.\",",
+      "line": 637
+    },
+    {
+      "source": "scripts/meta/generate_api_reference.py",
+      "target": "README.md",
+      "type": "file_path_reference",
+      "evidence": "<li><a href=\"{html.escape((REPO_ROOT / 'README.md').as_uri())}\">README.md</a> for installation, usage, routing, and exam",
+      "line": 836
+    },
+    {
+      "source": "scripts/meta/generate_api_reference.py",
+      "target": "AGENTS.md",
+      "type": "file_path_reference",
+      "evidence": "<li><a href=\"{html.escape((REPO_ROOT / 'AGENTS.md').as_uri())}\">AGENTS.md</a> for repo operating rules and architectural",
+      "line": 837
+    },
+    {
+      "source": "scripts/meta/merge_pr.py",
+      "target": "scripts/meta/worktree-coordination/check_claims.py",
+      "type": "file_path_reference",
+      "evidence": "\"scripts/meta/worktree-coordination/check_claims.py\",",
+      "line": 78
+    },
+    {
+      "source": "scripts/meta/hook_log.py",
+      "target": "scripts/relationships.yaml",
+      "type": "file_path_reference",
+      "evidence": "DEFAULT_CONFIG = Path(\"scripts/relationships.yaml\")",
+      "line": 26
+    },
+    {
+      "source": "scripts/meta/worktree-coordination/check_claims.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "Primary data store: .claude/active-work.yaml",
+      "line": 39
+    },
+    {
+      "source": "scripts/meta/worktree-coordination/check_claims.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "CLAUDE_MD_PATH = _MAIN_ROOT / \"CLAUDE.md\"",
+      "line": 96
+    },
+    {
+      "source": "scripts/meta/worktree-coordination/safe_worktree_remove.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "2. Active claim in .claude/active-work.yaml (same owner)",
+      "line": 202
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "scripts/meta/validate_relationships.py",
+      "type": "file_path_reference",
+      "evidence": "python scripts/meta/validate_relationships.py --strict",
+      "line": 32
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_io_log.py",
+      "type": "file_path_reference",
+      "evidence": "tests/test_io_log.py::TestLogCall::test_disabled_skips_logging \\",
+      "line": 37
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_model_identity_contract.py",
+      "type": "file_path_reference",
+      "evidence": "tests/test_model_identity_contract.py::TestModelIdentityContract::test_sync_identity_fields_with_explicit_routing_off",
+      "line": 38
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_required_reading_gate.py",
+      "type": "file_path_reference",
+      "evidence": "pytest -q tests/test_required_reading_gate.py tests/test_gate_edit_hook_integration.py",
+      "line": 42
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_gate_edit_hook_integration.py",
+      "type": "file_path_reference",
+      "evidence": "pytest -q tests/test_required_reading_gate.py tests/test_gate_edit_hook_integration.py",
+      "line": 42
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_foundation.py",
+      "type": "file_path_reference",
+      "evidence": "tests/test_foundation.py \\",
+      "line": 49
+    },
+    {
+      "source": ".github/workflows/smoke-observability.yml",
+      "target": "tests/test_mcp_agent.py",
+      "type": "file_path_reference",
+      "evidence": "tests/test_mcp_agent.py::TestAcallWithMcp::test_foundation_schema_strict_raises_on_invalid_event \\",
+      "line": 50
+    },
+    {
+      "source": "docs/archive/CHATGPT_REVIEW_STATUS_2026-02-23.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "- core call path + runtime/routing/execution modules -> ADR 0001/0002/0003/0004",
+      "line": 344
+    },
+    {
+      "source": "docs/archive/CHATGPT_REVIEW_STATUS_2026-02-23.md",
+      "target": "[adr:0005]",
+      "type": "adr_reference",
+      "evidence": "- MCP/Foundation/agent loop governance modules -> ADR 0005/0006",
+      "line": 345
+    },
+    {
+      "source": "docs/archive/CHATGPT_REVIEW_STATUS_2026-02-23.md",
+      "target": "[adr:0007]",
+      "type": "adr_reference",
+      "evidence": "- observability coupling -> ADR 0007",
+      "line": 383
+    },
+    {
+      "source": "docs/archive/CHATGPT_REVIEW_STATUS_2026-02-23.md",
+      "target": "[adr:0008]",
+      "type": "adr_reference",
+      "evidence": "- task-graph/evaluation coupling -> ADR 0008",
+      "line": 384
+    },
+    {
+      "source": "docs/archive/CHATGPT_REVIEW_STATUS_2026-02-23.md",
+      "target": "[adr:0009]",
+      "type": "adr_reference",
+      "evidence": "- `scripts/relationships.yaml` now requires ADR 0009 for `client.py`.",
+      "line": 435
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "README.md",
+      "type": "markdown_link",
+      "evidence": "- [README.md](../../README.md)",
+      "line": 8
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "AGENTS.md",
+      "type": "markdown_link",
+      "evidence": "- [AGENTS.md](../../AGENTS.md)",
+      "line": 9
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "docs/API_REFERENCE.md",
+      "type": "markdown_link",
+      "evidence": "- [docs/API_REFERENCE.md](../API_REFERENCE.md)",
+      "line": 10
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "docs/plans/CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "- [docs/plans/CLAUDE.md](../plans/CLAUDE.md)",
+      "line": 11
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "docs/adr/README.md",
+      "type": "markdown_link",
+      "evidence": "- [docs/adr/README.md](../adr/README.md)",
+      "line": 12
+    },
+    {
+      "source": "docs/archive/README.md",
+      "target": "docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md",
+      "type": "markdown_link",
+      "evidence": "- [docs/ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md](../ECOSYSTEM_TOP_DOWN_ARCHITECTURE.md)",
+      "line": 13
+    },
+    {
+      "source": "docs/archive/LLM_MODELS.md",
+      "target": "[plan:#1]",
+      "type": "plan_reference",
+      "evidence": "| **Best overall quality** | Claude Opus 4.6 Adaptive | #1 intelligence (53), best instruction following |",
+      "line": 21
+    },
+    {
+      "source": "docs/archive/PUBLIC_SURFACE_AUDIT.md",
+      "target": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "type": "markdown_link",
+      "evidence": "- [`docs/TASK_GRAPH_DESIGN.md`](TASK_GRAPH_DESIGN.md)",
+      "line": 209
+    },
+    {
+      "source": "docs/archive/ECOSYSTEM_UNCERTAINTIES.md",
+      "target": "[adr:0010]",
+      "type": "adr_reference",
+      "evidence": "the 2026-03-17 boundary decisions in ADR 0010, ADR 0011, and ADR 0012.",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/ECOSYSTEM_UNCERTAINTIES.md",
+      "target": "[adr:0011]",
+      "type": "adr_reference",
+      "evidence": "the 2026-03-17 boundary decisions in ADR 0010, ADR 0011, and ADR 0012.",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/ECOSYSTEM_UNCERTAINTIES.md",
+      "target": "[adr:0012]",
+      "type": "adr_reference",
+      "evidence": "the 2026-03-17 boundary decisions in ADR 0010, ADR 0011, and ADR 0012.",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/ECOSYSTEM_UNCERTAINTIES.md",
+      "target": "[adr:0002]",
+      "type": "adr_reference",
+      "evidence": "mapping itself is now defined in `prompt_eval` ADR 0002.",
+      "line": 80
+    },
+    {
+      "source": "docs/archive/BACKLOG.md",
+      "target": "[plan:#14]",
+      "type": "plan_reference",
+      "evidence": "**Resolved by:** Plan #14 (BatchProgressTracker, stagnation detection, item_timeout_s)",
+      "line": 6
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#28]",
+      "type": "plan_reference",
+      "evidence": "6. **Investigate before acting.** Agents must verify assumptions before executing. Task prompts can include investigatio",
+      "line": 20
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#13]",
+      "type": "plan_reference",
+      "evidence": "7. **Lock specs before execution.** Task definition is frozen at dispatch time. The agent cannot weaken requirements to ",
+      "line": 21
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#29]",
+      "type": "plan_reference",
+      "evidence": "8. **Persist uncertainties.** When a task discovers something unknown, record it in the execution log. Downstream tasks ",
+      "line": 22
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#15]",
+      "type": "plan_reference",
+      "evidence": "Derived from meta-process patterns (Plan Workflow #15, Verification Enforcement #17, Question-Driven Planning #28, Uncer",
+      "line": 295
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "Derived from meta-process patterns (Plan Workflow #15, Verification Enforcement #17, Question-Driven Planning #28, Uncer",
+      "line": 295
+    },
+    {
+      "source": "docs/archive/TASK_GRAPH_DESIGN.md",
+      "target": "[plan:#16]",
+      "type": "plan_reference",
+      "evidence": "This prevents downstream tasks from staying blocked when their dependencies have completed. (From meta-process Pattern #",
+      "line": 368
+    },
+    {
+      "source": "docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "target": "docs/plans/22_capability-ownership-and-sanctioned-worktree-alignment.md",
+      "type": "markdown_link",
+      "evidence": "- [`../plans/22_capability-ownership-and-sanctioned-worktree-alignment.md`](../plans/22_capability-ownership-and-sanctio",
+      "line": 13
+    },
+    {
+      "source": "docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "target": "README.md",
+      "type": "markdown_link",
+      "evidence": "- [`../../README.md`](../../README.md)",
+      "line": 14
+    },
+    {
+      "source": "docs/ops/CAPABILITY_DECOMPOSITION.md",
+      "target": "CLAUDE.md",
+      "type": "markdown_link",
+      "evidence": "- [`../../CLAUDE.md`](../../CLAUDE.md)",
+      "line": 15
+    },
+    {
+      "source": "docs/adr/0012-shared-data-plane-boundary.md",
+      "target": "[adr:0012]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0012: Shared Data Plane Boundary",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0012-shared-data-plane-boundary.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: causal_parent_id decision provenance column added to io_log + text_runtime (Plan #54)",
+      "line": 5
+    },
+    {
+      "source": "docs/adr/0005-reason-code-registry-governance.md",
+      "target": "[adr:0005]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0005: `reason_code` Registry Governance",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0006-actor-id-issuance-policy.md",
+      "target": "[adr:0006]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0006: Foundation `actor_id` Issuance Policy",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0001-model-identity-v0.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0001: Model Identity Contract v0",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0001-model-identity-v0.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0010-cross-project-runtime-substrate.md",
+      "target": "[adr:0010]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0010: Cross-Project Runtime and Observability Substrate",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0010-cross-project-runtime-substrate.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0011-prompt-assets-explicit-identity.md",
+      "target": "[adr:0011]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0011: Prompt Assets Use Explicit Identity and Lineage",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0003-warning-taxonomy.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0003: Warning Taxonomy",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0003-warning-taxonomy.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0004-result-model-semantics-migration.md",
+      "target": "[adr:0004]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0004: Fixed `result.model` Semantics",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0004-result-model-semantics-migration.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0013-stream-lifecycle-heartbeat-observability.md",
+      "target": "[adr:0013]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0013: Stream Lifecycle Heartbeat and Stagnation Observability",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0013-stream-lifecycle-heartbeat-observability.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: causal_parent_id decision provenance column added to io_log + text_runtime (Plan #54)",
+      "line": 5
+    },
+    {
+      "source": "docs/adr/0008-task-graph-evaluation-contract-boundary.md",
+      "target": "[adr:0008]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0008: Task Graph and Evaluation Contract Boundary",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0008-task-graph-evaluation-contract-boundary.md",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "Superseded: 2026-03-24 \u2014 task_graph.py extracted to project-meta, experiment_eval.py to prompt_eval (Plan #17)",
+      "line": 4
+    },
+    {
+      "source": "docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "target": "[adr:0014]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0014: Call Replay And Divergence Diagnosis Boundary",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "target": "[adr:0007]",
+      "type": "adr_reference",
+      "evidence": "ADR 0007 keeps canonical observability in `llm_client/observability/*` and",
+      "line": 31
+    },
+    {
+      "source": "docs/adr/0014-call-replay-and-divergence-diagnosis-boundary.md",
+      "target": "[adr:0013]",
+      "type": "adr_reference",
+      "evidence": "requires ADR-level governance for payload-shape changes. ADR 0013 already makes",
+      "line": 32
+    },
+    {
+      "source": "docs/adr/0002-routing-config-precedence.md",
+      "target": "[adr:0002]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0002: Routing and Config Precedence",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0002-routing-config-precedence.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0009-long-thinking-background-polling.md",
+      "target": "[adr:0009]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0009: Long-Thinking Responses Background Polling",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0009-long-thinking-background-polling.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)",
+      "line": 6
+    },
+    {
+      "source": "docs/adr/0007-observability-contract-boundary.md",
+      "target": "[adr:0007]",
+      "type": "adr_reference",
+      "evidence": "# ADR 0007: Observability Contract Boundary",
+      "line": 1
+    },
+    {
+      "source": "docs/adr/0007-observability-contract-boundary.md",
+      "target": "[plan:#54]",
+      "type": "plan_reference",
+      "evidence": "Verification context: causal_parent_id decision provenance column added to io_log + text_runtime (Plan #54)",
+      "line": 5
+    },
+    {
+      "source": "docs/adr/0007-observability-contract-boundary.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "must remain aligned with the warning taxonomy contract in ADR 0003.",
+      "line": 23
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/01_master-roadmap.md",
+      "type": "markdown_link",
+      "evidence": "| 1 | [LLM Client Master Roadmap](01_master-roadmap.md) | Highest | \u2705 Complete | - |",
+      "line": 9
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/02_client-boundary-hardening.md",
+      "type": "markdown_link",
+      "evidence": "| 2 | [Client Boundary Hardening Program](02_client-boundary-hardening.md) | High | \u2705 Complete | - |",
+      "line": 10
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/03_model-policy-modernization.md",
+      "type": "markdown_link",
+      "evidence": "| 3 | [Model Policy Modernization](03_model-policy-modernization.md) | High | \u2705 Complete | - |",
+      "line": 11
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/04_workflow-layer-boundary.md",
+      "type": "markdown_link",
+      "evidence": "| 4 | [Workflow Layer Boundary](04_workflow-layer-boundary.md) | Medium | \u2705 Complete | - |",
+      "line": 12
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/05_eval-boundary-cleanup.md",
+      "type": "markdown_link",
+      "evidence": "| 5 | [Eval Boundary Cleanup](05_eval-boundary-cleanup.md) | Medium | \u2705 Complete | - |",
+      "line": 13
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/06_simplification-and-observability.md",
+      "type": "markdown_link",
+      "evidence": "| 6 | [Simplification & Observability](06_simplification-and-observability.md) | High | \u2705 Complete | - |",
+      "line": 14
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/07_stream_lifecycle_observability.md",
+      "type": "markdown_link",
+      "evidence": "| 7 | [Stream Lifecycle Heartbeat and Stagnation Visibility](07_stream_lifecycle_observability.md) | High | \u2705 Complete |",
+      "line": 15
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/08_llm_client-subtree-instructions.md",
+      "type": "markdown_link",
+      "evidence": "| 8 | [llm_client Subtree Instruction Rollout](08_llm_client-subtree-instructions.md) | Medium | \u2705 Complete | - |",
+      "line": 16
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/09_replay-and-divergence-diagnosis.md",
+      "type": "markdown_link",
+      "evidence": "| 9 | [Replay and Divergence Diagnosis](09_replay-and-divergence-diagnosis.md) | High | \u2705 Complete | - |",
+      "line": 17
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/10_api-reference-generation-pipeline.md",
+      "type": "markdown_link",
+      "evidence": "| 10 | [API Reference Generation Pipeline](10_api-reference-generation-pipeline.md) | High | \u2705 Complete | - |",
+      "line": 18
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/11_program-e-module-size-reduction.md",
+      "type": "markdown_link",
+      "evidence": "| 11 | [Program E Module Size Reduction](11_program-e-module-size-reduction.md) | High | \u2705 Complete | 6 |",
+      "line": 19
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/12_module-reorganization.md",
+      "type": "markdown_link",
+      "evidence": "| 12 | [Module Reorganization (Flat \u2192 Layered)](12_module-reorganization.md) | High | \u2705 Complete | 11 |",
+      "line": 20
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/13_sdk-adapter-simplification.md",
+      "type": "markdown_link",
+      "evidence": "| 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | \u2705 Complete | 12 |",
+      "line": 21
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/14_batch-progress-and-stagnation.md",
+      "type": "markdown_link",
+      "evidence": "| 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | \u2705 Complete | - |",
+      "line": 22
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/15_centralize-defaults.md",
+      "type": "markdown_link",
+      "evidence": "| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | \u2753  | - |",
+      "line": 23
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/16_remove-compatibility-stubs.md",
+      "type": "markdown_link",
+      "evidence": "| 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | \u2705 Complete | 12 |",
+      "line": 24
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/17_text-runtime-dedup.md",
+      "type": "markdown_link",
+      "evidence": "| 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | Low | \u2753  | - |",
+      "line": 25
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/18_agent_loop_error_budget.md",
+      "type": "markdown_link",
+      "evidence": "| 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | \u2705 Complete | - |",
+      "line": 26
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/19_agent_planning_and_working_memory.md",
+      "type": "markdown_link",
+      "evidence": "| 19 | [Agent Planning and Working Memory](19_agent_planning_and_working_memory.md) | High | \u2705 Complete | - |",
+      "line": 27
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/20_makefile_and_requirements.md",
+      "type": "markdown_link",
+      "evidence": "| 20 | [Makefile and Requirements](20_makefile_and_requirements.md) | Medium | \u2705 Complete | - |",
+      "line": 28
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/21_runtime_durability_followups_from_grounded_research.md",
+      "type": "markdown_link",
+      "evidence": "| 21 | [Runtime Durability Follow-Ups From Grounded Research](21_runtime_durability_followups_from_grounded_research.md)",
+      "line": 29
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/22_capability-ownership-and-sanctioned-worktree-alignment.md",
+      "type": "markdown_link",
+      "evidence": "| 22 | [Capability Ownership And Sanctioned Worktree Alignment](22_capability-ownership-and-sanctioned-worktree-alignmen",
+      "line": 30
+    },
+    {
+      "source": "docs/plans/CLAUDE.md",
+      "target": "docs/plans/23_authoritative-coordination-wave-1-rollout.md",
+      "type": "markdown_link",
+      "evidence": "| 23 | [Authoritative coordination wave-1 rollout](23_authoritative-coordination-wave-1-rollout.md) | Critical | \u2705 Compl",
+      "line": 31
+    },
+    {
+      "source": "docs/plans/06_simplification-and-observability.md",
+      "target": "docs/plans/09_replay-and-divergence-diagnosis.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [09_replay-and-divergence-diagnosis.md](./09_replay-and-divergence-diagnosis.md)",
+      "line": 281
+    },
+    {
+      "source": "docs/plans/06_simplification-and-observability.md",
+      "target": "docs/reviews/2026-03-22_replay_divergence_proof_slice.md",
+      "type": "markdown_link",
+      "evidence": "[2026-03-22_replay_divergence_proof_slice.md](../reviews/2026-03-22_replay_divergence_proof_slice.md)",
+      "line": 300
+    },
+    {
+      "source": "docs/plans/06_simplification-and-observability.md",
+      "target": "docs/plans/11_program-e-module-size-reduction.md",
+      "type": "markdown_link",
+      "evidence": "[Plan 11](./11_program-e-module-size-reduction.md): `mcp_turn_execution.py`",
+      "line": 349
+    },
+    {
+      "source": "docs/plans/19_agent_planning_and_working_memory.md",
+      "target": "[plan:#19]",
+      "type": "plan_reference",
+      "evidence": "# Plan #19: Agent Planning and Working Memory",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/19_agent_planning_and_working_memory.md",
+      "target": "[plan:#18]",
+      "type": "plan_reference",
+      "evidence": "5. **No timeouts**: Per CLAUDE.md, no time-based cutoffs. Budget controls are via turn counts (Plan #18).",
+      "line": 38
+    },
+    {
+      "source": "docs/plans/09_replay-and-divergence-diagnosis.md",
+      "target": "[adr:0014]",
+      "type": "adr_reference",
+      "evidence": "- ADR 0014 and this plan agree on the shared/local boundary",
+      "line": 103
+    },
+    {
+      "source": "docs/plans/12_module-reorganization.md",
+      "target": "[plan:#12]",
+      "type": "plan_reference",
+      "evidence": "# Plan #12: Module Reorganization (Flat \u2192 Layered)",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/21_runtime_durability_followups_from_grounded_research.md",
+      "target": "[plan:#21]",
+      "type": "plan_reference",
+      "evidence": "# Plan #21: Runtime Durability Follow-Ups From Grounded Research",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/13_sdk-adapter-simplification.md",
+      "target": "[plan:#13]",
+      "type": "plan_reference",
+      "evidence": "# Plan #13: SDK Adapter Simplification",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/20_makefile_and_requirements.md",
+      "target": "[plan:#20]",
+      "type": "plan_reference",
+      "evidence": "# Plan #20: Makefile Test Targets and REQUIREMENTS.md",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/16_remove-compatibility-stubs.md",
+      "target": "[plan:#16]",
+      "type": "plan_reference",
+      "evidence": "# Plan #16: Remove Compatibility Stubs",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "docs/plans/02_client-boundary-hardening.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [02_client-boundary-hardening.md](./02_client-boundary-hardening.md)",
+      "line": 75
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "docs/plans/03_model-policy-modernization.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [03_model-policy-modernization.md](./03_model-policy-modernization.md)",
+      "line": 95
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "docs/plans/04_workflow-layer-boundary.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [04_workflow-layer-boundary.md](./04_workflow-layer-boundary.md)",
+      "line": 116
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "docs/plans/05_eval-boundary-cleanup.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [05_eval-boundary-cleanup.md](./05_eval-boundary-cleanup.md)",
+      "line": 129
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "docs/plans/06_simplification-and-observability.md",
+      "type": "markdown_link",
+      "evidence": "**Plan:** [06_simplification-and-observability.md](./06_simplification-and-observability.md)",
+      "line": 151
+    },
+    {
+      "source": "docs/plans/01_master-roadmap.md",
+      "target": "[adr:0008]",
+      "type": "adr_reference",
+      "evidence": "- ADR-0008 superseded (task_graph/experiment_eval extracted)",
+      "line": 200
+    },
+    {
+      "source": "docs/plans/11_program-e-module-size-reduction.md",
+      "target": "docs/plans/06_simplification-and-observability.md",
+      "type": "markdown_link",
+      "evidence": "**Blocks:** completion of Program E in [06_simplification-and-observability.md](./06_simplification-and-observability.md",
+      "line": 7
+    },
+    {
+      "source": "docs/plans/23_authoritative-coordination-wave-1-rollout.md",
+      "target": "[plan:#23]",
+      "type": "plan_reference",
+      "evidence": "# Plan #23: Authoritative coordination wave-1 rollout",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/18_agent_loop_error_budget.md",
+      "target": "[plan:#18]",
+      "type": "plan_reference",
+      "evidence": "# Plan #18: Agent Loop Error Budget and Retry Policy",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/17_text-runtime-dedup.md",
+      "target": "[plan:#17]",
+      "type": "plan_reference",
+      "evidence": "# Plan #17: text_runtime Sync/Async Deduplication",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/17_text-runtime-dedup.md",
+      "target": "[plan:#1]",
+      "type": "plan_reference",
+      "evidence": "**Why:** This is the #1 maintenance risk in llm_client. A bug fixed in one",
+      "line": 22
+    },
+    {
+      "source": "docs/plans/15_centralize-defaults.md",
+      "target": "[plan:#15]",
+      "type": "plan_reference",
+      "evidence": "# Plan #15: Centralize Hardcoded Defaults into ClientConfig",
+      "line": 1
+    },
+    {
+      "source": "docs/plans/14_batch-progress-and-stagnation.md",
+      "target": "[plan:#14]",
+      "type": "plan_reference",
+      "evidence": "# Plan #14: Batch Progress Observability & Stagnation Detection",
+      "line": 1
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "- \"Escrow is an artifact itself (per ADR-0001)\"",
+      "line": 168
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "adrs: [1, 3]  # ADR-0001, ADR-0003",
+      "line": 215
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "type": "markdown_link",
+      "evidence": "- [Acceptance Gate Linkage](14_acceptance-gate-linkage.md) - Companion pattern: optimal linkage structure",
+      "line": 599
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/07_adr.md",
+      "type": "markdown_link",
+      "evidence": "- [ADR](07_adr.md) - Architecture Decision Records",
+      "line": 600
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/08_adr-governance.md",
+      "type": "markdown_link",
+      "evidence": "- [ADR Governance](08_adr-governance.md) - Linking ADRs to code",
+      "line": 601
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "- [Doc-Code Coupling](10_doc-code-coupling.md) - Linking docs to code",
+      "line": 602
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/03_testing-strategy.md",
+      "type": "markdown_link",
+      "evidence": "- [Testing Strategy](03_testing-strategy.md) - Test organization",
+      "line": 603
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- [Verification Enforcement](17_verification-enforcement.md) - Proving completion",
+      "line": 604
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "[adr:0002]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0002: Thin-Slice Enforcement - Anti-big-bang goal",
+      "line": 609
+    },
+    {
+      "source": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "target": "[adr:0004]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0004: Gate YAML Is Documentation - YAML as single source",
+      "line": 611
+    },
+    {
+      "source": "docs/archive/meta-patterns/24_phased-adr-pattern.md",
+      "target": "[adr:00]",
+      "type": "adr_reference",
+      "evidence": "# ADR-00XX: [Feature] Architecture",
+      "line": 28
+    },
+    {
+      "source": "docs/archive/meta-patterns/24_phased-adr-pattern.md",
+      "target": "[adr:0015]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0015: Agent Cognitive Architecture",
+      "line": 137
+    },
+    {
+      "source": "docs/archive/meta-patterns/27_conceptual-modeling.md",
+      "target": "[plan:#229]",
+      "type": "plan_reference",
+      "evidence": "Emerged from Plan #229 in agent_ecology when CC instances repeatedly misunderstood fundamental concepts (like \"owner\" in",
+      "line": 213
+    },
+    {
+      "source": "docs/archive/meta-patterns/02_claude-md-authoring.md",
+      "target": "[plan:#244]",
+      "type": "plan_reference",
+      "evidence": "## Enforcement (Plan #244)",
+      "line": 204
+    },
+    {
+      "source": "docs/archive/meta-patterns/02_claude-md-authoring.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- [Claim system pattern](worktree-coordination/18_claim-system.md) - Coordination tables in CLAUDE.md",
+      "line": 290
+    },
+    {
+      "source": "docs/archive/meta-patterns/02_claude-md-authoring.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan workflow pattern](15_plan-workflow.md) - Linking CLAUDE.md to plans",
+      "line": 291
+    },
+    {
+      "source": "docs/archive/meta-patterns/02_claude-md-authoring.md",
+      "target": "docs/archive/meta-patterns/29_uncertainty-tracking.md",
+      "type": "markdown_link",
+      "evidence": "- [Uncertainty Tracking](29_uncertainty-tracking.md) - Session continuity across sessions",
+      "line": 292
+    },
+    {
+      "source": "docs/archive/meta-patterns/08_adr-governance.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0001: Everything is an artifact",
+      "line": 19
+    },
+    {
+      "source": "docs/archive/meta-patterns/08_adr-governance.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0003: Contracts can do anything",
+      "line": 20
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "[plan:#215]",
+      "type": "plan_reference",
+      "evidence": "> **STATUS: IMPLEMENTED** - Plan #215 (2026-01-25)",
+      "line": 3
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "docs/archive/meta-patterns/08_adr-governance.md",
+      "type": "markdown_link",
+      "evidence": "| [ADR Governance](08_adr-governance.md) | Subsumed | `governs` edges replace `governance.yaml` |",
+      "line": 99
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "| [Doc-Code Coupling](10_doc-code-coupling.md) | Subsumed | `documented_by` edges replace `doc_coupling.yaml` |",
+      "line": 100
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "docs/archive/meta-patterns/27_conceptual-modeling.md",
+      "type": "markdown_link",
+      "evidence": "| [Conceptual Modeling](27_conceptual-modeling.md) | Complementary | Ontology/glossary are compression layers routed by ",
+      "line": 101
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "[plan:#28]",
+      "type": "plan_reference",
+      "evidence": "Checking Plan #28 against relationship graph...",
+      "line": 123
+    },
+    {
+      "source": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "target": "[plan:#7]",
+      "type": "plan_reference",
+      "evidence": "- DESIGN_CLARIFICATIONS <70% items: [#7 Event system]",
+      "line": 127
+    },
+    {
+      "source": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "target": "docs/archive/meta-patterns/06_git-hooks.md",
+      "type": "markdown_link",
+      "evidence": "- [Git hooks pattern](06_git-hooks.md) - Can run doc-coupling check pre-commit",
+      "line": 259
+    },
+    {
+      "source": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan workflow pattern](15_plan-workflow.md) - Plans are a form of doc-code coupling",
+      "line": 260
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/02_claude-md-authoring.md",
+      "type": "markdown_link",
+      "evidence": "| [CLAUDE.md Authoring](02_claude-md-authoring.md) | AI assistants lack project context | Low | \u2014 |",
+      "line": 17
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/03_testing-strategy.md",
+      "type": "markdown_link",
+      "evidence": "| [Testing Strategy](03_testing-strategy.md) | Inconsistent test approaches | Low | \u2014 |",
+      "line": 18
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/04_mocking-policy.md",
+      "type": "markdown_link",
+      "evidence": "| [Mocking Policy](04_mocking-policy.md) | When to mock, when not to | Low | \u2014 |",
+      "line": 19
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/05_mock-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "| [Mock Enforcement](05_mock-enforcement.md) | Green CI, broken production | Low | 04 |",
+      "line": 20
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/06_git-hooks.md",
+      "type": "markdown_link",
+      "evidence": "| [Git Hooks](06_git-hooks.md) | CI failures caught late | Low | \u2014 |",
+      "line": 21
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/07_adr.md",
+      "type": "markdown_link",
+      "evidence": "| [ADR](07_adr.md) | Architectural decisions get lost | Medium | \u2014 |",
+      "line": 22
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/08_adr-governance.md",
+      "type": "markdown_link",
+      "evidence": "| [ADR Governance](08_adr-governance.md) | ADRs not linked to code | Medium | 07 |",
+      "line": 23
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "type": "markdown_link",
+      "evidence": "| [Documentation Graph](09_documentation-graph.md) | Can't trace decisions \u2192 code | Medium | 07, 10 |",
+      "line": 24
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "| [Doc-Code Coupling](10_doc-code-coupling.md) | Docs drift from code | Medium | \u2014 |",
+      "line": 25
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/11_terminology.md",
+      "type": "markdown_link",
+      "evidence": "| [Terminology](11_terminology.md) | Inconsistent terms | Low | \u2014 |",
+      "line": 26
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/12_structured-logging.md",
+      "type": "markdown_link",
+      "evidence": "| [Structured Logging](12_structured-logging.md) *(proposed)* | Unreadable logs | Low | \u2014 |",
+      "line": 27
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "type": "markdown_link",
+      "evidence": "| [Acceptance-Gate-Driven Development](13_acceptance-gate-driven-development.md) | AI drift, cheating, big bang integrat",
+      "line": 28
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "type": "markdown_link",
+      "evidence": "| [Acceptance Gate Linkage](14_acceptance-gate-linkage.md) | Sparse file-to-constraint mappings | Medium | 13 |",
+      "line": 29
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "| [Plan Workflow](15_plan-workflow.md) | Untracked work, scope creep | Medium | \u2014 |",
+      "line": 30
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/16_plan-blocker-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "| [Plan Blocker Enforcement](16_plan-blocker-enforcement.md) | Blocked plans started anyway | Medium | 15 |",
+      "line": 31
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "| [Verification Enforcement](17_verification-enforcement.md) | Untested \"complete\" work | Medium | 15 |",
+      "line": 32
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/22_human-review-pattern.md",
+      "type": "markdown_link",
+      "evidence": "| [Human Review Pattern](22_human-review-pattern.md) | Risky changes merged without review | Medium | 17 |",
+      "line": 33
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/23_plan-status-validation.md",
+      "type": "markdown_link",
+      "evidence": "| [Plan Status Validation](23_plan-status-validation.md) | Status/content mismatch in plans | Low | 15 |",
+      "line": 34
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/24_phased-adr-pattern.md",
+      "type": "markdown_link",
+      "evidence": "| [Phased ADR Pattern](24_phased-adr-pattern.md) | Complex features need phased rollout | Medium | 07 |",
+      "line": 35
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/25_pr-review-process.md",
+      "type": "markdown_link",
+      "evidence": "| [PR Review Process](25_pr-review-process.md) | Inconsistent review quality | Low | \u2014 |",
+      "line": 36
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/27_conceptual-modeling.md",
+      "type": "markdown_link",
+      "evidence": "| [Conceptual Modeling](27_conceptual-modeling.md) | AI accumulates misconceptions about architecture | Medium | \u2014 |",
+      "line": 37
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/28_question-driven-planning.md",
+      "type": "markdown_link",
+      "evidence": "| [Question-Driven Planning](28_question-driven-planning.md) | AI guesses instead of investigating | Low | \u2014 |",
+      "line": 38
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/29_uncertainty-tracking.md",
+      "type": "markdown_link",
+      "evidence": "| [Uncertainty Tracking](29_uncertainty-tracking.md) | Uncertainties forgotten across sessions | Low | \u2014 |",
+      "line": 39
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "type": "markdown_link",
+      "evidence": "| [Gap Analysis](30_gap-analysis.md) | Ad-hoc planning misses gaps between current and target | Medium | 28 |",
+      "line": 40
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/31_external-llm-review.md",
+      "type": "markdown_link",
+      "evidence": "| [External LLM Review](31_external-llm-review.md) | AI misses issues humans would catch | Low | \u2014 |",
+      "line": 41
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/32_recurring-issue-tracking.md",
+      "type": "markdown_link",
+      "evidence": "| [Recurring Issue Tracking](32_recurring-issue-tracking.md) | Issues recur despite \"fixes\", going in circles | Low | \u2014 ",
+      "line": 42
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/33_uncertainty-resolution.md",
+      "type": "markdown_link",
+      "evidence": "| [Uncertainty Resolution](33_uncertainty-resolution.md) | Uncertainties listed but never resolved | Low | 29 |",
+      "line": 43
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/README.md",
+      "type": "markdown_link",
+      "evidence": "See [worktree-coordination/README.md](worktree-coordination/README.md) for setup and usage.",
+      "line": 51
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "| [Claim System](worktree-coordination/18_claim-system.md) | Parallel work conflicts | Medium | \u2014 |",
+      "line": 55
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "| [Worktree Enforcement](worktree-coordination/19_worktree-enforcement.md) | Main directory corruption from parallel edi",
+      "line": 56
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "type": "markdown_link",
+      "evidence": "| [Rebase Workflow](worktree-coordination/20_rebase-workflow.md) | Stale worktrees causing \"reverted\" changes | Low | 19",
+      "line": 57
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "| [PR Coordination](worktree-coordination/21_pr-coordination.md) | Lost review requests | Low | 15, 18 |",
+      "line": 58
+    },
+    {
+      "source": "docs/archive/meta-patterns/01_README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/26_ownership-respect.md",
+      "type": "markdown_link",
+      "evidence": "| [Ownership Respect](worktree-coordination/26_ownership-respect.md) | CC instances interfering with each other's work |",
+      "line": 59
+    },
+    {
+      "source": "docs/archive/meta-patterns/06_git-hooks.md",
+      "target": "[plan:#3]",
+      "type": "plan_reference",
+      "evidence": "echo \"  e.g. [Plan #3] Implement feature X\"",
+      "line": 104
+    },
+    {
+      "source": "docs/archive/meta-patterns/06_git-hooks.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "- [Doc-code coupling pattern](10_doc-code-coupling.md) - Often run as pre-commit check",
+      "line": 250
+    },
+    {
+      "source": "docs/archive/meta-patterns/06_git-hooks.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan workflow pattern](15_plan-workflow.md) - Commit message format ties to plans",
+      "line": 251
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "[adr:0005]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0005: New approach to X",
+      "line": 156
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "[adr:0002]",
+      "type": "adr_reference",
+      "evidence": "**Supersedes:** ADR-0002",
+      "line": 160
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "# ADR-0001",
+      "line": 230
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "[plan:#3]",
+      "type": "plan_reference",
+      "evidence": "- Implements Gap #3 (Docker isolation)",
+      "line": 247
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "- [Doc-code coupling pattern](10_doc-code-coupling.md) - Related enforcement mechanism",
+      "line": 268
+    },
+    {
+      "source": "docs/archive/meta-patterns/07_adr.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan workflow pattern](15_plan-workflow.md) - ADRs can link to implementation plans",
+      "line": 269
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "type": "markdown_link",
+      "evidence": "See [Acceptance-Gate-Driven Development](13_acceptance-gate-driven-development.md) for the full pattern.",
+      "line": 60
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[plan:#6]",
+      "type": "plan_reference",
+      "evidence": "> \"Plan #6 (Unified Ontology) is a gate plan that delivers artifact-backed agents.\"",
+      "line": 121
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[plan:#1]",
+      "type": "plan_reference",
+      "evidence": "> \"Task: Create the TokenBucket class (part of Plan #1)\"",
+      "line": 123
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[plan:#2]",
+      "type": "plan_reference",
+      "evidence": "> \"Phase 1 includes Plans #1, #2, and #3\"",
+      "line": 125
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[plan:#3]",
+      "type": "plan_reference",
+      "evidence": "> \"Phase 1 includes Plans #1, #2, and #3\"",
+      "line": 125
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0001: Acceptance Gate Terminology",
+      "line": 139
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[adr:0002]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0002: Thin-Slice Enforcement",
+      "line": 140
+    },
+    {
+      "source": "docs/archive/meta-patterns/11_terminology.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0003: Plan-Gate Hierarchy",
+      "line": 141
+    },
+    {
+      "source": "docs/archive/meta-patterns/32_recurring-issue-tracking.md",
+      "target": "[plan:#1]",
+      "type": "plan_reference",
+      "evidence": "### Incident #1 - YYYY-MM-DD",
+      "line": 98
+    },
+    {
+      "source": "docs/archive/meta-patterns/32_recurring-issue-tracking.md",
+      "target": "[plan:#5]",
+      "type": "plan_reference",
+      "evidence": "should add to your understanding of the root cause. If incident #5 has the",
+      "line": 149
+    },
+    {
+      "source": "docs/archive/meta-patterns/29_uncertainty-tracking.md",
+      "target": "[plan:#229]",
+      "type": "plan_reference",
+      "evidence": "Emerged from Plan #229 when uncertainties kept getting lost:",
+      "line": 238
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#34]",
+      "type": "plan_reference",
+      "evidence": "# Pattern #34: Engineering Workflow",
+      "line": 1
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#02]",
+      "type": "plan_reference",
+      "evidence": "**Prerequisites:** Pattern #02 (CLAUDE.md), Pattern #07 (ADR), Pattern #10 (Doc-Code Coupling)",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#07]",
+      "type": "plan_reference",
+      "evidence": "**Prerequisites:** Pattern #02 (CLAUDE.md), Pattern #07 (ADR), Pattern #10 (Doc-Code Coupling)",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#10]",
+      "type": "plan_reference",
+      "evidence": "**Prerequisites:** Pattern #02 (CLAUDE.md), Pattern #07 (ADR), Pattern #10 (Doc-Code Coupling)",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#28]",
+      "type": "plan_reference",
+      "evidence": "- **Pattern #28 (Question-Driven Planning):** Phase 3 is where questions get asked",
+      "line": 101
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#29]",
+      "type": "plan_reference",
+      "evidence": "- **Pattern #29 (Uncertainty Tracking):** Uncertainties discovered in Phase 3 go to UNCERTAINTIES.md",
+      "line": 102
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#33]",
+      "type": "plan_reference",
+      "evidence": "- **Pattern #33 (Uncertainty Resolution):** Resolution lifecycle feeds Phase 7 persistence",
+      "line": 103
+    },
+    {
+      "source": "docs/archive/meta-patterns/34_engineering-workflow.md",
+      "target": "[plan:#15]",
+      "type": "plan_reference",
+      "evidence": "- **Pattern #15 (Plan Workflow):** Phase 4 uses the existing plan creation process",
+      "line": 105
+    },
+    {
+      "source": "docs/archive/meta-patterns/33_uncertainty-resolution.md",
+      "target": "[plan:#33]",
+      "type": "plan_reference",
+      "evidence": "# Pattern #33: Uncertainty Resolution",
+      "line": 1
+    },
+    {
+      "source": "docs/archive/meta-patterns/33_uncertainty-resolution.md",
+      "target": "[plan:#294]",
+      "type": "plan_reference",
+      "evidence": "**Created:** 2026-02-05 (Plan #294)",
+      "line": 4
+    },
+    {
+      "source": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "target": "[plan:#41]",
+      "type": "plan_reference",
+      "evidence": "## Lessons Learned (Plan #41)",
+      "line": 143
+    },
+    {
+      "source": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "target": "[plan:#40]",
+      "type": "plan_reference",
+      "evidence": "**Result:** Tests defined in bullets were invisible to CI. Plan #40 had 6 required tests that were never validated.",
+      "line": 161
+    },
+    {
+      "source": "docs/archive/meta-patterns/28_question-driven-planning.md",
+      "target": "[plan:#229]",
+      "type": "plan_reference",
+      "evidence": "From Plan #229 conceptual modeling work:",
+      "line": 187
+    },
+    {
+      "source": "docs/archive/meta-patterns/12_structured-logging.md",
+      "target": "[plan:#60]",
+      "type": "plan_reference",
+      "evidence": "> See Plan #60 for the current logging approach (SummaryLogger).",
+      "line": 5
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "[plan:#2]",
+      "type": "plan_reference",
+      "evidence": "| 1 | Feature A (`01_feature_a.md`) | High | \ud83d\udccb Planned | #2 |",
+      "line": 46
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "[plan:#123]",
+      "type": "plan_reference",
+      "evidence": "**GitHub Issue:** #123",
+      "line": 352
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/06_git-hooks.md",
+      "type": "markdown_link",
+      "evidence": "- [Git hooks pattern](06_git-hooks.md) - Enforces plan references in commits",
+      "line": 426
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "- [PR coordination pattern](worktree-coordination/21_pr-coordination.md) - Auto-updates plan status on merge",
+      "line": 427
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- [Claim system pattern](worktree-coordination/18_claim-system.md) - Tracks who's working on which plan",
+      "line": 428
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/28_question-driven-planning.md",
+      "type": "markdown_link",
+      "evidence": "- [Question-Driven Planning](28_question-driven-planning.md) - The principle behind \"References Reviewed\"",
+      "line": 429
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/29_uncertainty-tracking.md",
+      "type": "markdown_link",
+      "evidence": "- [Uncertainty Tracking](29_uncertainty-tracking.md) - Track open questions in plans",
+      "line": 430
+    },
+    {
+      "source": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "target": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "type": "markdown_link",
+      "evidence": "- [Gap Analysis](30_gap-analysis.md) - Systematic gap identification that informs plan creation",
+      "line": 431
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "[adr:1]",
+      "type": "adr_reference",
+      "evidence": "\u2502  \"What does ADR-1 govern?\"          \u2502  reverse: adrs \u2192 gates        \u2502",
+      "line": 92
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "adrs: [1, 3]  # ADR-0001, ADR-0003",
+      "line": 140
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "adrs: [1, 3]  # ADR-0001, ADR-0003",
+      "line": 140
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "type": "markdown_link",
+      "evidence": "- [Acceptance-Gate-Driven Development](13_acceptance-gate-driven-development.md) - The complete meta-process",
+      "line": 301
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "docs/archive/meta-patterns/08_adr-governance.md",
+      "type": "markdown_link",
+      "evidence": "- [ADR Governance](08_adr-governance.md) - Now derived from gates",
+      "line": 302
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "docs/archive/meta-patterns/10_doc-code-coupling.md",
+      "type": "markdown_link",
+      "evidence": "- [Doc-Code Coupling](10_doc-code-coupling.md) - Now derived from gates",
+      "line": 303
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "type": "markdown_link",
+      "evidence": "- [Documentation Graph](09_documentation-graph.md) - Gates as nodes",
+      "line": 304
+    },
+    {
+      "source": "docs/archive/meta-patterns/14_acceptance-gate-linkage.md",
+      "target": "[adr:0004]",
+      "type": "adr_reference",
+      "evidence": "- META-ADR-0004: Gate YAML Is Documentation - YAML as single source",
+      "line": 309
+    },
+    {
+      "source": "docs/archive/meta-patterns/22_human-review-pattern.md",
+      "target": "[plan:#40]",
+      "type": "plan_reference",
+      "evidence": "Completing Plan #40",
+      "line": 56
+    },
+    {
+      "source": "docs/archive/meta-patterns/22_human-review-pattern.md",
+      "target": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- [Verification Enforcement](17_verification-enforcement.md) - Overall completion requirements",
+      "line": 162
+    },
+    {
+      "source": "docs/archive/meta-patterns/22_human-review-pattern.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan Workflow](15_plan-workflow.md) - Full plan lifecycle",
+      "line": 163
+    },
+    {
+      "source": "docs/archive/meta-patterns/22_human-review-pattern.md",
+      "target": "docs/archive/meta-patterns/03_testing-strategy.md",
+      "type": "markdown_link",
+      "evidence": "- [Testing Strategy](03_testing-strategy.md) - Test types and when to use each",
+      "line": 164
+    },
+    {
+      "source": "docs/archive/meta-patterns/23_plan-status-validation.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan Workflow](15_plan-workflow.md) - Full plan lifecycle",
+      "line": 96
+    },
+    {
+      "source": "docs/archive/meta-patterns/23_plan-status-validation.md",
+      "target": "docs/archive/meta-patterns/17_verification-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- [Verification Enforcement](17_verification-enforcement.md) - How plans are completed",
+      "line": 97
+    },
+    {
+      "source": "docs/archive/meta-patterns/23_plan-status-validation.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- [Claim System](worktree-coordination/18_claim-system.md) - Coordinating who works on what",
+      "line": 98
+    },
+    {
+      "source": "docs/archive/meta-patterns/16_plan-blocker-enforcement.md",
+      "target": "[plan:#7]",
+      "type": "plan_reference",
+      "evidence": "Plan #7: Single ID Namespace",
+      "line": 54
+    },
+    {
+      "source": "docs/archive/meta-patterns/16_plan-blocker-enforcement.md",
+      "target": "[plan:#6]",
+      "type": "plan_reference",
+      "evidence": "Blocked by: #6 (Unified Artifact Ontology)",
+      "line": 56
+    },
+    {
+      "source": "docs/archive/meta-patterns/16_plan-blocker-enforcement.md",
+      "target": "[plan:#11]",
+      "type": "plan_reference",
+      "evidence": "**Blocked By:** #6, #11",
+      "line": 113
+    },
+    {
+      "source": "docs/archive/meta-patterns/03_testing-strategy.md",
+      "target": "docs/archive/meta-patterns/04_mocking-policy.md",
+      "type": "markdown_link",
+      "evidence": "See [Mocking Policy](./04_mocking-policy.md) for details.",
+      "line": 275
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "[plan:#15]",
+      "type": "plan_reference",
+      "evidence": "Plan Creation  (Pattern #15: Plan Workflow)",
+      "line": 106
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "[plan:#28]",
+      "type": "plan_reference",
+      "evidence": "Every plan should reference which gap(s) it addresses. The plan's \"References Reviewed\" section (Pattern #28) should cit",
+      "line": 115
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan Workflow](15_plan-workflow.md) - Plans implement gaps",
+      "line": 205
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "docs/archive/meta-patterns/28_question-driven-planning.md",
+      "type": "markdown_link",
+      "evidence": "- [Question-Driven Planning](28_question-driven-planning.md) - Forces exploration before planning",
+      "line": 206
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "docs/archive/meta-patterns/27_conceptual-modeling.md",
+      "type": "markdown_link",
+      "evidence": "- [Conceptual Modeling](27_conceptual-modeling.md) - Formal model prevents misconceptions",
+      "line": 207
+    },
+    {
+      "source": "docs/archive/meta-patterns/30_gap-analysis.md",
+      "target": "docs/archive/meta-patterns/09_documentation-graph.md",
+      "type": "markdown_link",
+      "evidence": "- [Documentation Graph](09_documentation-graph.md) - Traceability from decisions to code",
+      "line": 208
+    },
+    {
+      "source": "docs/archive/acceptance_gates/EXAMPLE.yaml",
+      "target": "[adr:0001]",
+      "type": "adr_reference",
+      "evidence": "adrs: []  # e.g., [1, 3] for ADR-0001, ADR-0003",
+      "line": 67
+    },
+    {
+      "source": "docs/archive/acceptance_gates/EXAMPLE.yaml",
+      "target": "[adr:0003]",
+      "type": "adr_reference",
+      "evidence": "adrs: []  # e.g., [1, 3] for ADR-0001, ADR-0003",
+      "line": 67
+    },
+    {
+      "source": "docs/archive/worktree-coordination/check_claims.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "Primary data store: .claude/active-work.yaml",
+      "line": 39
+    },
+    {
+      "source": "docs/archive/worktree-coordination/check_claims.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "CLAUDE_MD_PATH = _MAIN_ROOT / \"CLAUDE.md\"",
+      "line": 96
+    },
+    {
+      "source": "docs/archive/worktree-coordination/meta_status.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "\"\"\"Get active claims from .claude/active-work.yaml.",
+      "line": 47
+    },
+    {
+      "source": "docs/archive/worktree-coordination/meta_status.py",
+      "target": "CLAUDE.md",
+      "type": "file_path_reference",
+      "evidence": "\"\"\"Get PR review status from CLAUDE.md Awaiting Review table.\"\"\"",
+      "line": 260
+    },
+    {
+      "source": "docs/archive/worktree-coordination/safe_worktree_remove.py",
+      "target": ".claude/active-work.yaml",
+      "type": "file_path_reference",
+      "evidence": "2. Active claim in .claude/active-work.yaml (same owner)",
+      "line": 202
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- See [18_claim-system.md](18_claim-system.md)",
+      "line": 17
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- See [19_worktree-enforcement.md](19_worktree-enforcement.md)",
+      "line": 20
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- See [20_rebase-workflow.md](20_rebase-workflow.md)",
+      "line": 23
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/README.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "- See [21_pr-coordination.md](21_pr-coordination.md)",
+      "line": 26
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- [Worktree Enforcement](19_worktree-enforcement.md) - Blocks edits in main directory",
+      "line": 186
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "- [PR Coordination](21_pr-coordination.md) - Tracks PRs and claims",
+      "line": 187
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- [Claim System](18_claim-system.md) - Coordinates which instance works on what",
+      "line": 188
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/26_ownership-respect.md",
+      "target": "[plan:#71]",
+      "type": "plan_reference",
+      "evidence": "Created after repeated observations of CC instances offering to \"help\" fix other instances' blocked PRs, leading to conf",
+      "line": 94
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "target": "[plan:#3]",
+      "type": "plan_reference",
+      "evidence": "Plans are numbered implementation tasks in `docs/plans/`. Claiming `--plan 3` means you're working on Plan #3.",
+      "line": 50
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "type": "markdown_link",
+      "evidence": "- [Worktree Enforcement](19_worktree-enforcement.md) - Worktree + claim workflow",
+      "line": 242
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "- [PR Coordination](21_pr-coordination.md) - PR workflow with claims",
+      "line": 243
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan Workflow](../15_plan-workflow.md) - Plans that claims reference",
+      "line": 244
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "target": "docs/archive/meta-patterns/13_acceptance-gate-driven-development.md",
+      "type": "markdown_link",
+      "evidence": "- [Acceptance-Gate-Driven Development](../13_acceptance-gate-driven-development.md) - Acceptance gate definitions",
+      "line": 245
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "target": "[plan:#3]",
+      "type": "plan_reference",
+      "evidence": "1. **Create PR with plan link**: `[Plan #3] Implement feature X`",
+      "line": 186
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "- [Claim system pattern](18_claim-system.md) - More detailed claim management",
+      "line": 286
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan workflow pattern](../15_plan-workflow.md) - How plans integrate with PRs",
+      "line": 287
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/18_claim-system.md",
+      "type": "markdown_link",
+      "evidence": "See [Claim System](18_claim-system.md) for details on the claim system.",
+      "line": 38
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "[plan:#89]",
+      "type": "plan_reference",
+      "evidence": "- Extracts plan number from branch name (e.g., `plan-89-hooks` \u2192 Plan #89)",
+      "line": 250
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/20_rebase-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Rebase Workflow](20_rebase-workflow.md) - Keeps worktrees up-to-date before creating PRs",
+      "line": 344
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "docs/archive/meta-patterns/06_git-hooks.md",
+      "type": "markdown_link",
+      "evidence": "- [Git Hooks](../06_git-hooks.md) - Pre-commit validation before pushing",
+      "line": 346
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "docs/archive/meta-patterns/worktree-coordination/21_pr-coordination.md",
+      "type": "markdown_link",
+      "evidence": "- [PR Coordination](21_pr-coordination.md) - Tracks review requests across instances",
+      "line": 347
+    },
+    {
+      "source": "docs/archive/meta-patterns/worktree-coordination/19_worktree-enforcement.md",
+      "target": "docs/archive/meta-patterns/15_plan-workflow.md",
+      "type": "markdown_link",
+      "evidence": "- [Plan Workflow](../15_plan-workflow.md) - Plan template with Files Affected section",
+      "line": 348
+    }
+  ]
+}
