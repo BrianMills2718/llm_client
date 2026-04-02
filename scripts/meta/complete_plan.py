@@ -42,6 +42,11 @@ from pathlib import Path
 TEST_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
+def _pytest_command() -> list[str]:
+    """Return the interpreter-qualified pytest command for this environment."""
+    return [sys.executable, "-m", "pytest"]
+
+
 def find_plan_file(plan_number: int, plans_dir: Path) -> Path | None:
     """Find a plan file by number."""
     patterns = [
@@ -110,7 +115,7 @@ def run_unit_tests(project_root: Path, verbose: bool = True) -> tuple[bool, str]
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/", "--ignore=tests/e2e/", "-v", "--tb=short"],
+            [*_pytest_command(), "tests/", "--ignore=tests/e2e/", "-v", "--tb=short"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -159,7 +164,7 @@ def run_e2e_tests(project_root: Path, verbose: bool = True) -> tuple[bool, str]:
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/e2e/test_smoke.py", "-v", "--tb=short"],
+            [*_pytest_command(), "tests/e2e/test_smoke.py", "-v", "--tb=short"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -214,7 +219,13 @@ def run_real_e2e_tests(project_root: Path, verbose: bool = True) -> tuple[bool, 
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/e2e/test_real_e2e.py", "-v", "--tb=short", "--run-external"],
+            [
+                *_pytest_command(),
+                "tests/e2e/test_real_e2e.py",
+                "-v",
+                "--tb=short",
+                "--run-external",
+            ],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -256,7 +267,7 @@ def check_doc_coupling(project_root: Path, verbose: bool = True) -> tuple[bool, 
 
     try:
         result = subprocess.run(
-            ["python", "scripts/check_doc_coupling.py", "--strict"],
+            [sys.executable, "scripts/check_doc_coupling.py", "--strict"],
             cwd=project_root,
             capture_output=True,
             text=True,

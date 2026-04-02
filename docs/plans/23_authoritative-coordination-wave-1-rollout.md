@@ -1,6 +1,19 @@
 # Plan #23: Authoritative coordination wave-1 rollout
 
-**Status:** In Progress
+**Status:** ✅ Complete
+
+**Verified:** 2026-04-02T11:52:32Z
+**Verification Evidence:**
+```yaml
+completed_by: scripts/complete_plan.py
+timestamp: 2026-04-02T11:52:32Z
+tests:
+  unit: 1246 passed, 3 skipped, 1 deselected, 9 warnings in 62.53s (0:01:02)
+  e2e_smoke: skipped (--skip-e2e)
+  e2e_real: skipped (--skip-real-e2e)
+  doc_coupling: passed
+commit: 10c13e7
+```
 **Type:** implementation
 **Priority:** Critical
 **Blocked By:** None
@@ -53,6 +66,7 @@ not ready for broader ecosystem use.
 - `docs/plans/23_authoritative-coordination-wave-1-rollout.md` (create/modify)
 - `docs/plans/CLAUDE.md` (modify)
 - `scripts/meta/check_coordination_claims.py` (create)
+- `scripts/meta/complete_plan.py` (modify if closeout tooling is not venv-safe)
 - `scripts/meta/create_plan.py` (create)
 - `scripts/meta/plan_reservations.py` (create)
 
@@ -68,6 +82,9 @@ not ready for broader ecosystem use.
    stays bounded to the three scripts plus plan/index files.
 3. Re-run governed audit and local coordination smoke checks.
 4. Commit the rollout as one rollback point with explicit verification evidence.
+5. If formal closeout is blocked by non-venv-safe plan tooling, fix that
+   tooling in-repo, rerun closeout, and keep the change bounded to the local
+   coordination surface.
 
 ---
 
