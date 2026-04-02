@@ -251,6 +251,27 @@ def _parse_record_result_json_value(record: ToolCallRecordLike) -> Any | None:
     return parsed
 
 
+def _extract_evidence_pointers_from_text(text: str) -> set[str]:
+    """Fallback evidence pointer extraction from plain-text tool results.
+
+    When tool results are linearized into natural language (not JSON), the
+    standard JSON-based extraction produces zero pointers, causing the
+    stagnation detector to fire incorrectly. This fallback finds chunk IDs
+    and entity-like patterns in the text so stagnation tracking works.
+    """
+    import re
+    labels: set[str] = set()
+    # Chunk IDs: [chunk_123], chunk_123, chunk-123
+    for m in re.finditer(r'\b(chunk[_-]\d+)\b', text, re.IGNORECASE):
+        labels.add(f"chunk:{m.group(1)}")
+    # Quoted entity names from linearized entity_search output: 'entity_name'
+    for m in re.finditer(r"'([^']{2,60})'", text):
+        name = m.group(1).strip()
+        if name and not name.startswith(("http", "results/", "/")):
+            labels.add(f"entity:{name}")
+    return labels
+
+
 def _tool_evidence_pointer_labels(
     record: ToolCallRecordLike,
     *,
@@ -260,17 +281,21 @@ def _tool_evidence_pointer_labels(
     if record.error or record.tool in budget_exempt_tool_names:
         return set()
     parsed = _parse_record_result_json_value(record)
-    if parsed is None or not isinstance(parsed, (dict, list)):
-        return set()
-    labels: set[str] = set()
-    _collect_evidence_pointer_labels(parsed, labels)
-    redundant_labels = {
-        label.split("#", 1)[0]
-        for label in labels
-        if label.startswith("chunk:") and "#" in label
-    }
-    labels.difference_update(redundant_labels)
-    return labels
+    if parsed is not None and isinstance(parsed, (dict, list)):
+        labels: set[str] = set()
+        _collect_evidence_pointer_labels(parsed, labels)
+        redundant_labels = {
+            label.split("#", 1)[0]
+            for label in labels
+            if label.startswith("chunk:") and "#" in label
+        }
+        labels.difference_update(redundant_labels)
+        if labels:
+            return labels
+    # Fallback: extract from plain text (linearized tool results)
+    if record.result and isinstance(record.result, str) and len(record.result) > 10:
+        return _extract_evidence_pointers_from_text(record.result)
+    return set()
 
 
 def _evidence_digest(evidence_labels: set[str]) -> str:
