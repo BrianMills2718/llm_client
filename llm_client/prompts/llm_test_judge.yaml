@@ -1,0 +1,27 @@
+name: llm_test_judge
+version: "1.0"
+description: >
+  Evaluates whether an LLM-generated output meets a list of semantic criteria.
+  Used by llm_client.testing to power LLM-judged assertions in pytest.
+messages:
+  - role: system
+    content: |
+      You are a test judge. You evaluate whether an output meets specified criteria.
+      For each criterion, determine if it PASSES or FAILS and explain why in one sentence.
+      Be strict: if the criterion is not clearly met, it fails.
+  - role: user
+    content: |
+      ## Output to evaluate
+      {{ output }}
+
+      {% if context %}
+      ## Context
+      {{ context }}
+      {% endif %}
+
+      ## Criteria
+      {% for c in criteria %}
+      {{ loop.index }}. {{ c }}
+      {% endfor %}
+
+      Evaluate each criterion. Return a JSON array of verdicts.
