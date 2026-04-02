@@ -452,6 +452,7 @@ def call_llm(
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
     config: ClientConfig | None = None,
+    parent_trace_id: str | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Call any LLM. Routes by model string: litellm, Responses API, or Agent SDK.
@@ -514,6 +515,8 @@ def call_llm(
     """
     from llm_client.execution.text_runtime import _call_llm_impl
 
+    if parent_trace_id is not None:
+        kwargs["parent_trace_id"] = parent_trace_id
     envelope = _prepare_public_call_envelope(
         caller="call_llm",
         timeout=timeout,
@@ -755,6 +758,7 @@ async def acall_llm(
     hooks: Hooks | None = None,
     execution_mode: ExecutionMode = "text",
     config: ClientConfig | None = None,
+    parent_trace_id: str | None = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Async version of call_llm. Same three-tier routing (Agent SDK / Responses API / Completions).
@@ -791,6 +795,8 @@ async def acall_llm(
     """
     from llm_client.execution.text_runtime import _acall_llm_impl
 
+    if parent_trace_id is not None:
+        kwargs["parent_trace_id"] = parent_trace_id
     envelope = _prepare_public_call_envelope(
         caller="acall_llm",
         timeout=timeout,

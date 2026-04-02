@@ -299,6 +299,7 @@ def log_call(
     schema_hash: str | None = None,
     response_format_type: str | None = None,
     validation_errors: str | None = None,
+    causal_parent_id: str | None = None,
 ) -> None:
     """Append one call record with optional prompt asset identity.
 
@@ -424,6 +425,7 @@ def log_call(
             schema_hash=schema_hash,
             response_format_type=response_format_type,
             validation_errors=validation_errors,
+            causal_parent_id=causal_parent_id,
         )
     except Exception:
         # Never break LLM calls for logging
@@ -923,6 +925,9 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN response_format_type TEXT")
     if "validation_errors" not in llm_cols:
         conn.execute("ALTER TABLE llm_calls ADD COLUMN validation_errors TEXT")
+    if "causal_parent_id" not in llm_cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN causal_parent_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_causal_parent_id ON llm_calls(causal_parent_id)")
 
     # task_scores: add git_commit if missing
     scores_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_scores)").fetchall()}
@@ -1075,6 +1080,7 @@ def _write_call_to_db(
     schema_hash: str | None = None,
     response_format_type: str | None = None,
     validation_errors: str | None = None,
+    causal_parent_id: str | None = None,
 ) -> None:
     """Insert a call record into SQLite. Never raises."""
     try:
@@ -1090,8 +1096,9 @@ def _write_call_to_db(
                     finish_reason, latency_s, error, caller, task, trace_id, prompt_ref,
                     call_fingerprint, call_snapshot,
                     error_type, execution_path, retry_count,
-                    schema_hash, response_format_type, validation_errors)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    schema_hash, response_format_type, validation_errors,
+                    causal_parent_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     timestamp, _get_project(), model,
                     json.dumps(messages, default=str) if messages else None,
@@ -1103,6 +1110,7 @@ def _write_call_to_db(
                     json.dumps(call_snapshot, default=str) if call_snapshot is not None else None,
                     error_type, execution_path, retry_count,
                     schema_hash, response_format_type, validation_errors,
+                    causal_parent_id,
                 ),
             )
 

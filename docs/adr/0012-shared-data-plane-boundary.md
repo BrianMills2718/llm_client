@@ -1,6 +1,8 @@
 # ADR 0012: Shared Data Plane Boundary
 
 Status: Accepted  
+Last verified: 2026-04-01
+Verification context: causal_parent_id decision provenance column added to io_log + text_runtime (Plan #54)
 Date: 2026-03-17
 
 ## Context

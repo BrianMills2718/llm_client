@@ -393,6 +393,7 @@ def _log_call_event(
     schema_hash: str | None = None,
     response_format_type: str | None = None,
     validation_errors: str | None = None,
+    causal_parent_id: str | None = None,
 ) -> None:
     """Write one observability record for an LLM call."""
     from llm_client.observability.replay import snapshot_fingerprint as _snapshot_fingerprint
@@ -418,6 +419,7 @@ def _log_call_event(
         schema_hash=schema_hash,
         response_format_type=response_format_type,
         validation_errors=validation_errors,
+        causal_parent_id=causal_parent_id,
     )
 
 

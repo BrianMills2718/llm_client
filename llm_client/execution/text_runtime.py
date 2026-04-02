@@ -123,6 +123,7 @@ def _call_llm_impl(
     max_budget: float | None = kwargs.pop("max_budget", None)
     prompt_ref = _normalize_prompt_ref(kwargs.pop("prompt_ref", None))
     agent_retry_safe = kwargs.pop("agent_retry_safe", None)
+    parent_trace_id: str | None = kwargs.pop("parent_trace_id", None)
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="call_llm",
     )
@@ -413,6 +414,7 @@ def _call_llm_impl(
                     call_snapshot=call_snapshot,
                     schema_hash=_s_hash,
                     response_format_type=_rf_type,
+                    causal_parent_id=parent_trace_id,
                 )
                 return cached_result
 
@@ -491,6 +493,7 @@ def _call_llm_impl(
                 call_snapshot=call_snapshot,
                 schema_hash=_s_hash,
                 response_format_type=_rf_type,
+                causal_parent_id=parent_trace_id,
             )
             return result
 
@@ -545,6 +548,7 @@ def _call_llm_impl(
             call_snapshot=call_snapshot,
             schema_hash=_s_hash,
             response_format_type=_rf_type,
+            causal_parent_id=parent_trace_id,
         )
         raise wrap_error(e) from e
 
@@ -621,6 +625,7 @@ async def _acall_llm_impl(
     max_budget: float | None = kwargs.pop("max_budget", None)
     prompt_ref = _normalize_prompt_ref(kwargs.pop("prompt_ref", None))
     agent_retry_safe = kwargs.pop("agent_retry_safe", None)
+    parent_trace_id: str | None = kwargs.pop("parent_trace_id", None)
     task, trace_id, max_budget, _entry_warnings = _require_tags(
         task, trace_id, max_budget, caller="acall_llm",
     )
@@ -841,6 +846,7 @@ async def _acall_llm_impl(
                     call_snapshot=call_snapshot,
                     schema_hash=_s_hash,
                     response_format_type=_rf_type,
+                    causal_parent_id=parent_trace_id,
                 )
                 return cached_result
 
@@ -939,6 +945,7 @@ async def _acall_llm_impl(
                 call_snapshot=call_snapshot,
                 schema_hash=_s_hash,
                 response_format_type=_rf_type,
+                causal_parent_id=parent_trace_id,
             )
             return result
 
@@ -993,5 +1000,6 @@ async def _acall_llm_impl(
             call_snapshot=call_snapshot,
             schema_hash=_s_hash,
             response_format_type=_rf_type,
+            causal_parent_id=parent_trace_id,
         )
         raise wrap_error(e) from e
