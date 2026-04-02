@@ -9,9 +9,41 @@ without changing caller-facing signatures.
 from __future__ import annotations
 
 import asyncio
+import hashlib as _hashlib
+import json as _json
 
 from importlib import import_module
 from typing import Any, Callable, cast
+
+
+def _extract_schema_observability(kwargs: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (schema_hash, response_format_type) from call kwargs if response_format present."""
+    rf = kwargs.get("response_format")
+    if rf is None:
+        return None, None
+    rf_type: str | None = None
+    schema_hash: str | None = None
+    if isinstance(rf, dict):
+        rf_type = rf.get("type")
+        if rf_type == "json_schema":
+            schema = rf.get("json_schema", {}).get("schema") or rf.get("json_schema") or rf
+            try:
+                schema_hash = _hashlib.sha256(
+                    _json.dumps(schema, sort_keys=True).encode()
+                ).hexdigest()[:16]
+            except (TypeError, ValueError):
+                pass
+    elif hasattr(rf, "__name__"):
+        # Pydantic model class passed directly
+        rf_type = "json_schema"
+        try:
+            schema = rf.model_json_schema()
+            schema_hash = _hashlib.sha256(
+                _json.dumps(schema, sort_keys=True).encode()
+            ).hexdigest()[:16]
+        except (AttributeError, TypeError):
+            pass
+    return schema_hash, rf_type
 
 from llm_client.core.client import AsyncCachePolicy, CachePolicy, ExecutionMode, Hooks, LLMCallResult, RetryPolicy
 from llm_client.core.config import ClientConfig
@@ -368,6 +400,7 @@ def _call_llm_impl(
                         routing_policy=routing_policy,
                     ),
                 ))
+                _s_hash, _rf_type = _extract_schema_observability(public_kwargs)
                 _log_call_event(
                     model=current_model,
                     messages=messages,
@@ -378,6 +411,8 @@ def _call_llm_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    schema_hash=_s_hash,
+                    response_format_type=_rf_type,
                 )
                 return cached_result
 
@@ -443,6 +478,7 @@ def _call_llm_impl(
                 hooks.after_call(result)
             if cache is not None and key is not None:
                 cache.set(key, result)
+            _s_hash, _rf_type = _extract_schema_observability(public_kwargs)
             _log_call_event(
                 model=current_model,
                 messages=messages,
@@ -453,6 +489,8 @@ def _call_llm_impl(
                 trace_id=trace_id,
                 prompt_ref=prompt_ref,
                 call_snapshot=call_snapshot,
+                schema_hash=_s_hash,
+                response_format_type=_rf_type,
             )
             return result
 
@@ -494,6 +532,7 @@ def _call_llm_impl(
             logger=logger,
         ))
     except Exception as e:
+        _s_hash, _rf_type = _extract_schema_observability(kwargs)
         _log_call_event(
             model=last_model_attempted,
             messages=messages,
@@ -504,6 +543,8 @@ def _call_llm_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            schema_hash=_s_hash,
+            response_format_type=_rf_type,
         )
         raise wrap_error(e) from e
 
@@ -787,6 +828,7 @@ async def _acall_llm_impl(
                         routing_policy=routing_policy,
                     ),
                 ))
+                _s_hash, _rf_type = _extract_schema_observability(public_kwargs)
                 _log_call_event(
                     model=current_model,
                     messages=messages,
@@ -797,6 +839,8 @@ async def _acall_llm_impl(
                     trace_id=trace_id,
                     prompt_ref=prompt_ref,
                     call_snapshot=call_snapshot,
+                    schema_hash=_s_hash,
+                    response_format_type=_rf_type,
                 )
                 return cached_result
 
@@ -882,6 +926,7 @@ async def _acall_llm_impl(
                 hooks.after_call(result)
             if cache is not None and key is not None:
                 await _async_cache_set(cache, key, result)
+            _s_hash, _rf_type = _extract_schema_observability(public_kwargs)
             _log_call_event(
                 model=current_model,
                 messages=messages,
@@ -892,6 +937,8 @@ async def _acall_llm_impl(
                 trace_id=trace_id,
                 prompt_ref=prompt_ref,
                 call_snapshot=call_snapshot,
+                schema_hash=_s_hash,
+                response_format_type=_rf_type,
             )
             return result
 
@@ -933,6 +980,7 @@ async def _acall_llm_impl(
             logger=logger,
         ))
     except Exception as e:
+        _s_hash, _rf_type = _extract_schema_observability(kwargs)
         _log_call_event(
             model=last_model_attempted,
             messages=messages,
@@ -943,5 +991,7 @@ async def _acall_llm_impl(
             trace_id=trace_id,
             prompt_ref=prompt_ref,
             call_snapshot=call_snapshot,
+            schema_hash=_s_hash,
+            response_format_type=_rf_type,
         )
         raise wrap_error(e) from e

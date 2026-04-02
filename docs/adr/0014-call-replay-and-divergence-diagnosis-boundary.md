@@ -2,7 +2,8 @@
 
 Status: Accepted
 Date: 2026-03-22
-Last verified: 2026-03-31
+Last verified: 2026-04-01
+Verification context: schema_hash + response_format_type observability extended to text_runtime.py call sites (Plan #54)
 
 ## Context
 
