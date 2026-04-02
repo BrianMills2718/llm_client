@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-01T18:37:21Z -->
+<!-- Generated: 2026-04-02T00:44:01Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -3015,7 +3015,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3032,7 +3032,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3041,7 +3041,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3060,15 +3060,39 @@ Returns:
 
 
 
+<h4>Classes</h4>
+
+<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
+  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Validated human review payload used to resume the workflow.</p>
+    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
+    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
+    
+  </div>
+</details>
+
+<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
+  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
+  <div class="symbol-body">
+    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
+    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
+    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
+    
+  </div>
+</details>
+
+
+
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
   </tbody>
 </table>
 
@@ -5317,6 +5341,15 @@ Returns:
 
 Returns:
     AsyncLLMStream with tool_calls available on ``.result`` after consumption</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-core-client-boundary">
+  <summary><code>boundary</code> <span class="sig">(**kwargs)</span></summary>
+  <div class="symbol-body">
+    <p class="summary">No-op boundary decorator when data_contracts is unavailable.</p>
+    <p class="meta">Source: <code>llm_client.core.client</code> functions</p>
+    <pre class="doc">No-op boundary decorator when data_contracts is unavailable.</pre>
   </div>
 </details>
 
@@ -9026,9 +9059,7 @@ Raises:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>END</code></td><td><code>&#x27;__end__&#x27;</code></td><td>str</td></tr>
-<tr><td><code>START</code></td><td><code>&#x27;__start__&#x27;</code></td><td>str</td></tr>
-<tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 

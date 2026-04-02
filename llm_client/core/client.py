@@ -50,7 +50,23 @@ from typing import Any, Callable, TypeVar
 import litellm
 from pydantic import BaseModel
 
-from data_contracts import boundary
+try:
+    from data_contracts import boundary
+except ImportError:
+    # data_contracts requires Python >=3.11; degrade gracefully on older envs
+    class _FakeBoundaryInfo:
+        """Stub that accepts attribute assignment."""
+        def __setattr__(self, name, value):
+            pass
+        def __getattr__(self, name):
+            return None
+
+    def boundary(**kwargs):  # type: ignore[misc]
+        """No-op boundary decorator when data_contracts is unavailable."""
+        def _wrap(fn):
+            fn._boundary_info = _FakeBoundaryInfo()
+            return fn
+        return _wrap
 
 # Enable post-generation JSON Schema validation. Providers only enforce
 # structural constraints (type, required, enum) at decode time. Value-level
