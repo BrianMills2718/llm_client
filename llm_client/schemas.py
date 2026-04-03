@@ -87,6 +87,42 @@ class LLMCallResultSchema(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class AgentDecisionMixin(BaseModel):
+    """Mixin for schemas where the agent makes a judgment driving downstream action.
+
+    Add to: routing decisions, extraction classifications, review verdicts,
+    task prioritization. Do NOT add to: summarization, text generation, or
+    schemas where the output IS the product rather than a decision.
+
+    Required by agent_memory for EpisodicMemory.key_signals population.
+
+    Usage::
+
+        class MyDecisionSchema(AgentDecisionMixin):
+            chosen_action: str = Field(description="The chosen action")
+
+    Use json_schema response_format so all three fields are enforced at decode time.
+    """
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning leading to this output. "
+        "Explain what evidence was considered and why this choice was made over alternatives."
+    )
+    confidence: str = Field(
+        description="Epistemic confidence: CERTAIN | HIGH | MEDIUM | LOW | VERY_LOW. "
+        "CERTAIN = verified by direct observation. HIGH = strongly supported. "
+        "MEDIUM = reasonable confidence, some uncertainty. LOW = tentative, may be wrong. "
+        "VERY_LOW = speculative or auto-extracted."
+    )
+    key_signals: list[str] = Field(
+        description="1-3 signals most influential in this output. "
+        "Short phrases naming specific evidence (e.g. 'high error rate in logs', "
+        "'matches known pattern X'). Used for episodic memory — be specific."
+    )
+
+    model_config = {"extra": "allow"}
+
+
 class EmbeddingResultSchema(BaseModel):
     """Pydantic schema representation of EmbeddingResult for contract registry."""
 

@@ -1,5 +1,5 @@
 # API Reference
-<!-- Generated: 2026-04-02T18:54:51Z -->
+<!-- Generated: 2026-04-03T00:11:35Z -->
 
 Generated from package docstrings and typed signatures.
 
@@ -23,8 +23,8 @@ Browser view: [API_REFERENCE.html](API_REFERENCE.html)
 - `aembed` - Async version of embed(). See embed() for full docs.
 - `ActiveExperimentRun` - Bind an existing run id as the active experiment context.
 - `ActiveFeatureProfile` - Bind a feature profile as the active profile in the current context.
-- `AsyncCachePolicy` - Protocol for async LLM response caches (Redis, etc.).
-- `AsyncLLMStream` - Async streaming wrapper. Yields text chunks, then exposes ``.result``.
+- `AgentDecisionMixin` - Mixin for schemas where the agent makes a judgment driving downstream action.
+- `AgentPlan` - A structured plan for an agent task.
 
 ## Module Catalog
 

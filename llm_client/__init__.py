@@ -213,7 +213,7 @@ if _TYPE_CHECKING:
     # Relocated (Plan #17): git_utils, scoring, experiment_eval, task_graph, analyzer
 
 from llm_client.agent.agent_contracts import AgentErrorBudget
-from llm_client.agent.agent_planning import PlanningConfig
+from llm_client.agent.agent_planning import AgentPlan, PlanningConfig
 from llm_client.agent.mcp_agent import (
     DEFAULT_ENFORCE_TOOL_CONTRACTS,
     DEFAULT_INITIAL_ARTIFACTS,
@@ -244,6 +244,7 @@ from llm_client.core.config import ClientConfig
 from llm_client.core.routing import CallRequest, ResolvedCallPlan, resolve_call
 
 from llm_client.schemas import (
+    AgentDecisionMixin,
     EmbeddingResultSchema,
     LLMCallResultSchema,
 )
@@ -311,6 +312,7 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "LLMTransientError",
     "classify_error",
     "wrap_error",
+    "AgentDecisionMixin",
     "AsyncCachePolicy",
     "AsyncLLMStream",
     "CachePolicy",
@@ -412,6 +414,8 @@ _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
     # Relocated (Plan #17): agent_spec, validators
     "callable_to_openai_tool",
     "prepare_direct_tools",
+    "PlanningConfig",
+    "AgentPlan",
     "strip_fences",
     "strip_control_chars",
     "extract_json",
