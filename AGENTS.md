@@ -4,7 +4,7 @@
 <!-- generated_by: scripts/meta/render_agents_md.py -->
 <!-- canonical_claude: CLAUDE.md -->
 <!-- canonical_relationships: scripts/relationships.yaml -->
-<!-- canonical_relationships_sha256: 5f259af99ebf -->
+<!-- canonical_relationships_sha256: 2377f914f439 -->
 <!-- sync_check: python scripts/meta/check_agents_sync.py --check -->
 
 This file is a generated Codex-oriented projection of repo governance.

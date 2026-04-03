@@ -17,3 +17,4 @@ docs/archive/
 # Personal/machine-specific setup
 scripts/macos/
 .openclaw/
+.claude/hook_log.jsonl

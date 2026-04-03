@@ -22,7 +22,10 @@ import yaml
 
 
 DEFAULT_TTL_HOURS = 2.0
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
+LINEAGE_LANDED = "landed"
+LINEAGE_HISTORICAL_UNLANDED = "historical-unlanded"
+PROTECTED_PLAN_STATUSES = {"reserved", "consumed"}
 
 
 def coordination_dir() -> Path:
@@ -83,9 +86,10 @@ def locked_registry() -> Iterator[dict[str, Any]]:
         raw = handle.read()
         data = yaml.safe_load(raw) if raw.strip() else None
         registry = data if isinstance(data, dict) else _default_registry()
-        registry.setdefault("version", REGISTRY_VERSION)
+        registry["version"] = REGISTRY_VERSION
         registry.setdefault("active_work", [])
         registry.setdefault("plan_reservations", [])
+        _reconcile_registry_lineage(registry)
         yield registry
         handle.seek(0)
         handle.truncate()
@@ -124,6 +128,154 @@ def _repo_name(repo_root: str | Path | None, project: str | None) -> str:
     if repo_root:
         return Path(repo_root).expanduser().name
     raise ValueError("project or repo_root is required")
+
+
+def _repo_root_path(value: str | Path | None) -> Path | None:
+    """Return one expanded repo root path when available."""
+    if value in (None, ""):
+        return None
+    return Path(value).expanduser().resolve()
+
+
+def _canonical_plan_path(repo_root: Path, plan: int) -> Path | None:
+    """Return the canonical plan path for one plan number when it exists."""
+    plans_dir = repo_root / "docs" / "plans"
+    for pattern in (f"{plan:02d}_*.md", f"{plan}_*.md"):
+        matches = sorted(plans_dir.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _normalize_plan_path_for_repo(plan_file: str | Path, repo_root: Path | None) -> str:
+    """Return one stable plan path, relative to the canonical repo when possible."""
+    path = Path(plan_file).expanduser()
+    if repo_root is not None:
+        repo_root = repo_root.resolve()
+        if path.is_absolute():
+            resolved = path.resolve()
+            try:
+                return str(resolved.relative_to(repo_root))
+            except ValueError:
+                return str(resolved)
+        return str(path).lstrip("./")
+    return _normalize_path(path) or str(path)
+
+
+def _mark_entry_landed(
+    entry: dict[str, Any],
+    *,
+    canonical_plan_file: str,
+    source_plan_file: str | None = None,
+) -> None:
+    """Update one consumed reservation entry to landed lineage state."""
+    normalized_canonical = canonical_plan_file.lstrip("./")
+    if source_plan_file and source_plan_file != normalized_canonical:
+        entry["source_plan_file"] = source_plan_file
+    entry["lineage_state"] = LINEAGE_LANDED
+    entry["plan_file"] = normalized_canonical
+    entry["canonical_plan_file"] = normalized_canonical
+    entry.pop("historical_plan_file", None)
+    entry["updated_at"] = _iso_now()
+
+
+def _mark_entry_historical_unlanded(
+    entry: dict[str, Any],
+    *,
+    historical_plan_file: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Update one consumed reservation entry to historical-unlanded lineage state."""
+    fallback_path = historical_plan_file or entry.get("historical_plan_file") or entry.get("source_plan_file")
+    if fallback_path is None:
+        fallback_path = entry.get("plan_file")
+    if isinstance(fallback_path, str) and fallback_path:
+        entry["historical_plan_file"] = fallback_path
+    entry["lineage_state"] = LINEAGE_HISTORICAL_UNLANDED
+    entry.pop("plan_file", None)
+    entry.pop("canonical_plan_file", None)
+    if reason:
+        entry["lineage_reason"] = reason
+    entry["updated_at"] = _iso_now()
+
+
+def _reconcile_consumed_entry(entry: dict[str, Any]) -> None:
+    """Normalize one consumed reservation entry to the approved lineage model."""
+    if entry.get("status") != "consumed":
+        return
+
+    repo_root = _repo_root_path(entry.get("repo_root"))
+    raw_plan_file = entry.get("plan_file")
+    source_plan_file = entry.get("source_plan_file")
+    plan_value = entry.get("plan")
+    try:
+        plan_number = int(plan_value) if plan_value is not None else None
+    except (TypeError, ValueError):
+        plan_number = None
+
+    if not isinstance(source_plan_file, str) or not source_plan_file:
+        source_plan_file = raw_plan_file if isinstance(raw_plan_file, str) and raw_plan_file else None
+
+    lineage_state = entry.get("lineage_state")
+    if lineage_state == LINEAGE_HISTORICAL_UNLANDED:
+        historical_plan_file = entry.get("historical_plan_file")
+        if not isinstance(historical_plan_file, str) or not historical_plan_file:
+            historical_plan_file = source_plan_file
+        if not historical_plan_file and isinstance(raw_plan_file, str) and raw_plan_file:
+            historical_plan_file = raw_plan_file
+        if historical_plan_file and repo_root is not None:
+            historical_plan_file = _normalize_plan_path_for_repo(historical_plan_file, repo_root)
+        _mark_entry_historical_unlanded(
+            entry,
+            historical_plan_file=historical_plan_file,
+            reason=entry.get("lineage_reason"),
+        )
+        return
+
+    canonical_plan = (
+        _canonical_plan_path(repo_root, plan_number)
+        if repo_root is not None and plan_number is not None
+        else None
+    )
+    if canonical_plan is not None:
+        _mark_entry_landed(
+            entry,
+            canonical_plan_file=str(canonical_plan.relative_to(repo_root)),
+            source_plan_file=source_plan_file,
+        )
+        return
+
+    if lineage_state == LINEAGE_LANDED and isinstance(raw_plan_file, str) and raw_plan_file:
+        canonical_like_path = _normalize_plan_path_for_repo(raw_plan_file, repo_root)
+        _mark_entry_landed(
+            entry,
+            canonical_plan_file=canonical_like_path,
+            source_plan_file=source_plan_file,
+        )
+        return
+
+    historical_plan_file = None
+    if isinstance(source_plan_file, str) and source_plan_file:
+        historical_plan_file = source_plan_file
+    elif isinstance(raw_plan_file, str) and raw_plan_file:
+        historical_plan_file = raw_plan_file
+
+    if historical_plan_file and repo_root is not None:
+        historical_plan_file = _normalize_plan_path_for_repo(historical_plan_file, repo_root)
+
+    _mark_entry_historical_unlanded(
+        entry,
+        historical_plan_file=historical_plan_file,
+        reason="missing canonical plan file",
+    )
+
+
+def _reconcile_registry_lineage(registry: dict[str, Any]) -> None:
+    """Normalize consumed reservation entries to the current lineage schema."""
+    for entry in registry.get("plan_reservations", []):
+        if not isinstance(entry, dict):
+            continue
+        _reconcile_consumed_entry(entry)
 
 
 def _find_active_work(
@@ -472,7 +624,8 @@ def preview_next_plan_number(
         reserved = {
             int(entry["plan"])
             for entry in registry.get("plan_reservations", [])
-            if entry.get("project") == project and entry.get("status", "reserved") == "reserved"
+            if entry.get("project") == project
+            and entry.get("status", "reserved") in PROTECTED_PLAN_STATUSES
         }
         return (max(numbers | reserved) + 1) if (numbers or reserved) else 1
 
@@ -496,7 +649,8 @@ def reserve_next_plan_number(
         reserved = {
             int(entry["plan"])
             for entry in registry.get("plan_reservations", [])
-            if entry.get("project") == project and entry.get("status", "reserved") == "reserved"
+            if entry.get("project") == project
+            and entry.get("status", "reserved") in PROTECTED_PLAN_STATUSES
         }
         next_plan = (max(numbers | reserved) + 1) if (numbers or reserved) else 1
         now = _iso_now()
@@ -547,8 +701,9 @@ def consume_plan_reservation(
     plan: int,
     plan_file: str | Path,
 ) -> tuple[bool, str]:
-    """Mark one plan reservation as consumed."""
-    project = Path(repo_root).expanduser().name
+    """Mark one plan reservation as consumed and landed in the canonical repo."""
+    repo = Path(repo_root).expanduser().resolve()
+    project = repo.name
     with locked_registry() as registry:
         for entry in registry.get("plan_reservations", []):
             if (
@@ -556,8 +711,73 @@ def consume_plan_reservation(
                 and int(entry.get("plan")) == int(plan)
                 and entry.get("status", "reserved") == "reserved"
             ):
+                source_plan_file = _normalize_path(plan_file)
+                canonical_plan = _canonical_plan_path(repo, int(plan))
+                canonical_plan_file = (
+                    str(canonical_plan.relative_to(repo))
+                    if canonical_plan is not None
+                    else _normalize_plan_path_for_repo(plan_file, repo)
+                )
                 entry["status"] = "consumed"
                 entry["consumed_at"] = _iso_now()
-                entry["plan_file"] = _normalize_path(plan_file)
+                _mark_entry_landed(
+                    entry,
+                    canonical_plan_file=canonical_plan_file,
+                    source_plan_file=source_plan_file,
+                )
                 return True, f"Consumed reservation for Plan #{plan}"
         return False, f"No reservation found for Plan #{plan}"
+
+
+def mark_plan_reservation_historical_unlanded(
+    *,
+    repo_root: str | Path,
+    plan: int,
+    historical_plan_file: str | Path | None = None,
+    reason: str | None = None,
+) -> tuple[bool, str]:
+    """Mark one consumed reservation as historical-unlanded lineage."""
+    project = Path(repo_root).expanduser().name
+    with locked_registry() as registry:
+        for entry in registry.get("plan_reservations", []):
+            if (
+                entry.get("project") == project
+                and int(entry.get("plan")) == int(plan)
+                and entry.get("status") == "consumed"
+            ):
+                normalized_historical = (
+                    _normalize_path(historical_plan_file)
+                    if historical_plan_file is not None
+                    else None
+                )
+                _mark_entry_historical_unlanded(
+                    entry,
+                    historical_plan_file=normalized_historical,
+                    reason=reason or "explicit cleanup resolution",
+                )
+                return True, f"Marked Plan #{plan} as historical-unlanded"
+        return False, f"No consumed reservation found for Plan #{plan}"
+
+
+def reconcile_plan_reservations(
+    *,
+    repo_root: str | Path,
+) -> dict[str, int]:
+    """Reconcile consumed reservation lineage for one canonical repo."""
+    project = Path(repo_root).expanduser().name
+    landed = 0
+    historical = 0
+    with locked_registry() as registry:
+        for entry in registry.get("plan_reservations", []):
+            if entry.get("project") != project or entry.get("status") != "consumed":
+                continue
+            _reconcile_consumed_entry(entry)
+            if entry.get("lineage_state") == LINEAGE_LANDED:
+                landed += 1
+            elif entry.get("lineage_state") == LINEAGE_HISTORICAL_UNLANDED:
+                historical += 1
+    return {
+        "project": project,
+        "landed": landed,
+        "historical_unlanded": historical,
+    }

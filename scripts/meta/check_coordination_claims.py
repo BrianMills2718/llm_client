@@ -18,7 +18,9 @@ from plan_reservations import (
     coordination_dir,
     ingest_legacy_state,
     list_registry,
+    mark_plan_reservation_historical_unlanded,
     observe_file,
+    reconcile_plan_reservations,
     release_active_work,
     release_plan_reservation,
     reserve_next_plan_number,
@@ -35,6 +37,17 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--observe-file", metavar="PATH", help="Record one observed file for an active-work claim.")
     group.add_argument("--reserve-plan", action="store_true", help="Reserve the next plan number for a repo.")
     group.add_argument("--release-plan", metavar="PLAN", type=int, help="Release an unconsumed plan reservation.")
+    group.add_argument(
+        "--mark-historical-unlanded",
+        metavar="PLAN",
+        type=int,
+        help="Mark one consumed reservation as historical-unlanded lineage.",
+    )
+    group.add_argument(
+        "--reconcile-plan-lineage",
+        action="store_true",
+        help="Reconcile consumed reservation lineage for one repo.",
+    )
     group.add_argument("--list", action="store_true", help="List active work and plan reservations.")
     group.add_argument("--ingest-legacy", action="store_true", help="One-way ingest from legacy coordination files.")
 
@@ -49,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--worktree-path", help="Worktree path for active work or reservation metadata.")
     parser.add_argument("--session-id", help="Optional session identifier.")
     parser.add_argument("--no-fetch", action="store_true", help="Do not fetch origin before reserving a plan number.")
+    parser.add_argument("--historical-plan-file", help="Historical worktree-local plan path for cleanup resolution.")
+    parser.add_argument("--reason", help="Optional lineage resolution reason text.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser.parse_args()
 
@@ -83,9 +98,11 @@ def main() -> int:
                     f"plan={entry.get('plan')} task={entry.get('task')}"
                 )
             for entry in payload["plan_reservations"]:
+                lineage_state = entry.get("lineage_state")
+                lineage_suffix = f" lineage={lineage_state}" if lineage_state else ""
                 print(
                     f"[reserved] {entry.get('project')} Plan #{entry.get('plan')} "
-                    f"by {entry.get('agent')} task={entry.get('task')} status={entry.get('status')}"
+                    f"by {entry.get('agent')} task={entry.get('task')} status={entry.get('status')}{lineage_suffix}"
                 )
             if not payload["active_work"] and not payload["plan_reservations"]:
                 print("No coordination entries.")
@@ -157,6 +174,25 @@ def main() -> int:
         ok, msg = release_plan_reservation(repo_root=args.repo_root, plan=args.release_plan)
         _print_payload({"ok": ok, "message": msg} if args.json else msg, as_json=args.json)
         return 0 if ok else 1
+
+    if args.mark_historical_unlanded is not None:
+        if not args.repo_root:
+            raise SystemExit("--mark-historical-unlanded requires --repo-root")
+        ok, msg = mark_plan_reservation_historical_unlanded(
+            repo_root=args.repo_root,
+            plan=args.mark_historical_unlanded,
+            historical_plan_file=args.historical_plan_file,
+            reason=args.reason,
+        )
+        _print_payload({"ok": ok, "message": msg} if args.json else msg, as_json=args.json)
+        return 0 if ok else 1
+
+    if args.reconcile_plan_lineage:
+        if not args.repo_root:
+            raise SystemExit("--reconcile-plan-lineage requires --repo-root")
+        payload = reconcile_plan_reservations(repo_root=args.repo_root)
+        _print_payload(payload, as_json=args.json)
+        return 0
 
     return 0
 
