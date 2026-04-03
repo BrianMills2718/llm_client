@@ -288,7 +288,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         cc_id = info.get("cc_id", "unknown")
         task = info.get("task", "")[:50]
         plan = info.get("plan")
-        print(f"❌ BLOCKED: Worktree owned by another CC instance!")
+        print("❌ BLOCKED: Worktree owned by another CC instance!")
         print(f"   Owner: {cc_id}")
         if plan:
             print(f"   Plan: #{plan}")
@@ -301,7 +301,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         print("   Let the OWNER clean up their own worktree (from main).")
         print()
         print("   If the owner is gone and cleanup is needed:")
-        print(f"   1. Have the owner run: cd /path/to/main && make finish BRANCH=... PR=...")
+        print("   1. Have the owner run: cd /path/to/main && make finish BRANCH=... PR=...")
         print(f"   2. Or release their claim: python scripts/check_claims.py --release --id {cc_id}")
         print(f"   3. Then force remove (DANGEROUS): python scripts/safe_worktree_remove.py --force {worktree_path}")
         return False
@@ -310,7 +310,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         cc_id = info.get("cc_id", "unknown")
         task = info.get("task", "")[:50]
         plan = info.get("plan")
-        print(f"❌ BLOCKED: Worktree has an active claim!")
+        print("❌ BLOCKED: Worktree has an active claim!")
         print(f"   Claimed by: {cc_id}")
         if plan:
             print(f"   Plan: #{plan}")
@@ -331,7 +331,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
             age_str = f"{age.seconds // 3600}h {(age.seconds % 3600) // 60}m ago"
         else:
             age_str = "recently"
-        print(f"❌ BLOCKED: Session marker is recent!")
+        print("❌ BLOCKED: Session marker is recent!")
         print(f"   Last activity: {age_str}")
         print()
         print("   A Claude session may be actively using this worktree.")
@@ -350,7 +350,7 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         branch = get_worktree_branch(worktree_path) or "unknown"
         print(f"❌ BLOCKED: Worktree '{worktree_path}' has uncommitted changes!")
         print(f"   Branch: {branch}")
-        print(f"   Changes:")
+        print("   Changes:")
         for line in details.split("\n")[:10]:  # Show first 10 changes
             print(f"      {line}")
         if details.count("\n") > 10:

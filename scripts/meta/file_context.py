@@ -436,6 +436,30 @@ def _load_reads(paths_file: Path) -> set[str]:
     return reads
 
 
+
+def _any_seen_matches_glob(pattern: str, seen: set[str]) -> bool:
+    """Check if any seen read matches a glob pattern in required reads.
+
+    Handles ** for recursive directory matching (fnmatch alone does not).
+    """
+    if '*' not in pattern and '?' not in pattern:
+        return False
+    if '**' in pattern:
+        # Split on ** and check prefix/suffix matching
+        parts = pattern.split('**')
+        prefix = parts[0].rstrip('/')
+        suffix_pattern = parts[-1].lstrip('/')
+        for s in seen:
+            if s.startswith(prefix) and fnmatch.fnmatch(s.split('/')[-1], suffix_pattern):
+                return True
+            # Also handle nested: prefix/a/b/c matches suffix
+            remainder = s[len(prefix):].lstrip('/')
+            if s.startswith(prefix) and fnmatch.fnmatch(remainder, suffix_pattern):
+                return True
+        return False
+    return any(fnmatch.fnmatch(s, pattern) for s in seen)
+
+
 def check_required_reads(
     file_path: str,
     relationships: dict[str, Any],
@@ -445,7 +469,10 @@ def check_required_reads(
     context = collect_context(file_path, relationships)
     required = [path for path in context.required_reads if path != _normalize(file_path)]
     seen = _load_reads(reads_file)
-    missing = [path for path in required if path not in seen]
+    missing = [
+        path for path in required
+        if path not in seen and not _any_seen_matches_glob(path, seen)
+    ]
 
     scope_config = _get_file_scope_config(relationships)
     scope_violations: list[str] = []

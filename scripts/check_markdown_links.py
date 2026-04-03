@@ -99,11 +99,18 @@ def _split_link_target(target: str) -> tuple[str, str]:
 
 
 def _slugify_heading(value: str) -> str:
+    """Generate a GitHub-compatible anchor slug from a heading string.
+
+    Matches GitHub's algorithm: lowercase, strip markdown chars, remove
+    non-alphanumeric-except-space-underscore-hyphen, replace spaces with
+    hyphens.  GitHub does NOT collapse consecutive hyphens — e.g.
+    '## Evidence & Validation' → 'evidence--validation'.
+    """
     slug = value.strip().lower()
     slug = re.sub(r"[`*_~]", "", slug)
     slug = re.sub(r"[^a-z0-9 _-]", "", slug)
     slug = slug.replace(" ", "-")
-    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    slug = slug.strip("-")
     return slug
 
 

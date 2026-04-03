@@ -32,16 +32,18 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from file_context import collect_context, load_relationships
+from plan_reservations import get_active_plan_number as get_registry_plan_number
 
 
 PATH_CLEAN_RE = re.compile(r"[,;:.()]$")
 
 
 def normalize(path: str) -> str:
+    """Return a normalized slash-separated path string."""
     return str(path).replace("\\", "/").strip()
 
 
-def get_current_plan_number() -> int | None:
+def _current_branch_name() -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -51,15 +53,31 @@ def get_current_plan_number() -> int | None:
             check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
-    branch = result.stdout.strip()
+        return "unknown"
+    return result.stdout.strip()
+
+
+def _plan_number_from_branch(branch: str) -> int | None:
     match = re.match(r".*plan-(\d+).*", branch)
     if not match:
         return None
     return int(match.group(1))
 
 
+def get_current_plan_number() -> int | None:
+    """Return the active plan number from registry or branch naming."""
+    active_plan = get_registry_plan_number(
+        repo_root=ROOT,
+        branch=_current_branch_name(),
+        worktree_path=ROOT,
+    )
+    if active_plan is not None:
+        return active_plan
+    return _plan_number_from_branch(_current_branch_name())
+
+
 def find_plan_file(plan_number: int, plans_dir: Path) -> Path | None:
+    """Return the plan file for a plan number when it exists."""
     patterns = [
         f"{plan_number:02d}_*.md",
         f"{plan_number}_*.md",
@@ -71,11 +89,29 @@ def find_plan_file(plan_number: int, plans_dir: Path) -> Path | None:
     return None
 
 
+def parse_plan_index(index_file: Path) -> tuple[dict[int, str], dict[int, int]]:
+    """Return plan-number mappings and duplicate counts from the plan index."""
+    if not index_file.exists():
+        return {}, {}
+    entries: dict[int, str] = {}
+    counts: dict[int, int] = {}
+    for line in index_file.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\|\s*(\d+)\s*\|\s*\[[^\]]+\]\(([^)]+)\)", line)
+        if not match:
+            continue
+        number = int(match.group(1))
+        entries[number] = match.group(2).strip()
+        counts[number] = counts.get(number, 0) + 1
+    return entries, counts
+
+
 def read_text(path: Path) -> str:
+    """Read one UTF-8 text file."""
     return path.read_text(encoding="utf-8")
 
 
 def extract_section(content: str, heading: str) -> str:
+    """Extract one second-level markdown section by heading."""
     pattern = re.compile(
         rf"^##\s*{re.escape(heading)}\s*\n(.*?)(?=^##\s|\Z)",
         re.IGNORECASE | re.MULTILINE | re.DOTALL,
@@ -87,6 +123,7 @@ def extract_section(content: str, heading: str) -> str:
 
 
 def split_lines(section: str) -> list[str]:
+    """Return non-empty stripped lines from one markdown section."""
     lines: list[str] = []
     for line in section.splitlines():
         stripped = line.strip()
@@ -97,6 +134,7 @@ def split_lines(section: str) -> list[str]:
 
 
 def looks_like_file_path(value: str) -> bool:
+    """Return whether one token looks like a local file path."""
     if not value:
         return False
     value = value.strip().strip("`\"'()[],")
@@ -108,6 +146,7 @@ def looks_like_file_path(value: str) -> bool:
 
 
 def extract_inline_paths(line: str) -> list[str]:
+    """Extract inline file-path references from one markdown line."""
     paths: list[str] = []
     for match in re.finditer(r"\b([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b", line):
         value = match.group(1)
@@ -133,6 +172,7 @@ def extract_inline_paths(line: str) -> list[str]:
 
 
 def extract_paths(section: str) -> list[str]:
+    """Extract referenced file paths from a markdown section."""
     result: list[str] = []
     for line in split_lines(section):
         if line.startswith("|") and line.endswith("|"):
@@ -150,18 +190,21 @@ def extract_paths(section: str) -> list[str]:
 
 
 def parse_files_affected(content: str) -> list[str]:
+    """Parse the Files Affected section from a plan."""
     section = extract_section(content, "Files Affected")
     paths = extract_paths(section)
     return paths
 
 
 def parse_references_reviewed(content: str) -> list[str]:
+    """Parse the References Reviewed section from a plan."""
     section = extract_section(content, "References Reviewed")
     paths = extract_paths(section)
     return paths
 
 
 def parse_uncertainty_register(content: str) -> list[str]:
+    """Parse the optional uncertainty register from a plan."""
     section = extract_section(content, "Uncertainty Register")
     if not section:
         return []
@@ -174,7 +217,69 @@ def parse_uncertainty_register(content: str) -> list[str]:
     return items
 
 
+def parse_contracts_used(content: str) -> list[str]:
+    """Parse the Contracts Used section from a plan."""
+    section = extract_section(content, "Contracts Used")
+    if not section:
+        return []
+    contracts = []
+    for line in section.split("\n"):
+        line = line.strip()
+        if line.startswith("- ") or line.startswith("* "):
+            # Extract the contract name (before —)
+            name = line[2:].split("—")[0].split("-")[0].strip().strip("`")
+            if name and name != "-":
+                contracts.append(name)
+    return contracts
+
+
+def parse_tools_used(content: str) -> list[str]:
+    """Parse the Tools Used section from a plan."""
+    section = extract_section(content, "Tools Used")
+    if not section:
+        return []
+    tools = []
+    for line in section.split("\n"):
+        line = line.strip()
+        if line.startswith("- ") or line.startswith("* "):
+            name = line[2:].split("—")[0].split("-")[0].strip().strip("`")
+            if name and name != "-":
+                tools.append(name)
+    return tools
+
+
+def parse_data_flow(content: str) -> list[dict[str, str]]:
+    """Parse the Data Flow section from a plan.
+
+    Returns list of dicts with producer, producer_schema, consumer, consumer_schema.
+    """
+    section = extract_section(content, "Data Flow")
+    if not section:
+        return []
+
+    flows: list[dict[str, str]] = []
+    for line in section.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if re.match(r"^\|[-\s|:]+\|$", line):
+            continue
+        if re.match(r"^\|\s*(Step|#)", line, re.IGNORECASE):
+            continue
+
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 6:
+            flows.append({
+                "producer": parts[2].strip("`"),
+                "producer_schema": parts[3].strip("`"),
+                "consumer": parts[4].strip("`"),
+                "consumer_schema": parts[5].strip("`"),
+            })
+    return flows
+
+
 def parse_plan_status(content: str) -> tuple[str, str]:
+    """Extract the plan title and declared status from markdown."""
     status = "Unknown"
     if m := re.search(r"\*{1,2}Status:?\*?\s*:?\s*([^\n]+)", content, re.IGNORECASE):
         status = m.group(1).strip()
@@ -185,6 +290,7 @@ def parse_plan_status(content: str) -> tuple[str, str]:
 
 
 def parse_mentioned_adrs(content: str) -> set[int]:
+    """Return ADR numbers explicitly mentioned in the plan text."""
     result: set[int] = set()
     for match in re.finditer(r"\bADR[-_](\d{1,4})\b", content, re.IGNORECASE):
         try:
@@ -195,6 +301,7 @@ def parse_mentioned_adrs(content: str) -> set[int]:
 
 
 def get_plan_file(plan_number: int | None, plans_dir: Path, plan_file: str | None) -> Path:
+    """Resolve the concrete plan file path from CLI inputs."""
     if plan_file:
         candidate = Path(plan_file)
         if not candidate.is_absolute():
@@ -220,6 +327,7 @@ def collect_plan_requirements(
     file_paths: list[str],
     relationships: dict[str, Any],
 ) -> tuple[set[str], set[str], set[str], list[tuple[str, int, str]]]:
+    """Collect required docs and ADRs implied by the affected files."""
     required_docs_strict: set[str] = set()
     required_docs_soft: set[str] = set()
     required_adrs: dict[int, str] = {}
@@ -268,6 +376,7 @@ REQUIRED_PLAN_SECTIONS: dict[str, tuple[list[str], str]] = {
 
 @dataclass
 class ValidationResult:
+    """Structured outcome of one plan-validation run."""
     plan_number: int | None
     plan_file: Path
     title: str
@@ -282,8 +391,13 @@ class ValidationResult:
     missing_adrs: list[tuple[int, str]]
     governance: list[tuple[str, int, str]]
     missing_sections: list[tuple[str, str]]  # (section_name, reason)
+    data_flow: list[dict[str, str]]  # parsed data flow declarations
+    contracts_used: list[str]  # declared @boundary contracts
+    tools_used: list[str]  # declared @tool functions
+    index_errors: list[str]
 
     def to_payload(self) -> dict[str, Any]:
+        """Return a JSON-serializable payload for CLI output."""
         return {
             "plan_number": self.plan_number,
             "plan_file": str(self.plan_file),
@@ -306,6 +420,10 @@ class ValidationResult:
                 {"adr": adr, "title": title}
                 for adr, title in self.missing_adrs
             ],
+            "index_errors": self.index_errors,
+            "data_flow": self.data_flow,
+            "contracts_used": self.contracts_used,
+            "tools_used": self.tools_used,
             "missing_sections": [
                 {"section": name, "reason": reason}
                 for name, reason in self.missing_sections
@@ -314,6 +432,7 @@ class ValidationResult:
 
 
 def validate_plan(plan_file: Path, plan_number: int | None, relationships: dict[str, Any]) -> ValidationResult:
+    """Validate one plan against documentation, governance, and index rules."""
     content = read_text(plan_file)
     title, status = parse_plan_status(content)
     affected = parse_files_affected(content)
@@ -348,6 +467,11 @@ def validate_plan(plan_file: Path, plan_number: int | None, relationships: dict[
     missing_strict = {path for path in required_strict_norm if path not in covered}
     missing_soft = {path for path in required_soft_norm if path not in covered}
 
+    # Parse data flow declarations
+    data_flow = parse_data_flow(content)
+    contracts_used = parse_contracts_used(content)
+    tools_used = parse_tools_used(content)
+
     # Check for required plan sections (enforced design sequence)
     missing_sections: list[tuple[str, str]] = []
     for section_name, (aliases, reason) in REQUIRED_PLAN_SECTIONS.items():
@@ -359,6 +483,29 @@ def validate_plan(plan_file: Path, plan_number: int | None, relationships: dict[
                 break
         if not found:
             missing_sections.append((section_name, reason))
+
+    index_errors: list[str] = []
+    index_entries, index_counts = parse_plan_index(plan_file.parent / "CLAUDE.md")
+    if plan_number is not None:
+        if plan_number not in index_entries:
+            index_errors.append(
+                f"Plan #{plan_number} exists but is missing from docs/plans/CLAUDE.md"
+            )
+        else:
+            linked_name = Path(index_entries[plan_number]).name
+            if linked_name != plan_file.name:
+                index_errors.append(
+                    f"Plan #{plan_number} index row points to {linked_name}, expected {plan_file.name}"
+                )
+        if index_counts.get(plan_number, 0) > 1:
+            index_errors.append(
+                f"Plan #{plan_number} appears multiple times in docs/plans/CLAUDE.md"
+            )
+    for indexed_number, linked_name in index_entries.items():
+        if not (plan_file.parent / linked_name).exists():
+            index_errors.append(
+                f"Plan index row for Plan #{indexed_number} points to missing file {linked_name}"
+            )
 
     return ValidationResult(
         plan_number=plan_number,
@@ -375,10 +522,15 @@ def validate_plan(plan_file: Path, plan_number: int | None, relationships: dict[
         missing_adrs=missing_adrs,
         governance=governance,
         missing_sections=missing_sections,
+        data_flow=data_flow,
+        contracts_used=contracts_used,
+        tools_used=tools_used,
+        index_errors=index_errors,
     )
 
 
 def print_summary(result: ValidationResult) -> None:
+    """Print a human-readable summary of plan validation results."""
     print(f"Plan validation: {result.title}")
     if result.plan_number is not None:
         print(f"  Number: #{result.plan_number}")
@@ -414,8 +566,12 @@ def print_summary(result: ValidationResult) -> None:
         for path in sorted(result.required_docs_soft):
             print(f"  - {path}")
 
-    if result.missing_strict or result.missing_adrs or result.missing_soft:
+    if result.missing_strict or result.missing_adrs or result.missing_soft or result.index_errors:
         print("\nGAPS FOUND:")
+        if result.index_errors:
+            print("  Plan index drift:")
+            for error in result.index_errors:
+                print(f"    - {error}")
         if result.missing_strict:
             print("  Strict documentation gaps:")
             for path in sorted(result.missing_strict):
@@ -431,6 +587,21 @@ def print_summary(result: ValidationResult) -> None:
     else:
         print("\nNo documentation gaps found.")
 
+    if result.contracts_used:
+        print(f"\nCONTRACTS USED ({len(result.contracts_used)}):")
+        for c in result.contracts_used:
+            print(f"  - {c}")
+
+    if result.tools_used:
+        print(f"\nTOOLS USED ({len(result.tools_used)}):")
+        for t in result.tools_used:
+            print(f"  - {t}")
+
+    if result.data_flow:
+        print(f"\nDATA FLOW DECLARATIONS ({len(result.data_flow)} boundary crossings):")
+        for flow in result.data_flow:
+            print(f"  {flow['producer']} ({flow['producer_schema']}) → {flow['consumer']} ({flow['consumer_schema']})")
+
     if result.missing_sections:
         print("\nMISSING PLAN SECTIONS (design sequence enforcement):")
         for section_name, reason in result.missing_sections:
@@ -441,6 +612,7 @@ def print_summary(result: ValidationResult) -> None:
 
 
 def main() -> int:
+    """Run the plan-validation CLI."""
     parser = argparse.ArgumentParser(
         description="Validate a plan against the documentation relationship graph"
     )
@@ -530,7 +702,7 @@ def main() -> int:
     if args.warn_only:
         return 0
 
-    if result.missing_strict or result.missing_adrs or result.missing_sections:
+    if result.index_errors or result.missing_strict or result.missing_adrs or result.missing_sections:
         return 1
     return 0
 

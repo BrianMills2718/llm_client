@@ -954,7 +954,7 @@ def release_claim(
             is_stale, stale_session = is_session_stale(claim_session)
 
             if is_stale:
-                print(f"Note: Claim owner session is stale, allowing takeover")
+                print("Note: Claim owner session is stale, allowing takeover")
             else:
                 print("=" * 60)
                 print("❌ OWNERSHIP VERIFICATION FAILED")
@@ -981,7 +981,7 @@ def release_claim(
                 return False
             print("\n--force specified, releasing despite validation failures.\n")
     elif plan and not validate:
-        print(f"Tip: Use --validate to check TDD requirements before release.")
+        print("Tip: Use --validate to check TDD requirements before release.")
 
     data["claims"].remove(claim_to_remove)
 
@@ -1006,7 +1006,6 @@ def release_claim(
 
 
 def main() -> int:
-    """Run the claim-management CLI for worktree coordination."""
     parser = argparse.ArgumentParser(
         description="Manage active work claims for multi-CC coordination",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1206,8 +1205,8 @@ def main() -> int:
             print("\nAll implementation work requires an active claim.")
             print("This ensures coordination between Claude instances.")
             print("\nTo fix:")
-            print("  1. Create a claimed worktree: make worktree BRANCH=my-feature TASK='My task'")
-            print("  2. Or claim manually: python scripts/check_claims.py --claim --id my-feature --task 'My task'")
+            print("  1. Create a worktree: make worktree BRANCH=my-feature")
+            print("  2. Claim work: python scripts/check_claims.py --claim --task 'My task'")
             print("  3. Then commit your changes")
             return 1
 
