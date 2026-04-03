@@ -23,12 +23,14 @@ def test_grouped_exports_flatten_to_public_surface_without_duplicates() -> None:
 
     assert len(flattened) == len(set(flattened))
     assert llm_client.__all__ == flattened
-    assert len(flattened) == 120
+    assert len(flattened) == 123
 
     assert "call_llm" in llm_client._CORE_SUBSTRATE_EXPORTS
     assert "compare_call_snapshots" in llm_client._CORE_SUBSTRATE_EXPORTS
     assert "get_active_llm_calls" in llm_client._COMPAT_HOLD_EXPORTS
     assert "MCPAgentResult" in llm_client._COMPAT_HOLD_EXPORTS
+    assert "PlanningConfig" in llm_client._COMPAT_HOLD_EXPORTS
+    assert "AgentPlan" in llm_client._COMPAT_HOLD_EXPORTS
     assert "DifficultyTier" in llm_client._CANDIDATE_MOVE_EXPORTS
 
 
@@ -49,6 +51,10 @@ def test_top_level_declared_exports_resolve_for_star_import_compatibility() -> N
     assert namespace["compare_call_snapshots"] is llm_client.compare_call_snapshots
     assert "call_llm" in namespace
     assert namespace["call_llm"] is llm_client.call_llm
+    assert "PlanningConfig" in namespace
+    assert namespace["PlanningConfig"] is llm_client.PlanningConfig
+    assert "AgentPlan" in namespace
+    assert namespace["AgentPlan"] is llm_client.AgentPlan
 
 
 def test_top_level_difficulty_export_warns_and_resolves() -> None:
