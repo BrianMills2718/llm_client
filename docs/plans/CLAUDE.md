@@ -29,6 +29,7 @@ Track all implementation work here.
 | 21 | [Runtime Durability Follow-Ups From Grounded Research](21_runtime_durability_followups_from_grounded_research.md) | High | ✅ Complete | - |
 | 22 | [Capability Ownership And Sanctioned Worktree Alignment](22_capability-ownership-and-sanctioned-worktree-alignment.md) | High | ✅ Complete | 21 |
 | 23 | [Authoritative coordination wave-1 rollout](23_authoritative-coordination-wave-1-rollout.md) | Critical | ✅ Complete | - |
+| 24 | [isolated shared-tooling refresh](24_isolated-shared-tooling-refresh.md) | High | 🚧 In Progress | - |
 
 
 ## Status Key
