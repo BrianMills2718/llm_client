@@ -181,8 +181,7 @@ WORKTREE_CREATE_SCRIPT := scripts/meta/worktree-coordination/create_worktree.py
 WORKTREE_REMOVE_SCRIPT := scripts/meta/worktree-coordination/safe_worktree_remove.py
 WORKTREE_CLAIMS_SCRIPT := scripts/meta/worktree-coordination/check_claims.py
 WORKTREE_DIR ?= $(shell python "$(WORKTREE_CREATE_SCRIPT)" --repo-root . --print-default-worktree-dir)
-WORKTREE_DEFAULT_REMOTE_REF ?= $(shell git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@')
-WORKTREE_START_POINT ?= $(if $(WORKTREE_DEFAULT_REMOTE_REF),$(WORKTREE_DEFAULT_REMOTE_REF),HEAD)
+WORKTREE_START_POINT ?= HEAD
 
 .PHONY: worktree worktree-list worktree-remove
 
@@ -195,12 +194,12 @@ ifndef TASK
 endif
 	@if [ ! -f "$(WORKTREE_CREATE_SCRIPT)" ]; then \
 		echo "Missing worktree coordination module: $(WORKTREE_CREATE_SCRIPT)"; \
-		echo "Install the full meta-process worktree-coordination module before using make worktree."; \
+		echo "Install or sync the sanctioned worktree-coordination module before using make worktree."; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(WORKTREE_CLAIMS_SCRIPT)" ]; then \
 		echo "Missing worktree coordination module: $(WORKTREE_CLAIMS_SCRIPT)"; \
-		echo "Install the full meta-process worktree-coordination module before using make worktree."; \
+		echo "Install or sync the sanctioned worktree-coordination module before using make worktree."; \
 		exit 1; \
 	fi
 	@python "$(WORKTREE_CLAIMS_SCRIPT)" --claim --id "$(BRANCH)" --task "$(TASK)" $(if $(PLAN),--plan $(PLAN),)
@@ -216,7 +215,7 @@ endif
 worktree-list:  ## Show claimed worktree coordination status
 	@if [ ! -f "$(WORKTREE_CLAIMS_SCRIPT)" ]; then \
 		echo "Missing worktree coordination module: $(WORKTREE_CLAIMS_SCRIPT)"; \
-		echo "Install the full meta-process worktree-coordination module before using make worktree-list."; \
+		echo "Install or sync the sanctioned worktree-coordination module before using make worktree-list."; \
 		exit 1; \
 	fi
 	@python "$(WORKTREE_CLAIMS_SCRIPT)" --list
@@ -227,7 +226,7 @@ ifndef BRANCH
 endif
 	@if [ ! -f "$(WORKTREE_REMOVE_SCRIPT)" ]; then \
 		echo "Missing worktree coordination module: $(WORKTREE_REMOVE_SCRIPT)"; \
-		echo "Install the full meta-process worktree-coordination module before using make worktree-remove."; \
+		echo "Install or sync the sanctioned worktree-coordination module before using make worktree-remove."; \
 		exit 1; \
 	fi
 	@python "$(WORKTREE_REMOVE_SCRIPT)" "$(WORKTREE_DIR)/$(BRANCH)"
