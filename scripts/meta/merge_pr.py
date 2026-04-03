@@ -49,6 +49,15 @@ def get_pr_branch(pr_number: int) -> str | None:
     return data.get("headRefName")
 
 
+def find_existing_script(paths: list[str]) -> Path | None:
+    """Return the first existing script path from a priority-ordered list."""
+    for script_path in paths:
+        candidate = Path(script_path)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def find_worktree_for_branch(branch: str) -> Path | None:
     """Find local worktree path for a branch, if it exists."""
     result = run_cmd(["git", "worktree", "list", "--porcelain"], check=False)
@@ -73,21 +82,23 @@ def release_claim_for_branch(branch: str) -> bool:
     Gracefully degrades if claims system is not installed (worktree-coordination module).
     """
     # Try both script locations (portable: scripts/meta, project: scripts, worktree-coord)
-    for script_path in [
-        "scripts/worktree-coordination/check_claims.py",
-        "scripts/meta/worktree-coordination/check_claims.py",
-        "scripts/check_claims.py",
-        "scripts/meta/check_claims.py",
-    ]:
-        if Path(script_path).exists():
-            result = run_cmd(
-                ["python", script_path, "--release", "--id", branch, "--force"],
-                check=False,
-            )
-            if result.returncode == 0 and "Released" in result.stdout:
-                print(f"   Released claim for '{branch}'")
-                return True
-            return False  # Script exists but no claim - that's fine
+    claims_script = find_existing_script(
+        [
+            "scripts/worktree-coordination/check_claims.py",
+            "scripts/meta/worktree-coordination/check_claims.py",
+            "scripts/check_claims.py",
+            "scripts/meta/check_claims.py",
+        ]
+    )
+    if claims_script:
+        result = run_cmd(
+            ["python", str(claims_script), "--release", "--id", branch, "--force"],
+            check=False,
+        )
+        if result.returncode == 0 and "Released" in result.stdout:
+            print(f"   Released claim for '{branch}'")
+            return True
+        return False  # Script exists but no claim - that's fine
     # Claims system not installed - skip silently
     return False
 
@@ -104,16 +115,27 @@ def cleanup_worktree(branch: str) -> bool:
     # This must happen before worktree removal, which is blocked by active claims
     release_claim_for_branch(branch)
 
-    # Use make worktree-remove which has safety checks
-    result = run_cmd(
-        ["make", "worktree-remove", f"BRANCH={branch}"],
-        check=False,
+    safe_remove_script = find_existing_script(
+        [
+            "scripts/worktree-coordination/safe_worktree_remove.py",
+            "scripts/meta/worktree-coordination/safe_worktree_remove.py",
+            "scripts/safe_worktree_remove.py",
+            "scripts/meta/safe_worktree_remove.py",
+        ]
     )
+    if safe_remove_script:
+        cleanup_cmd = ["python", str(safe_remove_script), str(worktree_path)]
+        manual_cmd = f"python {safe_remove_script} {worktree_path}"
+    else:
+        cleanup_cmd = ["make", "worktree-remove", f"BRANCH={branch}"]
+        manual_cmd = f"make worktree-remove BRANCH={branch}"
+
+    result = run_cmd(cleanup_cmd, check=False)
 
     if result.returncode != 0:
         # Worktree removal failed - warn but don't fail the merge
         print(f"⚠️  Could not auto-cleanup worktree: {result.stderr or result.stdout}")
-        print(f"   Run manually: make worktree-remove BRANCH={branch}")
+        print(f"   Run manually: {manual_cmd}")
         return False
 
     print(f"✅ Cleaned up worktree at {worktree_path}")
