@@ -1,6 +1,6 @@
 # Plan #24: isolated shared-tooling refresh
 
-**Status:** In Progress
+**Status:** Complete
 **Type:** implementation  <!-- implementation | design -->
 **Priority:** High
 **Blocked By:** None
@@ -82,12 +82,12 @@
 
 ## Acceptance Criteria
 
-- [ ] The clean worktree reproduces the expected pre-refresh governed/stale-tooling state.
-- [ ] The sanctioned refresh is applied in the worktree.
-- [ ] Worktree governed audit clears stale-tooling warnings or narrows residual issues to explicitly classified non-stale signals.
-- [ ] Mechanical verification commands pass in the refreshed worktree.
-- [ ] `AGENTS.md` is in sync if the post-refresh audit requires it.
-- [ ] A committed isolated refresh patch exists for Plan 65 landing-safety comparison.
+- [x] The clean worktree reproduces the expected pre-refresh governed/stale-tooling state.
+- [x] The sanctioned refresh is applied in the worktree.
+- [x] Worktree governed audit clears stale-tooling warnings and reaches `PASS/governed`.
+- [x] Mechanical verification commands pass in the refreshed worktree.
+- [x] `AGENTS.md` is in sync after the sanctioned refresh.
+- [x] A committed isolated refresh patch exists for Plan 65 landing-safety comparison.
 
 ---
 
@@ -95,3 +95,8 @@
 
 - This plan intentionally does not decide canonical replay. That decision belongs to `project-meta` Plan 65 after measured overlap comparison against the dirty canonical root.
 - If this worktree refresh succeeds but canonical replay is blocked, this worktree commit is still the rollback-safe success artifact for the isolated slice.
+- Measured outcome:
+  - initial local plan scaffold committed as `512683d`
+  - isolated worktree refresh committed as `62e0058`
+  - authoritative worktree audit moved from `partial/FAIL` to `governed/PASS`
+  - `AGENTS.md` sync was resolved by the sanctioned installer path rather than by ad hoc manual editing
