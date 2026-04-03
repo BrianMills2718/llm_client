@@ -14,6 +14,8 @@ from llm_client.agent.agent_planning import (
     build_plan_tools,
     execute_plan_tool,
 )
+from llm_client.agent.mcp_tools import _count_budgeted_records, _count_budgeted_tool_calls
+from llm_client.tools.tool_runtime_common import MCPToolCallRecord
 
 
 class TestPlanState:
@@ -190,6 +192,28 @@ class TestBuildPlanTools:
             assert "name" in tool["function"]
             assert "description" in tool["function"]
             assert "parameters" in tool["function"]
+
+
+class TestPlanningBudgetExemption:
+    """Planning tools should not consume retrieval-tool budget."""
+
+    def test_planning_tool_calls_are_not_budgeted(self) -> None:
+        tool_calls = [
+            {"function": {"name": "create_plan"}},
+            {"function": {"name": "update_plan"}},
+            {"function": {"name": "search"}},
+        ]
+
+        assert _count_budgeted_tool_calls(tool_calls) == 1
+
+    def test_planning_tool_records_are_not_budgeted(self) -> None:
+        records = [
+            MCPToolCallRecord(server="__agent__", tool="create_plan", arguments={}),
+            MCPToolCallRecord(server="__agent__", tool="update_plan", arguments={}),
+            MCPToolCallRecord(server="srv", tool="search", arguments={}),
+        ]
+
+        assert _count_budgeted_records(records) == 1
 
 
 class TestExecutePlanTool:

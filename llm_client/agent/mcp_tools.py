@@ -29,14 +29,18 @@ from llm_client.tools.tool_runtime_common import (
 # ---------------------------------------------------------------------------
 
 BUDGET_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset({
+    "create_plan",
     "todo_write",
+    "update_plan",
     "submit_answer",
     "runtime_artifact_read",
 })
 """Tools exempt from max_tool_calls budgeting (planning + final submit)."""
 
 AUTO_REASONING_TOOL_DEFAULTS: dict[str, str] = {
+    "create_plan": "Create a concrete task plan before using other tools.",
     "todo_write": "Replace TODO list to track reasoning progress across atoms.",
+    "update_plan": "Update plan progress after finishing or blocking a step.",
     "submit_answer": "Submit the current best factual answer from gathered evidence.",
     "runtime_artifact_read": "Recover previously produced typed artifacts by artifact_id when older tool payloads were cleared from active context.",
 }

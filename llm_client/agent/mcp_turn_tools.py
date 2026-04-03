@@ -34,6 +34,7 @@ from llm_client.agent.mcp_contracts import (
 )
 from llm_client.agent.mcp_evidence import _evidence_digest, _tool_evidence_pointer_labels
 from llm_client.agent.mcp_tools import _extract_tool_call_args, _runtime_artifact_read_result
+from llm_client.agent.agent_planning import PlanState, execute_plan_tool
 from llm_client.tools.tool_runtime_common import MCPToolCallRecord, TOOL_REASONING_FIELD
 
 EVENT_CODE_TOOL_VALIDATION_SCHEMA = "TOOL_VALIDATION_REJECTED_SCHEMA"
@@ -94,6 +95,9 @@ async def _process_tool_calls_turn(
     available_bindings: dict[str, Any],
     runtime_artifact_registry_by_id: dict[str, dict[str, Any]],
     runtime_artifact_tool_name: str,
+    plan_state: PlanState,
+    plan_tool_names: set[str],
+    planning_question: str,
     tool_result_metadata_by_id: dict[str, dict[str, Any]],
     artifact_timeline: list[dict[str, Any]],
     retrieval_no_hits_detector: Any,
@@ -461,6 +465,49 @@ async def _process_tool_calls_turn(
                 max_result_length=tool_result_max_length,
                 require_tool_reasoning=require_tool_reasoning,
             )
+        elif tool_name in plan_tool_names:
+            parsed_args = _extract_tool_call_args(tc) or {}
+            if isinstance(parsed_args, dict):
+                parsed_args = dict(parsed_args)
+                parsed_args.pop(TOOL_REASONING_FIELD, None)
+            result_text = execute_plan_tool(
+                tool_name=tool_name,
+                arguments=parsed_args,
+                plan_state=plan_state,
+                question=planning_question,
+                turn=turn,
+            )
+            tc_id = str(tc.get("id", ""))
+            if result_text.startswith("Error") or result_text.startswith("Unknown"):
+                runtime_tool_call_indexes[idx] = (
+                    MCPToolCallRecord(
+                        server="__agent__",
+                        tool=tool_name,
+                        arguments=parsed_args,
+                        tool_call_id=tc_id,
+                        error=result_text,
+                    ),
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": _json.dumps({"error": result_text}),
+                    },
+                )
+            else:
+                runtime_tool_call_indexes[idx] = (
+                    MCPToolCallRecord(
+                        server="__agent__",
+                        tool=tool_name,
+                        arguments=parsed_args,
+                        tool_call_id=tc_id,
+                        result=result_text,
+                    ),
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": result_text,
+                    },
+                )
         else:
             patched_tc, handle_injections = _apply_handle_input_injections(
                 tc=tc,

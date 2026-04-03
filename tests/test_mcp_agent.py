@@ -1204,6 +1204,77 @@ class TestAcallWithMcp:
             assert result.raw_response.metadata["budgeted_tool_calls_used"] == 1
             assert mock_session.call_tool.call_count == 2
 
+    async def test_max_tool_calls_ignores_plan_tools(self) -> None:
+        """create_plan/update_plan calls do not consume max_tool_calls budget."""
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=MagicMock(
+            tools=[_make_tool("search")],
+        ))
+        mock_session.call_tool = AsyncMock(return_value=_make_tool_result("search-ok"))
+
+        with (
+            patch("llm_client.agent.mcp_agent._import_mcp") as mock_import,
+            patch("llm_client.agent.mcp_agent._inner_acall_llm") as mock_acall,
+        ):
+            mock_stdio = AsyncMock()
+            mock_stdio.__aenter__ = AsyncMock(return_value=("read", "write"))
+            mock_stdio.__aexit__ = AsyncMock(return_value=False)
+            mock_import.return_value = (
+                MagicMock(return_value=mock_stdio),
+                MagicMock,
+                MagicMock(return_value=mock_session),
+            )
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            mock_acall.side_effect = [
+                _make_llm_result(tool_calls=[{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "create_plan",
+                        "arguments": '{"steps":[{"step_id":"s1","description":"Search"}]}',
+                    },
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "update_plan",
+                        "arguments": '{"step_id":"s1","status":"done","result":"done"}',
+                    },
+                }]),
+                _make_llm_result(tool_calls=[{
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }]),
+                _make_llm_result(content="forced by retrieval budget"),
+            ]
+
+            from llm_client.agent.agent_planning import PlanningConfig
+            from llm_client.agent.mcp_agent import _acall_with_mcp
+
+            result = await _acall_with_mcp(
+                "test-model",
+                [{"role": "user", "content": "Q"}],
+                mcp_servers={"srv": {"command": "python", "args": ["s.py"]}},
+                max_turns=10,
+                max_tool_calls=1,
+                planning_config=PlanningConfig(enabled=True),
+            )
+
+            assert result.content == "forced by retrieval budget"
+            assert result.raw_response.turns == 4  # 3 loop turns + 1 forced final
+            assert len(result.raw_response.tool_calls) == 3
+            assert result.raw_response.metadata["budgeted_tool_calls_used"] == 1
+            assert [record.tool for record in result.raw_response.tool_calls[:2]] == [
+                "create_plan",
+                "update_plan",
+            ]
+            assert mock_session.call_tool.call_count == 1
+
     async def test_forced_final_circuit_breaker_opens_on_same_class_failures(self) -> None:
         """Repeated same-class forced-final failures should open circuit breaker."""
         mock_session = AsyncMock()
@@ -2310,6 +2381,8 @@ class TestRouting:
         """MCP-specific kwargs don't leak to inner acall_llm."""
         with patch("llm_client.agent.mcp_agent._acall_with_mcp") as mock_loop:
             mock_loop.return_value = _make_llm_result(content="answer")
+            from llm_client.agent.agent_planning import PlanningConfig
+            planning_config = PlanningConfig(enabled=True)
 
             await acall_llm(
                 "gemini/gemini-3-flash-preview",
@@ -2319,6 +2392,7 @@ class TestRouting:
                 max_tool_calls=15,
                 mcp_init_timeout=60.0,
                 tool_result_max_length=10000,
+                planning_config=planning_config,
                 temperature=0.5,  # regular litellm kwarg
                 task="test",
                 trace_id="test_mcp_kwargs_popped",
@@ -2332,6 +2406,7 @@ class TestRouting:
             assert call_kwargs["max_tool_calls"] == 15
             assert call_kwargs["mcp_init_timeout"] == 60.0
             assert call_kwargs["tool_result_max_length"] == 10000
+            assert call_kwargs["planning_config"] is planning_config
             # Regular kwargs also present (passed through)
             assert call_kwargs["temperature"] == 0.5
 

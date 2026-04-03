@@ -321,6 +321,7 @@ MCP_LOOP_KWARGS = frozenset({
     "retrieval_stagnation_action",
     "adoption_profile",
     "adoption_profile_enforce",
+    "planning_config",
 })
 
 # Kwargs consumed by the direct tool loop
@@ -351,6 +352,7 @@ TOOL_LOOP_KWARGS = frozenset({
     "retrieval_stagnation_action",
     "adoption_profile",
     "adoption_profile_enforce",
+    "planning_config",
 })
 
 
@@ -744,6 +746,7 @@ async def _acall_with_mcp(
     initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     error_budget: "AgentErrorBudget | None" = None,
+    planning_config: "Any | None" = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run an MCP tool-calling agent loop with any litellm model.
@@ -820,6 +823,7 @@ async def _acall_with_mcp(
                 kwargs,
 
                 error_budget=error_budget,
+                planning_config=planning_config,
             )
         except asyncio.CancelledError:
             final_content = agent_result.metadata.get("last_content", "")
@@ -876,6 +880,7 @@ async def _acall_with_mcp(
                     kwargs,
 
                     error_budget=error_budget,
+                    planning_config=planning_config,
                 )
             except asyncio.CancelledError:
                 final_finish_reason = "cancelled"
@@ -943,6 +948,7 @@ async def _acall_with_tools(
     initial_bindings: dict[str, Any] | None = None,
     timeout: int = 60,
     error_budget: "AgentErrorBudget | None" = None,
+    planning_config: "Any | None" = None,
     **kwargs: Any,
 ) -> LLMCallResult:
     """Run a tool-calling agent loop with direct Python functions.
@@ -1004,6 +1010,7 @@ async def _acall_with_tools(
             kwargs,
 
             error_budget=error_budget,
+            planning_config=planning_config,
         )
     except asyncio.CancelledError:
         final_content = agent_result.metadata.get("last_content", "")

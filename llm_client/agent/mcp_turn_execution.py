@@ -163,7 +163,6 @@ from llm_client.agent.agent_planning import (
     PlanningConfig,
     PlanState,
     build_plan_tools,
-    execute_plan_tool,
 )
 from llm_client.agent.mcp_turn_tools import _process_tool_calls_turn
 from llm_client.agent.mcp_state import (  # noqa: F401  re-exported
@@ -335,6 +334,7 @@ MCP_LOOP_KWARGS = frozenset({
     "retrieval_stagnation_action",
     "adoption_profile",
     "adoption_profile_enforce",
+    "planning_config",
 })
 
 # Kwargs consumed by the direct tool loop
@@ -365,6 +365,7 @@ TOOL_LOOP_KWARGS = frozenset({
     "retrieval_stagnation_action",
     "adoption_profile",
     "adoption_profile_enforce",
+    "planning_config",
 })
 
 
@@ -513,12 +514,26 @@ async def _agent_loop(
     # Error budget tracking
     _error_budget = error_budget if error_budget is not None else AgentErrorBudget()
     _budget_state = ErrorBudgetState(budget=_error_budget)
+    initial_question = ""
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            initial_question = content
+            break
 
     # Planning state
     _planning_config = planning_config or PlanningConfig(enabled=False)
     _plan_state = PlanState()
+    _plan_tool_names: set[str] = set()
     if _planning_config.enabled:
         plan_tools = build_plan_tools(_plan_state, _planning_config)
+        _plan_tool_names = {
+            str(tool.get("function", {}).get("name", "")).strip()
+            for tool in plan_tools
+            if str(tool.get("function", {}).get("name", "")).strip()
+        }
         openai_tools = plan_tools + list(openai_tools)  # plan tools first
     handle_input_resolution_count = 0
     handle_input_resolved_artifact_count = 0
@@ -905,6 +920,9 @@ async def _agent_loop(
             available_bindings=available_bindings,
             runtime_artifact_registry_by_id=runtime_artifact_registry_by_id,
             runtime_artifact_tool_name=runtime_artifact_tool_name,
+            plan_state=_plan_state,
+            plan_tool_names=_plan_tool_names,
+            planning_question=initial_question,
             tool_result_metadata_by_id=tool_result_metadata_by_id,
             artifact_timeline=artifact_timeline,
             retrieval_no_hits_detector=_is_retrieval_no_hits_result,

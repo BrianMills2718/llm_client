@@ -229,6 +229,13 @@ Format: compact, one line per step, ≤500 chars total. Truncates long results. 
 - [ ] Existing benchmark runs (HotpotQAsmallest 3q) produce same or better results
 - [ ] Unit tests for: plan creation, step updates, status aliases, context formatting, budget interaction
 
+## Required Tests
+
+- `pytest tests/test_agent_planning.py -q`
+- `pytest tests/test_agent_runtime_adapters.py -q`
+- `pytest tests/test_mcp_agent.py -q`
+- `pytest tests/test_public_surface.py -q`
+
 ---
 
 ## Open Questions (Pattern 29)
