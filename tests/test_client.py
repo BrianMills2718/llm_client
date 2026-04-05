@@ -108,7 +108,7 @@ class TestCallLLM:
     """Tests for call_llm."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_returns_result(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_returns_result", max_budget=0)
@@ -119,7 +119,7 @@ class TestCallLLM:
 
     @patch("llm_client.core.client.litellm.get_model_info", return_value={"max_output_tokens": 128000})
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_omitted_max_tokens_are_not_defaulted(
         self,
         mock_comp: MagicMock,
@@ -142,7 +142,7 @@ class TestCallLLM:
         assert "max_completion_tokens" not in kwargs
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_num_retries_not_passed_to_litellm(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """num_retries controls our retry loop, not litellm's internal retry."""
         mock_comp.return_value = _mock_response()
@@ -151,7 +151,7 @@ class TestCallLLM:
         assert "num_retries" not in kwargs
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_reasoning_effort_for_claude(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("anthropic/claude-opus-4-6", [{"role": "user", "content": "Hi"}], reasoning_effort="high", task="test", trace_id="test_reasoning_claude", max_budget=0)
@@ -159,21 +159,21 @@ class TestCallLLM:
         assert kwargs["reasoning_effort"] == "high"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_reasoning_effort_ignored_for_non_claude(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gpt-4", [{"role": "user", "content": "Hi"}], reasoning_effort="high", task="test", trace_id="test_reasoning_non_claude", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
         assert "reasoning_effort" not in kwargs
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_raises_on_error(self, mock_comp: MagicMock) -> None:
         mock_comp.side_effect = Exception("API down")
         with pytest.raises(Exception, match="API down"):
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_raises_error", max_budget=0)
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_extracts_usage(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_extracts_usage", max_budget=0)
@@ -182,7 +182,7 @@ class TestCallLLM:
         assert result.usage["total_tokens"] == 15
 
     @patch("llm_client.core.client.litellm.completion_cost", side_effect=Exception("no pricing"))
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_cost_fallback(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_cost_fallback", max_budget=0)
@@ -190,7 +190,7 @@ class TestCallLLM:
         assert result.cost == 15 * 0.000001  # total_tokens * $1/M
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_api_base_passed_through(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm(
@@ -205,7 +205,7 @@ class TestCallLLM:
         assert kwargs["api_base"] == "https://openrouter.ai/api/v1"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_api_base_omitted_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_api_base_omitted", max_budget=0)
@@ -214,7 +214,7 @@ class TestCallLLM:
 
     @patch("llm_client.core.client._io_log.log_call")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_prompt_ref_is_logged_but_not_forwarded_to_provider(
         self,
         mock_comp: MagicMock,
@@ -233,10 +233,10 @@ class TestCallLLM:
         )
         provider_kwargs = mock_comp.call_args.kwargs
         assert "prompt_ref" not in provider_kwargs
-        assert mock_log_call.call_args.kwargs["prompt_ref"] == "shared.investigation_pipeline.collect@1"
+        assert mock_log_call.call_args_list[0].kwargs["prompt_ref"] == "shared.investigation_pipeline.collect@1"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_timeout_policy_ban_omits_timeout(
         self,
         mock_comp: MagicMock,
@@ -263,7 +263,7 @@ class TestCallLLMWithTools:
     """Tests for call_llm_with_tools."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_passes_tools(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
@@ -272,7 +272,7 @@ class TestCallLLMWithTools:
         assert kwargs["tools"] == tools
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_extracts_tool_calls(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_tc = MagicMock()
         mock_tc.id = "call_1"
@@ -287,7 +287,7 @@ class TestCallLLMWithTools:
         assert result.tool_calls[0]["function"]["name"] == "get_weather"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_api_base_passed_through(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
@@ -512,13 +512,13 @@ class TestFinishReasonAndRawResponse:
     """Tests for finish_reason and raw_response fields."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_finish_reason_extracted(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response(finish_reason="stop")
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_finish_reason", max_budget=0)
         assert result.finish_reason == "stop"
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_finish_reason_length_raises(self, mock_comp: MagicMock) -> None:
         """Truncated responses should raise immediately (not retry)."""
         mock_comp.return_value = _mock_response(finish_reason="length")
@@ -527,7 +527,7 @@ class TestFinishReasonAndRawResponse:
         assert mock_comp.call_count == 1  # No retry on truncation
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_raw_response_included(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         resp = _mock_response()
         mock_comp.return_value = resp
@@ -535,7 +535,7 @@ class TestFinishReasonAndRawResponse:
         assert result.raw_response is resp
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_raw_response_excluded_from_repr(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         result = call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_raw_repr", max_budget=0)
@@ -597,9 +597,9 @@ class TestFinishReasonAndRawResponse:
 class TestSmartRetry:
     """Tests for retry with jittered exponential backoff."""
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retries_on_empty_content(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Empty responses should trigger retry."""
         empty = _mock_response(content="")
@@ -611,9 +611,9 @@ class TestSmartRetry:
         assert mock_comp.call_count == 2
         mock_sleep.assert_called_once()
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retries_on_empty_choices(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Empty choices[] should be treated as retryable empty responses."""
         empty_choices = MagicMock()
@@ -638,7 +638,7 @@ class TestSmartRetry:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retries_on_transient_error(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Rate limit / timeout errors should retry."""
         mock_comp.side_effect = [
@@ -650,7 +650,7 @@ class TestSmartRetry:
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_non_retryable_error_raises_immediately(self, mock_comp: MagicMock) -> None:
         """Non-retryable errors should not retry."""
         mock_comp.side_effect = Exception("invalid api key")
@@ -660,7 +660,7 @@ class TestSmartRetry:
         assert mock_comp.call_count == 1
 
     @patch("llm_client.core.client.time.sleep")
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_exhausted_retries_raises(self, mock_comp: MagicMock, mock_sleep: MagicMock) -> None:
         """After exhausting retries, the last error should propagate."""
         mock_comp.side_effect = Exception("timeout")
@@ -671,7 +671,7 @@ class TestSmartRetry:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retries_on_json_parse_error(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """JSON parse errors should be retryable."""
         mock_comp.side_effect = [
@@ -743,7 +743,7 @@ class TestSmartRetry:
         assert mock_client.chat.completions.create_with_completion.call_count == 2
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_tool_calls_not_retried_on_empty_content(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Tool call responses with empty content should NOT retry."""
         mock_tc = MagicMock()
@@ -761,7 +761,7 @@ class TestSmartRetry:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_finish_reason_tool_calls_but_no_tools_retries(
         self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
     ) -> None:
@@ -785,7 +785,7 @@ class TestSmartRetry:
 class TestNonRetryableErrors:
     """Permanent errors (auth, billing, quota) should fail immediately."""
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_authentication_error_not_retried(self, mock_comp: MagicMock) -> None:
         """litellm.AuthenticationError (401) should not retry."""
         import litellm
@@ -796,7 +796,7 @@ class TestNonRetryableErrors:
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_auth_error", max_budget=0)
         assert mock_comp.call_count == 1
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_budget_exceeded_not_retried(self, mock_comp: MagicMock) -> None:
         """litellm.BudgetExceededError should not retry."""
         import litellm
@@ -807,7 +807,7 @@ class TestNonRetryableErrors:
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_budget_exceeded", max_budget=0)
         assert mock_comp.call_count == 1
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_content_policy_not_retried(self, mock_comp: MagicMock) -> None:
         """litellm.ContentPolicyViolationError should not retry."""
         import litellm
@@ -818,7 +818,7 @@ class TestNonRetryableErrors:
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_content_policy", max_budget=0)
         assert mock_comp.call_count == 1
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_not_found_not_retried(self, mock_comp: MagicMock) -> None:
         """litellm.NotFoundError (404, model doesn't exist) should not retry."""
         import litellm
@@ -829,7 +829,7 @@ class TestNonRetryableErrors:
             call_llm("gpt-99", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_not_found", max_budget=0)
         assert mock_comp.call_count == 1
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_quota_exceeded_not_retried(self, mock_comp: MagicMock) -> None:
         """RateLimitError with quota message should not retry."""
         import litellm
@@ -843,7 +843,7 @@ class TestNonRetryableErrors:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_transient_rate_limit_is_retried(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """RateLimitError with transient message (no quota keywords) should retry."""
         import litellm
@@ -860,7 +860,7 @@ class TestNonRetryableErrors:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_rate_limit_quota_with_retry_delay_is_retried(
         self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
     ) -> None:
@@ -890,9 +890,9 @@ class TestNonRetryableErrors:
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_blank_timeout_error_is_retried(
         self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
     ) -> None:
@@ -911,9 +911,9 @@ class TestNonRetryableErrors:
         assert mock_comp.call_count == 2
         assert mock_sleep.call_count == 1
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_structured_retry_after_hint_is_used(
         self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock,
     ) -> None:
@@ -940,7 +940,7 @@ class TestNonRetryableErrors:
         assert mock_sleep.call_args.args[0] >= 3.0
         assert any("retry_delay_source=structured" in warning for warning in result.warnings)
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_generic_quota_string_not_retried(self, mock_comp: MagicMock) -> None:
         """Generic Exception with quota/billing message should not retry."""
         mock_comp.side_effect = Exception("insufficient quota for this request")
@@ -953,7 +953,7 @@ class TestOpenRouterKeyRotation:
     """OpenRouter key-limit handling should rotate keys when possible."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_rotates_key_on_key_limit_403(
         self,
         mock_comp: MagicMock,
@@ -995,7 +995,7 @@ class TestOpenRouterKeyRotation:
         assert any("OPENROUTER_KEY_ROTATED" in warning for warning in result.warnings)
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_rotates_key_on_insufficient_credits_402(
         self,
         mock_comp: MagicMock,
@@ -1038,7 +1038,7 @@ class TestOpenRouterKeyRotation:
         assert os.environ.get("OPENROUTER_API_KEY") == "or-key-bbb2"
         assert any("OPENROUTER_KEY_ROTATED" in warning for warning in result.warnings)
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_key_limit_without_backup_key_fails_without_retry(
         self,
         mock_comp: MagicMock,
@@ -1069,7 +1069,7 @@ class TestOpenRouterKeyRotation:
             )
         assert mock_comp.call_count == 1
 
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_explicit_api_key_disables_rotation(
         self,
         mock_comp: MagicMock,
@@ -1113,7 +1113,7 @@ class TestThinkingModelDetection:
 
     @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_gemini_3_gets_thinking_config(
         self,
         mock_comp: MagicMock,
@@ -1127,7 +1127,7 @@ class TestThinkingModelDetection:
 
     @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_gemini_4_gets_thinking_config(
         self,
         mock_comp: MagicMock,
@@ -1140,7 +1140,7 @@ class TestThinkingModelDetection:
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_non_thinking_model_no_config(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-2.0-flash-lite", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_non_thinking", max_budget=0)
@@ -1149,7 +1149,7 @@ class TestThinkingModelDetection:
 
     @patch("litellm.get_supported_openai_params", return_value=[])
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_thinking_model_without_supported_param_has_no_config(
         self,
         mock_comp: MagicMock,
@@ -1162,7 +1162,7 @@ class TestThinkingModelDetection:
         assert "thinking" not in kwargs
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_thinking_config_not_overridden(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """User-provided thinking config should not be overridden."""
         mock_comp.return_value = _mock_response()
@@ -1328,7 +1328,7 @@ class TestGPT5TemperatureStripping:
         assert call_kwargs["temperature"] == 0.5
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_openrouter_gpt5_strips_sampling_controls(self, mock_completion: MagicMock, mock_cost: MagicMock) -> None:
         """Provider-prefixed GPT-5 calls should also strip incompatible sampling args."""
         mock_completion.return_value = _mock_response(content="ok")
@@ -1349,7 +1349,7 @@ class TestGPT5TemperatureStripping:
         assert "logprobs" not in call_kwargs
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_openrouter_gpt5_coerce_and_warn_populates_result_warnings(
         self,
         mock_completion: MagicMock,
@@ -1391,9 +1391,9 @@ class TestGPT5TemperatureStripping:
 class TestConfigurableBackoff:
     """Tests for configurable base_delay and max_delay parameters."""
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_custom_base_delay_used(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Custom base_delay should affect backoff timing."""
         mock_comp.side_effect = [
@@ -1408,7 +1408,7 @@ class TestConfigurableBackoff:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_custom_max_delay_caps(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Custom max_delay should cap backoff."""
         mock_comp.side_effect = [
@@ -1841,7 +1841,7 @@ class TestResponsesAPIRouting:
         assert kwargs["api_base"] == "https://custom.api/v1"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_non_gpt5_still_uses_completion(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Non-GPT-5 models should still use litellm.completion()."""
         mock_comp.return_value = _mock_response()
@@ -2198,7 +2198,7 @@ class TestRetryOn:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_on_extends_patterns(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Custom pattern in retry_on should trigger retry."""
         mock_comp.side_effect = [
@@ -2218,7 +2218,7 @@ class TestRetryOn:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_on_does_not_affect_defaults(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Default retryable patterns still work when retry_on is set."""
         mock_comp.side_effect = [
@@ -2268,7 +2268,7 @@ class TestOnRetry:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_on_retry_called_with_attempt_error_delay(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """on_retry should be called with (attempt, error, delay)."""
         mock_comp.side_effect = [
@@ -2292,7 +2292,7 @@ class TestOnRetry:
         assert isinstance(args[2], float)  # delay
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_on_retry_not_called_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """on_retry should not be called when the first attempt succeeds."""
         mock_comp.return_value = _mock_response()
@@ -2341,7 +2341,7 @@ class TestCache:
     """Tests for the cache parameter and LRUCache."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_cache_hit_skips_llm_call(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Cached result should be returned without calling the LLM."""
         cache = LRUCache()
@@ -2364,7 +2364,7 @@ class TestCache:
         assert result2.marginal_cost == 0.0
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_cache_miss_calls_llm_and_stores(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Cache miss should call LLM and store the result."""
         cache = LRUCache()
@@ -2379,7 +2379,7 @@ class TestCache:
         assert mock_comp.call_count == 1
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_cache_not_used_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Default behavior (cache=None) should always call LLM."""
         mock_comp.return_value = _mock_response()
@@ -2527,7 +2527,7 @@ class TestRetryPolicy:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_policy_overrides_individual_params(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """RetryPolicy should override num_retries/base_delay/max_delay."""
         mock_comp.side_effect = [
@@ -2544,7 +2544,7 @@ class TestRetryPolicy:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_policy_on_retry_callback(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """on_retry in RetryPolicy should fire."""
         mock_comp.side_effect = [Exception("timeout"), _mock_response()]
@@ -2553,9 +2553,9 @@ class TestRetryPolicy:
         call_llm("gpt-4", [{"role": "user", "content": "Hi"}], retry=policy, task="test", trace_id="test_policy_callback", max_budget=0)
         cb.assert_called_once()
 
-    @patch("llm_client.core.client.time.sleep")
+    @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_policy_custom_backoff(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Custom backoff function on RetryPolicy should be used."""
         mock_comp.side_effect = [Exception("timeout"), _mock_response()]
@@ -2565,7 +2565,7 @@ class TestRetryPolicy:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_policy_should_retry_overrides_patterns(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """should_retry on RetryPolicy should replace built-in pattern matching."""
         mock_comp.side_effect = [
@@ -2579,7 +2579,7 @@ class TestRetryPolicy:
         assert mock_comp.call_count == 2
 
     @patch("llm_client.core.client.time.sleep")
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_policy_should_retry_can_reject(self, mock_comp: MagicMock, mock_sleep: MagicMock) -> None:
         """should_retry returning False should prevent retry even for built-in patterns."""
         mock_comp.side_effect = Exception("rate limit")
@@ -2651,7 +2651,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_fallback_on_exhausted_retries(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """When primary model exhausts retries, fallback model should be tried."""
         mock_comp.side_effect = [
@@ -2673,7 +2673,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_no_fallback_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Fallback should not be used if primary succeeds."""
         mock_comp.return_value = _mock_response(content="Primary OK")
@@ -2690,7 +2690,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_duplicate_primary_fallback_is_deduplicated(
         self,
         mock_comp: MagicMock,
@@ -2712,7 +2712,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_on_fallback_callback(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """on_fallback callback should fire with correct args."""
         mock_comp.side_effect = [
@@ -2737,7 +2737,7 @@ class TestFallbackModels:
         assert args[2] == "gpt-3.5-turbo"  # next model
 
     @patch("llm_client.core.client.time.sleep")
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_all_fallbacks_exhausted_raises(self, mock_comp: MagicMock, mock_sleep: MagicMock) -> None:
         """When all models (primary + fallbacks) fail, error should propagate."""
         mock_comp.side_effect = Exception("rate limit")
@@ -2754,7 +2754,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_multiple_fallbacks(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Multiple fallback models tried in order."""
         mock_comp.side_effect = [
@@ -2795,7 +2795,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_fallback_non_retryable_error(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Non-retryable errors on primary should still trigger fallback."""
         mock_comp.side_effect = [
@@ -2815,7 +2815,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_fallback_populates_warnings(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Fallback should populate result.warnings with FALLBACK message."""
         mock_comp.side_effect = [
@@ -2839,7 +2839,7 @@ class TestFallbackModels:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_retry_populates_warnings(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """Retries should populate result.warnings with RETRY messages."""
         mock_comp.side_effect = [
@@ -2861,7 +2861,7 @@ class TestFallbackModels:
         assert "retry_delay_source=none" in result.warnings[0]
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_no_warnings_on_success(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Clean call should have empty warnings."""
         mock_comp.return_value = _mock_response(content="Clean")
@@ -3006,7 +3006,7 @@ class TestHooks:
     """Tests for the hooks parameter (observability)."""
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_before_call_fires(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """before_call hook should fire with model, messages, kwargs."""
         mock_comp.return_value = _mock_response()
@@ -3020,7 +3020,7 @@ class TestHooks:
         assert args[1] == messages
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_after_call_fires(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """after_call hook should fire with LLMCallResult."""
         mock_comp.return_value = _mock_response()
@@ -3034,7 +3034,7 @@ class TestHooks:
 
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_on_error_fires(self, mock_comp: MagicMock, mock_cost: MagicMock, mock_sleep: MagicMock) -> None:
         """on_error hook should fire on each failed attempt."""
         mock_comp.side_effect = [
@@ -3050,14 +3050,14 @@ class TestHooks:
         assert args[1] == 0  # attempt number
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_hooks_not_called_when_none(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """No errors when hooks is None (default)."""
         mock_comp.return_value = _mock_response()
         call_llm("gpt-4", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_hooks_none", max_budget=0)  # should not raise
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_hooks_partial_fields(self, mock_comp: MagicMock, mock_cost: MagicMock) -> None:
         """Only set fields are called; None fields are skipped."""
         mock_comp.return_value = _mock_response()
@@ -4059,19 +4059,19 @@ class TestModelDeprecation:
     def test_gpt4o_warns(self):
         """GPT-4o should trigger outclassed-model warning."""
         with pytest.warns(UserWarning, match="OUTCLASSED MODEL.*gpt-4o"):
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o", max_budget=0)
 
     def test_claude_3_haiku_warns(self):
         """Claude 3 Haiku should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("anthropic/claude-3-haiku-20240307", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_claude3", max_budget=0)
 
     def test_gemini_15_warns(self):
         """Gemini 1.5 should trigger deprecation warning."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("gemini/gemini-1.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini15", max_budget=0)
 
     def test_current_model_no_warning(self):
@@ -4079,7 +4079,7 @@ class TestModelDeprecation:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("anthropic/claude-sonnet-4-5-20250929", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_current", max_budget=0)
 
     def test_deepseek_no_warning(self):
@@ -4087,7 +4087,7 @@ class TestModelDeprecation:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("deepseek/deepseek-chat", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_deepseek", max_budget=0)
 
     def test_gemini_25_no_warning(self):
@@ -4095,13 +4095,13 @@ class TestModelDeprecation:
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("gemini/gemini-2.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini25", max_budget=0)
 
     def test_warning_message_contains_outclassed_guidance(self):
         """Outclassed warning should include guidance and replacement."""
         with pytest.warns(UserWarning) as record:
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_stop_msg", max_budget=0)
         msg = str(record[0].message)
         assert "OUTCLASSED MODEL" in msg
@@ -4137,5 +4137,5 @@ class TestModelDeprecation:
     def test_o1_pro_warns(self):
         """o1-pro is soft-deprecated — should warn, not raise."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
-            with patch("litellm.completion", return_value=_mock_response()):
+            with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 call_llm("o1-pro", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_o1pro", max_budget=0)

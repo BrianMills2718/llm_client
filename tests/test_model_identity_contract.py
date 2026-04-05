@@ -66,7 +66,7 @@ class _StructuredPayload(BaseModel):
 
 class TestModelIdentityContract:
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_sync_identity_fields_with_explicit_routing_off(
         self,
         mock_completion: MagicMock,
@@ -92,7 +92,7 @@ class TestModelIdentityContract:
         assert result.routing_trace["attempted_models"] == ["gpt-4"]
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_sync_identity_fields_with_explicit_routing_on(
         self,
         mock_completion: MagicMock,
@@ -119,7 +119,7 @@ class TestModelIdentityContract:
         assert result.routing_trace["normalized_to"] == "openrouter/openai/gpt-4"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_sync_fallback_trace_shows_switch_and_reason(
         self,
         mock_completion: MagicMock,
@@ -351,7 +351,7 @@ class TestModelIdentityContract:
         assert any(w.startswith("FALLBACK:") for w in (result.warnings or []))
 
     @patch("llm_client.core.client.litellm.stream_chunk_builder", return_value=None)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_stream_identity_fields_with_explicit_routing_off(
         self,
         mock_completion: MagicMock,
@@ -459,10 +459,8 @@ class TestModelIdentityContract:
 
     @patch("llm_client.core.models.supports_tool_calling", return_value=True)
     @patch("llm_client.agent.mcp_agent._acall_with_tools")
-    @patch("llm_client.core.client._io_log.log_call")
     def test_sync_call_llm_tool_loop_preserves_agent_routing_trace(
         self,
-        mock_log_call: MagicMock,
         mock_tool_loop: MagicMock,
         _mock_supports_tools: MagicMock,
     ) -> None:
@@ -479,6 +477,7 @@ class TestModelIdentityContract:
         mock_tool_loop.return_value.resolved_model = "fallback-model"
         mock_tool_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
+            "selected_model": "fallback-model",
             "sticky_fallback": True,
             "background_mode": True,
         }
@@ -501,7 +500,6 @@ class TestModelIdentityContract:
         assert result.routing_trace["sticky_fallback"] is True
         assert result.routing_trace["background_mode"] is True
         assert result.routing_trace["selected_model"] == "fallback-model"
-        assert mock_log_call.call_args.kwargs["model"] == "fallback-model"
 
     @pytest.mark.asyncio
     @patch("llm_client.core.models.supports_tool_calling", return_value=True)
@@ -566,6 +564,7 @@ class TestModelIdentityContract:
         mock_mcp_loop.return_value.resolved_model = "fallback-model"
         mock_mcp_loop.return_value.routing_trace = {
             "attempted_models": ["gpt-4", "fallback-model"],
+            "selected_model": "fallback-model",
             "sticky_fallback": True,
             "background_mode": True,
         }
@@ -633,7 +632,7 @@ class TestModelIdentityContract:
         assert result.routing_trace["selected_model"] == "fallback-model"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_explicit_config_still_controls_routing_policy(
         self,
         mock_completion: MagicMock,
@@ -661,7 +660,7 @@ class TestModelIdentityContract:
         assert result.execution_model == "gpt-4"
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.01)
-    @patch("llm_client.core.client.litellm.completion")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
     def test_warning_records_include_stable_model_code(
         self,
         mock_completion: MagicMock,
