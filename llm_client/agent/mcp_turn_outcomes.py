@@ -147,6 +147,7 @@ def _process_turn_outcomes(
     submit_error_this_turn = False
     submit_errors: list[str] = []
     submit_needs_new_evidence_signal = False
+    submit_requires_forced_terminal_signal = False
 
     evidence_digest_before_turn = _evidence_digest(evidence_pointer_labels)
     for record in executed_records:
@@ -327,6 +328,11 @@ def _process_turn_outcomes(
                     and bool(recovery_policy.get("new_evidence_required_before_retry"))
                 ):
                     submit_needs_new_evidence_signal = True
+                if (
+                    isinstance(recovery_policy, dict)
+                    and bool(recovery_policy.get("requires_forced_terminal_path"))
+                ):
+                    submit_requires_forced_terminal_signal = True
                 if isinstance(validation_payload, dict):
                     reason_code = str(validation_payload.get("reason_code", "")).strip()
                     detail = str(validation_payload.get("message", "")).strip()
@@ -403,6 +409,35 @@ def _process_turn_outcomes(
                 ),
             }
         )
+        max_reason_count = (
+            max(submit_validation_reason_counts.values(), default=0)
+            if submit_validation_reason_counts
+            else 0
+        )
+        if (
+            submit_requires_forced_terminal_signal
+            and submit_requires_new_evidence
+            and max_reason_count >= 2
+        ):
+            warning = (
+                "CONTROL_CHURN: repeated submit validator rejections signaled that "
+                "normal submission now requires the forced-terminal path. Forcing final answer."
+            )
+            warnings.append(warning)
+            logger.warning(warning)
+            failure_event_codes.append(event_code_control_churn_threshold)
+            emitted_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: Repeated submit validator loop detected. Stop trying "
+                        "normal submit and provide your best final answer now from the "
+                        "current evidence.]"
+                    ),
+                }
+            )
+            force_final_reason = "control_churn"
+            stop_agent_loop = True
 
     todo_write_called_this_turn = False
     updated_last_todo_status_line = last_todo_status_line
