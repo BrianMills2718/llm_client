@@ -168,15 +168,21 @@ def _create_codex_home(mcp_servers: dict[str, Any]) -> str:
 
 
 def _prepare_codex_mcp(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    """Process mcp_servers kwarg into codex_home.
+    """Process MCP-related kwargs into an isolated codex_home when needed.
 
     Returns:
         (updated_kwargs, tmp_dir_to_cleanup_or_None)
     """
-    if "mcp_servers" not in kwargs:
-        return kwargs, None
     if "codex_home" in kwargs:
-        raise ValueError("Cannot specify both 'mcp_servers' and 'codex_home'")
+        if "mcp_servers" in kwargs:
+            raise ValueError("Cannot specify both 'mcp_servers' and 'codex_home'")
+        return kwargs, None
+    if "mcp_servers" not in kwargs:
+        if not _as_bool(os.environ.get("LLM_CLIENT_CODEX_ISOLATE_HOME", "1"), default=True):
+            return kwargs, None
+        tmp_dir = _create_codex_home({})
+        kwargs["codex_home"] = tmp_dir
+        return kwargs, tmp_dir
     mcp_servers = kwargs.pop("mcp_servers")
     tmp_dir = _create_codex_home(mcp_servers)
     kwargs["codex_home"] = tmp_dir

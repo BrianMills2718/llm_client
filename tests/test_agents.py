@@ -2053,10 +2053,29 @@ class TestCodexMcpServers:
         finally:
             _cleanup_tmp(tmp_dir)
 
-    def test_prepare_codex_mcp_passthrough(self) -> None:
-        """No mcp_servers → kwargs unchanged, no tmp_dir."""
+    def test_prepare_codex_mcp_isolates_home_by_default(self) -> None:
+        """No mcp_servers should still isolate Codex from the user's global home."""
+        from pathlib import Path
+
+        from llm_client.sdk.agents import _cleanup_tmp, _prepare_codex_mcp
+
+        kwargs = {"sandbox_mode": "workspace-write"}
+        out, tmp = _prepare_codex_mcp(kwargs)
+        try:
+            assert tmp is not None
+            assert out["codex_home"] == tmp
+            assert (Path(tmp) / ".codex" / "config.toml").exists()
+        finally:
+            _cleanup_tmp(tmp)
+
+    def test_prepare_codex_mcp_passthrough_when_isolation_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Isolation can be disabled explicitly for operators who need global Codex home."""
         from llm_client.sdk.agents import _prepare_codex_mcp
 
+        monkeypatch.setenv("LLM_CLIENT_CODEX_ISOLATE_HOME", "0")
         kwargs = {"sandbox_mode": "workspace-write"}
         out, tmp = _prepare_codex_mcp(kwargs)
         assert tmp is None
