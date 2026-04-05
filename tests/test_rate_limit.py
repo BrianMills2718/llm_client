@@ -11,6 +11,7 @@ import pytest
 import llm_client.utils.rate_limit as rl
 from llm_client.utils.rate_limit import (
     _DEFAULT_COOLDOWN_FLOORS,
+    _DEFAULT_SHARED_LIMITS,
     _get_provider,
     aacquire,
     acquire,
@@ -20,6 +21,8 @@ from llm_client.utils.rate_limit import (
     _cooldown_enabled,
     _cooldown_floors,
     _cooldown_state_path,
+    _shared_enabled,
+    _shared_limits,
     _sync_sems,
     _limits,
     _DEFAULT_LIMITS,
@@ -35,12 +38,23 @@ def _reset_state():
     old_cooldown_enabled = _cooldown_enabled
     old_cooldown_floors = dict(_cooldown_floors)
     old_cooldown_state_path = _cooldown_state_path
+    old_shared_enabled = _shared_enabled
+    old_shared_limits = dict(_shared_limits)
+    old_shared_lease_ttl_s = rl._shared_lease_ttl_s
+    old_shared_poll_interval_s = rl._shared_poll_interval_s
+    old_coordination_backend_override = rl._coordination_backend_override
     _async_sems.clear()
     _sync_sems.clear()
     rl._enabled = True
     rl._cooldown_enabled = True
     _cooldown_floors.clear()
     _cooldown_floors.update(_DEFAULT_COOLDOWN_FLOORS)
+    rl._shared_enabled = True
+    _shared_limits.clear()
+    _shared_limits.update(_DEFAULT_SHARED_LIMITS)
+    rl._shared_lease_ttl_s = rl._DEFAULT_SHARED_LEASE_TTL_S
+    rl._shared_poll_interval_s = rl._DEFAULT_SHARED_POLL_INTERVAL_S
+    rl._coordination_backend_override = None
     yield
     _async_sems.clear()
     _sync_sems.clear()
@@ -51,6 +65,12 @@ def _reset_state():
     _cooldown_floors.clear()
     _cooldown_floors.update(old_cooldown_floors)
     rl._cooldown_state_path = old_cooldown_state_path
+    rl._shared_enabled = old_shared_enabled
+    _shared_limits.clear()
+    _shared_limits.update(old_shared_limits)
+    rl._shared_lease_ttl_s = old_shared_lease_ttl_s
+    rl._shared_poll_interval_s = old_shared_poll_interval_s
+    rl._coordination_backend_override = old_coordination_backend_override
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +107,10 @@ class TestProviderDetection:
         assert _get_provider("gpt-5.3-codex") == "agent"
         assert _get_provider("gpt-5.1-codex-mini") == "agent"
         assert _get_provider("gpt-5.1-codex-max") == "agent"
+
+    def test_gpt54_alias_models(self):
+        assert _get_provider("gpt-5.4") == "agent"
+        assert _get_provider("openrouter/openai/gpt-5.4") == "agent"
 
     def test_unknown_default(self):
         assert _get_provider("some-unknown-model") == "default"
@@ -229,10 +253,18 @@ class TestConfigure:
             cooldown_enabled=False,
             cooldown_floors={"google": 3.5},
             cooldown_path=tmp_path / "cooldowns.db",
+            shared_enabled=False,
+            shared_limits={"google": 2},
+            shared_lease_ttl_s=123.0,
+            shared_poll_interval_s=0.25,
         )
         assert rl._cooldown_enabled is False
         assert _cooldown_floors["google"] == 3.5
         assert rl._cooldown_state_path == tmp_path / "cooldowns.db"
+        assert rl._shared_enabled is False
+        assert _shared_limits["google"] == 2
+        assert rl._shared_lease_ttl_s == 123.0
+        assert rl._shared_poll_interval_s == 0.25
 
 
 class TestSharedCooldown:
@@ -248,3 +280,65 @@ class TestSharedCooldown:
         )
         assert applied >= 0.4
         assert cooldown_remaining("gemini/gemini-2.5-flash") > 0.1
+
+
+class TestSharedProviderLeases:
+    @pytest.mark.asyncio
+    async def test_async_acquire_obeys_shared_provider_limit(self, tmp_path):
+        """Cross-process lease caps should constrain concurrency before first-attempt calls."""
+        configure(
+            limits={"google": 10},
+            cooldown_path=tmp_path / "cooldowns.db",
+            shared_limits={"google": 1},
+            shared_lease_ttl_s=5.0,
+            shared_poll_interval_s=0.01,
+        )
+
+        peak_concurrent = 0
+        current = 0
+
+        async def worker():
+            nonlocal peak_concurrent, current
+            async with aacquire("gemini/gemini-2.5-flash"):
+                current += 1
+                peak_concurrent = max(peak_concurrent, current)
+                await asyncio.sleep(0.05)
+                current -= 1
+
+        await asyncio.gather(*(worker() for _ in range(3)))
+
+        assert peak_concurrent == 1
+
+    def test_expired_shared_provider_lease_is_reclaimed(self, tmp_path):
+        """Expired leases should not block new Gemini callers indefinitely."""
+        db_path = tmp_path / "cooldowns.db"
+        configure(
+            cooldown_path=db_path,
+            shared_limits={"google": 1},
+            shared_lease_ttl_s=5.0,
+            shared_poll_interval_s=0.01,
+        )
+        with rl._connect_cooldown_db() as conn:
+            now = time.time()
+            conn.execute(
+                """
+                INSERT INTO provider_leases(
+                    lease_id, provider, holder, acquired_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("expired-lease", "google", "test-holder", now - 10, now - 1),
+            )
+            conn.commit()
+
+        started = time.perf_counter()
+        with acquire("gemini/gemini-2.5-flash"):
+            pass
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.2
+        with rl._connect_cooldown_db() as conn:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM provider_leases WHERE provider = ?",
+                ("google",),
+            ).fetchone()[0]
+        assert active == 0

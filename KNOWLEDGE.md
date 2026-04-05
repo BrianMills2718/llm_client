@@ -13,6 +13,16 @@ Human-reviewed periodically.
 
 ---
 
+### 2026-04-05 — codex — integration-issue
+
+Exact `gpt-5.4` requests must canonicalize to the Codex SDK route, not
+OpenRouter. The earlier routing contract only recognized `codex/...`,
+`codex-mini-latest`, and `*-codex` family names, so bare or provider-prefixed
+`gpt-5.4` could slip into `openrouter/openai/gpt-5.4` and burn credits outside
+the subscription-backed Codex path. `llm_client` now treats exact `gpt-5.4`
+as a Codex alias across routing, agent detection, availability checks, and
+rate-limit provider classification.
+
 ### 2026-04-01 — claude-code — best-practice
 
 **Ecosystem audit findings (Phase 7 of infra sprint).**
@@ -137,3 +147,16 @@ bug was that `normalize_model_for_policy()` handled `google/...` aliases but
 left bare `gemini-*` ids untouched, so LiteLLM guessed the wrong Google path.
 Fix: canonicalize bare Gemini ids to `gemini/<id>` before both direct and
 openrouter policy handling.
+
+### 2026-04-05 — codex — bug-pattern
+
+**Cross-process provider leases must be acquired after the local semaphore, not before it.**
+
+The first implementation of shared Gemini leases in `llm_client.utils.rate_limit`
+grabbed a SQLite-backed lease before the in-process semaphore. Under local
+concurrency, queued callers then consumed shared lease slots while they were
+still waiting inside the same process, which made the next waiter sleep until
+lease TTL expiry instead of real request completion. Fix: acquire the local
+provider semaphore first, then claim the shared lease immediately before the
+actual call window. This preserves the cross-process cap without turning local
+queueing into false shared saturation.

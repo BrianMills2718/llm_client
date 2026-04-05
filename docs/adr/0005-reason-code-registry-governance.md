@@ -2,8 +2,9 @@
 
 Status: Accepted  
 Date: 2026-02-23
-Last verified: 2026-04-04
+Last verified: 2026-04-05
 
+Verification context: Codex agent parsing now canonicalizes exact gpt-5.4 requests before SDK dispatch
 ## Context
 
 MCP submit-validation paths emit `reason_code` values that are counted in run
