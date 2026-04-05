@@ -1,10 +1,29 @@
 # Plan 24: Workflow Kit Manifest, Validator, and Runtime Adapter Proving Slice
 
-**Status:** Planned
+**Status:** Redirected / Superseded
 **Type:** design
-**Priority:** High
-**Blocked By:** None
-**Blocks:** truthful workflow-kit packaging, installer work, registry/discovery work
+**Priority:** N/A — see redirect below
+**Blocked By:** N/A
+**Blocks:** N/A
+
+> **Redirected (2026-04-04)**: After strategic review, the manifest-validator framing was
+> solving the wrong problem for Brian's ecosystem. The correct problem is **execution strategy
+> swappability** (make different execution approaches — single LLM call, map-reduce, agent SDK,
+> critique loop — swappable at the task boundary, the way llm_client makes providers swappable).
+>
+> **Where this work moved:**
+> - Architectural decision: `project-meta/docs/ops/ADR-2026-04-04-workflow-portability-revised-execution-strategies.md`
+> - Deferred implementation: `~/projects/PROJECTS_DEFERRED/workflow_portability_swappable_execution.md`
+> - Framework research: `project-meta/research_texts/agent_ecosystems/2026-04-04_workflow_pipeline_framework_landscape.md`
+>
+> **Why the framing changed**: The plan was inspired by Journey Kits (multi-tenant distribution)
+> but Brian's ecosystem needs cross-strategy swappability, not cross-organization distribution.
+> The manifest validator would govern content that doesn't exist yet. The execution strategy
+> layer belongs in `agentic_scaffolding` (where EvaluatorOptimizerLoop already lives), not
+> `llm_client`. Trigger for implementation: second project needs to swap strategies and
+> copy-pastes stage code to do it.
+>
+> The original plan text is preserved below for reference.
 
 ---
 
