@@ -277,6 +277,9 @@ DEFAULT_TOOL_DISCLOSURE_TOKEN_CHARS: int = 4
 DEFAULT_TOOL_CALL_STALL_TURNS: int = 3
 """Force final answer after this many consecutive tool-call turns with zero executable calls."""
 
+DEFAULT_SUBMIT_PROGRESS_STALL_TURNS: int = 2
+"""Force final answer after this many suppressed submit retries without TODO progress."""
+
 FOUNDATION_SCHEMA_STRICT_ENV: str = "FOUNDATION_SCHEMA_STRICT"
 """When true, invalid foundation events raise instead of only warning."""
 
@@ -471,6 +474,9 @@ async def _agent_loop(
     tool_error_nudges: dict[tuple[str, str], int] = {}
     submit_requires_new_evidence = False
     submit_requires_todo_progress = False
+    submit_progress_stall_turn_threshold = int(
+        kwargs.get("submit_progress_stall_turn_threshold", DEFAULT_SUBMIT_PROGRESS_STALL_TURNS)
+    )
     control_loop_suppressed_calls = 0
     last_budget_remaining: int | None = None
     rejected_missing_reasoning_calls = 0
@@ -545,6 +551,9 @@ async def _agent_loop(
     submit_evidence_digest_at_last_failure: str | None = None
     submit_todo_status_at_last_failure: str | None = None
     submit_retry_guidance: str | None = None
+    submit_progress_stall_streak = 0
+    submit_progress_stall_streak_max = 0
+    submit_progress_stall_signature: tuple[str, str] | None = None
     evidence_digest_change_count = 0
     evidence_turns_total = 0
     evidence_turns_with_new_evidence = 0
@@ -1086,6 +1095,87 @@ async def _agent_loop(
         for emitted_message in turn_outcome.emitted_messages:
             messages.append(emitted_message)
             agent_result.conversation_trace.append(emitted_message)
+        suppressed_submit_this_turn = any(
+            record.tool == "submit_answer"
+            and record.server == "__agent__"
+            and isinstance(record.error, str)
+            and "suppressed:" in record.error.lower()
+            for record in records
+        )
+        current_stall_signature = (
+            str(submit_todo_status_at_last_failure or _last_todo_status_line or ""),
+            str(submit_retry_guidance or ""),
+        )
+        if not submit_requires_todo_progress:
+            submit_progress_stall_streak = 0
+            submit_progress_stall_signature = None
+        elif submit_progress_stall_signature is None:
+            submit_progress_stall_signature = current_stall_signature
+            submit_progress_stall_streak = 1 if suppressed_submit_this_turn else 0
+        elif submit_progress_stall_signature != current_stall_signature:
+            submit_progress_stall_signature = current_stall_signature
+            submit_progress_stall_streak = 1 if suppressed_submit_this_turn else 0
+        elif suppressed_submit_this_turn:
+            submit_progress_stall_streak += 1
+
+        submit_progress_stall_streak_max = max(
+            submit_progress_stall_streak_max,
+            submit_progress_stall_streak,
+        )
+
+        if (
+            not turn_outcome.stop_agent_loop
+            and submit_requires_todo_progress
+            and submit_progress_stall_streak >= submit_progress_stall_turn_threshold
+        ):
+            warning = (
+                "CONTROL_CHURN: repeated suppressed submit retries without TODO progress "
+                "on the same repair hint; forcing final answer."
+            )
+            agent_result.warnings.append(warning)
+            failure_event_codes.append(EVENT_CODE_CONTROL_CHURN_THRESHOLD)
+            emitted_message = {
+                "role": "user",
+                "content": (
+                    "[SYSTEM: Repeated submit suppressions without TODO progress on the same "
+                    "repair hint. Stop looping and give your best answer now from existing evidence.]"
+                ),
+            }
+            messages.append(emitted_message)
+            agent_result.conversation_trace.append(emitted_message)
+            _emit_foundation_event(
+                {
+                    "event_id": new_event_id(),
+                    "event_type": "ToolFailed",
+                    "timestamp": now_iso(),
+                    "run_id": foundation_run_id,
+                    "session_id": foundation_session_id,
+                    "actor_id": foundation_actor_id,
+                    "operation": {"name": "__control_churn__", "version": None},
+                    "inputs": {
+                        "artifact_ids": sorted(available_artifacts),
+                        "params": {
+                            "suppressed_submit_streak": submit_progress_stall_streak,
+                            "todo_status_line": _last_todo_status_line,
+                            "repair_guidance": submit_retry_guidance,
+                            "threshold": submit_progress_stall_turn_threshold,
+                        },
+                        "bindings": dict(available_bindings),
+                    },
+                    "outputs": {"artifact_ids": [], "payload_hashes": []},
+                    "failure": {
+                        "error_code": EVENT_CODE_CONTROL_CHURN_THRESHOLD,
+                        "category": "policy",
+                        "phase": "post_validation",
+                        "retryable": False,
+                        "tool_name": "__control_churn__",
+                        "user_message": warning,
+                        "debug_ref": None,
+                    },
+                }
+            )
+            force_final_reason = "control_churn"
+            break
         if turn_outcome.force_final_reason is not None:
             force_final_reason = turn_outcome.force_final_reason
         if turn_outcome.stop_agent_loop:
@@ -1436,5 +1526,11 @@ async def _agent_loop(
         foundation_events_logged=foundation_events_logged,
         evidence_pointer_labels=evidence_pointer_labels,
         force_final_reason=force_final_reason,
+    )
+    agent_result.metadata["submit_progress_stall_turn_threshold"] = (
+        submit_progress_stall_turn_threshold
+    )
+    agent_result.metadata["submit_progress_stall_streak_max"] = (
+        submit_progress_stall_streak_max
     )
     return final_content, final_finish_reason
