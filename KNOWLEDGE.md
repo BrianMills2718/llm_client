@@ -68,3 +68,15 @@ re-submitting until budget exhaustion even after the validator signaled both
 `mcp_turn_outcomes.py` now treats repeated rejections of that shape as early
 control churn and forces finalization immediately. Verified in
 `tests/test_mcp_agent.py::test_repeated_submit_rejections_can_force_final_early`.
+
+### 2026-04-05 — codex — bug-pattern
+
+**OpenRouter routing should normalize explicit `google/...` provider ids the same way it already normalizes other provider-prefixed models.**
+
+`ac14` surfaced repeated provider-resolution failures from `MODEL=google/gemini-2.0-flash-001`.
+Under OpenRouter policy, `llm_client.core.routing.normalize_model_for_policy()`
+left `google/...` untouched, so the call reached LiteLLM without a provider
+route and failed as "LLM Provider NOT provided". Fix: normalize `google/...`
+to `openrouter/google/...` in the shared routing layer so stale but otherwise
+valid OpenRouter Google aliases do not fail late inside structured-call
+boundaries.

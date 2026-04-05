@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: git-derived canonical project attribution keeps worktree observability grouped at repo scope (Plan #58)
+Verification context: OpenRouter routing normalizes explicit google/gemini aliases before execution identity is finalized
 
 ## Context
 

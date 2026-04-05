@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-02-22
-Last verified: 2026-04-04
-Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)
+Last verified: 2026-04-05
+Verification context: OpenRouter routing normalizes explicit google/gemini aliases before execution identity is finalized
 
 ## Context
 
@@ -41,4 +41,3 @@ Negative:
 
 Week 2+: extract pure routing resolver with typed output:
 `resolve_call(request, config) -> ResolvedCallPlan`.
-
