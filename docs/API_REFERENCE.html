@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-05T15:18:59Z -->
+<!-- Generated: 2026-04-05T15:28:47Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -3160,7 +3160,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3177,7 +3177,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3186,7 +3186,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3205,39 +3205,15 @@ Returns:
 
 
 
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
-  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Validated human review payload used to resume the workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
-    
-  </div>
-</details>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
-  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
-    
-  </div>
-</details>
-
-
-
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
@@ -5490,15 +5466,6 @@ Returns:
   </div>
 </details>
 
-<details class="symbol" id="module-llm_client-core-client-boundary">
-  <summary><code>boundary</code> <span class="sig">(**kwargs)</span></summary>
-  <div class="symbol-body">
-    <p class="summary">No-op boundary decorator when data_contracts is unavailable.</p>
-    <p class="meta">Source: <code>llm_client.core.client</code> functions</p>
-    <pre class="doc">No-op boundary decorator when data_contracts is unavailable.</pre>
-  </div>
-</details>
-
 <details class="symbol" id="module-llm_client-core-client-call_llm">
   <summary><code>call_llm</code> <span class="sig">(model: str, messages: list[dict[str, typing.Any]], *, timeout: int = 60, num_retries: int = 2, reasoning_effort: str | None = None, api_base: str | None = None, base_delay: float = 1.0, max_delay: float = 30.0, retry_on: list[str] | None = None, on_retry: Optional[Callable[[int, Exception, float], NoneType]] = None, cache: llm_client.core.data_types.CachePolicy | None = None, retry: llm_client.execution.retry.RetryPolicy | None = None, fallback_models: list[str] | None = None, on_fallback: Optional[Callable[[str, Exception, str], NoneType]] = None, hooks: llm_client.execution.retry.Hooks | None = None, execution_mode: Literal[&#x27;text&#x27;, &#x27;structured&#x27;, &#x27;workspace_agent&#x27;, &#x27;workspace_tools&#x27;] = &#x27;text&#x27;, config: llm_client.core.config.ClientConfig | None = None, parent_trace_id: str | None = None, **kwargs: Any) -&gt; llm_client.core.data_types.LLMCallResult</span></summary>
   <div class="symbol-body">
@@ -6135,7 +6102,8 @@ Callers can catch specific error types instead of parsing raw litellm exceptions
     <p class="meta">Source: <code>llm_client.core.errors</code> functions</p>
     <pre class="doc">Classify any exception into an LLMError subtype.
 
-Uses litellm exception types when available, falls back to string matching.</pre>
+Uses litellm exception types when available, falls back to string matching.
+Unwraps instructor.InstructorRetryException to expose the underlying cause.</pre>
   </div>
 </details>
 
@@ -6146,7 +6114,8 @@ Uses litellm exception types when available, falls back to string matching.</pre
     <p class="meta">Source: <code>llm_client.core.errors</code> functions</p>
     <pre class="doc">Wrap an exception in the appropriate LLMError subclass.
 
-If the error is already an LLMError, returns it unchanged.</pre>
+If the error is already an LLMError, returns it unchanged.
+InstructorRetryException is unwrapped to expose the underlying provider error.</pre>
   </div>
 </details>
 
@@ -9228,7 +9197,9 @@ Raises:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>END</code></td><td><code>&#x27;__end__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>START</code></td><td><code>&#x27;__start__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 

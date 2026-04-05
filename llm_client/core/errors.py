@@ -152,11 +152,41 @@ def _litellm_error_types(module: Any, names: tuple[str, ...]) -> tuple[type[Base
     return tuple(out)
 
 
+def _unwrap_instructor_retry(error: Exception) -> Exception:
+    """If error is InstructorRetryException, return the underlying cause.
+
+    instructor wraps all provider errors in InstructorRetryException after
+    exhausting retries. The wrapped errors (BadRequestError, RateLimitError,
+    APIError, etc.) are more informative for observability than the generic
+    retry wrapper. Returns the original error unchanged if not an instructor
+    retry exception.
+    """
+    type_name = type(error).__name__
+    if type_name != "InstructorRetryException":
+        return error
+    # Try to extract last_completion or failed_attempts cause first.
+    # instructor.InstructorRetryException has: __cause__, args, failed_attempts
+    if error.__cause__ is not None and isinstance(error.__cause__, Exception):
+        return error.__cause__
+    # Try to get the first failed attempt's exception
+    failed = getattr(error, "failed_attempts", None)
+    if failed:
+        last = failed[-1] if hasattr(failed, "__getitem__") else None
+        if last is not None:
+            exc = getattr(last, "exception", None)
+            if exc is not None and isinstance(exc, Exception):
+                return exc
+    return error
+
+
 def classify_error(error: Exception) -> type[LLMError]:
     """Classify any exception into an LLMError subtype.
 
     Uses litellm exception types when available, falls back to string matching.
+    Unwraps instructor.InstructorRetryException to expose the underlying cause.
     """
+    # Unwrap instructor retry wrapper to get the actual provider error
+    error = _unwrap_instructor_retry(error)
     try:
         import litellm as _lt
 
@@ -223,8 +253,12 @@ def wrap_error(error: Exception) -> LLMError:
     """Wrap an exception in the appropriate LLMError subclass.
 
     If the error is already an LLMError, returns it unchanged.
+    InstructorRetryException is unwrapped to expose the underlying provider error.
     """
     if isinstance(error, LLMError):
         return error
-    cls = classify_error(error)
-    return cls(_error_message(error), original=error)
+    unwrapped = _unwrap_instructor_retry(error)
+    if isinstance(unwrapped, LLMError):
+        return unwrapped
+    cls = classify_error(unwrapped)
+    return cls(_error_message(unwrapped), original=unwrapped)

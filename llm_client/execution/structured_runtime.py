@@ -14,7 +14,7 @@ from typing import Any, Callable, NoReturn, TypeVar, cast
 
 from llm_client.core.client import AsyncCachePolicy, CachePolicy, Hooks, LLMCallResult, RetryPolicy
 from llm_client.core.config import ClientConfig
-from llm_client.core.errors import LLMCapabilityError
+from llm_client.core.errors import LLMCapabilityError, _unwrap_instructor_retry
 from llm_client.langfuse_callbacks import inject_metadata as _inject_langfuse_metadata
 from pydantic import BaseModel, ValidationError
 
@@ -1335,10 +1335,13 @@ async def _acall_llm_structured_impl(
             logger=logger,
         ))
     except Exception as e:
+        # Unwrap InstructorRetryException to expose the underlying provider error
+        # in the observability record (e.g. BadRequestError, RateLimitError).
+        log_error = _unwrap_instructor_retry(e)
         _log_call_event(
             model=last_model_attempted,
             messages=messages,
-            error=e,
+            error=log_error,
             latency_s=time.monotonic() - _log_t0,
             caller="acall_llm_structured",
             task=task,
