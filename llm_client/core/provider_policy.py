@@ -291,6 +291,87 @@ def canonicalize_model_for_policy(
     return raw
 
 
+def describe_model_governance(
+    model: str,
+    routing_policy: RoutingPolicy,
+    *,
+    policy: ProviderGovernancePolicy | None = None,
+) -> dict[str, str] | None:
+    """Describe the governance rule that applies to *model*, if any."""
+
+    raw = str(model or "").strip()
+    if not raw:
+        return None
+
+    active_policy = policy or get_provider_governance_policy()
+    lower = raw.lower()
+
+    blocked = active_policy.blocked_exact_aliases.get(lower)
+    if blocked is not None:
+        return {
+            "event": "model_blocked",
+            "reason": blocked.reason,
+        }
+
+    exact_alias = active_policy.exact_aliases.get(lower)
+    if exact_alias is not None:
+        return {
+            "event": "model_canonicalized",
+            "reason": exact_alias.reason,
+            "route_class": exact_alias.route_class,
+            "canonical_model": exact_alias.canonical_model,
+        }
+
+    if lower == "codex" or lower.startswith("codex/"):
+        return None
+    if _is_codex_alias_model(raw) or _is_codex_family_model(raw):
+        canonical = f"codex/{raw.rsplit('/', 1)[-1]}"
+        return {
+            "event": "model_canonicalized",
+            "reason": "Codex-family models must route through the Codex SDK lane.",
+            "route_class": "agent_sdk",
+            "canonical_model": canonical,
+        }
+
+    for rule in active_policy.direct_prefix_templates:
+        if any(lower.startswith(prefix) for prefix in rule.prefixes):
+            return {
+                "event": "model_canonicalized",
+                "reason": rule.reason,
+                "route_class": rule.route_class,
+                "canonical_model": rule.template.format(model=raw),
+            }
+
+    if routing_policy == "direct":
+        return None
+
+    if lower.startswith(active_policy.passthrough_prefixes) or _is_image_generation_model(raw):
+        return None
+
+    if "/" in raw:
+        provider = lower.split("/", 1)[0]
+        for rule in active_policy.explicit_provider_routes:
+            if provider in rule.providers:
+                return {
+                    "event": "model_canonicalized",
+                    "reason": rule.reason,
+                    "route_class": rule.route_class,
+                    "canonical_model": f"{rule.target_prefix}/{raw}",
+                }
+        return None
+
+    for rule in active_policy.bare_model_routes:
+        if any(lower.startswith(prefix) for prefix in rule.prefixes):
+            return {
+                "event": "model_canonicalized",
+                "reason": rule.reason,
+                "route_class": rule.route_class,
+                "canonical_model": rule.template.format(model=raw),
+            }
+
+    return None
+
+
 def get_provider_runtime_policy(
     provider: str,
     *,

@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.core.config import ClientConfig, RoutingPolicy
-from llm_client.core.provider_policy import canonicalize_model_for_policy
+from llm_client.core.provider_policy import (
+    canonicalize_model_for_policy,
+    describe_model_governance,
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,7 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
     models: list[str] = []
     seen: set[str] = set()
     normalized_events: list[dict[str, str]] = []
+    provider_governance_events: list[dict[str, str]] = []
 
     for candidate in candidates:
         raw = str(candidate or "").strip()
@@ -69,6 +73,15 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
         normalized = normalize_model_for_policy(raw, config.routing_policy)
         if normalized != raw:
             normalized_events.append({"from": raw, "to": normalized})
+            governance_event = describe_model_governance(raw, config.routing_policy)
+            if governance_event is not None:
+                provider_governance_events.append(
+                    {
+                        **governance_event,
+                        "from": raw,
+                        "to": normalized,
+                    }
+                )
         key = normalized.lower()
         if key in seen:
             continue
@@ -90,6 +103,8 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
     }
     if normalized_events:
         trace["normalization_events"] = normalized_events
+    if provider_governance_events:
+        trace["provider_governance_events"] = provider_governance_events
     if requested_model != primary_model:
         trace["normalized_from"] = requested_model
         trace["normalized_to"] = primary_model

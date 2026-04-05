@@ -13,6 +13,16 @@
 4. Do not mark incidents resolved from code deployment alone; require fresh operational evidence.
 5. Merge completed worktree branches into a clean integration branch, publish, then remove completed worktrees.
 
+## Progress
+
+- Phase 0 complete: `CLAUDE.md` now points at this tracker and strengthens worktree/commit discipline.
+- Phase 1 complete: typed provider-governance policy added in `llm_client/core/provider_policy.py`.
+- Phase 2 complete: SQLite cooldown/lease mechanics moved behind `llm_client/utils/provider_coordination.py`.
+- Phase 3 substantially complete: routing traces now emit `provider_governance_events`, and cooldown registration emits a stable governance warning record.
+- Phase 4 complete for the implemented slice: new provider-policy and provider-coordination tests pass alongside routing/rate-limit/execution-kernel regressions.
+- Phase 5 complete for the implemented slice: README and advanced-usage docs now describe provider-governance routing and shared coordination env vars.
+- Phase 6 pending: merge, push integration branch, and clean worktrees.
+
 ## Next 24 Hours
 
 ### Phase 0: Sprint Hardening
@@ -98,3 +108,4 @@ Acceptance:
 ### 2026-04-05
 
 - Plan 25 is documented as blocked on `llm_client` PR #24 merge. Safe default: implement on top of the sanctioned provider-governance plan branch that already includes the latest anomaly mitigation baseline, and keep the dependency visible in commits and tracker notes.
+- `pytest tests/test_client.py -k "codex or routing"` is not currently a trustworthy verification target in this shared environment. A bounded probe of `tests/test_client.py::TestAsyncResponsesAPIRouting::test_async_gpt5_routes_to_aresponses` failed on a locked shared observability SQLite DB during foundation-event logging, not on the new provider-governance code. Safe default: rely on the focused provider-policy/routing/rate-limit/execution-kernel suites for this sprint and keep the broader DB-lock issue separate.

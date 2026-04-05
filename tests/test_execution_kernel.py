@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from unittest.mock import patch
 
 import pytest
 
 from llm_client.execution.execution_kernel import (
+    _maybe_register_provider_cooldown,
     run_async_with_fallback,
     run_async_with_retry,
     run_sync_with_fallback,
@@ -110,3 +112,26 @@ async def test_run_async_with_fallback_uses_next_model() -> None:
     assert result == "ok"
     assert seen == ["primary", "fallback"]
     assert any("FALLBACK: primary -> fallback" in w for w in warnings)
+
+
+def test_register_provider_cooldown_emits_provider_governance_warning() -> None:
+    warnings: list[str] = []
+
+    with patch("llm_client.execution.retry._is_rate_limit_error", return_value=True), patch(
+        "llm_client.execution.retry._retry_delay_hint",
+        return_value=(1.5, "provider-hint"),
+    ), patch(
+        "llm_client.utils.rate_limit.register_rate_limit_cooldown",
+        return_value=1.5,
+    ):
+        applied = _maybe_register_provider_cooldown(
+            model="gemini/gemini-2.5-flash",
+            exc=RuntimeError("rate limit"),
+            warning_sink=warnings,
+            logger=logging.getLogger("test_execution_kernel"),
+        )
+
+    assert applied == 1.5
+    assert warnings == [
+        "PROVIDER_GOVERNANCE_EVENT[cooldown_registered]: provider=google delay_s=1.5 source=provider-hint"
+    ]

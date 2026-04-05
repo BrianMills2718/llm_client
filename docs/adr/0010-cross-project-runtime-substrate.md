@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-17
 Last verified: 2026-04-05
-Verification context: the shared substrate now owns a typed provider-governance policy for exact gpt-5.4 canonicalization and Gemini defaults, while shared 429 cooldown and lease coordination still avoid duplicate waits and cooldown busy-spins across worktrees through a dedicated backend boundary
+Verification context: the shared substrate now owns a typed provider-governance policy for exact gpt-5.4 canonicalization and Gemini defaults, exposes those decisions through `provider_governance_events`, and keeps shared 429 cooldown/lease coordination behind a dedicated backend boundary
 
 ## Context
 

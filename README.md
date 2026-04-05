@@ -172,6 +172,17 @@ export ANTHROPIC_API_KEY=sk-ant-...    # Direct Anthropic
 | `LLM_CLIENT_REQUIRE_TAGS` | off | Strict enforcement of task/trace_id/max_budget |
 | `LLM_CLIENT_TIMEOUT_POLICY` | `allow` | `ban` to disable all per-call timeouts |
 | `LLM_CLIENT_LOG_ENABLED` | `1` | Disable logging with `0` |
+| `LLM_CLIENT_RATE_LIMIT_SHARED_ENABLED` | `1` | Enable cross-process shared provider leases |
+| `LLM_CLIENT_RATE_LIMIT_SHARED_LIMITS` | provider defaults | Override cross-process provider caps as JSON |
+| `LLM_CLIENT_RATE_LIMIT_COOLDOWN_FLOORS` | provider defaults | Override provider cooldown floors as JSON |
+| `LLM_CLIENT_RATE_LIMIT_STATE_PATH` | `~/projects/data/llm_rate_limit_state.sqlite3` | Shared SQLite state for cooldowns and leases |
+
+### Provider governance
+
+- Exact `gpt-5.4` requests canonicalize to `codex/gpt-5.4` before routing policy is applied.
+- Bare Gemini ids canonicalize to `gemini/<model>` before provider selection.
+- Gemini shared-cap and cooldown defaults come from the typed provider-governance policy, not scattered literals.
+- `result.routing_trace["provider_governance_events"]` records canonicalization decisions for click-through debugging and downstream operator tooling.
 
 ### Tool-call observability
 
