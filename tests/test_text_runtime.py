@@ -35,20 +35,20 @@ def _explicit_test_runtime_policy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
-@patch("llm_client.core.client.litellm.completion")
+@patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
 def test_text_runtime_sync_preserves_cache_and_identity_contracts(
-    mock_comp: MagicMock,
+    mock_acomp: AsyncMock,
     _mock_cost: MagicMock,
 ) -> None:
-    """Direct sync runtime calls should preserve the text-call return contract."""
+    """Sync runtime delegates to async impl — patches acompletion, not completion."""
     cache = LRUCache()
     messages = [{"role": "user", "content": "Hi"}]
-    mock_comp.return_value = _mock_response(content="First")
+    mock_acomp.return_value = _mock_response(content="First")
 
     result1 = _call_llm_impl("gpt-4", messages, cache=cache, task="test", trace_id="text.runtime.sync", max_budget=0)
     result2 = _call_llm_impl("gpt-4", messages, cache=cache, task="test", trace_id="text.runtime.sync", max_budget=0)
 
-    assert mock_comp.call_count == 1
+    assert mock_acomp.call_count == 1
     assert result1.cache_hit is False
     assert result2.cache_hit is True
     assert result2.cost_source == "cache_hit"

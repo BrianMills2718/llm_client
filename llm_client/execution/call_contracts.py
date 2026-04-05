@@ -30,6 +30,7 @@ import litellm
 
 import llm_client.io_log as _io_log
 from llm_client.core.errors import (
+    DeprecatedModelError,
     LLMBudgetExceededError,
     LLMCapabilityError,
     LLMEmptyResponseError,
@@ -570,26 +571,43 @@ def _coerce_model_kwargs_for_execution(
 # Model deprecation warnings
 # ---------------------------------------------------------------------------
 
-# Models that are outclassed on both price and quality by newer alternatives.
-# Key: model substring (matched case-insensitively against the model string).
-# Value: (replacement suggestion, reason).
-# Checked at every call_llm / stream_llm entry point.
-_DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
+# Models that are HARD-BLOCKED: always raise DeprecatedModelError regardless
+# of env vars.  Add a model here when a strictly better alternative exists at
+# equal-or-lower cost and there is no legitimate reason for a new call to use
+# it (e.g., it was retired by the provider, or it is strictly dominated).
+# Key: model substring (matched case-insensitively).
+# Value: (replacement, reason).
+_HARD_BLOCKED_MODELS: dict[str, tuple[str, str]] = {
     "gpt-4o-mini": (
         "deepseek/deepseek-chat OR gemini/gemini-2.5-flash",
         "GPT-4o-mini (intel 30, $0.15/$0.60) is outclassed by DeepSeek V3.2 "
         "(intel 42, $0.28/$0.42) and MiMo-V2-Flash (intel 41, $0.15 blended). "
-        "Both are smarter AND cheaper.",
+        "Both are smarter AND cheaper. This model is hard-blocked.",
     ),
+    "o4-mini": (
+        "o3-mini",
+        "o4-mini was retired by OpenAI on Feb 16, 2026 and no longer accepts "
+        "requests. Use o3-mini for reasoning tasks or gpt-5-mini for general tasks.",
+    ),
+    "mistral-large": (
+        "deepseek/deepseek-chat OR gemini/gemini-2.5-flash",
+        "Mistral Large (intel ~27, $2.75 blended) is dramatically overpriced "
+        "for its quality. DeepSeek V3.2 (intel 42, $0.32) is 8x cheaper and smarter. "
+        "This model is hard-blocked.",
+    ),
+}
+
+# Models that are soft-deprecated: warn loudly by default; raise
+# LLMModelNotFoundError if LLM_CLIENT_STRICT_MODELS=1.  Use for models that
+# are outclassed but may still have legitimate uses (benchmarking baselines,
+# explicit user opt-in, etc.).
+# Key: model substring (matched case-insensitively).
+# Value: (replacement suggestion, reason).
+_DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
     # gpt-4o moved to _WARNED_MODELS (warn-only, never banned)
     "o1-mini": (
         "o3-mini",
         "o1-mini is deprecated. Use o3-mini for reasoning tasks.",
-    ),
-    "o4-mini": (
-        "o3-mini",
-        "o4-mini was retired by OpenAI on Feb 16, 2026. Use o3-mini "
-        "for reasoning tasks or gpt-5-mini for general tasks.",
     ),
     "o1-pro": (
         "o3",
@@ -626,11 +644,6 @@ _DEPRECATED_MODELS: dict[str, tuple[str, str]] = {
         "Claude 3 Haiku is superseded by Haiku 4.5 at the same price with "
         "much better quality.",
     ),
-    "mistral-large": (
-        "deepseek/deepseek-chat OR gemini/gemini-2.5-flash",
-        "Mistral Large (intel ~27, $2.75 blended) is dramatically overpriced "
-        "for its quality. DeepSeek V3.2 (intel 42, $0.32) is 8x cheaper and smarter.",
-    ),
 }
 
 # Models that are outclassed but still usable — warn loudly, never ban.
@@ -651,19 +664,40 @@ _DEPRECATED_MODEL_EXCEPTIONS: set[str] = {
 
 
 def _check_model_deprecation(model: str) -> None:
-    """Emit a loud warning (or raise) if the model is outclassed.
+    """Raise or warn if the model is hard-blocked or soft-deprecated.
 
-    The warning text is intentionally aggressive because it may be read by
-    an LLM agent that needs to STOP and ask the user before proceeding.
+    **Hard-blocked models** (``_HARD_BLOCKED_MODELS``): always raise
+    ``DeprecatedModelError`` regardless of env vars.  These are models where
+    a strictly better alternative exists and there is no legitimate reason for
+    a new call to reach them.
 
-    Set ``LLM_CLIENT_STRICT_MODELS=1`` to raise ``LLMModelNotFoundError``
-    instead of warning. This is recommended for benchmarks and CI.
+    **Soft-deprecated models** (``_DEPRECATED_MODELS``): emit a loud warning
+    by default.  Set ``LLM_CLIENT_STRICT_MODELS=1`` to raise
+    ``LLMModelNotFoundError`` instead (recommended for CI and benchmarks).
+
+    **Outclassed-but-usable models** (``_WARNED_MODELS``): always warn, never
+    raise — useful for benchmarking against older baselines.
     """
+    import warnings as _warnings
+
     lower = model.lower()
+
+    # 1. Hard-blocked: raise unconditionally.
+    for pattern, (replacement, reason) in _HARD_BLOCKED_MODELS.items():
+        if pattern in lower:
+            if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
+                continue
+            raise DeprecatedModelError(
+                f"HARD-BLOCKED MODEL: {model}\n"
+                f"Reason: {reason}\n"
+                f"Use instead: {replacement}",
+                replacement=replacement,
+            )
+
+    # 2. Soft-deprecated: warn by default; raise if STRICT_MODELS=1.
     strict = os.environ.get("LLM_CLIENT_STRICT_MODELS", "").strip() == "1"
     for pattern, (replacement, reason) in _DEPRECATED_MODELS.items():
         if pattern in lower:
-            # Check exceptions (e.g., don't flag gpt-4o-mini under gpt-4o)
             if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
                 continue
             if strict:
@@ -686,10 +720,10 @@ def _check_model_deprecation(model: str) -> None:
                 f"{'=' * 72}\n"
             )
             logger.warning(warning_msg)
-            import warnings
-            warnings.warn(warning_msg, DeprecationWarning, stacklevel=3)
+            _warnings.warn(warning_msg, DeprecationWarning, stacklevel=3)
             return
-    # Warned models: loud warning but never banned, even in strict mode
+
+    # 3. Outclassed-but-usable: loud warning, never banned.
     for pattern, (replacement, reason) in _WARNED_MODELS.items():
         if pattern in lower:
             if any(exc in lower and exc != pattern for exc in _DEPRECATED_MODEL_EXCEPTIONS):
@@ -703,6 +737,5 @@ def _check_model_deprecation(model: str) -> None:
                 f"{'=' * 72}\n"
             )
             logger.warning(warning_msg)
-            import warnings
-            warnings.warn(warning_msg, UserWarning, stacklevel=3)
+            _warnings.warn(warning_msg, UserWarning, stacklevel=3)
             return

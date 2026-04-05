@@ -686,7 +686,7 @@ class TestAgentFallback:
         mock_resp.usage.total_tokens = 15
 
         with (
-            patch("llm_client.core.client.litellm.completion", return_value=mock_resp),
+            patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock, return_value=mock_resp),
             patch("llm_client.core.client.litellm.completion_cost", return_value=0.001),
         ):
             result = call_llm(
@@ -1295,7 +1295,7 @@ class TestCodexCall:
     def test_timeout_policy_ban_zeroes_agent_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: dict[str, object] = {}
 
-        def _fake_call_codex(
+        async def _fake_acall_codex(
             model: str,
             messages: list[dict[str, object]],
             *,
@@ -1312,8 +1312,8 @@ class TestCodexCall:
             )
 
         monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
-        monkeypatch.setattr(agents_mod, "_call_codex", _fake_call_codex)
-        monkeypatch.setattr(agents_codex_mod, "_call_codex", _fake_call_codex)
+        monkeypatch.setattr(agents_mod, "_acall_codex", _fake_acall_codex)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex", _fake_acall_codex)
         result = call_llm(
             "codex",
             [{"role": "user", "content": "Hi"}],
@@ -1644,7 +1644,7 @@ class TestCodexFallback:
         mock_resp.usage.total_tokens = 15
 
         with (
-            patch("llm_client.core.client.litellm.completion", return_value=mock_resp),
+            patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock, return_value=mock_resp),
             patch("llm_client.core.client.litellm.completion_cost", return_value=0.001),
         ):
             result = call_llm(

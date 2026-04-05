@@ -45,3 +45,26 @@ Practical rule:
 
 - if a shared repo is already registry-covered, add the local capability source
   and align declared workflow policy before expanding the registry further
+
+### 2026-04-04 — codex — best-practice
+
+**Portable workflow packaging should be staged as a runtime-facing manifest and validator layer before any registry or installer work.**
+
+Journey, Anthropic's workflow-vs-agent framing, `static_pipeline`, and
+`llm_client`'s existing LangGraph slice all point to the same boundary:
+`llm_client` is the natural home for runtime-facing package truthfulness
+(manifest models, capability-based runtime support, validation, and example
+adapters), but not for registry/community/product concerns. A runtime list
+without capability validation is not a truthful portability claim.
+
+### 2026-04-04 — codex — bug-pattern
+
+**Repeated submit-validator rejections that explicitly require the forced-terminal path should short-circuit the loop instead of burning the remaining tool budget.**
+
+In DIGIMON's benchmark lane, the normal submit gate correctly rejected pending
+semantic-plan atoms, but the generic MCP loop then kept searching and
+re-submitting until budget exhaustion even after the validator signaled both
+`new_evidence_required_before_retry` and `requires_forced_terminal_path`.
+`mcp_turn_outcomes.py` now treats repeated rejections of that shape as early
+control churn and forces finalization immediately. Verified in
+`tests/test_mcp_agent.py::test_repeated_submit_rejections_can_force_final_early`.

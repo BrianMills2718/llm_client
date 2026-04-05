@@ -122,6 +122,7 @@ _load_api_keys()
 
 from llm_client.core.errors import (
     LLMAuthError,
+    DeprecatedModelError,
     LLMConfigurationError,
     LLMCapabilityError,
     LLMBudgetExceededError,
@@ -300,6 +301,7 @@ from llm_client.rubric_registry import (
 )
 
 _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
+    "DeprecatedModelError",
     "LLMAuthError",
     "LLMConfigurationError",
     "LLMCapabilityError",
