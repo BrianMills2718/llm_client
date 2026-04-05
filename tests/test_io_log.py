@@ -151,6 +151,47 @@ class TestLogCall:
         log_file = _today_jsonl(tmp_path, "calls")
         assert not log_file.exists()
 
+    def test_foundation_event_respects_env_disable_set_after_import(self, tmp_path, monkeypatch):
+        io_log._enabled = None
+        monkeypatch.setenv("LLM_CLIENT_LOG_ENABLED", "0")
+
+        io_log.log_foundation_event(
+            caller="test",
+            task="disabled-foundation",
+            trace_id="trace-disabled-foundation",
+            event={
+                "event_id": "evt_disabled_foundation",
+                "event_type": "LLMCallLifecycle",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "run_id": "run_disabled_foundation",
+                "session_id": "sess_disabled_foundation",
+                "actor_id": "service:llm_client:call_runtime:1",
+                "operation": {"name": "call_llm", "version": None},
+                "inputs": {
+                    "artifact_ids": [],
+                    "params": {
+                        "task": "disabled-foundation",
+                        "trace_id": "trace-disabled-foundation",
+                        "call_kind": "text",
+                    },
+                    "bindings": {},
+                },
+                "outputs": {"artifact_ids": [], "payload_hashes": []},
+                "llm_call_lifecycle": {
+                    "call_id": "llmcall_disabled_foundation",
+                    "phase": "started",
+                    "call_kind": "text",
+                    "requested_model_id": "gpt-5-mini",
+                    "timeout_policy": "allow",
+                    "elapsed_s": 0.0,
+                },
+            },
+        )
+
+        foundation_jsonl = _today_jsonl(tmp_path, "foundation_events")
+        assert not foundation_jsonl.exists()
+        assert not (tmp_path / "test.db").exists()
+
     def test_trace_id_jsonl(self, tmp_path):
         result = _mock_result(content="hi", usage={})
         io_log.log_call(model="gpt-5", result=result, latency_s=1.0, trace_id="trace_abc")

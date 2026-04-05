@@ -40,7 +40,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-_enabled: bool = os.environ.get("LLM_CLIENT_LOG_ENABLED", "1") == "1"
+_enabled: bool | None = None
 _data_root: Path = Path(os.environ.get("LLM_CLIENT_DATA_ROOT", str(Path.home() / "projects" / "data")))
 _project: str | None = os.environ.get("LLM_CLIENT_PROJECT")
 _db_path: Path = Path(os.environ.get("LLM_CLIENT_DB_PATH", str(Path.home() / "projects" / "data" / "llm_observability.db")))
@@ -268,6 +268,25 @@ def _log_dir() -> Path:
     return _data_root / _get_project() / f"{_get_project()}_llm_client_data"
 
 
+def _env_logging_enabled() -> bool:
+    """Return logging-enabled state from the current environment."""
+
+    return os.environ.get("LLM_CLIENT_LOG_ENABLED", "1") == "1"
+
+
+def _logging_enabled() -> bool:
+    """Return the effective logging-enabled state.
+
+    Runtime/test overrides win when set explicitly. Otherwise, read the current
+    environment dynamically so test fixtures that patch `LLM_CLIENT_LOG_ENABLED`
+    after import still take effect.
+    """
+
+    if _enabled is not None:
+        return _enabled
+    return _env_logging_enabled()
+
+
 def configure(
     *,
     enabled: bool | None = None,
@@ -360,7 +379,7 @@ def log_call(
 
     Never raises — observability must not break model execution.
     """
-    if not _enabled:
+    if not _logging_enabled():
         return
     try:
         d = _log_dir()
@@ -502,7 +521,7 @@ def log_embedding(
     trace_id: str | None = None,
 ) -> None:
     """Append one JSONL record for an embedding call. Never raises."""
-    if not _enabled:
+    if not _logging_enabled():
         return
     try:
         d = _log_dir()
@@ -552,7 +571,7 @@ def log_foundation_event(
     trace_id: str | None = None,
 ) -> None:
     """Append one FOUNDATION event record. Never raises by default."""
-    if not _enabled:
+    if not _logging_enabled():
         return
     try:
         from llm_client.foundation import validate_foundation_event
@@ -626,7 +645,7 @@ def log_tool_call_record(
     data-loss detection.
     """
 
-    if not _enabled:
+    if not _logging_enabled():
         return
     try:
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -1423,7 +1442,7 @@ def log_score(
     git_commit: str | None = None,
 ) -> None:
     """Write a rubric score to the observability DB. Never raises."""
-    if not _enabled:
+    if not _logging_enabled():
         return
     try:
         # Auto-capture git commit if not provided

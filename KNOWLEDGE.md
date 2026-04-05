@@ -115,6 +115,26 @@ Current safe rule:
 
 ### 2026-04-05 — codex — bug-pattern
 
+`io_log` must not cache `LLM_CLIENT_LOG_ENABLED` only at import time if tests
+or callers rely on env-based suppression after module import.
+
+Measured failure:
+- `tests/test_client.py::TestAsyncResponsesAPIRouting::test_async_gpt5_routes_to_aresponses`
+  could hang on a locked shared observability SQLite DB during
+  `log_foundation_event()`
+- the suite-level fixture set `LLM_CLIENT_LOG_ENABLED=0`, but foundation-event
+  writes still ran because `io_log._enabled` had already been initialized from
+  the old environment
+
+Current safe rule:
+- logging enablement should resolve dynamically from the environment unless an
+  explicit runtime/test override has been set on `io_log._enabled`
+- foundation-event logging must honor the same suppression contract as the rest
+  of `io_log`, otherwise async client verification can fail for unrelated
+  environmental DB contention
+
+### 2026-04-05 — codex — bug-pattern
+
 **OpenRouter routing should normalize explicit `google/...` provider ids the same way it already normalizes other provider-prefixed models.**
 
 `ac14` surfaced repeated provider-resolution failures from `MODEL=google/gemini-2.0-flash-001`.
