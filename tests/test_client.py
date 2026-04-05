@@ -841,6 +841,34 @@ class TestNonRetryableErrors:
             call_llm("gpt-4", [{"role": "user", "content": "Hi"}], num_retries=2, task="test", trace_id="test_quota_exceeded", max_budget=0)
         assert mock_comp.call_count == 1
 
+    @patch("llm_client.execution.execution_kernel._maybe_register_provider_cooldown")
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
+    def test_quota_exceeded_registers_provider_cooldown(
+        self,
+        mock_comp: MagicMock,
+        mock_register_cooldown: MagicMock,
+    ) -> None:
+        """Quota-like 429s should still publish shared cooldown state."""
+        import litellm
+
+        mock_comp.side_effect = litellm.RateLimitError(
+            "You exceeded your current quota, please check your plan and billing details",
+            model="gemini-2.5-flash",
+            llm_provider="gemini",
+        )
+
+        with pytest.raises(LLMQuotaExhaustedError):
+            call_llm(
+                "gemini/gemini-2.5-flash",
+                [{"role": "user", "content": "Hi"}],
+                num_retries=2,
+                task="test",
+                trace_id="test_quota_cooldown",
+                max_budget=0,
+            )
+
+        mock_register_cooldown.assert_called_once()
+
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)

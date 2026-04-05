@@ -8,14 +8,20 @@ import pytest
 
 import llm_client.utils.rate_limit as rl
 from llm_client.utils.rate_limit import (
+    _DEFAULT_COOLDOWN_FLOORS,
     _get_provider,
     aacquire,
     acquire,
+    cooldown_remaining,
     configure,
     _async_sems,
+    _cooldown_enabled,
+    _cooldown_floors,
+    _cooldown_state_path,
     _sync_sems,
     _limits,
     _DEFAULT_LIMITS,
+    register_rate_limit_cooldown,
 )
 
 
@@ -24,15 +30,25 @@ def _reset_state():
     """Reset rate limiter state between tests."""
     old_limits = dict(_limits)
     old_enabled = rl._enabled
+    old_cooldown_enabled = _cooldown_enabled
+    old_cooldown_floors = dict(_cooldown_floors)
+    old_cooldown_state_path = _cooldown_state_path
     _async_sems.clear()
     _sync_sems.clear()
     rl._enabled = True
+    rl._cooldown_enabled = True
+    _cooldown_floors.clear()
+    _cooldown_floors.update(_DEFAULT_COOLDOWN_FLOORS)
     yield
     _async_sems.clear()
     _sync_sems.clear()
     _limits.clear()
     _limits.update(old_limits)
     rl._enabled = old_enabled
+    rl._cooldown_enabled = old_cooldown_enabled
+    _cooldown_floors.clear()
+    _cooldown_floors.update(old_cooldown_floors)
+    rl._cooldown_state_path = old_cooldown_state_path
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +161,27 @@ class TestAsyncAcquire:
 
         assert peak_concurrent <= 2
 
+    @pytest.mark.asyncio
+    async def test_async_acquire_waits_for_registered_cooldown(self, tmp_path):
+        """Async acquire should honor cross-process provider cooldowns."""
+        configure(
+            cooldown_path=tmp_path / "cooldowns.db",
+            cooldown_floors={"google": 0.0},
+        )
+        applied = register_rate_limit_cooldown(
+            "gemini/gemini-3-flash",
+            0.05,
+            source="provider-hint",
+        )
+        assert applied >= 0.04
+
+        started = time.perf_counter()
+        async with aacquire("gemini/gemini-3-flash"):
+            pass
+        elapsed = time.perf_counter() - started
+
+        assert elapsed >= 0.03
+
 
 # ---------------------------------------------------------------------------
 # Configure
@@ -171,3 +208,28 @@ class TestConfigure:
         # Reconfigure — should clear
         configure(limits={"openai": 99})
         assert "openai" not in _sync_sems
+
+    def test_configure_updates_cooldown_settings(self, tmp_path):
+        configure(
+            cooldown_enabled=False,
+            cooldown_floors={"google": 3.5},
+            cooldown_path=tmp_path / "cooldowns.db",
+        )
+        assert rl._cooldown_enabled is False
+        assert _cooldown_floors["google"] == 3.5
+        assert rl._cooldown_state_path == tmp_path / "cooldowns.db"
+
+
+class TestSharedCooldown:
+    def test_register_rate_limit_cooldown_uses_provider_floor(self, tmp_path):
+        configure(
+            cooldown_path=tmp_path / "cooldowns.db",
+            cooldown_floors={"google": 0.1},
+        )
+        applied = register_rate_limit_cooldown(
+            "gemini/gemini-2.5-flash",
+            None,
+            source="provider-floor",
+        )
+        assert applied >= 0.09
+        assert cooldown_remaining("gemini/gemini-2.5-flash") > 0

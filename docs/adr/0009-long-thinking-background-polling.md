@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-23
 Last verified: 2026-04-05
-Verification context: OpenRouter routing normalizes explicit google/gemini aliases before execution identity is finalized
+Verification context: Execution kernel registers shared provider cooldowns for 429-like failures, and Gemini traffic now enters the runtime through a lower default Google concurrency ceiling
 
 ## Context
 

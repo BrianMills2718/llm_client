@@ -18,6 +18,47 @@ def _error_text(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _maybe_register_provider_cooldown(
+    *,
+    model: str,
+    exc: Exception,
+    warning_sink: list[str],
+    logger: logging.Logger,
+) -> None:
+    """Publish shared cooldown state for 429-like provider failures."""
+    try:
+        from llm_client.execution.retry import _is_rate_limit_error, _retry_delay_hint
+        from llm_client.utils import rate_limit as _rate_limit
+    except Exception:
+        return
+
+    if not _is_rate_limit_error(exc):
+        return
+
+    hint_delay, hint_source = _retry_delay_hint(exc)
+    source = hint_source if hint_source != "none" else "provider-floor"
+    applied_delay = _rate_limit.register_rate_limit_cooldown(
+        model,
+        hint_delay,
+        source=source,
+    )
+    if applied_delay <= 0:
+        return
+
+    provider = _rate_limit._get_provider(model)
+    warning_sink.append(
+        f"PROVIDER_COOLDOWN: {provider} cooling down for {applied_delay:.1f}s "
+        f"[source={source}]"
+    )
+    logger.warning(
+        "Registered shared provider cooldown for %s after %s: %.1fs (source=%s)",
+        provider,
+        type(exc).__name__,
+        applied_delay,
+        source,
+    )
+
+
 def run_sync_with_retry(
     *,
     caller: str,
@@ -39,6 +80,12 @@ def run_sync_with_retry(
         except Exception as exc:
             if on_error is not None:
                 on_error(exc, attempt)
+            _maybe_register_provider_cooldown(
+                model=model,
+                exc=exc,
+                warning_sink=warning_sink,
+                logger=logger,
+            )
             if maybe_retry_hook is not None and maybe_retry_hook(exc, attempt, max_retries):
                 continue
             if not should_retry(exc) or attempt >= max_retries:
@@ -87,6 +134,12 @@ async def run_async_with_retry(
         except Exception as exc:
             if on_error is not None:
                 on_error(exc, attempt)
+            _maybe_register_provider_cooldown(
+                model=model,
+                exc=exc,
+                warning_sink=warning_sink,
+                logger=logger,
+            )
             if maybe_retry_hook is not None and maybe_retry_hook(exc, attempt, max_retries):
                 continue
             if not should_retry(exc) or attempt >= max_retries:
