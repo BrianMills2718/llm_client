@@ -19,6 +19,7 @@ compatibility contracts in `llm_client`.
 | 0012 | [Shared data plane boundary](0012-shared-data-plane-boundary.md) | Accepted | 2026-03-30 | Plan #12 |
 | 0013 | [Stream lifecycle heartbeat observability](0013-stream-lifecycle-heartbeat-observability.md) | Accepted | 2026-03-31 | Plan #7 |
 | 0014 | [Call replay and divergence diagnosis boundary](0014-call-replay-and-divergence-diagnosis-boundary.md) | Accepted | 2026-04-01 | Plan #9 |
+| 0015 | [Provider governance and shared coordination](0015-provider-governance-and-shared-coordination.md) | Accepted | 2026-04-05 | Plan #25 |
 
 Related architecture docs:
 

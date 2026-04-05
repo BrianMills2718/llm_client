@@ -1,6 +1,6 @@
 # Capability Decomposition
 
-Last updated: 2026-04-01
+Last updated: 2026-04-05
 
 ## Purpose
 
@@ -21,6 +21,7 @@ Use this together with:
 It owns:
 
 - model execution and transport routing
+- provider governance: canonical model identity, provider routing class, shared caps, cooldown policy, and provider incident signaling
 - required call metadata and budgets
 - structured-output contract enforcement
 - tool-call and LLM-call observability
@@ -79,3 +80,5 @@ integrations exist.
   evidence-driven.
 - The right enforcement point for requiring consumer repos to prefer
   `llm_client` over ad hoc runtime wrappers is still unsettled.
+- The provider-governance contract is being formalized by Plan #25 so the
+  recent Gemini/codex fixes stop living as tactical runtime patches.

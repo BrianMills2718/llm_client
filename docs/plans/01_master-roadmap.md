@@ -182,7 +182,7 @@ stable enough that package-boundary churn is low.
 Programs A–E are complete. The library is in **maintenance mode**.
 
 **Active work:**
-- Plan 21 (Runtime Durability Follow-Ups From Grounded Research) — evidence-driven durability and diagnostics follow-up from a real downstream benchmark program
+- Plan 25 (Provider Governance and Shared Coordination) — consolidate model identity, provider caps, cooldowns, and shared coordination into one explicit runtime policy layer
 
 **Cancelled:**
 - Plan 15 (Centralize Defaults) — pure refactoring, no consumer value
@@ -192,6 +192,7 @@ Programs A–E are complete. The library is in **maintenance mode**.
 - Plan 19 (Agent Planning & Working Memory) — well-designed but large scope, not blocking
 
 **Completed recently:**
+- Plan 21 (Runtime Durability Follow-Ups From Grounded Research) — evidence-driven durability and diagnostics follow-up from a real downstream benchmark program
 - Module reorganization (Plan 12) landed; 29 stubs remain for Plan 16
 - Prompt assets externalized to `~/projects/prompts/`
 - LiteLLM observer callback added for unmigrated projects
