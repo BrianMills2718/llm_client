@@ -350,7 +350,8 @@ async def _acall_codex_structured_inproc(
     codex_mod = _codex_mod()
     kwargs, tmp_dir = codex_mod._prepare_codex_mcp(kwargs)
     try:
-        schema = response_model.model_json_schema()
+        from llm_client.execution.responses_runtime import _strict_json_schema
+        schema = _strict_json_schema(response_model.model_json_schema())
         prompt, codex_opts, thread_opts, turn_opts, sdk = codex_mod._build_codex_options(
             model, messages, output_schema=schema, **kwargs,
         )
@@ -501,12 +502,13 @@ def _call_codex_structured_in_isolated_process(
 ) -> tuple[BaseModel, LLMCallResult]:
     """Execute one Codex structured call in a child process."""
 
+    from llm_client.execution.responses_runtime import _strict_json_schema
     codex_mod = _codex_mod()
     start_method = codex_mod._codex_process_start_method(kwargs)
     grace_s = codex_mod._codex_process_grace_s(kwargs)
     ctx = _mp.get_context(start_method)
     recv_conn, send_conn = ctx.Pipe(duplex=False)
-    schema = response_model.model_json_schema()
+    schema = _strict_json_schema(response_model.model_json_schema())
     process_factory = getattr(ctx, "Process")
     proc = process_factory(
         target=_codex_structured_worker_entry,
