@@ -74,6 +74,9 @@ class AgentTurnToolProcessingResult:
     retrieval_no_hits_count_delta: int
     submit_requires_new_evidence: bool
     submit_evidence_digest_at_last_failure: str | None
+    submit_requires_todo_progress: bool
+    submit_todo_status_at_last_failure: str | None
+    submit_retry_guidance: str | None
     evidence_pointer_labels: set[str]
     contract_rejected_record_count: int
     suppressed_record_count: int
@@ -103,6 +106,10 @@ async def _process_tool_calls_turn(
     retrieval_no_hits_detector: Any,
     submit_requires_new_evidence: bool,
     submit_evidence_digest_at_last_failure: str | None,
+    submit_requires_todo_progress: bool,
+    submit_todo_status_at_last_failure: str | None,
+    submit_retry_guidance: str | None,
+    last_todo_status_line: str | None,
     evidence_pointer_labels: set[str],
     foundation_run_id: str,
     foundation_session_id: str,
@@ -362,6 +369,8 @@ async def _process_tool_calls_turn(
                         "Run at least one non-control evidence tool call "
                         "(entity_*, chunk_*, relationship_*, subgraph_*) first, then retry submit."
                     )
+                    if submit_retry_guidance:
+                        err += f" Repair hint: {submit_retry_guidance}"
                     suppressed_records.append(
                         MCPToolCallRecord(
                             server="__agent__",
@@ -380,6 +389,48 @@ async def _process_tool_calls_turn(
                                     "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
                                     "evidence_digest": current_evidence_digest,
                                     "required_evidence_digest_change_from": submit_evidence_digest_at_last_failure,
+                                    "repair_guidance": submit_retry_guidance,
+                                }
+                            ),
+                        }
+                    )
+                    continue
+
+            if tool_name == "submit_answer" and submit_requires_todo_progress:
+                if (
+                    submit_todo_status_at_last_failure is not None
+                    and last_todo_status_line is not None
+                    and last_todo_status_line != submit_todo_status_at_last_failure
+                ):
+                    submit_requires_todo_progress = False
+                    submit_todo_status_at_last_failure = None
+                else:
+                    err = (
+                        "submit_answer suppressed: validator requires TODO progress before retry. "
+                        "Pending atom state has not changed since the last rejected submit. "
+                        "Resolve or complete the pending atom first, then retry submit."
+                    )
+                    if submit_retry_guidance:
+                        err += f" Repair hint: {submit_retry_guidance}"
+                    suppressed_records.append(
+                        MCPToolCallRecord(
+                            server="__agent__",
+                            tool=tool_name,
+                            arguments=parsed_args,
+                            error=err,
+                        )
+                    )
+                    suppressed_tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": _json.dumps(
+                                {
+                                    "error": err,
+                                    "error_code": EVENT_CODE_CONTROL_LOOP_SUPPRESSED,
+                                    "todo_status_line": last_todo_status_line,
+                                    "required_todo_progress_from": submit_todo_status_at_last_failure,
+                                    "repair_guidance": submit_retry_guidance,
                                 }
                             ),
                         }
@@ -395,11 +446,18 @@ async def _process_tool_calls_turn(
     control_loop_suppressed_calls_delta = 0
     if suppressed_records:
         control_loop_suppressed_calls_delta = len(suppressed_records)
+        repair_suffix = (
+            f" Active repair hint: {submit_retry_guidance}"
+            if submit_retry_guidance
+            else ""
+        )
         pending_control_loop_msg = {
             "role": "user",
             "content": (
                 "[SYSTEM: Repeated control-call loop detected. Some tool calls were suppressed. "
-                "Update TODO state or change hypotheses before retrying submit/completion.]"
+                "Update TODO state or change hypotheses before retrying submit/completion."
+                + repair_suffix
+                + "]"
             ),
         }
         for rec in suppressed_records:
@@ -743,6 +801,9 @@ async def _process_tool_calls_turn(
         retrieval_no_hits_count_delta=retrieval_no_hits_count_delta,
         submit_requires_new_evidence=submit_requires_new_evidence,
         submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+        submit_requires_todo_progress=submit_requires_todo_progress,
+        submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
+        submit_retry_guidance=submit_retry_guidance,
         evidence_pointer_labels=set(evidence_pointer_labels),
         contract_rejected_record_count=len(contract_rejected_records),
         suppressed_record_count=len(suppressed_records),
