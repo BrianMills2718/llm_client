@@ -200,7 +200,7 @@ from llm_client.prompt_assets import (
     resolve_prompt_asset,
 )
 from llm_client.prompts import render_prompt
-# Relocated (Plan #17): agent_spec → project-meta, validators → agentic_scaffolding
+# Relocated: agent_spec → prompt_eval, validators → agentic_scaffolding
 
 if _TYPE_CHECKING:
     from llm_client.difficulty import (
@@ -413,7 +413,7 @@ _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
     "get_active_llm_calls",
     "get_background_mode_adoption",
     "get_completed_traces",
-    # Relocated (Plan #17): agent_spec, validators
+    # Relocated: agent_spec, validators
     "callable_to_openai_tool",
     "prepare_direct_tools",
     "PlanningConfig",
@@ -508,7 +508,7 @@ def __getattr__(name: str) -> object:
         "load_gate_policy": "prompt_eval.experiment_eval",
         "build_gate_signals": "prompt_eval.experiment_eval",
         "evaluate_gate_policy": "prompt_eval.experiment_eval",
-        "load_agent_spec": "project-meta (scripts/meta/agent_spec.py)",
+        "load_agent_spec": "prompt_eval.agent_spec",
         "experiment_run": "prompt_eval.experiment_eval",
     }
     if name in _EXTRACTED_FUNCTIONS:
