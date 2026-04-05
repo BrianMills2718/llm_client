@@ -42,6 +42,7 @@ def _reset_state():
     old_shared_limits = dict(_shared_limits)
     old_shared_lease_ttl_s = rl._shared_lease_ttl_s
     old_shared_poll_interval_s = rl._shared_poll_interval_s
+    old_coordination_backend_override = rl._coordination_backend_override
     _async_sems.clear()
     _sync_sems.clear()
     rl._enabled = True
@@ -53,6 +54,7 @@ def _reset_state():
     _shared_limits.update(_DEFAULT_SHARED_LIMITS)
     rl._shared_lease_ttl_s = rl._DEFAULT_SHARED_LEASE_TTL_S
     rl._shared_poll_interval_s = rl._DEFAULT_SHARED_POLL_INTERVAL_S
+    rl._coordination_backend_override = None
     yield
     _async_sems.clear()
     _sync_sems.clear()
@@ -68,6 +70,7 @@ def _reset_state():
     _shared_limits.update(old_shared_limits)
     rl._shared_lease_ttl_s = old_shared_lease_ttl_s
     rl._shared_poll_interval_s = old_shared_poll_interval_s
+    rl._coordination_backend_override = old_coordination_backend_override
 
 
 # ---------------------------------------------------------------------------

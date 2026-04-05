@@ -34,10 +34,15 @@ import os
 import sqlite3
 import threading
 import time
-import uuid
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
+
+from llm_client.core.provider_policy import get_provider_runtime_policy
+from llm_client.utils.provider_coordination import (
+    ProviderCoordinationBackend,
+    SQLiteProviderCoordinationBackend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,20 @@ _DEFAULT_LIMITS: dict[str, int] = {
     "default": 30,
 }
 
+
+def _default_provider_runtime_maps() -> tuple[dict[str, float], dict[str, int]]:
+    """Build default cooldown and shared-cap maps from provider policy."""
+
+    cooldowns: dict[str, float] = {}
+    shared_limits: dict[str, int] = {}
+    for provider in ("google", "openai", "anthropic", "openrouter", "deepseek", "xai", "ollama", "together", "agent", "default"):
+        runtime_policy = get_provider_runtime_policy(provider)
+        if runtime_policy.cooldown_floor_s > 0:
+            cooldowns[provider] = runtime_policy.cooldown_floor_s
+        if runtime_policy.shared_limit > 0:
+            shared_limits[provider] = runtime_policy.shared_limit
+    return cooldowns, shared_limits
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -115,12 +134,7 @@ _SHARED_ENABLED_ENV = "LLM_CLIENT_RATE_LIMIT_SHARED_ENABLED"
 _SHARED_LEASE_TTL_S_ENV = "LLM_CLIENT_RATE_LIMIT_SHARED_LEASE_TTL_S"
 _SHARED_POLL_INTERVAL_S_ENV = "LLM_CLIENT_RATE_LIMIT_SHARED_POLL_INTERVAL_S"
 _DEFAULT_COOLDOWN_DB_BUSY_TIMEOUT_MS = 1000
-_DEFAULT_COOLDOWN_FLOORS: dict[str, float] = {
-    "google": 15.0,
-}
-_DEFAULT_SHARED_LIMITS: dict[str, int] = {
-    "google": 4,
-}
+_DEFAULT_COOLDOWN_FLOORS, _DEFAULT_SHARED_LIMITS = _default_provider_runtime_maps()
 _DEFAULT_SHARED_LEASE_TTL_S = 600.0
 _DEFAULT_SHARED_POLL_INTERVAL_S = 0.5
 _COOLDOWN_WAIT_EPSILON_S = 0.001
@@ -139,6 +153,7 @@ _cooldown_state_path = Path(
         str(_default_data_root / "llm_rate_limit_state.sqlite3"),
     )
 )
+_coordination_backend_override: ProviderCoordinationBackend | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +172,7 @@ def configure(
     shared_limits: dict[str, int] | None = None,
     shared_lease_ttl_s: float | None = None,
     shared_poll_interval_s: float | None = None,
+    coordination_backend: ProviderCoordinationBackend | None = None,
 ) -> None:
     """Configure rate limiting.
 
@@ -168,9 +184,11 @@ def configure(
         cooldown_enabled: Enable/disable cross-process provider cooldowns.
         cooldown_floors: Minimum cooldown seconds per provider after a 429.
         cooldown_path: SQLite path for shared cooldown state.
+        coordination_backend: Optional test or alternate backend override.
     """
     global _enabled, _cooldown_enabled, _cooldown_state_path  # noqa: PLW0603
     global _shared_enabled, _shared_lease_ttl_s, _shared_poll_interval_s  # noqa: PLW0603
+    global _coordination_backend_override  # noqa: PLW0603
     if enabled is not None:
         _enabled = enabled
     if cooldown_enabled is not None:
@@ -213,6 +231,10 @@ def configure(
         _shared_lease_ttl_s = max(1.0, float(shared_lease_ttl_s))
     if shared_poll_interval_s is not None:
         _shared_poll_interval_s = max(0.01, float(shared_poll_interval_s))
+    if coordination_backend is not None:
+        _coordination_backend_override = coordination_backend
+    elif coordination_backend is None:
+        _coordination_backend_override = None
 
 
 def _load_env_limits() -> None:
@@ -330,37 +352,23 @@ def _cooldown_db_timeout_s() -> float:
     return _DEFAULT_COOLDOWN_DB_BUSY_TIMEOUT_MS / 1000.0
 
 
+def _coordination_backend() -> ProviderCoordinationBackend:
+    """Return the active provider-coordination backend."""
+
+    if _coordination_backend_override is not None:
+        return _coordination_backend_override
+    return SQLiteProviderCoordinationBackend(
+        _cooldown_state_path,
+        busy_timeout_s=_cooldown_db_timeout_s(),
+    )
+
+
 def _connect_cooldown_db() -> sqlite3.Connection:
     """Open the shared cooldown DB and ensure the schema exists."""
-    _cooldown_state_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_cooldown_state_path), timeout=_cooldown_db_timeout_s())
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS provider_cooldowns (
-            provider TEXT PRIMARY KEY,
-            cooldown_until REAL NOT NULL,
-            source TEXT,
-            updated_at REAL NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS provider_leases (
-            lease_id TEXT PRIMARY KEY,
-            provider TEXT NOT NULL,
-            holder TEXT,
-            acquired_at REAL NOT NULL,
-            expires_at REAL NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_provider_leases_provider_expires "
-        "ON provider_leases(provider, expires_at)"
-    )
-    conn.commit()
-    return conn
+    backend = _coordination_backend()
+    if isinstance(backend, SQLiteProviderCoordinationBackend):
+        return backend._connect()  # noqa: SLF001 - compatibility helper for existing tests
+    raise RuntimeError("_connect_cooldown_db is only available for the SQLite coordination backend")
 
 
 def _provider_cooldown_remaining(provider: str) -> float:
@@ -369,22 +377,10 @@ def _provider_cooldown_remaining(provider: str) -> float:
         return 0.0
     if provider in {"agent"}:
         return 0.0
-    try:
-        with _connect_cooldown_db() as conn:
-            row = conn.execute(
-                "SELECT cooldown_until FROM provider_cooldowns WHERE provider = ?",
-                (provider,),
-            ).fetchone()
-    except sqlite3.Error:
-        logger.debug("Failed reading provider cooldown state", exc_info=True)
+    remaining = _coordination_backend().cooldown_remaining(provider)
+    if remaining <= 0:
         return 0.0
-    if row is None:
-        return 0.0
-    try:
-        cooldown_until = float(row[0])
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, cooldown_until - time.time())
+    return remaining
 
 
 def cooldown_remaining(model: str) -> float:
@@ -404,12 +400,6 @@ def _provider_uses_shared_limit(provider: str) -> bool:
     return _shared_enabled and provider not in {"agent"} and _get_shared_limit(provider) > 0
 
 
-def _cleanup_expired_provider_leases(conn: sqlite3.Connection, now: float) -> None:
-    """Delete expired provider leases before counting active holders."""
-
-    conn.execute("DELETE FROM provider_leases WHERE expires_at <= ?", (now,))
-
-
 def _try_acquire_provider_lease(provider: str) -> tuple[str | None, float]:
     """Try to claim one cross-process provider lease.
 
@@ -420,73 +410,19 @@ def _try_acquire_provider_lease(provider: str) -> tuple[str | None, float]:
 
     if not _provider_uses_shared_limit(provider):
         return None, 0.0
-
-    now = time.time()
-    wait_s = max(0.01, _shared_poll_interval_s)
-    try:
-        conn = _connect_cooldown_db()
-    except sqlite3.Error:
-        logger.debug("Failed opening shared provider lease DB", exc_info=True)
-        return None, wait_s
-
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        _cleanup_expired_provider_leases(conn, now)
-        limit = _get_shared_limit(provider)
-        rows = conn.execute(
-            "SELECT expires_at FROM provider_leases WHERE provider = ? ORDER BY expires_at ASC",
-            (provider,),
-        ).fetchall()
-        active = len(rows)
-        if active < limit:
-            lease_id = uuid.uuid4().hex
-            conn.execute(
-                """
-                INSERT INTO provider_leases(
-                    lease_id,
-                    provider,
-                    holder,
-                    acquired_at,
-                    expires_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    lease_id,
-                    provider,
-                    _shared_lease_holder(),
-                    now,
-                    now + _shared_lease_ttl_s,
-                ),
-            )
-            conn.commit()
-            return lease_id, 0.0
-        if rows:
-            soonest_expiry = min(float(row[0]) for row in rows)
-            wait_s = max(wait_s, soonest_expiry - now)
-        conn.commit()
-        return None, wait_s
-    except sqlite3.Error:
-        logger.debug("Failed acquiring shared provider lease", exc_info=True)
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-        return None, wait_s
-    finally:
-        conn.close()
+    attempt = _coordination_backend().try_acquire_lease(
+        provider,
+        shared_limit=_get_shared_limit(provider),
+        lease_ttl_s=_shared_lease_ttl_s,
+        holder=_shared_lease_holder(),
+        poll_interval_s=_shared_poll_interval_s,
+    )
+    return attempt.lease_id, attempt.wait_s
 
 
 def _release_provider_lease(lease_id: str | None) -> None:
     """Release one cross-process provider lease, if present."""
-
-    if not lease_id:
-        return
-    try:
-        with _connect_cooldown_db() as conn:
-            conn.execute("DELETE FROM provider_leases WHERE lease_id = ?", (lease_id,))
-            conn.commit()
-    except sqlite3.Error:
-        logger.debug("Failed releasing shared provider lease", exc_info=True)
+    _coordination_backend().release_lease(lease_id)
 
 
 def _wait_for_provider_lease(provider: str) -> str | None:
@@ -553,37 +489,19 @@ def register_rate_limit_cooldown(
         return 0.0
 
     requested_delay = max(0.0, float(delay_s or 0.0))
-    applied_delay = max(requested_delay, _get_cooldown_floor(provider))
+    applied_delay = max(
+        requested_delay,
+        _get_cooldown_floor(provider),
+        get_provider_runtime_policy(provider).cooldown_floor_s,
+    )
     if applied_delay <= 0:
         return 0.0
 
-    now = time.time()
-    requested_until = now + applied_delay
-    try:
-        with _connect_cooldown_db() as conn:
-            row = conn.execute(
-                "SELECT cooldown_until FROM provider_cooldowns WHERE provider = ?",
-                (provider,),
-            ).fetchone()
-            existing_until = float(row[0]) if row is not None else 0.0
-            cooldown_until = max(existing_until, requested_until)
-            conn.execute(
-                """
-                INSERT INTO provider_cooldowns(provider, cooldown_until, source, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(provider) DO UPDATE SET
-                    cooldown_until = excluded.cooldown_until,
-                    source = excluded.source,
-                    updated_at = excluded.updated_at
-                """,
-                (provider, cooldown_until, source, now),
-            )
-            conn.commit()
-    except sqlite3.Error:
-        logger.debug("Failed writing provider cooldown state", exc_info=True)
-        return applied_delay
-
-    final_delay = max(0.0, cooldown_until - now)
+    final_delay = _coordination_backend().register_cooldown(
+        provider,
+        applied_delay,
+        source=source,
+    )
     logger.warning(
         "Registered provider cooldown: provider=%s model=%s delay=%.1fs source=%s",
         provider,

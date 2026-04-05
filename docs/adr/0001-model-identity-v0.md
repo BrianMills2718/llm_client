@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: exact gpt-5.4 requests now canonicalize to codex/gpt-5.4 instead of drifting into OpenRouter, while Gemini routing and shared 429 cooldown coordination remain intact
+Verification context: exact gpt-5.4 requests now canonicalize through the typed provider-governance policy to codex/gpt-5.4, while Gemini routing still preserves shared-cap and cooldown behavior through the new coordination backend boundary
 
 ## Context
 
