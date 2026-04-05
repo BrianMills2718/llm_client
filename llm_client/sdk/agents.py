@@ -112,10 +112,32 @@ def _compact_json(payload: dict[str, Any], *, max_chars: int = 1800) -> str:
     return rendered[:max_chars] + "...(truncated)"
 
 
+def _is_codex_sdk_parse_validation_error(exc: BaseException) -> bool:
+    """Return whether one ValidationError matches known Codex SDK parse drift.
+
+    The installed Codex SDK can surface a Pydantic validation error when it
+    receives `FileChangeItem.status="in_progress"` while the local SDK schema
+    still only accepts `completed|failed`. That is a transport-compatibility
+    issue, so `codex_transport="auto"` should fall back to CLI instead of
+    treating it as a model/content failure.
+    """
+
+    if type(exc).__name__ != "ValidationError":
+        return False
+    message = _safe_error_text(exc)
+    return (
+        "FileChangeItem" in message
+        and "Input should be 'completed' or 'failed'" in message
+        and "in_progress" in message
+    )
+
+
 def _is_codex_transport_fallback_error(exc: BaseException) -> bool:
     """Return whether a Codex SDK failure should fall back to CLI transport."""
 
     if isinstance(exc, _CODEX_TRANSPORT_FALLBACK_EXCEPTIONS):
+        return True
+    if _is_codex_sdk_parse_validation_error(exc):
         return True
     if isinstance(exc, RuntimeError):
         message = _safe_error_text(exc)
@@ -519,4 +541,3 @@ async def _route_astream(
             "Only 'claude-code' and 'codex' are implemented."
         )
     raise ValueError(f"Unknown agent SDK: {sdk_name}")
-

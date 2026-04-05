@@ -81,3 +81,37 @@ TODO-progress retry gate in addition to the evidence gate. Repeated submit
 attempts are suppressed until TODO state changes, which prevents this family
 from escalating directly into `SUBMIT_FORCED_ACCEPT_FORCED_FINAL`. Verified in
 `tests/test_mcp_agent.py::test_pending_atom_submit_rejections_require_todo_progress_before_retry`.
+
+### 2026-04-04 — codex — integration-issue
+
+The installed Codex SDK can fail on file-writing runs before llm_client
+finalizes an agent result because the SDK parser still rejects
+`FileChangeItem.status="in_progress"`.
+
+Measured behavior:
+- trivial `acall_llm("codex", ...)` text runs still succeed
+- heavier repo-mutating prompts can raise:
+  `ValidationError: FileChangeItem.status Input should be 'completed' or 'failed'`
+
+Runtime implication:
+- `codex_transport="auto"` must treat that exact ValidationError family as a
+  transport-compatibility failure and fall back to CLI
+- keep the fallback rule narrow so unrelated Pydantic validation failures still
+  surface normally
+
+### 2026-04-04 — codex — bug-pattern
+
+The Codex CLI transport path in `llm_client/sdk/agents_codex.py` can silently
+rot if it is only exercised through mocked dispatch tests.
+
+Measured failure:
+- forcing `LLM_CLIENT_CODEX_TRANSPORT=cli` from a real OpenClaw run failed
+  immediately with `name 'subprocess' is not defined`
+- root cause was simple: `_call_codex_via_cli()` used `subprocess.run(...)`
+  but the module did not import `subprocess`
+
+Current safe rule:
+- keep one direct unit test that executes `_call_codex_via_cli()` with
+  `subprocess.run` monkeypatched and verifies the output file is read back
+- transport-selection tests alone are not enough; the concrete CLI helper must
+  be exercised too

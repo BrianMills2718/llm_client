@@ -14,6 +14,8 @@ import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,6 +45,7 @@ from llm_client import (
 from llm_client.sdk.agents import (
     _build_agent_options,
     _build_codex_cli_command,
+    _is_codex_transport_fallback_error,
     _messages_to_agent_prompt,
     _normalize_codex_reasoning_effort,
     _parse_agent_model,
@@ -1813,6 +1816,83 @@ class TestCodexFallback:
         assert result.content == "cli ok"
         assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
 
+    def test_codex_transport_auto_falls_back_on_sdk_parse_validation_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Known Codex SDK parse drift should route through CLI fallback."""
+
+        class FileChangeItem(BaseModel):
+            status: Literal["completed", "failed"]
+
+        with pytest.raises(Exception) as excinfo:
+            FileChangeItem.model_validate({"status": "in_progress"})
+        sdk_parse_error = excinfo.value
+
+        async def _fake_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del model, messages, timeout, kwargs
+            raise sdk_parse_error
+
+        calls: dict[str, object] = {}
+
+        def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del messages, output_schema, kwargs
+            calls["fallback_warning"] = fallback_warning
+            return LLMCallResult(
+                content="cli recovered",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                warnings=[fallback_warning] if fallback_warning else [],
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _fake_cli)
+
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="auto",
+            timeout=17,
+            agent_hard_timeout=23,
+            task="test",
+            trace_id="test_codex_transport_auto_sdk_parse_validation",
+            max_budget=0,
+        )
+
+        assert result.content == "cli recovered"
+        assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
+        assert "FileChangeItem" in str(calls["fallback_warning"])
+
+    def test_codex_transport_fallback_rule_stays_narrow_for_other_validation_errors(self) -> None:
+        """Other ValidationError instances should not be reclassified as transport failures."""
+
+        class ArbitraryPayload(BaseModel):
+            value: int
+
+        with pytest.raises(Exception) as excinfo:
+            ArbitraryPayload.model_validate({"value": "not-an-int"})
+
+        assert _is_codex_transport_fallback_error(excinfo.value) is False
+
     @pytest.mark.asyncio
     async def test_codex_transport_cli_dispatches_async(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Explicit CLI transport should bypass the SDK path entirely."""
@@ -1904,6 +1984,34 @@ class TestCodexFallback:
         assert "--dangerously-bypass-approvals-and-sandbox" in command
         assert stdin_payload == "Reply with OK only."
 
+    def test_call_codex_via_cli_uses_subprocess_transport(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        """CLI transport should execute via subprocess and return the written output."""
+
+        def _fake_run(command, *, input, text, capture_output, check, timeout, env):
+            del input, text, capture_output, check, timeout, env
+            output_path = command[command.index("-o") + 1]
+            Path(output_path).write_text("cli transport ok\n")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(agents_codex_mod.subprocess, "run", _fake_run)
+
+        result = agents_codex_mod._call_codex_via_cli(
+            "codex",
+            [{"role": "user", "content": "Reply with OK only."}],
+            timeout=11,
+            working_directory=str(tmp_path),
+            approval_policy="never",
+            sandbox_mode="workspace-write",
+            skip_git_repo_check=True,
+        )
+
+        assert result.content == "cli transport ok"
+        assert result.raw_response == {"transport": "codex_cli"}
+
 
 # ---------------------------------------------------------------------------
 # Codex MCP server control
@@ -1945,10 +2053,29 @@ class TestCodexMcpServers:
         finally:
             _cleanup_tmp(tmp_dir)
 
-    def test_prepare_codex_mcp_passthrough(self) -> None:
-        """No mcp_servers → kwargs unchanged, no tmp_dir."""
+    def test_prepare_codex_mcp_isolates_home_by_default(self) -> None:
+        """No mcp_servers should still isolate Codex from the user's global home."""
+        from pathlib import Path
+
+        from llm_client.sdk.agents import _cleanup_tmp, _prepare_codex_mcp
+
+        kwargs = {"sandbox_mode": "workspace-write"}
+        out, tmp = _prepare_codex_mcp(kwargs)
+        try:
+            assert tmp is not None
+            assert out["codex_home"] == tmp
+            assert (Path(tmp) / ".codex" / "config.toml").exists()
+        finally:
+            _cleanup_tmp(tmp)
+
+    def test_prepare_codex_mcp_passthrough_when_isolation_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Isolation can be disabled explicitly for operators who need global Codex home."""
         from llm_client.sdk.agents import _prepare_codex_mcp
 
+        monkeypatch.setenv("LLM_CLIENT_CODEX_ISOLATE_HOME", "0")
         kwargs = {"sandbox_mode": "workspace-write"}
         out, tmp = _prepare_codex_mcp(kwargs)
         assert tmp is None
