@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: Warning surfaces now cover both Gemini identity canonicalization and provider-cooldown activation for 429-like failures, including non-retryable quota exhaustion
+Verification context: git-derived canonical project attribution keeps worktree observability grouped at repo scope (Plan #58)
 
 ## Context
 

@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -68,6 +69,42 @@ def _isolate_io_log(tmp_path):
         io_log._db_conn.close()
     io_log._db_conn = old_db_conn
     io_log._last_cleanup_date = old_last_cleanup
+
+
+class TestGetProject:
+    def test_explicit_project_override_skips_git_lookup(self, monkeypatch):
+        io_log._project = "explicit_project"
+
+        def _unexpected_git(*args, **kwargs):
+            raise AssertionError("git lookup should not run when project is configured")
+
+        monkeypatch.setattr(io_log.subprocess, "run", _unexpected_git)
+
+        assert io_log._get_project() == "explicit_project"
+
+    def test_git_common_dir_maps_worktree_to_canonical_repo(self, monkeypatch):
+        io_log._project = None
+
+        def _fake_run(cmd, **kwargs):
+            assert cmd == ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]
+            return subprocess.CompletedProcess(cmd, 0, stdout="/tmp/llm_client/.git\n", stderr="")
+
+        monkeypatch.setattr(io_log.subprocess, "run", _fake_run)
+
+        assert io_log._get_project() == "llm_client"
+
+    def test_cwd_basename_used_when_git_metadata_unavailable(self, monkeypatch, tmp_path):
+        io_log._project = None
+        repo_free_dir = tmp_path / "scratch_project"
+        repo_free_dir.mkdir()
+        monkeypatch.chdir(repo_free_dir)
+
+        def _git_missing(*args, **kwargs):
+            raise subprocess.CalledProcessError(returncode=128, cmd=args[0])
+
+        monkeypatch.setattr(io_log.subprocess, "run", _git_missing)
+
+        assert io_log._get_project() == "scratch_project"
 
 
 # ---------------------------------------------------------------------------
