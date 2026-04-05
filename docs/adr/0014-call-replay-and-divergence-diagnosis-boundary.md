@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-22
 Last verified: 2026-04-05
-Verification context: OpenRouter routing normalizes explicit google/gemini aliases before execution identity is finalized
+Verification context: Execution kernel emits provider-cooldown warnings for 429-like failures, preserving replay-visible evidence when shared cooldown coordination activates
 
 ## Context
 

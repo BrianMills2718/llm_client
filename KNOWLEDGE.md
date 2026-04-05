@@ -80,3 +80,15 @@ route and failed as "LLM Provider NOT provided". Fix: normalize `google/...`
 to `openrouter/google/...` in the shared routing layer so stale but otherwise
 valid OpenRouter Google aliases do not fail late inside structured-call
 boundaries.
+
+### 2026-04-05 — codex — bug-pattern
+
+**In-process semaphores are not enough to stop shared quota bursts when multiple repos run concurrently; 429s need a cross-process provider cooldown.**
+
+The April 3 Gemini anomaly cluster hit several active projects at once, which
+means each process could respect its own semaphore and still collectively hammer
+the same provider quota. `llm_client.utils.rate_limit` now combines a lower
+default Google concurrency ceiling with a SQLite-backed shared cooldown window
+that every process/worktree checks before starting the next Gemini call. The
+execution kernel registers that cooldown on any 429-like failure, including
+quota-exhausted errors that are intentionally not retried.

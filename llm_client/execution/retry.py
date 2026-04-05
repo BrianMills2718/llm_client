@@ -121,6 +121,27 @@ def _error_status_code(error: Exception) -> int | None:
     return None
 
 
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Return whether *error* represents a provider 429/rate-limit condition."""
+    try:
+        import litellm as _lt
+
+        rate_limit_type = getattr(_lt, "RateLimitError", None)
+        if isinstance(rate_limit_type, type) and issubclass(rate_limit_type, BaseException):
+            if isinstance(error, rate_limit_type):
+                return True
+    except ImportError:
+        pass
+
+    if _error_status_code(error) == 429:
+        return True
+
+    error_text = _error_text(error).lower()
+    if "ratelimit" in type(error).__name__.lower():
+        return True
+    return "rate limit" in error_text or "retrydelay" in error_text
+
+
 # ---------------------------------------------------------------------------
 # Retry delay helpers
 # ---------------------------------------------------------------------------
@@ -256,8 +277,7 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
 
         # RateLimitError (429) is ambiguous — could be transient rate limit
         # or permanent quota exhaustion. Check the message.
-        rate_limit_types = _litellm_error_types("RateLimitError")
-        if rate_limit_types and isinstance(error, rate_limit_types):
+        if _is_rate_limit_error(error):
             error_str = str(error).lower()
             # Provider-specified retry windows are considered retryable even
             # when the message includes "quota" phrasing.
