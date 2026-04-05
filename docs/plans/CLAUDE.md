@@ -20,7 +20,7 @@ Track all implementation work here.
 | 12 | [Module Reorganization (Flat → Layered)](12_module-reorganization.md) | High | ✅ Complete | 11 |
 | 13 | [SDK Adapter Simplification](13_sdk-adapter-simplification.md) | Medium | ✅ Complete | 12 |
 | 14 | [Batch Progress & Stagnation Detection](14_batch-progress-and-stagnation.md) | High | ✅ Complete | - |
-| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | ❓ Cancelled — "pure refactoring, no consumer value" (2026-03-25, confirmed 2026-04-04) | - |
+| 15 | [Centralize Hardcoded Defaults into ClientConfig](15_centralize-defaults.md) | Low | ❓  | - |
 | 16 | [Remove Compatibility Stubs](16_remove-compatibility-stubs.md) | Medium | ✅ Complete | 12 |
 | 17 | [text_runtime Sync/Async Deduplication](17_text-runtime-dedup.md) | High | ✅ Complete | - |
 | 18 | [Agent Loop Error Budget and Retry Policy](18_agent_loop_error_budget.md) | High | ✅ Complete | - |
@@ -30,6 +30,7 @@ Track all implementation work here.
 | 22 | [Capability Ownership And Sanctioned Worktree Alignment](22_capability-ownership-and-sanctioned-worktree-alignment.md) | High | ✅ Complete | 21 |
 | 23 | [Authoritative coordination wave-1 rollout](23_authoritative-coordination-wave-1-rollout.md) | Critical | ✅ Complete | - |
 | 24 | [Workflow Kit Manifest, Validator, and Runtime Adapter Proving Slice](24_workflow-kit-manifest-validator-and-runtime-adapter-proving-slice.md) | — | Cancelled — execution strategy layer reassigned to agentic_scaffolding; packaging scope deferred to PROJECTS_DEFERRED. See `project-meta/docs/ops/ADR-2026-04-04-workflow-portability-revised-execution-strategies.md` (2026-04-04). | — |
+| 25 | [Provider Governance and Shared Coordination](25_provider-governance-and-shared-coordination.md) | Critical | 📋 Planned | llm_client PR #24 merge for the latest Gemini coordination baseline |
 
 
 ## Status Key

@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: routing now canonicalizes exact gpt-5.4 requests to codex/gpt-5.4 before direct or openrouter policy application, while Gemini routing and shared 429 cooldown coordination remain intact
+Verification context: routing now canonicalizes exact gpt-5.4 requests through the typed provider-governance policy before direct or openrouter policy application, and `routing_trace["provider_governance_events"]` now exposes those governance decisions explicitly
 
 ## Context
 

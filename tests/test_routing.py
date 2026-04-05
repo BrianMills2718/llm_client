@@ -61,6 +61,16 @@ def test_resolve_call_gpt54_canonicalizes_to_codex_under_openrouter_policy() -> 
     assert plan.models == ["codex/gpt-5.4"]
     assert plan.routing_trace["normalized_from"] == "gpt-5.4"
     assert plan.routing_trace["normalized_to"] == "codex/gpt-5.4"
+    assert plan.routing_trace["provider_governance_events"] == [
+        {
+            "event": "model_canonicalized",
+            "reason": "Exact gpt-5.4 aliases must use the Codex SDK lane.",
+            "route_class": "agent_sdk",
+            "canonical_model": "codex/gpt-5.4",
+            "from": "gpt-5.4",
+            "to": "codex/gpt-5.4",
+        }
+    ]
 
 
 def test_resolve_call_gpt54_canonicalizes_to_codex_under_direct_policy() -> None:
@@ -108,6 +118,16 @@ def test_resolve_call_normalizes_bare_gemini_model_id() -> None:
     assert plan.primary_model == "gemini/gemini-2.5-flash"
     assert plan.routing_trace["normalized_from"] == "gemini-2.5-flash"
     assert plan.routing_trace["normalized_to"] == "gemini/gemini-2.5-flash"
+    assert plan.routing_trace["provider_governance_events"] == [
+        {
+            "event": "model_canonicalized",
+            "reason": "Bare Gemini ids are not stable provider identities and must be canonicalized.",
+            "route_class": "direct_provider",
+            "canonical_model": "gemini/gemini-2.5-flash",
+            "from": "gemini-2.5-flash",
+            "to": "gemini/gemini-2.5-flash",
+        }
+    ]
 
 
 def test_resolve_call_direct_still_canonicalizes_bare_gemini_model_id() -> None:

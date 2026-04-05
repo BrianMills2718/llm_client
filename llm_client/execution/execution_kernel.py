@@ -47,8 +47,8 @@ def _maybe_register_provider_cooldown(
 
     provider = _rate_limit._get_provider(model)
     warning_sink.append(
-        f"PROVIDER_COOLDOWN: {provider} cooling down for {applied_delay:.1f}s "
-        f"[source={source}]"
+        "PROVIDER_GOVERNANCE_EVENT[cooldown_registered]: "
+        f"provider={provider} delay_s={applied_delay:.1f} source={source}"
     )
     logger.warning(
         "Registered shared provider cooldown for %s after %s: %.1fs (source=%s)",

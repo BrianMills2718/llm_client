@@ -95,6 +95,23 @@ result = call_llm("gpt-5-mini", messages, config=cfg, task="...", trace_id="..."
 
 Or via environment: `LLM_CLIENT_OPENROUTER_ROUTING=off`
 
+Provider-governance rules are applied before the final routing decision:
+
+- exact `gpt-5.4` requests canonicalize to `codex/gpt-5.4`
+- bare Gemini ids canonicalize to `gemini/<model>`
+- `result.routing_trace["provider_governance_events"]` records these decisions
+
+### Shared provider coordination
+
+Gemini and other providers can use shared cooldown and lease state across
+processes/worktrees to prevent first-attempt stampedes against the same quota
+surface.
+
+- `LLM_CLIENT_RATE_LIMIT_SHARED_ENABLED=1` enables shared leases
+- `LLM_CLIENT_RATE_LIMIT_SHARED_LIMITS='{"google": 4}'` overrides provider caps
+- `LLM_CLIENT_RATE_LIMIT_COOLDOWN_FLOORS='{"google": 15}'` overrides provider cooldown floors
+- `LLM_CLIENT_RATE_LIMIT_STATE_PATH=/path/to/llm_rate_limit_state.sqlite3` changes the SQLite state location
+
 ### OpenRouter key rotation
 
 If OpenRouter returns key exhaustion (402/403), retry loops auto-rotate to backup keys.

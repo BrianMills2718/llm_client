@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.core.config import ClientConfig, RoutingPolicy
-from llm_client.execution.call_contracts import (
-    _is_codex_alias_model,
-    _is_codex_family_model,
+from llm_client.core.provider_policy import (
+    canonicalize_model_for_policy,
+    describe_model_governance,
 )
 
 
@@ -38,84 +38,9 @@ def routing_policy_label(policy: RoutingPolicy) -> str:
     return "openrouter_on" if policy == "openrouter" else "openrouter_off"
 
 
-def _base_model_name(model: str) -> str:
-    return model.lower().rsplit("/", 1)[-1]
-
-
-def _is_image_generation_model(model: str) -> bool:
-    base = _base_model_name(model)
-    hints = (
-        "gpt-image",
-        "dall-e",
-        "imagen",
-        "stable-diffusion",
-        "sdxl",
-        "flux",
-    )
-    return any(h in base for h in hints)
-
-
-def _canonicalize_codex_model(model: str) -> str:
-    """Return the canonical Codex SDK route for known Codex-routed models."""
-
-    raw = str(model or "").strip()
-    if not raw:
-        return raw
-    lower = raw.lower()
-    if lower == "codex" or lower.startswith("codex/"):
-        return raw
-    if _is_codex_alias_model(raw) or _is_codex_family_model(raw):
-        return f"codex/{raw.rsplit('/', 1)[-1]}"
-    return raw
-
-
 def normalize_model_for_policy(model: str, policy: RoutingPolicy) -> str:
     """Normalize model IDs according to explicit routing policy."""
-    raw = str(model or "").strip()
-    if not raw:
-        return raw
-    raw = _canonicalize_codex_model(raw)
-
-    lower = raw.lower()
-    # Bare Gemini model IDs are not stable LiteLLM provider identities.
-    # Canonicalize them first so both direct and openrouter policies route
-    # through the normal Gemini provider path instead of provider guessing.
-    if lower.startswith("gemini-"):
-        return f"gemini/{raw}"
-
-    if policy == "direct":
-        return raw
-
-    if lower.startswith(("openrouter/", "gemini/")):
-        return raw
-    if lower.startswith(("codex", "claude-code", "openai-agents")):
-        return raw
-    # Codex-family models (e.g. gpt-5.3-codex) must not be normalized
-    # through OpenRouter — they route to the Codex SDK.
-    if _is_codex_family_model(raw):
-        return raw
-    if _is_image_generation_model(raw):
-        return raw
-
-    # Explicit provider/model IDs.
-    if "/" in raw:
-        provider = lower.split("/", 1)[0]
-        if provider in {"openai", "anthropic", "deepseek", "x-ai", "xai", "mistral", "mistralai", "google"}:
-            return f"openrouter/{raw}"
-        return raw
-
-    # Bare model IDs.
-    if lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-embedding-", "text-moderation-")):
-        return f"openrouter/openai/{raw}"
-    if lower.startswith("claude"):
-        return f"openrouter/anthropic/{raw}"
-    if lower.startswith("deepseek"):
-        return f"openrouter/deepseek/{raw}"
-    if lower.startswith("grok"):
-        return f"openrouter/x-ai/{raw}"
-    if lower.startswith("mistral"):
-        return f"openrouter/mistralai/{raw}"
-    return raw
+    return canonicalize_model_for_policy(model, policy)
 
 
 def resolve_api_base_for_model(
@@ -139,6 +64,7 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
     models: list[str] = []
     seen: set[str] = set()
     normalized_events: list[dict[str, str]] = []
+    provider_governance_events: list[dict[str, str]] = []
 
     for candidate in candidates:
         raw = str(candidate or "").strip()
@@ -147,6 +73,15 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
         normalized = normalize_model_for_policy(raw, config.routing_policy)
         if normalized != raw:
             normalized_events.append({"from": raw, "to": normalized})
+            governance_event = describe_model_governance(raw, config.routing_policy)
+            if governance_event is not None:
+                provider_governance_events.append(
+                    {
+                        **governance_event,
+                        "from": raw,
+                        "to": normalized,
+                    }
+                )
         key = normalized.lower()
         if key in seen:
             continue
@@ -168,6 +103,8 @@ def resolve_call(request: CallRequest, config: ClientConfig) -> ResolvedCallPlan
     }
     if normalized_events:
         trace["normalization_events"] = normalized_events
+    if provider_governance_events:
+        trace["provider_governance_events"] = provider_governance_events
     if requested_model != primary_model:
         trace["normalized_from"] = requested_model
         trace["normalized_to"] = primary_model

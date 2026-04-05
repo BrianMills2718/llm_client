@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-22
 Last verified: 2026-04-05
-Verification context: exact gpt-5.4 requests now canonicalize to codex/gpt-5.4 in replayable routing traces, while shared 429 cooldown coordination still avoids duplicate retry waits and cooldown busy-spins across worktrees
+Verification context: exact gpt-5.4 requests now canonicalize to codex/gpt-5.4 in replayable routing traces through the typed provider-governance policy, those traces now include `provider_governance_events`, and shared 429 cooldown coordination still avoids duplicate retry waits and cooldown busy-spins across worktrees through the backend boundary
 
 ## Context
 
