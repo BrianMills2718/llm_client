@@ -45,3 +45,14 @@ Practical rule:
 
 - if a shared repo is already registry-covered, add the local capability source
   and align declared workflow policy before expanding the registry further
+
+### 2026-04-04 — codex — best-practice
+
+**Portable workflow packaging should be staged as a runtime-facing manifest and validator layer before any registry or installer work.**
+
+Journey, Anthropic's workflow-vs-agent framing, `static_pipeline`, and
+`llm_client`'s existing LangGraph slice all point to the same boundary:
+`llm_client` is the natural home for runtime-facing package truthfulness
+(manifest models, capability-based runtime support, validation, and example
+adapters), but not for registry/community/product concerns. A runtime list
+without capability validation is not a truthful portability claim.
