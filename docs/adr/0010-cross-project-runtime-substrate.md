@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-17
 Last verified: 2026-04-05
-Verification context: Cross-project Gemini bursts now coordinate through a shared provider cooldown registry, so separate repos/worktrees honor the same 429 backoff window
+Verification context: Cross-project Gemini traffic now shares both canonical model identity (`gemini/...`) and a shared provider cooldown registry, so separate repos/worktrees honor the same routed provider and 429 backoff window
 
 ## Context
 

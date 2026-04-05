@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-22
 Last verified: 2026-04-05
-Verification context: Execution kernel emits provider-cooldown warnings for 429-like failures, preserving replay-visible evidence when shared cooldown coordination activates
+Verification context: Execution kernel emits provider-cooldown warnings for 429-like failures, and routing canonicalizes bare Gemini ids before execution so replay surfaces preserve the actual provider path taken
 
 ## Context
 
