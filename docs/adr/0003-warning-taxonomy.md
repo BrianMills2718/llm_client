@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: Execution kernel emits provider-cooldown warnings for 429-like failures, including non-retryable quota exhaustion, so warning surfaces match the shared cooldown runtime contract
+Verification context: Warning surfaces now cover both Gemini identity canonicalization and provider-cooldown activation for 429-like failures, including non-retryable quota exhaustion
 
 ## Context
 

@@ -65,3 +65,33 @@ def test_resolve_call_normalizes_google_gemini_alias_to_openrouter() -> None:
     assert plan.primary_model == "openrouter/google/gemini-2.0-flash-001"
     assert plan.routing_trace["normalized_from"] == "google/gemini-2.0-flash-001"
     assert plan.routing_trace["normalized_to"] == "openrouter/google/gemini-2.0-flash-001"
+
+
+def test_resolve_call_normalizes_bare_gemini_model_id() -> None:
+    """Bare Gemini ids should canonicalize before provider routing kicks in."""
+    cfg = ClientConfig(routing_policy="openrouter")
+
+    plan = resolve_call(
+        CallRequest(model="gemini-2.5-flash"),
+        cfg,
+    )
+
+    assert plan.primary_model == "gemini/gemini-2.5-flash"
+    assert plan.routing_trace["normalized_from"] == "gemini-2.5-flash"
+    assert plan.routing_trace["normalized_to"] == "gemini/gemini-2.5-flash"
+
+
+def test_resolve_call_direct_still_canonicalizes_bare_gemini_model_id() -> None:
+    """Direct policy still needs a canonical provider id for bare Gemini models."""
+    cfg = ClientConfig(routing_policy="direct")
+
+    plan = resolve_call(
+        CallRequest(model="gemini-3-flash-preview"),
+        cfg,
+    )
+
+    assert plan.primary_model == "gemini/gemini-3-flash-preview"
+    assert plan.models == ["gemini/gemini-3-flash-preview"]
+    assert plan.routing_trace["routing_policy"] == "openrouter_off"
+    assert plan.routing_trace["normalized_from"] == "gemini-3-flash-preview"
+    assert plan.routing_trace["normalized_to"] == "gemini/gemini-3-flash-preview"

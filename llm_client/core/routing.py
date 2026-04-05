@@ -57,10 +57,17 @@ def normalize_model_for_policy(model: str, policy: RoutingPolicy) -> str:
     raw = str(model or "").strip()
     if not raw:
         return raw
+
+    lower = raw.lower()
+    # Bare Gemini model IDs are not stable LiteLLM provider identities.
+    # Canonicalize them first so both direct and openrouter policies route
+    # through the normal Gemini provider path instead of provider guessing.
+    if lower.startswith("gemini-"):
+        return f"gemini/{raw}"
+
     if policy == "direct":
         return raw
 
-    lower = raw.lower()
     if lower.startswith(("openrouter/", "gemini/")):
         return raw
     if lower.startswith(("codex", "claude-code", "openai-agents")):

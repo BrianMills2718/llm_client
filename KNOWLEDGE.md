@@ -92,3 +92,14 @@ default Google concurrency ceiling with a SQLite-backed shared cooldown window
 that every process/worktree checks before starting the next Gemini call. The
 execution kernel registers that cooldown on any 429-like failure, including
 quota-exhausted errors that are intentionally not retried.
+
+### 2026-04-05 — codex — bug-pattern
+
+**Bare `gemini-*` model ids are not stable provider identities and should be canonicalized before policy routing.**
+
+`theory-forge` surfaced a 100% failure lane on `gemini-2.5-flash` with
+`Google Cloud SDK not found`, which was not a real provider outage. The actual
+bug was that `normalize_model_for_policy()` handled `google/...` aliases but
+left bare `gemini-*` ids untouched, so LiteLLM guessed the wrong Google path.
+Fix: canonicalize bare Gemini ids to `gemini/<id>` before both direct and
+openrouter policy handling.
