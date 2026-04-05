@@ -3711,6 +3711,7 @@ class TestAgentDiagnostics:
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
                                 },
                             }
                         ),
@@ -3733,6 +3734,7 @@ class TestAgentDiagnostics:
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
                                 },
                             }
                         ),
@@ -3820,7 +3822,12 @@ class TestAgentDiagnostics:
         assert "CONTROL_CHURN_THRESHOLD_EXCEEDED" not in agent_result.metadata["failure_event_codes"]
         assert "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" not in agent_result.metadata["failure_event_codes"]
         assert agent_result.metadata["required_submit_missing"] is True
+        assert agent_result.metadata["submit_retry_guidance"] == (
+            "Resolve atom a2 via entity_search(string) before retry."
+        )
         assert any(
-            record.tool == "submit_answer" and "requires TODO progress" in (record.error or "")
+            record.tool == "submit_answer"
+            and "requires TODO progress" in (record.error or "")
+            and "Resolve atom a2 via entity_search(string) before retry." in (record.error or "")
             for record in agent_result.tool_calls
         )

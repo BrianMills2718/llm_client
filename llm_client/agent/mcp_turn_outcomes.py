@@ -42,6 +42,7 @@ class AgentTurnOutcomeResult:
     submit_evidence_digest_at_last_failure: str | None
     submit_requires_todo_progress: bool
     submit_todo_status_at_last_failure: str | None
+    submit_retry_guidance: str | None
     evidence_pointer_count: int
     evidence_digest_change_count_delta: int
     evidence_turns_total_delta: int
@@ -77,6 +78,7 @@ def _process_turn_outcomes(
     submit_evidence_digest_at_last_failure: str | None,
     submit_requires_todo_progress: bool,
     submit_todo_status_at_last_failure: str | None,
+    submit_retry_guidance: str | None,
     current_turn_deficit_digest: str | None,
     retrieval_stagnation_streak: int,
     retrieval_stagnation_streak_max: int,
@@ -328,6 +330,7 @@ def _process_turn_outcomes(
                 validation_payload = parsed.get("validation_error")
                 reason_code = ""
                 detail = ""
+                repair_guidance = ""
                 submit_todo_status_line: str | None = None
                 recovery_policy = parsed.get("recovery_policy")
                 if (
@@ -340,9 +343,17 @@ def _process_turn_outcomes(
                     and bool(recovery_policy.get("requires_forced_terminal_path"))
                 ):
                     submit_requires_forced_terminal_signal = True
+                if isinstance(recovery_policy, dict):
+                    raw_guidance = recovery_policy.get("repair_guidance")
+                    if isinstance(raw_guidance, str) and raw_guidance.strip():
+                        repair_guidance = raw_guidance.strip()
                 if isinstance(validation_payload, dict):
                     reason_code = str(validation_payload.get("reason_code", "")).strip()
                     detail = str(validation_payload.get("message", "")).strip()
+                if not repair_guidance and detail:
+                    repair_guidance = detail
+                if repair_guidance:
+                    submit_retry_guidance = repair_guidance
                 raw_todo_status_line = parsed.get("todo_status_line")
                 if isinstance(raw_todo_status_line, str) and raw_todo_status_line.strip():
                     submit_todo_status_line = raw_todo_status_line.strip()
@@ -413,6 +424,11 @@ def _process_turn_outcomes(
             if submit_requires_todo_progress
             else ""
         )
+        repair_hint = (
+            f" Repair hint: {submit_retry_guidance}"
+            if submit_retry_guidance
+            else ""
+        )
         emitted_messages.append(
             {
                 "role": "user",
@@ -428,7 +444,9 @@ def _process_turn_outcomes(
                     )
                     + "Do not call submit_answer again until those conditions are satisfied. "
                     "When they are, submit a short factual answer only "
-                    "(name/date/number/yes/no, <=8 words).]"
+                    "(name/date/number/yes/no, <=8 words)."
+                    + repair_hint
+                    + "]"
                 ),
             }
         )
@@ -458,6 +476,7 @@ def _process_turn_outcomes(
     ):
         submit_requires_todo_progress = False
         submit_todo_status_at_last_failure = None
+        submit_retry_guidance = None
     if not todo_write_called_this_turn and updated_last_todo_status_line:
         emitted_messages.append(
             {
@@ -544,6 +563,7 @@ def _process_turn_outcomes(
         submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
         submit_requires_todo_progress=submit_requires_todo_progress,
         submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
+        submit_retry_guidance=submit_retry_guidance,
         evidence_pointer_count=evidence_pointer_count,
         evidence_digest_change_count_delta=evidence_digest_change_count_delta,
         evidence_turns_total_delta=evidence_turns_total_delta,

@@ -135,6 +135,7 @@ def _apply_agent_loop_summary(
     evidence_pointer_count: int,
     failure_event_codes: list[str],
     submit_evidence_digest_at_last_failure: str | None,
+    submit_retry_guidance: str | None,
     foundation_events: list[dict[str, Any]],
     foundation_event_types: dict[str, int],
     foundation_event_validation_errors: int,
@@ -483,6 +484,7 @@ def _apply_agent_loop_summary(
     agent_result.metadata["submit_evidence_digest_at_last_failure"] = (
         submit_evidence_digest_at_last_failure
     )
+    agent_result.metadata["submit_retry_guidance"] = submit_retry_guidance
     agent_result.metadata["foundation_event_count"] = len(foundation_events)
     agent_result.metadata["foundation_event_types"] = dict(foundation_event_types)
     agent_result.metadata["foundation_event_validation_errors"] = (
