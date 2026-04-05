@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-05T19:17:59Z -->
+<!-- Generated: 2026-04-05T23:17:31Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -3174,7 +3174,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3191,7 +3191,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3200,7 +3200,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3219,39 +3219,15 @@ Returns:
 
 
 
-<h4>Classes</h4>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
-  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">Validated human review payload used to resume the workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
-    
-  </div>
-</details>
-
-<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
-  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
-  <div class="symbol-body">
-    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
-    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
-    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
-    
-  </div>
-</details>
-
-
-
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 
@@ -8328,6 +8304,56 @@ Converts Codex SDK types into the unified LLMCallResult interface.
 This module is an implementation detail of agents.py. All public names are
 re-exported from agents.py for backward compatibility.</pre>
 
+<h4>Functions</h4>
+
+<details class="symbol" id="module-llm_client-sdk-agents_codex-log_codex_exec_session">
+  <summary><code>log_codex_exec_session</code> <span class="sig">(session: dict[str, typing.Any], *, task: str, trace_id: str, latency_s: float, component_id: str | None = None, exit_code: int | None = None) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Log a Codex exec session to the shared observability DB.</p>
+    <p class="meta">Source: <code>llm_client.sdk.agents_codex</code> functions</p>
+    <pre class="doc">Log a Codex exec session to the shared observability DB.
+
+Call this after each ``codex exec`` subprocess completes, passing the
+result of ``parse_codex_exec_events()``.  The session appears in
+``make cost`` / ``make errors`` alongside regular LLM calls.
+
+Args:
+    session:      Output of ``parse_codex_exec_events()``.
+    task:         Task label (e.g. ``&quot;ac14/zeta_scale_40&quot;``).
+    trace_id:     Hierarchical trace ID (e.g. ``&quot;trial_2/attempt_1/compute_speed&quot;``).
+    latency_s:    Wall-clock seconds the subprocess took.
+    component_id: Optional component name; appended to content for diagnosis.
+    exit_code:    Subprocess return code; stored in finish_reason.</pre>
+  </div>
+</details>
+
+<details class="symbol" id="module-llm_client-sdk-agents_codex-parse_codex_exec_events">
+  <summary><code>parse_codex_exec_events</code> <span class="sig">(stdout_jsonl: str, stderr: str) -&gt; dict[str, typing.Any]</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Parse a Codex exec session into structured observability data.</p>
+    <p class="meta">Source: <code>llm_client.sdk.agents_codex</code> functions</p>
+    <pre class="doc">Parse a Codex exec session into structured observability data.
+
+Codex exec (``codex exec --json``) writes one JSON event per line to
+stdout.  The human-readable transcript (tool calls, reasoning) goes to
+stderr.  This function combines both sources to produce a dict suitable
+for logging or display.
+
+Returns a dict with:
+    model           str | None  — from the stderr session header
+    reasoning_effort str | None — from the stderr session header
+    session_id      str | None  — Codex session UUID
+    total_tokens    int | None  — from JSONL usage events or stderr fallback
+    input_tokens    int | None  — if JSONL exposes the breakdown
+    output_tokens   int | None  — if JSONL exposes the breakdown
+    n_turns         int         — number of model turns (``codex`` markers)
+    per_turn_tokens list[dict]  — [{turn: N, total: T, input: I, output: O}]
+    exit_code       int | None  — from the caller (not parsed here)</pre>
+  </div>
+</details>
+
+
+
 <h4>Classes</h4>
 
 <details class="symbol class-symbol" id="module-llm_client-sdk-agents_codex-AsyncCodexStream">
@@ -9309,7 +9335,9 @@ Raises:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>END</code></td><td><code>&#x27;__end__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>START</code></td><td><code>&#x27;__start__&#x27;</code></td><td>str</td></tr>
+<tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 

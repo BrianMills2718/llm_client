@@ -398,6 +398,8 @@ from llm_client.sdk.agents_codex import (  # noqa: F401
     _stream_codex,
     _strip_fences,
     _terminate_pid_tree,
+    log_codex_exec_session,
+    parse_codex_exec_events,
 )
 
 # ===========================================================================

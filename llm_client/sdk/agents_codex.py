@@ -1330,3 +1330,182 @@ def _stream_codex(
     if hooks and hooks.before_call:
         hooks.before_call(model, messages, kwargs)
     return CodexStream(model, messages, hooks=hooks, timeout=timeout, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Public: Codex exec session observability
+# ---------------------------------------------------------------------------
+
+def parse_codex_exec_events(stdout_jsonl: str, stderr: str) -> dict[str, Any]:
+    """Parse a Codex exec session into structured observability data.
+
+    Codex exec (``codex exec --json``) writes one JSON event per line to
+    stdout.  The human-readable transcript (tool calls, reasoning) goes to
+    stderr.  This function combines both sources to produce a dict suitable
+    for logging or display.
+
+    Returns a dict with:
+        model           str | None  — from the stderr session header
+        reasoning_effort str | None — from the stderr session header
+        session_id      str | None  — Codex session UUID
+        total_tokens    int | None  — from JSONL usage events or stderr fallback
+        input_tokens    int | None  — if JSONL exposes the breakdown
+        output_tokens   int | None  — if JSONL exposes the breakdown
+        n_turns         int         — number of model turns (``codex`` markers)
+        per_turn_tokens list[dict]  — [{turn: N, total: T, input: I, output: O}]
+        exit_code       int | None  — from the caller (not parsed here)
+    """
+    result: dict[str, Any] = {
+        "model": None,
+        "reasoning_effort": None,
+        "session_id": None,
+        "total_tokens": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "n_turns": 0,
+        "per_turn_tokens": [],
+        "exit_code": None,
+    }
+
+    # --- Parse stderr header ------------------------------------------------
+    for line in stderr.splitlines():
+        s = line.strip()
+        if s.startswith("model:"):
+            result["model"] = s.split(":", 1)[1].strip()
+        elif s.startswith("reasoning effort:"):
+            result["reasoning_effort"] = s.split(":", 1)[1].strip()
+        elif s.startswith("session id:"):
+            result["session_id"] = s.split(":", 1)[1].strip()
+        elif s == "codex":
+            result["n_turns"] = result["n_turns"] + 1
+
+    # --- Fallback: total tokens from stderr ("tokens used\nNNNNN") ----------
+    stderr_lines = stderr.splitlines()
+    for i, line in enumerate(stderr_lines):
+        if line.strip() == "tokens used" and i + 1 < len(stderr_lines):
+            raw = stderr_lines[i + 1].strip().replace(",", "")
+            if raw.isdigit():
+                result["total_tokens"] = int(raw)
+                break
+
+    # --- Parse JSONL event stream -------------------------------------------
+    if not stdout_jsonl.strip():
+        return result
+
+    turn_idx = 0
+    cumulative_total = 0
+
+    for line in stdout_jsonl.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+
+        event_type = event.get("type", "")
+
+        # Count turns from JSONL too (prefer JSONL over stderr count)
+        if event_type == "turn.started":
+            turn_idx += 1
+
+        # Extract usage from any event that carries it
+        usage = event.get("usage") or {}
+        if not usage and "response" in event:
+            usage = event["response"].get("usage", {}) or {}
+
+        if usage:
+            total = usage.get("total_tokens") or (
+                (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+            )
+            if total:
+                cumulative_total = max(cumulative_total, total)
+                result["per_turn_tokens"].append({
+                    "turn": turn_idx,
+                    "total": total,
+                    "input": usage.get("input_tokens") or usage.get("prompt_tokens"),
+                    "output": usage.get("output_tokens") or usage.get("completion_tokens"),
+                })
+                # Update breakdown if present
+                if usage.get("input_tokens"):
+                    result["input_tokens"] = usage["input_tokens"]
+                if usage.get("output_tokens"):
+                    result["output_tokens"] = usage["output_tokens"]
+
+    if cumulative_total:
+        result["total_tokens"] = cumulative_total
+        if result["per_turn_tokens"]:
+            result["n_turns"] = max(t["turn"] for t in result["per_turn_tokens"])
+
+    return result
+
+
+def log_codex_exec_session(
+    session: dict[str, Any],
+    *,
+    task: str,
+    trace_id: str,
+    latency_s: float,
+    component_id: str | None = None,
+    exit_code: int | None = None,
+) -> None:
+    """Log a Codex exec session to the shared observability DB.
+
+    Call this after each ``codex exec`` subprocess completes, passing the
+    result of ``parse_codex_exec_events()``.  The session appears in
+    ``make cost`` / ``make errors`` alongside regular LLM calls.
+
+    Args:
+        session:      Output of ``parse_codex_exec_events()``.
+        task:         Task label (e.g. ``"ac14/zeta_scale_40"``).
+        trace_id:     Hierarchical trace ID (e.g. ``"trial_2/attempt_1/compute_speed"``).
+        latency_s:    Wall-clock seconds the subprocess took.
+        component_id: Optional component name; appended to content for diagnosis.
+        exit_code:    Subprocess return code; stored in finish_reason.
+    """
+    model = session.get("model") or "codex-exec"
+    total_tokens = session.get("total_tokens") or 0
+    input_tokens = session.get("input_tokens") or 0
+    output_tokens = session.get("output_tokens") or 0
+
+    # Build a minimal LLMCallResult so io_log.log_call() can extract fields.
+    usage_dict: dict[str, Any] = {"total_tokens": total_tokens}
+    if input_tokens:
+        usage_dict["prompt_tokens"] = input_tokens
+    if output_tokens:
+        usage_dict["completion_tokens"] = output_tokens
+
+    finish_reason = "stop" if exit_code == 0 else f"exit_{exit_code}"
+    content = component_id or ""
+    n_turns = session.get("n_turns") or 0
+    reasoning_effort = session.get("reasoning_effort") or ""
+    extra_notes = f"turns={n_turns}"
+    if reasoning_effort:
+        extra_notes += f" reasoning={reasoning_effort}"
+    if content:
+        extra_notes += f" component={content}"
+
+    result = LLMCallResult(
+        content=extra_notes,
+        usage=usage_dict,
+        cost=0.0,
+        model=model,
+        finish_reason=finish_reason,
+        cost_source="subscription_included",
+        billing_mode="subscription_included",
+    )
+
+    try:
+        import llm_client.io_log as _io_log
+        _io_log.log_call(
+            model=model,
+            messages=None,
+            result=result,
+            latency_s=latency_s,
+            caller="codex_exec",
+            task=task,
+            trace_id=trace_id,
+        )
+    except Exception as exc:  # observability must not break execution
+        logger.warning("log_codex_exec_session failed (non-fatal): %s", exc)
