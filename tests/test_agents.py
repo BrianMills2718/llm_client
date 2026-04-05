@@ -121,6 +121,9 @@ class TestIsAgentModel:
     def test_codex_family_older_version(self) -> None:
         assert _is_agent_model("gpt-5.2-codex") is True
 
+    def test_gpt54_alias_routes_to_codex_sdk(self) -> None:
+        assert _is_agent_model("gpt-5.4") is True
+
     def test_codex_family_case_insensitive(self) -> None:
         assert _is_agent_model("GPT-5.3-CODEX") is True
         assert _is_agent_model("Gpt-5.1-Codex-Mini") is True
@@ -129,6 +132,10 @@ class TestIsAgentModel:
         """Provider-prefixed Codex-family models are still detected."""
         assert _is_agent_model("openai/gpt-5.3-codex") is True
         assert _is_agent_model("openrouter/openai/gpt-5.3-codex") is True
+
+    def test_gpt54_alias_with_provider_prefix_routes_to_codex_sdk(self) -> None:
+        assert _is_agent_model("openai/gpt-5.4") is True
+        assert _is_agent_model("openrouter/openai/gpt-5.4") is True
 
     def test_non_codex_gpt_models(self) -> None:
         """Regular GPT models should NOT match Codex-family pattern."""
@@ -182,6 +189,9 @@ class TestCodexReasoningEffortNormalization:
     def test_codex_alias(self) -> None:
         assert _parse_agent_model("codex-mini-latest") == ("codex", "codex-mini-latest")
 
+    def test_gpt54_alias(self) -> None:
+        assert _parse_agent_model("gpt-5.4") == ("codex", "gpt-5.4")
+
     def test_codex_family_bare(self) -> None:
         """Codex-family models parse as (codex, <full-model-name>)."""
         assert _parse_agent_model("gpt-5.3-codex") == ("codex", "gpt-5.3-codex")
@@ -189,6 +199,9 @@ class TestCodexReasoningEffortNormalization:
     def test_codex_family_with_suffix(self) -> None:
         assert _parse_agent_model("gpt-5.1-codex-mini") == ("codex", "gpt-5.1-codex-mini")
         assert _parse_agent_model("gpt-5.1-codex-max") == ("codex", "gpt-5.1-codex-max")
+
+    def test_provider_prefixed_gpt54_alias(self) -> None:
+        assert _parse_agent_model("openrouter/openai/gpt-5.4") == ("codex", "gpt-5.4")
 
 
 # ---------------------------------------------------------------------------

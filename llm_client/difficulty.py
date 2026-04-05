@@ -153,8 +153,11 @@ def _is_model_available(model: str) -> bool:
     if model in ("codex", "claude-code") or model.startswith("codex/") or model.startswith("claude-code/"):
         return True  # Agent SDKs use their own auth
     # Codex-family models (e.g. gpt-5.3-codex) use the Codex SDK's own auth.
-    from llm_client.execution.call_contracts import _is_codex_family_model
-    if _is_codex_family_model(model):
+    from llm_client.execution.call_contracts import (
+        _is_codex_alias_model,
+        _is_codex_family_model,
+    )
+    if _is_codex_alias_model(model) or _is_codex_family_model(model):
         return True
     # Map model prefix to env var
     prefix_to_env: dict[str, str] = {

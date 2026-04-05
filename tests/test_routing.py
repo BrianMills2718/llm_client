@@ -53,6 +53,35 @@ def test_resolve_api_base_prefers_explicit_and_injects_openrouter_default() -> N
     )
 
 
+def test_resolve_call_gpt54_canonicalizes_to_codex_under_openrouter_policy() -> None:
+    cfg = ClientConfig(routing_policy="openrouter")
+    plan = resolve_call(CallRequest(model="gpt-5.4"), cfg)
+
+    assert plan.primary_model == "codex/gpt-5.4"
+    assert plan.models == ["codex/gpt-5.4"]
+    assert plan.routing_trace["normalized_from"] == "gpt-5.4"
+    assert plan.routing_trace["normalized_to"] == "codex/gpt-5.4"
+
+
+def test_resolve_call_gpt54_canonicalizes_to_codex_under_direct_policy() -> None:
+    cfg = ClientConfig(routing_policy="direct")
+    plan = resolve_call(CallRequest(model="gpt-5.4"), cfg)
+
+    assert plan.primary_model == "codex/gpt-5.4"
+    assert plan.models == ["codex/gpt-5.4"]
+    assert plan.routing_trace["routing_policy"] == "openrouter_off"
+
+
+def test_resolve_call_prefixed_gpt54_canonicalizes_to_codex() -> None:
+    cfg = ClientConfig(routing_policy="openrouter")
+    plan = resolve_call(CallRequest(model="openrouter/openai/gpt-5.4"), cfg)
+
+    assert plan.primary_model == "codex/gpt-5.4"
+    assert plan.models == ["codex/gpt-5.4"]
+    assert plan.routing_trace["normalized_from"] == "openrouter/openai/gpt-5.4"
+    assert plan.routing_trace["normalized_to"] == "codex/gpt-5.4"
+
+
 def test_resolve_call_normalizes_google_gemini_alias_to_openrouter() -> None:
     """OpenRouter policy should canonicalize google/gemini provider aliases."""
     cfg = ClientConfig(routing_policy="openrouter")

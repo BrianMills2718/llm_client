@@ -64,8 +64,11 @@ def _get_provider(model: str) -> str:
     # "gpt-5.3-codex" start with "gpt-" but route to the Codex SDK.
     if model.startswith(("claude-code", "codex")):
         return "agent"
-    from llm_client.execution.call_contracts import _is_codex_family_model
-    if _is_codex_family_model(model):
+    from llm_client.execution.call_contracts import (
+        _is_codex_alias_model,
+        _is_codex_family_model,
+    )
+    if _is_codex_alias_model(model) or _is_codex_family_model(model):
         return "agent"
     for prefix, provider in _PROVIDER_PREFIXES.items():
         if model.startswith(prefix):
