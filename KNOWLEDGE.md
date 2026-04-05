@@ -69,6 +69,19 @@ re-submitting until budget exhaustion even after the validator signaled both
 control churn and forces finalization immediately. Verified in
 `tests/test_mcp_agent.py::test_repeated_submit_rejections_can_force_final_early`.
 
+### 2026-04-04 — codex — bug-pattern
+
+**Pending-atom submit rejections need a TODO-progress gate, not forced-final acceptance.**
+
+The DIGIMON overnight traces showed that the earlier shared fix was too broad:
+`pending_atoms` plus `requires_forced_terminal_path` does not mean "accept the
+best final answer now." It means the controller still has unresolved semantic
+work. Plan #91 changes the shared MCP runtime so this rejection family opens a
+TODO-progress retry gate in addition to the evidence gate. Repeated submit
+attempts are suppressed until TODO state changes, which prevents this family
+from escalating directly into `SUBMIT_FORCED_ACCEPT_FORCED_FINAL`. Verified in
+`tests/test_mcp_agent.py::test_pending_atom_submit_rejections_require_todo_progress_before_retry`.
+
 ### 2026-04-04 — codex — integration-issue
 
 The installed Codex SDK can fail on file-writing runs before llm_client

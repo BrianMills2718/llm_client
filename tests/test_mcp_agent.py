@@ -3661,8 +3661,8 @@ class TestAgentDiagnostics:
         # Successful evidence call should clear pending digest gate.
         assert agent_result.metadata.get("submit_evidence_digest_at_last_failure") is None
 
-    async def test_repeated_submit_rejections_can_force_final_early(self) -> None:
-        """Repeated validator rejections that require forced-terminal submission should stop churn early."""
+    async def test_pending_atom_submit_rejections_require_todo_progress_before_retry(self) -> None:
+        """Pending-atom submit churn should be blocked instead of forcing final acceptance."""
         from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_call_names: list[str] = []
@@ -3707,9 +3707,11 @@ class TestAgentDiagnostics:
                                     "reason_code": "pending_atoms",
                                     "message": "atom a2 still unresolved",
                                 },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [ ] a2",
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
                                 },
                             }
                         ),
@@ -3728,9 +3730,11 @@ class TestAgentDiagnostics:
                                     "reason_code": "pending_atoms",
                                     "message": "atom a2 still unresolved",
                                 },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [ ] a2",
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
                                 },
                             }
                         ),
@@ -3783,7 +3787,7 @@ class TestAgentDiagnostics:
                 }],
                 finish_reason="tool_calls",
             ),
-            _make_llm_result(content="12", finish_reason="stop"),
+            _make_llm_result(content="Need to resolve atom a2 before submit.", finish_reason="stop"),
         ]
 
         agent_result = MCPAgentResult()
@@ -3797,7 +3801,7 @@ class TestAgentDiagnostics:
                 ],
                 agent_result,
                 mock_executor,
-                10,
+                5,
                 None,
                 False,
                 50000,
@@ -3807,14 +3811,210 @@ class TestAgentDiagnostics:
                 kwargs={},
             )
 
-        assert content == "12"
+        assert content == "Need to resolve atom a2 before submit."
         assert finish == "stop"
         assert executor_call_names == [
             "chunk_text_search",
             "submit_answer",
             "chunk_text_search",
-            "submit_answer",
         ]
-        assert agent_result.metadata["submit_validation_reason_counts"]["pending_atoms"] == 2
+        assert agent_result.metadata["submit_validation_reason_counts"]["pending_atoms"] == 1
+        assert "CONTROL_CHURN_THRESHOLD_EXCEEDED" not in agent_result.metadata["failure_event_codes"]
+        assert "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" not in agent_result.metadata["failure_event_codes"]
+        assert agent_result.metadata["required_submit_missing"] is True
+        assert agent_result.metadata["submit_retry_guidance"] == (
+            "Resolve atom a2 via entity_search(string) before retry."
+        )
+        assert any(
+            record.tool == "submit_answer"
+            and "requires TODO progress" in (record.error or "")
+            and "Resolve atom a2 via entity_search(string) before retry." in (record.error or "")
+            for record in agent_result.tool_calls
+        )
+
+    async def test_repeated_submit_suppressions_without_todo_progress_force_control_churn(self) -> None:
+        """Repeated suppressed submit retries on the same TODO state should end the loop early."""
+        from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
+
+        executor_call_names: list[str] = []
+        search_count = 0
+
+        async def mock_executor(tool_calls, max_len):
+            nonlocal search_count
+            tool_name = tool_calls[0]["function"]["name"]
+            executor_call_names.append(tool_name)
+            if tool_name == "chunk_text_search":
+                search_count += 1
+                return (
+                    [
+                        MCPToolCallRecord(
+                            server="srv",
+                            tool="chunk_text_search",
+                            arguments={"query_text": f"evidence {search_count}"},
+                            result=json.dumps({"results": [{"chunk_id": f"chunk_{search_count}"}]}),
+                        ),
+                    ],
+                    [
+                        {
+                            "role": "tool",
+                            "tool_call_id": f"tc_search_{search_count}",
+                            "content": json.dumps({"results": [{"chunk_id": f"chunk_{search_count}"}]}),
+                        }
+                    ],
+                )
+            return (
+                [
+                    MCPToolCallRecord(
+                        server="srv",
+                        tool="submit_answer",
+                        arguments={"reasoning": "grounded", "answer": "12"},
+                        result=json.dumps(
+                            {
+                                "status": "rejected",
+                                "pending_atoms": 1,
+                                "pending_ids": ["a2"],
+                                "validation_error": {
+                                    "reason_code": "pending_atoms",
+                                    "message": "atom a2 still unresolved",
+                                },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [>] a2",
+                                "recovery_policy": {
+                                    "new_evidence_required_before_retry": True,
+                                    "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
+                                },
+                            }
+                        ),
+                    ),
+                ],
+                [
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"tc_submit_{len([n for n in executor_call_names if n == 'submit_answer'])}",
+                        "content": json.dumps(
+                            {
+                                "status": "rejected",
+                                "pending_atoms": 1,
+                                "pending_ids": ["a2"],
+                                "validation_error": {
+                                    "reason_code": "pending_atoms",
+                                    "message": "atom a2 still unresolved",
+                                },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [>] a2",
+                                "recovery_policy": {
+                                    "new_evidence_required_before_retry": True,
+                                    "requires_forced_terminal_path": True,
+                                    "repair_guidance": "Resolve atom a2 via entity_search(string) before retry.",
+                                },
+                            }
+                        ),
+                    }
+                ],
+            )
+
+        llm_results = [
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_1",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"evidence 1","tool_reasoning":"get initial evidence"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_1",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"grounded","answer":"12","tool_reasoning":"first submit"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_2",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"evidence 2","tool_reasoning":"retry evidence"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_2",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"grounded","answer":"12","tool_reasoning":"second submit"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_search_3",
+                    "function": {
+                        "name": "chunk_text_search",
+                        "arguments": '{"query_text":"evidence 3","tool_reasoning":"retry evidence again"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(
+                content="",
+                tool_calls=[{
+                    "id": "tc_submit_3",
+                    "function": {
+                        "name": "submit_answer",
+                        "arguments": '{"reasoning":"grounded","answer":"12","tool_reasoning":"third submit"}',
+                    },
+                }],
+                finish_reason="tool_calls",
+            ),
+            _make_llm_result(content="best effort", finish_reason="stop"),
+        ]
+
+        agent_result = MCPAgentResult()
+        with patch("llm_client.agent.mcp_agent._inner_acall_llm", side_effect=llm_results):
+            content, finish = await _agent_loop(
+                "test-model",
+                [{"role": "user", "content": "q"}],
+                [
+                    {"type": "function", "function": {"name": "submit_answer"}},
+                    {"type": "function", "function": {"name": "chunk_text_search"}},
+                ],
+                agent_result,
+                mock_executor,
+                8,
+                None,
+                False,
+                50000,
+                max_message_chars=60,
+                suppress_control_loop_calls=True,
+                timeout=60,
+                kwargs={"submit_progress_stall_turn_threshold": 2},
+            )
+
+        assert content == "best effort"
+        assert finish == "stop"
+        assert executor_call_names == [
+            "chunk_text_search",
+            "submit_answer",
+            "chunk_text_search",
+            "chunk_text_search",
+        ]
         assert "CONTROL_CHURN_THRESHOLD_EXCEEDED" in agent_result.metadata["failure_event_codes"]
-        assert "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" in agent_result.metadata["failure_event_codes"]
+        assert agent_result.metadata["submit_progress_stall_streak_max"] == 2
+        assert any(
+            "Repeated submit suppressions without TODO progress" in msg.get("content", "")
+            for msg in agent_result.conversation_trace
+            if isinstance(msg, dict)
+        )
