@@ -1,6 +1,6 @@
 # Plan 24: Workflow Kit Manifest, Validator, and Runtime Adapter Proving Slice
 
-**Status:** Redirected / Superseded
+**Status:** Cancelled
 **Type:** design
 **Priority:** N/A — see redirect below
 **Blocked By:** N/A
