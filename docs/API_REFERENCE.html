@@ -1,4 +1,4 @@
-<!-- Generated: 2026-04-05T15:28:47Z -->
+<!-- Generated: 2026-04-05T19:17:59Z -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -1281,6 +1281,20 @@ litellm passes to all registered callbacks (including Langfuse). Preserves any
 existing metadata the caller already set.
 
 This is a no-op when both task and trace_id are None.</pre>
+  </div>
+</details>
+
+
+
+<h4>Classes</h4>
+
+<details class="symbol class-symbol" id="module-llm_client-langfuse_callbacks-LangfuseCallbackConfig">
+  <summary><code>LangfuseCallbackConfig</code> <span class="sig">(*, enabled: bool, host: str | None) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Configuration state describing whether Langfuse callbacks are active.</p>
+    <p class="meta">Source: <code>llm_client.langfuse_callbacks</code> class</p>
+    <pre class="doc">Configuration state describing whether Langfuse callbacks are active.</pre>
+    
   </div>
 </details>
 
@@ -3160,7 +3174,7 @@ LLM calls, prompt identity, budgets, and observability still flow through
 <h4>Functions</h4>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-build_summary_approval_workflow">
-  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: typing.Any | None = None) -&gt; Any</span></summary>
+  <summary><code>build_summary_approval_workflow</code> <span class="sig">(*, checkpointer: Any | None = None) -&gt; Any</span></summary>
   <div class="symbol-body">
     <p class="summary">Build the concrete LangGraph summary approval workflow.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3177,7 +3191,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-resume_summary_approval_workflow">
-  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
+  <summary><code>resume_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, approved: bool, review_note: str | None = None) -&gt; dict[str, Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Resume the summary approval workflow with an explicit review decision.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3186,7 +3200,7 @@ Returns:
 </details>
 
 <details class="symbol" id="module-llm_client-workflow_langgraph-start_summary_approval_workflow">
-  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, typing.Any]</span></summary>
+  <summary><code>start_summary_approval_workflow</code> <span class="sig">(app: Any, *, workflow_id: str, source_text: str, requested_style: str = &#x27;concise&#x27;, max_budget: float = 0.25, max_revision_rounds: int = 1, trace_id: str | None = None) -&gt; dict[str, Any]</span></summary>
   <div class="symbol-body">
     <p class="summary">Start the concrete summary approval workflow and run until pause or end.</p>
     <p class="meta">Source: <code>llm_client.workflow_langgraph</code> functions</p>
@@ -3205,15 +3219,39 @@ Returns:
 
 
 
+<h4>Classes</h4>
+
+<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalDecision">
+  <summary><code>SummaryApprovalDecision</code> <span class="sig">()</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Validated human review payload used to resume the workflow.</p>
+    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
+    <pre class="doc">Validated human review payload used to resume the workflow.</pre>
+    
+  </div>
+</details>
+
+<details class="symbol class-symbol" id="module-llm_client-workflow_langgraph-SummaryApprovalState">
+  <summary><code>SummaryApprovalState</code> <span class="sig">()</span></summary>
+  <div class="symbol-body">
+    <p class="summary">State carried through the LangGraph summary approval workflow.</p>
+    <p class="meta">Source: <code>llm_client.workflow_langgraph</code> class</p>
+    <pre class="doc">State carried through the LangGraph summary approval workflow.</pre>
+    
+  </div>
+</details>
+
+
+
 <h4>Constants</h4>
 <table>
   <thead>
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>str</td></tr>
-<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>str</td></tr>
-<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>DRAFT_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_draft@1&#x27;</code></td><td>literal</td></tr>
+<tr><td><code>REVISION_PROMPT_REF</code></td><td><code>&#x27;shared.workflow.summary_approval_revision@1&#x27;</code></td><td>literal</td></tr>
+<tr><td><code>WORKFLOW_SELECTION_TASK</code></td><td><code>&#x27;synthesis&#x27;</code></td><td>literal</td></tr>
   </tbody>
 </table>
 
@@ -3612,6 +3650,26 @@ Returns:
   </div>
 </details>
 
+<details class="symbol" id="module-llm_client-agent-agent_planning-validate_custom_tool_contract">
+  <summary><code>validate_custom_tool_contract</code> <span class="sig">(tool_name: str, tool: Callable[..., Any]) -&gt; llm_client.agent.agent_planning.ToolSignatureContract</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Validate and describe the contract for a DIGIMON-supplied custom plan or todo tool.</p>
+    <p class="meta">Source: <code>llm_client.agent.agent_planning</code> functions</p>
+    <pre class="doc">Validate and describe the contract for a DIGIMON-supplied custom plan or todo tool.
+
+DIGIMON passes custom_plan_tool / custom_todo_tool via PlanningConfig.
+This boundary records the expected calling contract so the integration
+surface is visible to ecosystem tooling.
+
+Args:
+    tool_name: Either &#x27;plan_tool&#x27; or &#x27;todo_tool&#x27;.
+    tool: The callable provided by DIGIMON.
+
+Returns:
+    A ToolSignatureContract describing the tool&#x27;s expected interface.</pre>
+  </div>
+</details>
+
 
 
 <h4>Classes</h4>
@@ -3745,6 +3803,16 @@ Attributes:
     custom_plan_tool: Project-specific plan creation tool (replaces built-in).
     custom_todo_tool: Project-specific status update tool (replaces built-in).
     require_plan_before_tools: If True, first action must be create_plan.</pre>
+    
+  </div>
+</details>
+
+<details class="symbol class-symbol" id="module-llm_client-agent-agent_planning-ToolSignatureContract">
+  <summary><code>ToolSignatureContract</code> <span class="sig">(*, tool_name: str, accepts_text: bool, returns_structured: bool) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Describes the required callable shape for a DIGIMON-provided custom plan or todo tool.</p>
+    <p class="meta">Source: <code>llm_client.agent.agent_planning</code> class</p>
+    <pre class="doc">Describes the required callable shape for a DIGIMON-provided custom plan or todo tool.</pre>
     
   </div>
 </details>
@@ -5859,6 +5927,28 @@ signature. See Plan #15.</pre>
   </div>
 </details>
 
+<details class="symbol" id="module-llm_client-core-config-resolve_with_record">
+  <summary><code>resolve_with_record</code> <span class="sig">(self, param_name: str, explicit: Optional[~_T], default: ~_T) -&gt; llm_client.core.config.DefaultResolution</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Resolve one config parameter and return a typed record of the resolution.</p>
+    <p class="meta">Source: <code>llm_client.core.config</code> method</p>
+    <pre class="doc">Resolve one config parameter and return a typed record of the resolution.
+
+Used by consumers that need to trace whether a value came from an explicit
+caller arg or from the config default — e.g. for observability or audit.</pre>
+  </div>
+</details>
+
+    
+  </div>
+</details>
+
+<details class="symbol class-symbol" id="module-llm_client-core-config-DefaultResolution">
+  <summary><code>DefaultResolution</code> <span class="sig">(*, param_name: str, explicit_value: Any, resolved_value: Any, source: Literal[&#x27;explicit&#x27;, &#x27;config_default&#x27;]) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Record of a single config-parameter default resolution.</p>
+    <p class="meta">Source: <code>llm_client.core.config</code> class</p>
+    <pre class="doc">Record of a single config-parameter default resolution.</pre>
     
   </div>
 </details>
@@ -6654,6 +6744,18 @@ Args:
   </div>
 </details>
 
+<details class="symbol" id="module-llm_client-execution-batch_runtime-emit_batch_stagnation_event">
+  <summary><code>emit_batch_stagnation_event</code> <span class="sig">(tracker: llm_client.execution.batch_runtime.BatchProgressTracker) -&gt; llm_client.execution.batch_runtime.BatchStagnationEvent</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Extract and return a typed stagnation event from a BatchProgressTracker.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> functions</p>
+    <pre class="doc">Extract and return a typed stagnation event from a BatchProgressTracker.
+
+Called when stagnation is detected (N consecutive identical errors).
+Consumers can inspect this event to trigger circuit-breaker logic.</pre>
+  </div>
+</details>
+
 
 
 <h4>Classes</h4>
@@ -6694,6 +6796,16 @@ Args:
   </div>
 </details>
 
+    
+  </div>
+</details>
+
+<details class="symbol class-symbol" id="module-llm_client-execution-batch_runtime-BatchStagnationEvent">
+  <summary><code>BatchStagnationEvent</code> <span class="sig">(*, error_hash: str, stagnation_window: int, items_completed: int, items_total: int) -&gt; None</span></summary>
+  <div class="symbol-body">
+    <p class="summary">Typed event emitted when a batch run detects consecutive identical errors.</p>
+    <p class="meta">Source: <code>llm_client.execution.batch_runtime</code> class</p>
+    <pre class="doc">Typed event emitted when a batch run detects consecutive identical errors.</pre>
     
   </div>
 </details>
@@ -9197,9 +9309,7 @@ Raises:
     <tr><th>Name</th><th>Value</th><th>Type</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>END</code></td><td><code>&#x27;__end__&#x27;</code></td><td>str</td></tr>
-<tr><td><code>START</code></td><td><code>&#x27;__start__&#x27;</code></td><td>str</td></tr>
-<tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
+    <tr><td><code>WF_STAGE_KEY</code></td><td><code>&#x27;_wf_current_stage&#x27;</code></td><td>str</td></tr>
   </tbody>
 </table>
 

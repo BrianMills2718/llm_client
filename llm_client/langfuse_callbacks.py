@@ -32,11 +32,36 @@ from __future__ import annotations
 import logging
 import os
 
+from pydantic import Field
+
+try:
+    from data_contracts import boundary, BoundaryModel
+except ImportError:
+    def boundary(*args, **kwargs):  # type: ignore[misc]
+        def decorator(fn):  # type: ignore[misc]
+            return fn
+        return decorator
+    from pydantic import BaseModel as BoundaryModel  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+
+class LangfuseCallbackConfig(BoundaryModel):
+    """Configuration state describing whether Langfuse callbacks are active."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(description="Whether Langfuse env vars are present and callbacks were activated")
+    host: str | None = Field(description="LANGFUSE_HOST if set, else None")
 
 _initialized: bool = False
 
 
+@boundary(
+    name="llm_client.langfuse_callback_config",
+    producer="llm_client",
+    consumers=["observability"],
+)
 def configure_langfuse_callbacks() -> bool:
     """Register Langfuse in LiteLLM's callback lists if env-configured.
 

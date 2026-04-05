@@ -5,9 +5,33 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, TypeVar
+
+from pydantic import Field
+
+try:
+    from data_contracts import boundary, BoundaryModel
+except ImportError:
+    def boundary(*args, **kwargs):  # type: ignore[misc]
+        def decorator(fn):  # type: ignore[misc]
+            return fn
+        return decorator
+    from pydantic import BaseModel as BoundaryModel  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+class DefaultResolution(BoundaryModel):
+    """Record of a single config-parameter default resolution."""
+
+    model_config = {"extra": "forbid"}
+
+    param_name: str = Field(description="Name of the config parameter being resolved")
+    explicit_value: Any = Field(description="Caller-provided value, or None if not supplied")
+    resolved_value: Any = Field(description="Final resolved value after applying config defaults")
+    source: Literal["explicit", "config_default"] = Field(description="Whether the value came from the caller or the config default")
 
 OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
@@ -72,6 +96,31 @@ class ClientConfig:
             "max_delay": max_delay if max_delay is not None else self.default_max_delay,
             "max_concurrent": max_concurrent if max_concurrent is not None else self.default_max_concurrent,
         }
+
+    @boundary(
+        name="llm_client.default_resolution",
+        producer="llm_client",
+        consumers=["core_client"],
+    )
+    def resolve_with_record(self, param_name: str, explicit: _T | None, default: _T) -> DefaultResolution:
+        """Resolve one config parameter and return a typed record of the resolution.
+
+        Used by consumers that need to trace whether a value came from an explicit
+        caller arg or from the config default — e.g. for observability or audit.
+        """
+        if explicit is not None:
+            return DefaultResolution(
+                param_name=param_name,
+                explicit_value=explicit,
+                resolved_value=explicit,
+                source="explicit",
+            )
+        return DefaultResolution(
+            param_name=param_name,
+            explicit_value=None,
+            resolved_value=default,
+            source="config_default",
+        )
 
     @classmethod
     def from_env(cls) -> "ClientConfig":

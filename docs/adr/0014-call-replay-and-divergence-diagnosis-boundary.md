@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-22
 Last verified: 2026-04-05
-Verification context: schema_hash + response_format_type + causal_parent_id observability extended (Plan #54)
+Verification context: @boundary decorators added to batch_runtime/config (2026-04-05)
 
 ## Context
 

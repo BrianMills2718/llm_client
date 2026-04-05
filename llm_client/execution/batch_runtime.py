@@ -13,10 +13,30 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+try:
+    from data_contracts import boundary, BoundaryModel
+except ImportError:
+    def boundary(*args, **kwargs):  # type: ignore[misc]
+        def decorator(fn):  # type: ignore[misc]
+            return fn
+        return decorator
+    from pydantic import BaseModel as BoundaryModel  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+
+class BatchStagnationEvent(BoundaryModel):
+    """Typed event emitted when a batch run detects consecutive identical errors."""
+
+    model_config = {"extra": "forbid"}
+
+    error_hash: str = Field(description="Hash of the repeated error (type:message[:200])")
+    stagnation_window: int = Field(description="Number of consecutive identical errors that triggered this event")
+    items_completed: int = Field(description="Items successfully completed before stagnation was detected")
+    items_total: int = Field(description="Total items in the batch")
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +100,26 @@ class BatchProgressTracker:
             "avg_latency_s": round(self.avg_latency_s, 3) if self.avg_latency_s else None,
             "completion_rate": round(self.completion_rate, 4),
         }
+
+
+@boundary(
+    name="llm_client.batch_stagnation_event",
+    producer="llm_client",
+    consumers=["agentic_scaffolding"],
+)
+def emit_batch_stagnation_event(tracker: BatchProgressTracker) -> BatchStagnationEvent:
+    """Extract and return a typed stagnation event from a BatchProgressTracker.
+
+    Called when stagnation is detected (N consecutive identical errors).
+    Consumers can inspect this event to trigger circuit-breaker logic.
+    """
+    error_hash = tracker._error_hashes[-1] if tracker._error_hashes else ""
+    return BatchStagnationEvent(
+        error_hash=error_hash,
+        stagnation_window=tracker._stagnation_window,
+        items_completed=tracker.completed,
+        items_total=tracker.total,
+    )
 
 if TYPE_CHECKING:
     from llm_client.core.config import ClientConfig
@@ -194,9 +234,10 @@ async def acall_llm_batch_impl(
                 if on_item_error is not None:
                     on_item_error(idx, exc)
                 if is_stagnant:
+                    event = emit_batch_stagnation_event(tracker)
                     logger.warning(
                         "BATCH_STAGNATION: %d consecutive identical errors. %s",
-                        stagnation_window,
+                        event.stagnation_window,
                         tracker.summary(),
                     )
                     if abort_on_stagnation:
@@ -208,9 +249,10 @@ async def acall_llm_batch_impl(
                 if on_item_error is not None:
                     on_item_error(idx, e)
                 if is_stagnant:
+                    event = emit_batch_stagnation_event(tracker)
                     logger.warning(
                         "BATCH_STAGNATION: %d consecutive identical errors. %s",
-                        stagnation_window,
+                        event.stagnation_window,
                         tracker.summary(),
                     )
                     if abort_on_stagnation:

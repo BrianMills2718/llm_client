@@ -11,9 +11,67 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Callable, Literal
+
+from pydantic import Field
+
+try:
+    from data_contracts import boundary, BoundaryModel
+except ImportError:
+    def boundary(*args, **kwargs):  # type: ignore[misc]
+        def decorator(fn):  # type: ignore[misc]
+            return fn
+        return decorator
+    from pydantic import BaseModel as BoundaryModel  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+class ToolSignatureContract(BoundaryModel):
+    """Describes the required callable shape for a DIGIMON-provided custom plan or todo tool."""
+
+    model_config = {"extra": "forbid"}
+
+    tool_name: str = Field(description="'plan_tool' or 'todo_tool' — which slot this contract describes")
+    accepts_text: bool = Field(description="Whether the tool accepts a plain text/string input")
+    returns_structured: bool = Field(description="Whether the tool returns structured data (dict/Pydantic) rather than a raw string")
+
+
+@boundary(
+    name="llm_client.digimon_tool_integration",
+    producer="llm_client",
+    consumers=["Digimon_for_KG_application"],
+)
+def validate_custom_tool_contract(tool_name: str, tool: Callable[..., Any]) -> ToolSignatureContract:
+    """Validate and describe the contract for a DIGIMON-supplied custom plan or todo tool.
+
+    DIGIMON passes custom_plan_tool / custom_todo_tool via PlanningConfig.
+    This boundary records the expected calling contract so the integration
+    surface is visible to ecosystem tooling.
+
+    Args:
+        tool_name: Either 'plan_tool' or 'todo_tool'.
+        tool: The callable provided by DIGIMON.
+
+    Returns:
+        A ToolSignatureContract describing the tool's expected interface.
+    """
+    import inspect
+    sig = inspect.signature(tool)
+    params = list(sig.parameters.values())
+    accepts_text = any(
+        p.annotation in (str, inspect.Parameter.empty)
+        for p in params
+        if p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
+    # Treat dict/BaseModel return annotations as structured; str/None/empty as plain
+    ret = sig.return_annotation
+    returns_structured = ret not in (str, None, inspect.Parameter.empty)
+    return ToolSignatureContract(
+        tool_name=tool_name,
+        accepts_text=accepts_text,
+        returns_structured=returns_structured,
+    )
 
 
 @dataclass
