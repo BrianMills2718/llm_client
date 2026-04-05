@@ -24,16 +24,16 @@ def _maybe_register_provider_cooldown(
     exc: Exception,
     warning_sink: list[str],
     logger: logging.Logger,
-) -> None:
+) -> float:
     """Publish shared cooldown state for 429-like provider failures."""
     try:
         from llm_client.execution.retry import _is_rate_limit_error, _retry_delay_hint
         from llm_client.utils import rate_limit as _rate_limit
     except Exception:
-        return
+        return 0.0
 
     if not _is_rate_limit_error(exc):
-        return
+        return 0.0
 
     hint_delay, hint_source = _retry_delay_hint(exc)
     source = hint_source if hint_source != "none" else "provider-floor"
@@ -43,7 +43,7 @@ def _maybe_register_provider_cooldown(
         source=source,
     )
     if applied_delay <= 0:
-        return
+        return 0.0
 
     provider = _rate_limit._get_provider(model)
     warning_sink.append(
@@ -57,6 +57,7 @@ def _maybe_register_provider_cooldown(
         applied_delay,
         source,
     )
+    return applied_delay
 
 
 def run_sync_with_retry(
@@ -80,7 +81,7 @@ def run_sync_with_retry(
         except Exception as exc:
             if on_error is not None:
                 on_error(exc, attempt)
-            _maybe_register_provider_cooldown(
+            registered_cooldown = _maybe_register_provider_cooldown(
                 model=model,
                 exc=exc,
                 warning_sink=warning_sink,
@@ -92,8 +93,10 @@ def run_sync_with_retry(
                 raise
 
             delay, retry_delay_source = compute_delay(attempt, exc)
+            effective_delay = max(delay, registered_cooldown)
+            sleep_delay = max(0.0, effective_delay - registered_cooldown)
             if on_retry is not None:
-                on_retry(attempt, exc, delay)
+                on_retry(attempt, exc, effective_delay)
             warning_sink.append(
                 f"RETRY {attempt + 1}/{max_retries + 1}: "
                 f"{model} ({type(exc).__name__}: {_error_text(exc)}) "
@@ -104,11 +107,12 @@ def run_sync_with_retry(
                 caller,
                 attempt + 1,
                 max_retries + 1,
-                delay,
+                effective_delay,
                 retry_delay_source,
                 _error_text(exc),
             )
-            time.sleep(delay)
+            if sleep_delay > 0:
+                time.sleep(sleep_delay)
 
     raise RuntimeError("run_sync_with_retry exhausted without returning")
 
@@ -134,7 +138,7 @@ async def run_async_with_retry(
         except Exception as exc:
             if on_error is not None:
                 on_error(exc, attempt)
-            _maybe_register_provider_cooldown(
+            registered_cooldown = _maybe_register_provider_cooldown(
                 model=model,
                 exc=exc,
                 warning_sink=warning_sink,
@@ -146,8 +150,10 @@ async def run_async_with_retry(
                 raise
 
             delay, retry_delay_source = compute_delay(attempt, exc)
+            effective_delay = max(delay, registered_cooldown)
+            sleep_delay = max(0.0, effective_delay - registered_cooldown)
             if on_retry is not None:
-                on_retry(attempt, exc, delay)
+                on_retry(attempt, exc, effective_delay)
             warning_sink.append(
                 f"RETRY {attempt + 1}/{max_retries + 1}: "
                 f"{model} ({type(exc).__name__}: {_error_text(exc)}) "
@@ -158,11 +164,12 @@ async def run_async_with_retry(
                 caller,
                 attempt + 1,
                 max_retries + 1,
-                delay,
+                effective_delay,
                 retry_delay_source,
                 _error_text(exc),
             )
-            await asyncio.sleep(delay)
+            if sleep_delay > 0:
+                await asyncio.sleep(sleep_delay)
 
     raise RuntimeError("run_async_with_retry exhausted without returning")
 

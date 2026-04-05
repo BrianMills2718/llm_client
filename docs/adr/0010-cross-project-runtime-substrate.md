@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-03-17
 Last verified: 2026-04-05
-Verification context: git-derived canonical project attribution keeps worktree observability grouped at repo scope (Plan #58)
+Verification context: shared 429 cooldown coordination now avoids duplicate retry waits and cooldown busy-spins across worktrees
 
 ## Context
 

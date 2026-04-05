@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: Gemini routing now canonicalizes both bare `gemini-*` ids and `google/...` aliases before execution identity is finalized, while the execution kernel coordinates shared 429 cooldowns
+Verification context: Gemini routing canonicalizes bare and aliased Gemini ids, and shared 429 cooldowns now avoid duplicate retry waits or cooldown busy-spins
 
 ## Context
 

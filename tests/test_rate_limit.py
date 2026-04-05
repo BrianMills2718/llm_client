@@ -1,8 +1,10 @@
 """Tests for llm_client.utils.rate_limit — per-provider concurrency limiting."""
 
 import asyncio
+import itertools
 import threading
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -170,17 +172,30 @@ class TestAsyncAcquire:
         )
         applied = register_rate_limit_cooldown(
             "gemini/gemini-3-flash",
-            0.05,
+            0.5,
             source="provider-hint",
         )
-        assert applied >= 0.04
+        assert applied >= 0.4
 
         started = time.perf_counter()
         async with aacquire("gemini/gemini-3-flash"):
             pass
         elapsed = time.perf_counter() - started
 
-        assert elapsed >= 0.03
+        assert elapsed >= 0.2
+
+    @pytest.mark.asyncio
+    async def test_async_cooldown_wait_does_not_busy_spin_without_clock_progress(self, monkeypatch):
+        """Async cooldown waits should not loop forever if a mocked sleep returns instantly."""
+        sleep_mock = AsyncMock()
+
+        monkeypatch.setattr(rl, "_provider_cooldown_remaining", lambda provider: 3.0)
+        monkeypatch.setattr(rl.asyncio, "sleep", sleep_mock)
+        monkeypatch.setattr(rl.time, "monotonic", lambda: next(itertools.repeat(100.0)))
+
+        await rl._await_provider_cooldown("openai")
+
+        sleep_mock.assert_awaited_once_with(3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +239,12 @@ class TestSharedCooldown:
     def test_register_rate_limit_cooldown_uses_provider_floor(self, tmp_path):
         configure(
             cooldown_path=tmp_path / "cooldowns.db",
-            cooldown_floors={"google": 0.1},
+            cooldown_floors={"google": 0.5},
         )
         applied = register_rate_limit_cooldown(
             "gemini/gemini-2.5-flash",
             None,
             source="provider-floor",
         )
-        assert applied >= 0.09
-        assert cooldown_remaining("gemini/gemini-2.5-flash") > 0
+        assert applied >= 0.4
+        assert cooldown_remaining("gemini/gemini-2.5-flash") > 0.1

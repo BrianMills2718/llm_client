@@ -110,6 +110,7 @@ _DEFAULT_COOLDOWN_DB_BUSY_TIMEOUT_MS = 1000
 _DEFAULT_COOLDOWN_FLOORS: dict[str, float] = {
     "google": 15.0,
 }
+_COOLDOWN_WAIT_EPSILON_S = 0.001
 _default_data_root = Path(
     os.environ.get("LLM_CLIENT_DATA_ROOT", str(Path.home() / "projects" / "data"))
 )
@@ -346,28 +347,42 @@ def _wait_for_provider_cooldown(provider: str) -> None:
     """Block until any shared provider cooldown expires."""
     while True:
         remaining = _provider_cooldown_remaining(provider)
-        if remaining <= 0:
+        if remaining <= _COOLDOWN_WAIT_EPSILON_S:
             return
         logger.warning(
             "Waiting for provider cooldown: provider=%s remaining=%.1fs",
             provider,
             remaining,
         )
+        started = time.monotonic()
         time.sleep(remaining)
+        if time.monotonic() - started < _COOLDOWN_WAIT_EPSILON_S:
+            logger.debug(
+                "Provider cooldown sleep returned without observable clock progress; "
+                "breaking wait loop to avoid busy spin",
+            )
+            return
 
 
 async def _await_provider_cooldown(provider: str) -> None:
     """Async wait until any shared provider cooldown expires."""
     while True:
         remaining = _provider_cooldown_remaining(provider)
-        if remaining <= 0:
+        if remaining <= _COOLDOWN_WAIT_EPSILON_S:
             return
         logger.warning(
             "Waiting for provider cooldown: provider=%s remaining=%.1fs",
             provider,
             remaining,
         )
+        started = time.monotonic()
         await asyncio.sleep(remaining)
+        if time.monotonic() - started < _COOLDOWN_WAIT_EPSILON_S:
+            logger.debug(
+                "Provider cooldown sleep returned without observable clock progress; "
+                "breaking async wait loop to avoid busy spin",
+            )
+            return
 
 
 def _get_async_sem(model: str) -> asyncio.Semaphore:

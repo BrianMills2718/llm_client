@@ -965,7 +965,7 @@ class TestNonRetryableErrors:
         )
         assert result.content == "Hello!"
         assert mock_sleep.call_count == 1
-        assert mock_sleep.call_args.args[0] >= 3.0
+        assert mock_sleep.call_args.args[0] >= 2.5
         assert any("retry_delay_source=structured" in warning for warning in result.warnings)
 
     @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
