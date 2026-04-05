@@ -470,6 +470,7 @@ async def _agent_loop(
     tool_error_counts: dict[tuple[str, str], int] = {}
     tool_error_nudges: dict[tuple[str, str], int] = {}
     submit_requires_new_evidence = False
+    submit_requires_todo_progress = False
     control_loop_suppressed_calls = 0
     last_budget_remaining: int | None = None
     rejected_missing_reasoning_calls = 0
@@ -542,6 +543,7 @@ async def _agent_loop(
     submit_validation_reason_counts: dict[str, int] = {}
     evidence_pointer_labels: set[str] = set()
     submit_evidence_digest_at_last_failure: str | None = None
+    submit_todo_status_at_last_failure: str | None = None
     evidence_digest_change_count = 0
     evidence_turns_total = 0
     evidence_turns_with_new_evidence = 0
@@ -928,6 +930,9 @@ async def _agent_loop(
             retrieval_no_hits_detector=_is_retrieval_no_hits_result,
             submit_requires_new_evidence=submit_requires_new_evidence,
             submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+            submit_requires_todo_progress=submit_requires_todo_progress,
+            submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
+            last_todo_status_line=_last_todo_status_line,
             evidence_pointer_labels=evidence_pointer_labels,
             foundation_run_id=foundation_run_id,
             foundation_session_id=foundation_session_id,
@@ -960,6 +965,10 @@ async def _agent_loop(
         submit_evidence_digest_at_last_failure = (
             tool_processing.submit_evidence_digest_at_last_failure
         )
+        submit_requires_todo_progress = tool_processing.submit_requires_todo_progress
+        submit_todo_status_at_last_failure = (
+            tool_processing.submit_todo_status_at_last_failure
+        )
         contract_rejected_record_count = (
             tool_processing.contract_rejected_record_count
         )
@@ -988,6 +997,8 @@ async def _agent_loop(
             evidence_pointer_labels=evidence_pointer_labels,
             submit_requires_new_evidence=submit_requires_new_evidence,
             submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+            submit_requires_todo_progress=submit_requires_todo_progress,
+            submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
             current_turn_deficit_digest=current_turn_deficit_digest,
             retrieval_stagnation_streak=retrieval_stagnation_streak,
             retrieval_stagnation_streak_max=retrieval_stagnation_streak_max,
@@ -1031,6 +1042,10 @@ async def _agent_loop(
         submit_requires_new_evidence = turn_outcome.submit_requires_new_evidence
         submit_evidence_digest_at_last_failure = (
             turn_outcome.submit_evidence_digest_at_last_failure
+        )
+        submit_requires_todo_progress = turn_outcome.submit_requires_todo_progress
+        submit_todo_status_at_last_failure = (
+            turn_outcome.submit_todo_status_at_last_failure
         )
         evidence_pointer_count = turn_outcome.evidence_pointer_count
         evidence_digest_change_count += (

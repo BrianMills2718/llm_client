@@ -3661,8 +3661,8 @@ class TestAgentDiagnostics:
         # Successful evidence call should clear pending digest gate.
         assert agent_result.metadata.get("submit_evidence_digest_at_last_failure") is None
 
-    async def test_repeated_submit_rejections_can_force_final_early(self) -> None:
-        """Repeated validator rejections that require forced-terminal submission should stop churn early."""
+    async def test_pending_atom_submit_rejections_require_todo_progress_before_retry(self) -> None:
+        """Pending-atom submit churn should be blocked instead of forcing final acceptance."""
         from llm_client.agent.mcp_agent import MCPAgentResult, _agent_loop
 
         executor_call_names: list[str] = []
@@ -3707,6 +3707,7 @@ class TestAgentDiagnostics:
                                     "reason_code": "pending_atoms",
                                     "message": "atom a2 still unresolved",
                                 },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [ ] a2",
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
@@ -3728,6 +3729,7 @@ class TestAgentDiagnostics:
                                     "reason_code": "pending_atoms",
                                     "message": "atom a2 still unresolved",
                                 },
+                                "todo_status_line": "[TODO: 1/2 done] [x] a1 | [ ] a2",
                                 "recovery_policy": {
                                     "new_evidence_required_before_retry": True,
                                     "requires_forced_terminal_path": True,
@@ -3783,7 +3785,7 @@ class TestAgentDiagnostics:
                 }],
                 finish_reason="tool_calls",
             ),
-            _make_llm_result(content="12", finish_reason="stop"),
+            _make_llm_result(content="Need to resolve atom a2 before submit.", finish_reason="stop"),
         ]
 
         agent_result = MCPAgentResult()
@@ -3797,7 +3799,7 @@ class TestAgentDiagnostics:
                 ],
                 agent_result,
                 mock_executor,
-                10,
+                5,
                 None,
                 False,
                 50000,
@@ -3807,14 +3809,18 @@ class TestAgentDiagnostics:
                 kwargs={},
             )
 
-        assert content == "12"
+        assert content == "Need to resolve atom a2 before submit."
         assert finish == "stop"
         assert executor_call_names == [
             "chunk_text_search",
             "submit_answer",
             "chunk_text_search",
-            "submit_answer",
         ]
-        assert agent_result.metadata["submit_validation_reason_counts"]["pending_atoms"] == 2
-        assert "CONTROL_CHURN_THRESHOLD_EXCEEDED" in agent_result.metadata["failure_event_codes"]
-        assert "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" in agent_result.metadata["failure_event_codes"]
+        assert agent_result.metadata["submit_validation_reason_counts"]["pending_atoms"] == 1
+        assert "CONTROL_CHURN_THRESHOLD_EXCEEDED" not in agent_result.metadata["failure_event_codes"]
+        assert "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" not in agent_result.metadata["failure_event_codes"]
+        assert agent_result.metadata["required_submit_missing"] is True
+        assert any(
+            record.tool == "submit_answer" and "requires TODO progress" in (record.error or "")
+            for record in agent_result.tool_calls
+        )

@@ -40,6 +40,8 @@ class AgentTurnOutcomeResult:
     fallback_submit_guess_value: str | None
     submit_requires_new_evidence: bool
     submit_evidence_digest_at_last_failure: str | None
+    submit_requires_todo_progress: bool
+    submit_todo_status_at_last_failure: str | None
     evidence_pointer_count: int
     evidence_digest_change_count_delta: int
     evidence_turns_total_delta: int
@@ -73,6 +75,8 @@ def _process_turn_outcomes(
     evidence_pointer_labels: set[str],
     submit_requires_new_evidence: bool,
     submit_evidence_digest_at_last_failure: str | None,
+    submit_requires_todo_progress: bool,
+    submit_todo_status_at_last_failure: str | None,
     current_turn_deficit_digest: str | None,
     retrieval_stagnation_streak: int,
     retrieval_stagnation_streak_max: int,
@@ -263,6 +267,8 @@ def _process_turn_outcomes(
                 fallback_submit_guess_value=fallback_submit_guess_value,
                 submit_requires_new_evidence=submit_requires_new_evidence,
                 submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+                submit_requires_todo_progress=submit_requires_todo_progress,
+                submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
                 evidence_pointer_count=evidence_pointer_count,
                 evidence_digest_change_count_delta=evidence_digest_change_count_delta,
                 evidence_turns_total_delta=evidence_turns_total_delta,
@@ -322,6 +328,7 @@ def _process_turn_outcomes(
                 validation_payload = parsed.get("validation_error")
                 reason_code = ""
                 detail = ""
+                submit_todo_status_line: str | None = None
                 recovery_policy = parsed.get("recovery_policy")
                 if (
                     isinstance(recovery_policy, dict)
@@ -336,9 +343,17 @@ def _process_turn_outcomes(
                 if isinstance(validation_payload, dict):
                     reason_code = str(validation_payload.get("reason_code", "")).strip()
                     detail = str(validation_payload.get("message", "")).strip()
+                raw_todo_status_line = parsed.get("todo_status_line")
+                if isinstance(raw_todo_status_line, str) and raw_todo_status_line.strip():
+                    submit_todo_status_line = raw_todo_status_line.strip()
                 if reason_code:
                     submit_validation_reason_counts[reason_code] = (
                         submit_validation_reason_counts.get(reason_code, 0) + 1
+                    )
+                if reason_code == "pending_atoms":
+                    submit_requires_todo_progress = True
+                    submit_todo_status_at_last_failure = (
+                        submit_todo_status_line or last_todo_status_line
                     )
                 err_parts = [f"submit_answer not accepted (status={status})"]
                 if reason_code:
@@ -392,52 +407,38 @@ def _process_turn_outcomes(
             if submit_requires_new_evidence
             else ""
         )
+        todo_fix_hint = (
+            " Validator also requires TODO progress before retry. Resolve or complete the "
+            "pending atom so TODO state changes before submit."
+            if submit_requires_todo_progress
+            else ""
+        )
         emitted_messages.append(
             {
                 "role": "user",
                 "content": (
                     "[SYSTEM: submit_answer failed. "
                     + evidence_fix_hint
+                    + todo_fix_hint
                     + (
                         "Do NOT use refusal text (cannot, unknown, insufficient, no such, not found). "
                         "Submit the single best factual guess from retrieved evidence. "
                         if refusal_blocked
                         else ""
                     )
-                    + "Call submit_answer again with answer as a short fact only "
+                    + "Do not call submit_answer again until those conditions are satisfied. "
+                    "When they are, submit a short factual answer only "
                     "(name/date/number/yes/no, <=8 words).]"
                 ),
             }
         )
-        max_reason_count = (
-            max(submit_validation_reason_counts.values(), default=0)
-            if submit_validation_reason_counts
-            else 0
-        )
-        if (
-            submit_requires_forced_terminal_signal
-            and submit_requires_new_evidence
-            and max_reason_count >= 2
-        ):
+        if submit_requires_forced_terminal_signal and submit_requires_todo_progress:
             warning = (
-                "CONTROL_CHURN: repeated submit validator rejections signaled that "
-                "normal submission now requires the forced-terminal path. Forcing final answer."
+                "CONTROL_CHURN: repeated pending-atom submit rejections now require TODO progress "
+                "before retry; suppressing further submit attempts until state changes."
             )
             warnings.append(warning)
             logger.warning(warning)
-            failure_event_codes.append(event_code_control_churn_threshold)
-            emitted_messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "[SYSTEM: Repeated submit validator loop detected. Stop trying "
-                        "normal submit and provide your best final answer now from the "
-                        "current evidence.]"
-                    ),
-                }
-            )
-            force_final_reason = "control_churn"
-            stop_agent_loop = True
 
     todo_write_called_this_turn = False
     updated_last_todo_status_line = last_todo_status_line
@@ -449,6 +450,14 @@ def _process_turn_outcomes(
                 status_line = parsed.get("status_line")
                 if isinstance(status_line, str) and status_line.strip():
                     updated_last_todo_status_line = status_line.strip()
+    if (
+        submit_requires_todo_progress
+        and submit_todo_status_at_last_failure is not None
+        and updated_last_todo_status_line is not None
+        and updated_last_todo_status_line != submit_todo_status_at_last_failure
+    ):
+        submit_requires_todo_progress = False
+        submit_todo_status_at_last_failure = None
     if not todo_write_called_this_turn and updated_last_todo_status_line:
         emitted_messages.append(
             {
@@ -533,6 +542,8 @@ def _process_turn_outcomes(
         fallback_submit_guess_value=fallback_submit_guess_value,
         submit_requires_new_evidence=submit_requires_new_evidence,
         submit_evidence_digest_at_last_failure=submit_evidence_digest_at_last_failure,
+        submit_requires_todo_progress=submit_requires_todo_progress,
+        submit_todo_status_at_last_failure=submit_todo_status_at_last_failure,
         evidence_pointer_count=evidence_pointer_count,
         evidence_digest_change_count_delta=evidence_digest_change_count_delta,
         evidence_turns_total_delta=evidence_turns_total_delta,
