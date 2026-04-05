@@ -70,6 +70,27 @@ class LLMModelNotFoundError(LLMError):
     """Model doesn't exist (404)."""
 
 
+class DeprecatedModelError(LLMError):
+    """Model is hard-blocked because a strictly better alternative exists.
+
+    Unlike ``LLMModelNotFoundError`` (which means the provider returned 404),
+    this error is raised before the call is made — the model exists but we
+    refuse to use it.  The message includes the recommended replacement.
+
+    Example::
+
+        try:
+            call_llm("gpt-4o-mini", messages, ...)
+        except DeprecatedModelError as e:
+            # Switch to e.replacement before retrying
+            call_llm(e.replacement.split()[0], messages, ...)
+    """
+
+    def __init__(self, message: str, *, replacement: str, original: Exception | None = None) -> None:
+        super().__init__(message, original=original)
+        self.replacement = replacement
+
+
 class LLMBudgetExceededError(LLMError):
     """Trace has exceeded its max_budget — no more calls allowed."""
 
