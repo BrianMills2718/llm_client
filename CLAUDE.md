@@ -20,8 +20,11 @@
 **Everything else — uncertainty, tool failure, partial results — is NOT a stop condition.**
 Log it in the sprint tracker and proceed with the safer option.
 
-**Always work in worktrees for Plan-level changes.** Commit at every verified milestone.
-**Active sprint:** see `docs/ops/SPRINT_2026_04_04_EVENING.md` in project-meta.
+**Always work in dedicated worktrees for Plan-level changes.** Do not edit the main checkout for plan execution.
+**Commit every verified milestone before moving to the next phase.** Uncommitted progress is not acceptable.
+**Between merges and pushes, stay in worktrees.** Merge from clean integration worktrees, then remove completed worktrees once the merged branch is published and verified.
+**Document concerns and uncertainties in the active sprint tracker immediately, then continue with the safer option unless a real stop condition applies.**
+**Active sprint:** see `docs/ops/SPRINT_2026_04_05_PLAN25_PROVIDER_GOVERNANCE.md`.
 
 ---
 
