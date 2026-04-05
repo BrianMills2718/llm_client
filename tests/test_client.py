@@ -4012,28 +4012,55 @@ class TestStrictJsonSchema:
 
 
 class TestModelDeprecation:
-    """Test that deprecated models emit loud warnings."""
+    """Test hard-blocked and soft-deprecated model enforcement."""
+
+    # --- Hard-blocked: always raise DeprecatedModelError ---
+
+    def test_gpt4o_mini_raises(self):
+        """gpt-4o-mini is hard-blocked — must raise DeprecatedModelError, not warn."""
+        from llm_client.core.errors import DeprecatedModelError
+        with pytest.raises(DeprecatedModelError, match="HARD-BLOCKED MODEL.*gpt-4o-mini"):
+            call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini", max_budget=0)
+
+    def test_gpt4o_mini_raises_includes_replacement(self):
+        """DeprecatedModelError.replacement carries the recommended model."""
+        from llm_client.core.errors import DeprecatedModelError
+        with pytest.raises(DeprecatedModelError) as exc_info:
+            call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini_repl", max_budget=0)
+        assert exc_info.value.replacement  # non-empty replacement string
+
+    def test_gpt4o_mini_does_not_trigger_gpt4o_pattern(self):
+        """gpt-4o-mini hits the hard-block dict first; the gpt-4o warn pattern never fires."""
+        from llm_client.core.errors import DeprecatedModelError
+        with pytest.raises(DeprecatedModelError):
+            call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini_only", max_budget=0)
+
+    def test_o4_mini_raises(self):
+        """o4-mini is retired and hard-blocked."""
+        from llm_client.core.errors import DeprecatedModelError
+        with pytest.raises(DeprecatedModelError, match="HARD-BLOCKED MODEL.*o4-mini"):
+            call_llm("o4-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_o4mini", max_budget=0)
+
+    def test_mistral_large_raises(self):
+        """Mistral Large is hard-blocked for cost/quality reasons."""
+        from llm_client.core.errors import DeprecatedModelError
+        with pytest.raises(DeprecatedModelError, match="HARD-BLOCKED MODEL.*mistral"):
+            call_llm("mistral/mistral-large-latest", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_mistral", max_budget=0)
+
+    def test_hard_block_not_bypassed_by_strict_env(self, monkeypatch):
+        """Hard-blocked models raise even without LLM_CLIENT_STRICT_MODELS=1."""
+        from llm_client.core.errors import DeprecatedModelError
+        monkeypatch.delenv("LLM_CLIENT_STRICT_MODELS", raising=False)
+        with pytest.raises(DeprecatedModelError):
+            call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_hard_no_strict", max_budget=0)
+
+    # --- Soft-deprecated: warn by default ---
 
     def test_gpt4o_warns(self):
         """GPT-4o should trigger outclassed-model warning."""
         with pytest.warns(UserWarning, match="OUTCLASSED MODEL.*gpt-4o"):
             with patch("litellm.completion", return_value=_mock_response()):
                 call_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o", max_budget=0)
-
-    def test_gpt4o_mini_warns(self):
-        """GPT-4o-mini should trigger its own deprecation warning."""
-        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL DETECTED.*gpt-4o-mini"):
-            with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini", max_budget=0)
-
-    def test_gpt4o_mini_does_not_trigger_gpt4o_pattern(self):
-        """gpt-4o-mini should NOT also trigger the gpt-4o warning (exception logic)."""
-        with pytest.warns(DeprecationWarning) as record:
-            with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("gpt-4o-mini", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gpt4o_mini_only", max_budget=0)
-        # Should only have one warning, and it should mention gpt-4o-mini specifically
-        assert len(record) == 1
-        assert "gpt-4o-mini" in str(record[0].message)
 
     def test_claude_3_haiku_warns(self):
         """Claude 3 Haiku should trigger deprecation warning."""
@@ -4046,12 +4073,6 @@ class TestModelDeprecation:
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
                 call_llm("gemini/gemini-1.5-flash", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_gemini15", max_budget=0)
-
-    def test_o1_pro_warns(self):
-        """o1-pro should trigger deprecation warning."""
-        with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
-            with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("o1-pro", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_o1pro", max_budget=0)
 
     def test_current_model_no_warning(self):
         """Current models should NOT trigger any deprecation warning."""
@@ -4113,8 +4134,8 @@ class TestModelDeprecation:
             with patch("litellm.acompletion", new_callable=AsyncMock, return_value=_mock_response()):
                 await acall_llm("gpt-4o", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_async", max_budget=0)
 
-    def test_mistral_large_warns(self):
-        """Mistral Large should trigger deprecation warning."""
+    def test_o1_pro_warns(self):
+        """o1-pro is soft-deprecated — should warn, not raise."""
         with pytest.warns(DeprecationWarning, match="DEPRECATED MODEL"):
             with patch("litellm.completion", return_value=_mock_response()):
-                call_llm("mistral/mistral-large-latest", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_mistral", max_budget=0)
+                call_llm("o1-pro", [{"role": "user", "content": "hi"}], task="test", trace_id="test_depr_o1pro", max_budget=0)
