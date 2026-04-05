@@ -102,3 +102,15 @@ Current safe rule:
   `subprocess.run` monkeypatched and verifies the output file is read back
 - transport-selection tests alone are not enough; the concrete CLI helper must
   be exercised too
+
+### 2026-04-05 — codex — bug-pattern
+
+**OpenRouter routing should normalize explicit `google/...` provider ids the same way it already normalizes other provider-prefixed models.**
+
+`ac14` surfaced repeated provider-resolution failures from `MODEL=google/gemini-2.0-flash-001`.
+Under OpenRouter policy, `llm_client.core.routing.normalize_model_for_policy()`
+left `google/...` untouched, so the call reached LiteLLM without a provider
+route and failed as "LLM Provider NOT provided". Fix: normalize `google/...`
+to `openrouter/google/...` in the shared routing layer so stale but otherwise
+valid OpenRouter Google aliases do not fail late inside structured-call
+boundaries.

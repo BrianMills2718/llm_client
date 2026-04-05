@@ -75,7 +75,7 @@ def normalize_model_for_policy(model: str, policy: RoutingPolicy) -> str:
     # Explicit provider/model IDs.
     if "/" in raw:
         provider = lower.split("/", 1)[0]
-        if provider in {"openai", "anthropic", "deepseek", "x-ai", "xai", "mistral", "mistralai"}:
+        if provider in {"openai", "anthropic", "deepseek", "x-ai", "xai", "mistral", "mistralai", "google"}:
             return f"openrouter/{raw}"
         return raw
 

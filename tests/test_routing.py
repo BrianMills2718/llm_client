@@ -51,3 +51,17 @@ def test_resolve_api_base_prefers_explicit_and_injects_openrouter_default() -> N
         resolve_api_base_for_model("openrouter/openai/gpt-4", "https://override", cfg)
         == "https://override"
     )
+
+
+def test_resolve_call_normalizes_google_gemini_alias_to_openrouter() -> None:
+    """OpenRouter policy should canonicalize google/gemini provider aliases."""
+    cfg = ClientConfig(routing_policy="openrouter")
+
+    plan = resolve_call(
+        CallRequest(model="google/gemini-2.0-flash-001"),
+        cfg,
+    )
+
+    assert plan.primary_model == "openrouter/google/gemini-2.0-flash-001"
+    assert plan.routing_trace["normalized_from"] == "google/gemini-2.0-flash-001"
+    assert plan.routing_trace["normalized_to"] == "openrouter/google/gemini-2.0-flash-001"
