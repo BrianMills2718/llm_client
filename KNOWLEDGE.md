@@ -147,3 +147,16 @@ bug was that `normalize_model_for_policy()` handled `google/...` aliases but
 left bare `gemini-*` ids untouched, so LiteLLM guessed the wrong Google path.
 Fix: canonicalize bare Gemini ids to `gemini/<id>` before both direct and
 openrouter policy handling.
+
+### 2026-04-05 — codex — bug-pattern
+
+**Cross-process provider leases must be acquired after the local semaphore, not before it.**
+
+The first implementation of shared Gemini leases in `llm_client.utils.rate_limit`
+grabbed a SQLite-backed lease before the in-process semaphore. Under local
+concurrency, queued callers then consumed shared lease slots while they were
+still waiting inside the same process, which made the next waiter sleep until
+lease TTL expiry instead of real request completion. Fix: acquire the local
+provider semaphore first, then claim the shared lease immediately before the
+actual call window. This preserves the cross-process cap without turning local
+queueing into false shared saturation.
