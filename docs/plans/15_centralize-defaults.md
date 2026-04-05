@@ -1,10 +1,30 @@
 # Plan #15: Centralize Hardcoded Defaults into ClientConfig
 
-**Status:** Cancelled
+**Status:** Cancelled — 2026-03-25 by Brian: "pure refactoring, no consumer value"
 **Type:** implementation
 **Priority:** Medium
 **Blocked By:** None
 **Blocks:** None
+
+---
+
+## Cancellation Rationale
+
+Cancelled 2026-03-25 (commit fa9c8a4, "pure refactoring, no consumer value").
+Confirmed correct on 2026-04-04 re-review:
+
+1. **Sentinel pattern degrades readability**: changing `timeout: int = 60` to
+   `timeout: int | None = None` means callers can no longer see the default by
+   reading the signature — they must look up ClientConfig. This is a net negative
+   for a library used primarily by the author and their agents.
+2. **No behavioral change**: the only consumer is Brian's project ecosystem, which
+   can already override behavior by setting values on ClientConfig directly. The
+   plan adds indirection without adding capability.
+3. **Broad mechanical churn**: 16+ signature changes across a stable public API for
+   no user-visible benefit.
+
+Do not reinstate unless there is an external consumer who needs centralized config
+tuning without modifying per-call kwargs.
 
 ---
 

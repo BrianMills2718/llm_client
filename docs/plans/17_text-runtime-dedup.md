@@ -1,10 +1,27 @@
 # Plan #17: text_runtime Sync/Async Deduplication
 
-**Status:** Cancelled
+**Status:** Planned — reinstated 2026-04-04 (cancellation reason invalidated by evidence)
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
 **Blocks:** None
+
+---
+
+## Reinstatement Evidence (2026-04-04)
+
+Originally cancelled 2026-03-25 as "pure refactoring, no consumer value."
+
+Reinstated because the maintenance tax materialized. Since cancellation, 4 commits
+touched `text_runtime.py`. The largest (Plan #54, commit ac12029) added schema
+observability: `_extract_schema_observability()` was factored into a shared helper
+(good) but the call sites were duplicated 3× in the sync path and 3× in the async
+path (6 total call sites for one feature). The duplication is not theoretical —
+the next developer or agent adding observability to text_runtime will pay the same
+tax again.
+
+The file grew from ~924 to 1005 lines since cancellation. Every feature added to
+either path must be manually applied twice.
 
 ---
 

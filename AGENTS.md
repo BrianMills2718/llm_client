@@ -1,20 +1,29 @@
 # LLM Client
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY -->
-<!-- generated_by: scripts/meta/render_agents_md.py -->
-<!-- canonical_claude: CLAUDE.md -->
-<!-- canonical_relationships: scripts/relationships.yaml -->
-<!-- canonical_relationships_sha256: 2377f914f439 -->
-<!-- sync_check: python scripts/meta/check_agents_sync.py --check -->
+---
 
-This file is a generated Codex-oriented projection of repo governance.
-Edit the canonical sources instead of editing this file directly.
+## ⚡ AUTONOMOUS OPERATION DIRECTIVE
 
-Canonical governance sources:
-- `CLAUDE.md` — human-readable project rules, workflow, and references
-- `scripts/relationships.yaml` — machine-readable ADR, coupling, and required-reading graph
+> ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+> ⚠️  NEVER STOP — NO EXCEPTIONS, NO EXCUSES  ⚠️
+> ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+>
+> Brian has explicitly authorized continuous autonomous operation.
+> A completed phase, a green test suite, or a finished commit is
+> NOT a stop condition. Update the sprint tracker, commit, move
+> immediately to the next phase.
 
-## Purpose
+**ONLY TWO LEGITIMATE STOP CONDITIONS:**
+1. An action is BOTH irreversible AND affects shared state (force push, drop prod tables)
+2. A genuine architectural decision not pre-made in the plan that cannot be safely defaulted
+
+**Everything else — uncertainty, tool failure, partial results — is NOT a stop condition.**
+Log it in the sprint tracker and proceed with the safer option.
+
+**Always work in worktrees for Plan-level changes.** Commit at every verified milestone.
+**Active sprint:** see `docs/ops/SPRINT_2026_04_04_EVENING.md` in project-meta.
+
+---
 
 Shared LLM infrastructure for Brian's project ecosystem: completions, structured output, tool calling, embeddings, streaming, batch, agent SDK routing, MCP loops, retry/fallback, cost tracking, observability (JSONL + SQLite), model registry, and experiment logging. AGENTS.md is generated from this file via `render_agents_md.py`.
 
@@ -26,6 +35,8 @@ When working in this repo, read these first:
 4. [docs/API_REFERENCE.html](docs/API_REFERENCE.html) for the generated browser reference
 5. [scripts/meta/generate_api_reference.py](scripts/meta/generate_api_reference.py) to regenerate the docs
 6. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)
+
+---
 
 ## Commands
 
@@ -58,13 +69,9 @@ python scripts/meta/check_required_reading.py <file>    # Check read-gate for a 
 python scripts/meta/validate_relationships.py --strict  # Validate coupling config
 ```
 
-## Operating Rules
+---
 
-This projection keeps the highest-signal rules in always-on Codex context.
-For full project structure, detailed terminology, and any rule omitted here,
-read `CLAUDE.md` directly.
-
-### Principles
+## Principles
 
 1. **Runtime substrate, not thin wrapper** -- `llm_client` is a control plane providing routing, observability, retry/fallback, and structured output enforcement. It is not a convenience layer over LiteLLM.
 2. **Required kwargs on every call** -- `task=`, `trace_id=`, `max_budget=`. No exceptions.
@@ -75,7 +82,9 @@ read `CLAUDE.md` directly.
 7. **Programs A-D complete** -- Do not invent new cleanup slices without fresh evidence. The roadmap tracks what remains.
 8. **API reference is generated** -- Run `python scripts/meta/generate_api_reference.py --write` after changing the public surface or docstrings.
 
-### Workflow
+---
+
+## Workflow
 
 ### Process Awareness
 - All significant work follows meta-process plans in `docs/plans/`.
@@ -91,9 +100,7 @@ read `CLAUDE.md` directly.
 - `make test` runs the full suite. `make check` adds type checking and lint.
 - Plan-specific tests: `python scripts/meta/check_plan_tests.py --plan N`.
 
-## Machine-Readable Governance
-
-`scripts/relationships.yaml` is the source of truth for machine-readable governance in this repo: ADR coupling, required-reading edges, and doc-code linkage. This generated file does not inline that graph; it records the canonical path and sync marker, then points operators and validators back to the source graph. Prefer deterministic validators over prompt-only memory when those scripts are available.
+---
 
 ## References
 
