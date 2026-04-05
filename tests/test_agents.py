@@ -14,6 +14,7 @@ import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,6 +44,7 @@ from llm_client import (
 from llm_client.sdk.agents import (
     _build_agent_options,
     _build_codex_cli_command,
+    _is_codex_transport_fallback_error,
     _messages_to_agent_prompt,
     _normalize_codex_reasoning_effort,
     _parse_agent_model,
@@ -1812,6 +1814,83 @@ class TestCodexFallback:
 
         assert result.content == "cli ok"
         assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
+
+    def test_codex_transport_auto_falls_back_on_sdk_parse_validation_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Known Codex SDK parse drift should route through CLI fallback."""
+
+        class FileChangeItem(BaseModel):
+            status: Literal["completed", "failed"]
+
+        with pytest.raises(Exception) as excinfo:
+            FileChangeItem.model_validate({"status": "in_progress"})
+        sdk_parse_error = excinfo.value
+
+        async def _fake_inproc(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del model, messages, timeout, kwargs
+            raise sdk_parse_error
+
+        calls: dict[str, object] = {}
+
+        def _fake_cli(
+            model: str,
+            messages: list[dict[str, object]],
+            *,
+            timeout: int = 300,
+            output_schema: dict[str, object] | None = None,
+            fallback_warning: str | None = None,
+            **kwargs: object,
+        ) -> LLMCallResult:
+            del messages, output_schema, kwargs
+            calls["fallback_warning"] = fallback_warning
+            return LLMCallResult(
+                content="cli recovered",
+                usage={},
+                cost=0.0,
+                model=model,
+                finish_reason="stop",
+                warnings=[fallback_warning] if fallback_warning else [],
+                raw_response={"transport": "codex_cli"},
+            )
+
+        monkeypatch.setattr(agents_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_codex_mod, "_acall_codex_inproc", _fake_inproc)
+        monkeypatch.setattr(agents_mod, "_call_codex_via_cli", _fake_cli)
+        monkeypatch.setattr(agents_codex_mod, "_call_codex_via_cli", _fake_cli)
+
+        result = call_llm(
+            "codex",
+            [{"role": "user", "content": "Hi"}],
+            codex_transport="auto",
+            timeout=17,
+            agent_hard_timeout=23,
+            task="test",
+            trace_id="test_codex_transport_auto_sdk_parse_validation",
+            max_budget=0,
+        )
+
+        assert result.content == "cli recovered"
+        assert "CODEX_TRANSPORT_FALLBACK[sdk->cli]" in str(calls["fallback_warning"])
+        assert "FileChangeItem" in str(calls["fallback_warning"])
+
+    def test_codex_transport_fallback_rule_stays_narrow_for_other_validation_errors(self) -> None:
+        """Other ValidationError instances should not be reclassified as transport failures."""
+
+        class ArbitraryPayload(BaseModel):
+            value: int
+
+        with pytest.raises(Exception) as excinfo:
+            ArbitraryPayload.model_validate({"value": "not-an-int"})
+
+        assert _is_codex_transport_fallback_error(excinfo.value) is False
 
     @pytest.mark.asyncio
     async def test_codex_transport_cli_dispatches_async(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -56,3 +56,20 @@ Journey, Anthropic's workflow-vs-agent framing, `static_pipeline`, and
 (manifest models, capability-based runtime support, validation, and example
 adapters), but not for registry/community/product concerns. A runtime list
 without capability validation is not a truthful portability claim.
+
+### 2026-04-04 — codex — integration-issue
+
+The installed Codex SDK can fail on file-writing runs before llm_client
+finalizes an agent result because the SDK parser still rejects
+`FileChangeItem.status="in_progress"`.
+
+Measured behavior:
+- trivial `acall_llm("codex", ...)` text runs still succeed
+- heavier repo-mutating prompts can raise:
+  `ValidationError: FileChangeItem.status Input should be 'completed' or 'failed'`
+
+Runtime implication:
+- `codex_transport="auto"` must treat that exact ValidationError family as a
+  transport-compatibility failure and fall back to CLI
+- keep the fallback rule narrow so unrelated Pydantic validation failures still
+  surface normally
