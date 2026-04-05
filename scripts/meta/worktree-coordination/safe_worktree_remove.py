@@ -23,6 +23,13 @@ from typing import Any
 import yaml
 
 
+SCRIPT_ROOT = Path(__file__).resolve().parents[2]
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from enforced_planning import coordination_claims
+
+
 # Session marker settings
 SESSION_MARKER_FILE = ".claude_session"
 SESSION_STALENESS_HOURS = 24  # Block removal if marker is newer than this
@@ -123,6 +130,30 @@ def check_worktree_claimed(
     Returns:
         (is_claimed, claim_info) - claim_info is the claim dict if found
     """
+    normalized_path = str(Path(worktree_path).expanduser().resolve())
+
+    previous_claims_dir = coordination_claims.CLAIMS_DIR
+    try:
+        if claims_file is not None:
+            coordination_claims.CLAIMS_DIR = claims_file
+        for claim in coordination_claims.check_claims():
+            if not claim.worktree_path:
+                continue
+            if str(Path(claim.worktree_path).expanduser().resolve()) != normalized_path:
+                continue
+            return True, {
+                "coordination_source": "claim_v2",
+                "agent": claim.agent,
+                "scope": claim.scope,
+                "intent": claim.intent,
+                "plan_ref": claim.plan_ref,
+                "branch": claim.branch,
+                "session_id": claim.session_id,
+                "worktree_path": claim.worktree_path,
+            }
+    finally:
+        coordination_claims.CLAIMS_DIR = previous_claims_dir
+
     if claims_file is None:
         claims_file = get_main_repo_root() / ".claude" / "active-work.yaml"
 
@@ -135,9 +166,6 @@ def check_worktree_claimed(
         return False, None
 
     claims = data.get("claims", [])
-
-    # Normalize the worktree path for comparison
-    normalized_path = str(Path(worktree_path).resolve())
 
     for claim in claims:
         claim_worktree = claim.get("worktree_path")
@@ -222,6 +250,9 @@ def should_block_removal(
     is_claimed, claim_info = check_worktree_claimed(worktree_path, claims_file)
 
     if is_claimed and claim_info and not force:
+        if claim_info.get("coordination_source") == "claim_v2":
+            return True, "claim", claim_info
+
         # Check if the claim owner matches our identity
         claim_owner = claim_info.get("cc_id", "")
 
@@ -307,20 +338,35 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
         return False
 
     if block and reason == "claim" and info:
-        cc_id = info.get("cc_id", "unknown")
-        task = info.get("task", "")[:50]
-        plan = info.get("plan")
+        cc_id = info.get("cc_id") or info.get("agent", "unknown")
+        task = (info.get("task") or info.get("intent") or "")[:50]
+        plan = info.get("plan") or info.get("plan_ref")
         print("❌ BLOCKED: Worktree has an active claim!")
         print(f"   Claimed by: {cc_id}")
         if plan:
-            print(f"   Plan: #{plan}")
+            plan_text = str(plan)
+            if plan_text.startswith("Plan #"):
+                print(f"   {plan_text}")
+            else:
+                print(f"   Plan: #{plan_text}")
         print(f"   Task: {task}")
         print()
         print("   A Claude session may be actively using this worktree.")
         print("   Removing it will break their shell (CWD becomes invalid).")
         print()
         print("   Options:")
-        print(f"   1. Release the claim first: python scripts/check_claims.py --release --id {cc_id}")
+        if info.get("coordination_source") == "claim_v2":
+            branch_text = info.get("branch") or "unknown-branch"
+            scope_text = info.get("scope") or "unknown-scope"
+            print(
+                "   1. Use the canonical closeout flow instead: "
+                f"python scripts/session_close.py --agent {cc_id} "
+                f"--project {get_main_repo_root().name} --scope {scope_text} "
+                f"--worktree-path {worktree_path} --branch {branch_text}"
+            )
+            print(f"      Claim branch: {branch_text}")
+        else:
+            print(f"   1. Release the claim first: python scripts/check_claims.py --release --id {cc_id}")
         print(f"   2. Force remove (BREAKS SESSION): python scripts/safe_worktree_remove.py --force {worktree_path}")
         return False
 

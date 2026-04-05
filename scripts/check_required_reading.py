@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 
-TARGET = Path(__file__).resolve().parent / "meta" / "file_context.py"
+SCRIPT_DIR = Path(__file__).resolve().parent
+TARGET = SCRIPT_DIR / "meta" / "file_context.py"
+if not TARGET.exists():
+    TARGET = SCRIPT_DIR / "file_context.py"
 
 
 if __name__ == "__main__":

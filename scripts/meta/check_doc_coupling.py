@@ -24,7 +24,7 @@ Exit codes:
 import argparse
 import fnmatch
 import glob
-import yaml
+import yaml  # type: ignore[import-untyped]
 import subprocess
 import sys
 from pathlib import Path

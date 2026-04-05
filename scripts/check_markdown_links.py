@@ -14,8 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-PROJECT_META_ROOT = Path(__file__).resolve().parents[1]
+from enforced_planning.worktree_paths import resolve_canonical_target_path
+
+PROJECT_META_ROOT = REPO_ROOT
 DEFAULT_TARGETS = ("vision", "STATUS_LEDGER.md")
 
 # Matches inline links and image links: [text](target) / ![alt](target)
@@ -54,9 +59,9 @@ def _to_display(path: Path) -> str:
 def _resolve_targets(raw_targets: list[str], root: Path) -> list[Path]:
     resolved: list[Path] = []
     for item in raw_targets:
-        target = Path(item)
+        target = Path(item).expanduser()
         if not target.is_absolute():
-            target = root / item
+            target = root / target
         if target.is_file():
             if target.suffix.lower() == ".md":
                 resolved.append(target)
@@ -137,7 +142,9 @@ def _extract_markdown_anchors(markdown_path: Path) -> set[str]:
 
 
 def _validate_file(
-    markdown_file: Path, anchor_cache: dict[Path, set[str]]
+    markdown_file: Path,
+    anchor_cache: dict[Path, set[str]],
+    repo_root: Path,
 ) -> list[LinkViolation]:
     violations: list[LinkViolation] = []
     lines = markdown_file.read_text(encoding="utf-8").splitlines()
@@ -163,8 +170,15 @@ def _validate_file(
             if decoded_path == "":
                 target_path = markdown_file
             else:
-                candidate = Path(decoded_path)
+                candidate = Path(decoded_path).expanduser()
                 target_path = candidate if candidate.is_absolute() else (markdown_file.parent / candidate)
+                if not target_path.exists():
+                    canonical_target = resolve_canonical_target_path(
+                        target_path=target_path,
+                        repo_root=repo_root,
+                    )
+                    if canonical_target is not None:
+                        target_path = canonical_target
 
             if not target_path.exists():
                 violations.append(
@@ -205,7 +219,7 @@ def check_markdown_links(targets: list[str], root: Path) -> list[LinkViolation]:
     violations: list[LinkViolation] = []
 
     for markdown_file in markdown_files:
-        violations.extend(_validate_file(markdown_file, anchor_cache))
+        violations.extend(_validate_file(markdown_file, anchor_cache, root))
 
     return violations
 

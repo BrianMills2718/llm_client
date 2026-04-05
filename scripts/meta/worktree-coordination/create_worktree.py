@@ -7,16 +7,21 @@ agent work. A freshly created worktree should be clean. If it is not, that is
 already enough to block autonomous execution. The wrapper records the immediate
 status, classifies stronger split-brain-like symptoms, and optionally cleans up
 the failed worktree instead of leaving an ambiguous checkout in circulation.
+
+When strict coordination enforcement is enabled, the wrapper also requires an
+active scoped write claim before the worktree is created.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,19 @@ class WorktreeCreationResult:
     cleanup_performed: bool
     message: str
     status: WorktreeStatusSummary | None
+    coordination_checked: bool
+    coordination_message: str | None
+
+
+@dataclass(frozen=True)
+class CheckoutStateSummary:
+    """Summarize whether one checkout is safe to use as a control surface."""
+
+    clean: bool
+    unmerged: bool
+    entries: list[StatusEntry]
+    modified_count: int
+    untracked_count: int
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -75,6 +93,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--keep-failed-worktree",
         action="store_true",
         help="Leave a failed worktree on disk for manual diagnosis",
+    )
+    parser.add_argument(
+        "--require-write-claim",
+        action="store_true",
+        help="Require a matching scoped write claim before creating the worktree.",
+    )
+    parser.add_argument(
+        "--require-clean-main-root",
+        action="store_true",
+        help="Require the canonical main checkout to be clean before creating the worktree.",
+    )
+    parser.add_argument("--claim-agent", help="Agent name expected on the scoped write claim.")
+    parser.add_argument(
+        "--claim-project",
+        help="Claim project name. Defaults to the canonical repo root name when omitted.",
+    )
+    parser.add_argument(
+        "--claim-write-path",
+        action="append",
+        default=[],
+        help="Repo-relative write path required by the scoped claim. Repeat as needed.",
+    )
+    parser.add_argument(
+        "--claims-dir",
+        help="Override the coordination claims directory instead of ~/.claude/coordination/claims/.",
     )
     parser.add_argument(
         "--json",
@@ -125,6 +168,18 @@ def get_default_worktree_dir(repo_root: Path) -> Path:
     """Return the canonical repo-level *_worktrees directory for this repo."""
     main_repo_root = resolve_main_repo_root(repo_root.resolve())
     return main_repo_root.parent / f"{main_repo_root.name}_worktrees"
+
+
+def _load_claims_module() -> Any:
+    """Load the sibling coordination-claims script as a module."""
+    module_path = Path(__file__).resolve().parents[1] / "check_coordination_claims.py"
+    spec = importlib.util.spec_from_file_location("coordination_claims_for_worktree", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load coordination claims module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def parse_status_porcelain(
@@ -198,6 +253,72 @@ def classify_summary(summary: WorktreeStatusSummary) -> str:
     return "dirty"
 
 
+def inspect_checkout_state(checkout_path: Path) -> CheckoutStateSummary:
+    """Inspect whether one checkout is safe to use as a control surface."""
+
+    result = run_git(
+        ["status", "--porcelain", "--untracked-files=all"],
+        cwd=checkout_path,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Unable to inspect checkout status:\n"
+            f"{result.stderr or result.stdout}".strip()
+        )
+
+    entries: list[StatusEntry] = []
+    modified_count = 0
+    untracked_count = 0
+    unmerged = False
+
+    for raw_line in result.stdout.splitlines():
+        if not raw_line:
+            continue
+        if raw_line.startswith("?? "):
+            entries.append(StatusEntry(code="??", path=raw_line[3:]))
+            untracked_count += 1
+            continue
+        code = raw_line[:2]
+        path = raw_line[3:]
+        entries.append(StatusEntry(code=code, path=path))
+        if code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
+            unmerged = True
+        else:
+            modified_count += 1
+
+    return CheckoutStateSummary(
+        clean=len(entries) == 0,
+        unmerged=unmerged,
+        entries=entries,
+        modified_count=modified_count,
+        untracked_count=untracked_count,
+    )
+
+
+def verify_clean_main_root(repo_root: Path) -> tuple[bool, str]:
+    """Require the canonical main checkout to be clean before publish-worktree creation."""
+
+    main_repo_root = resolve_main_repo_root(repo_root)
+    summary = inspect_checkout_state(main_repo_root)
+    if summary.clean:
+        return True, f"Canonical main checkout is clean: {main_repo_root}"
+
+    classification = "main-root-unmerged" if summary.unmerged else "main-root-dirty"
+    sample_entries = ", ".join(
+        f"{entry.code} {entry.path}" for entry in summary.entries[:8]
+    )
+    return (
+        False,
+        "Publish worktree creation blocked: canonical main checkout is not clean. "
+        f"classification={classification}; "
+        f"path={main_repo_root}; "
+        f"modified={summary.modified_count}; "
+        f"untracked={summary.untracked_count}; "
+        f"sample=[{sample_entries}]. "
+        "Do not create a publish lane from a dirty primary checkout; either clear the blocker first or keep the verified branch unpublished on trunk.",
+    )
+
+
 def cleanup_failed_worktree(
     repo_root: Path,
     worktree_path: Path,
@@ -227,6 +348,108 @@ def ensure_safe_target_path(worktree_path: Path) -> None:
     )
 
 
+def _claim_project(repo_root: Path, explicit_project: str | None) -> str:
+    """Resolve the project name used for scoped claim matching."""
+    if explicit_project:
+        return explicit_project
+    return resolve_main_repo_root(repo_root).name
+
+
+def _write_paths_are_covered(*, claims_module: Any, required_paths: list[str], claim_paths: list[str]) -> bool:
+    """Return whether a scoped claim covers every required write path."""
+    for required in required_paths:
+        if not any(claims_module._paths_overlap(required, existing) for existing in claim_paths):
+            return False
+    return True
+
+
+def verify_scoped_write_claim(
+    *,
+    repo_root: Path,
+    worktree_path: Path,
+    branch: str,
+    claim_agent: str | None,
+    claim_project: str | None,
+    claim_write_paths: list[str],
+    claims_dir: Path | None,
+) -> tuple[bool, str]:
+    """Require a matching active write claim and reject conflicting claims."""
+    if not claim_agent:
+        return False, "Scoped write-claim enforcement requires --claim-agent."
+    if not claim_write_paths:
+        return False, "Scoped write-claim enforcement requires at least one --claim-write-path."
+
+    claims_module = _load_claims_module()
+    if claims_dir is not None:
+        claims_module.CLAIMS_DIR = claims_dir.resolve()
+
+    project_name = _claim_project(repo_root, claim_project)
+    normalized_paths = [claims_module._normalize_repo_path(path) for path in claim_write_paths]
+    candidate = claims_module.build_candidate_claim(
+        agent=claim_agent,
+        project=project_name,
+        scope=f"worktree:{branch}",
+        intent=f"Create sanctioned worktree {branch}",
+        claim_type="write",
+        write_paths=normalized_paths,
+        branch=branch,
+        worktree_path=str(worktree_path),
+    )
+    active_claims = claims_module.check_claims(project_name)
+
+    matching_claims = [
+        claim
+        for claim in active_claims
+        if claim.agent == claim_agent
+        and claim.claim_type == "write"
+        and project_name in claim.projects
+        and _write_paths_are_covered(
+            claims_module=claims_module,
+            required_paths=normalized_paths,
+            claim_paths=claim.write_paths,
+        )
+        and (claim.branch in (None, branch))
+    ]
+    if not matching_claims:
+        joined_paths = ", ".join(normalized_paths)
+        return (
+            False,
+            "Scoped write-claim enforcement failed: no active matching write claim for "
+            f"agent={claim_agent}, project={project_name}, branch={branch}, "
+            f"write_paths=[{joined_paths}]. Create the narrow write claim first.",
+        )
+
+    weak_matching_claims = [
+        (claim, claims_module.claim_health_issues(claim))
+        for claim in matching_claims
+        if claims_module.claim_health_issues(claim)
+    ]
+    if weak_matching_claims:
+        claim, issues = weak_matching_claims[0]
+        return (
+            False,
+            "Scoped write-claim enforcement failed: matching active write claim is weak — "
+            f"agent={claim.agent}, project={project_name}, scope={claim.scope}, "
+            f"issues=[{', '.join(issues)}]. Refresh the claim with explicit live ownership metadata first.",
+        )
+
+    check_result = claims_module.evaluate_claim(candidate, active_claims=active_claims)
+    hard_conflicts = check_result.hard_conflicts
+    if hard_conflicts:
+        formatted = "; ".join(
+            f"{item.other_agent} ({item.other_scope}: {', '.join(item.overlapping_write_paths)})"
+            for item in hard_conflicts
+        )
+        return (
+            False,
+            "Scoped write-claim enforcement failed: conflicting active write claim(s) detected — "
+            f"{formatted}",
+        )
+
+    matched_scope = matching_claims[0].scope
+    return True, f"Scoped write claim verified via {claim_agent}:{project_name}:{matched_scope}."
+
+
 def create_worktree(
     *,
     repo_root: Path,
@@ -235,13 +458,64 @@ def create_worktree(
     start_point: str,
     split_brain_threshold: int,
     keep_failed_worktree: bool,
+    require_write_claim: bool = False,
+    claim_agent: str | None = None,
+    claim_project: str | None = None,
+    claim_write_paths: list[str] | None = None,
+    claims_dir: Path | None = None,
+    require_clean_main_root: bool = False,
 ) -> WorktreeCreationResult:
     """Create a worktree, inspect it immediately, and fail loud on unsafe state."""
+    repo_root = repo_root.resolve()
+    worktree_path = worktree_path.resolve()
+    coordination_checked = require_write_claim
+    coordination_message: str | None = None
+
+    if require_write_claim:
+        claim_ok, coordination_message = verify_scoped_write_claim(
+            repo_root=repo_root,
+            worktree_path=worktree_path,
+            branch=branch,
+            claim_agent=claim_agent,
+            claim_project=claim_project,
+            claim_write_paths=claim_write_paths or [],
+            claims_dir=claims_dir,
+        )
+        if not claim_ok:
+            return WorktreeCreationResult(
+                ok=False,
+                repo_root=str(repo_root),
+                worktree_path=str(worktree_path),
+                branch=branch,
+                created_branch=False,
+                classification="coordination-error",
+                cleanup_performed=False,
+                message=coordination_message,
+                status=None,
+                coordination_checked=coordination_checked,
+                coordination_message=coordination_message,
+            )
+
+    if require_clean_main_root:
+        clean_main_root, root_message = verify_clean_main_root(repo_root)
+        if not clean_main_root:
+            return WorktreeCreationResult(
+                ok=False,
+                repo_root=str(repo_root),
+                worktree_path=str(worktree_path),
+                branch=branch,
+                created_branch=False,
+                classification="main-root-dirty",
+                cleanup_performed=False,
+                message=root_message,
+                status=None,
+                coordination_checked=coordination_checked,
+                coordination_message=coordination_message,
+            )
+
     ensure_safe_target_path(worktree_path)
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-    repo_root = repo_root.resolve()
-    worktree_path = worktree_path.resolve()
     branch_already_exists = branch_exists(repo_root, branch)
     if branch_already_exists and start_point != "HEAD":
         raise ValueError(
@@ -269,6 +543,8 @@ def create_worktree(
             cleanup_performed=False,
             message=(add_result.stderr or add_result.stdout).strip(),
             status=None,
+            coordination_checked=coordination_checked,
+            coordination_message=coordination_message,
         )
 
     summary = inspect_worktree_state(
@@ -287,6 +563,8 @@ def create_worktree(
             cleanup_performed=False,
             message="Worktree created cleanly.",
             status=summary,
+            coordination_checked=coordination_checked,
+            coordination_message=coordination_message,
         )
 
     cleanup_performed = False
@@ -321,6 +599,8 @@ def create_worktree(
             f"sample=[{sample_entries}].{cleanup_note}"
         ),
         status=summary,
+        coordination_checked=coordination_checked,
+        coordination_message=coordination_message,
     )
 
 
@@ -331,6 +611,8 @@ def _print_human(result: WorktreeCreationResult) -> None:
     print(f"repo: {result.repo_root}")
     print(f"path: {result.worktree_path}")
     print(f"branch: {result.branch}")
+    if result.coordination_checked and result.coordination_message:
+        print(f"coordination: {result.coordination_message}")
     if result.status is not None:
         print(f"classification: {result.classification}")
         print(
@@ -362,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Missing required arguments for worktree creation: {', '.join(missing)}")
 
     worktree_path = Path(args.path).expanduser().resolve()
+    claims_dir = Path(args.claims_dir).expanduser().resolve() if args.claims_dir else None
     try:
         result = create_worktree(
             repo_root=repo_root,
@@ -370,6 +653,12 @@ def main(argv: list[str] | None = None) -> int:
             start_point=args.start_point,
             split_brain_threshold=args.split_brain_threshold,
             keep_failed_worktree=args.keep_failed_worktree,
+            require_write_claim=args.require_write_claim,
+            claim_agent=args.claim_agent,
+            claim_project=args.claim_project,
+            claim_write_paths=args.claim_write_path,
+            claims_dir=claims_dir,
+            require_clean_main_root=args.require_clean_main_root,
         )
     except (RuntimeError, ValueError) as exc:
         error_result = WorktreeCreationResult(
@@ -382,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
             cleanup_performed=False,
             message=str(exc),
             status=None,
+            coordination_checked=args.require_write_claim,
+            coordination_message=None,
         )
         if args.json:
             print(json.dumps(asdict(error_result), indent=2))

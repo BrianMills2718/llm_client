@@ -14,13 +14,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from file_context import check_required_reads
-from file_context import collect_context
-from file_context import load_relationships
+def _detect_repo_root(script_path: Path) -> Path:
+    """Resolve repo root for both canonical and installed script layouts."""
+    if script_path.parent.name == "meta" and script_path.parent.parent.name == "scripts":
+        return script_path.parents[2]
+    if script_path.parent.name == "scripts":
+        return script_path.parents[1]
+    return script_path.parents[1]
+
+
+REPO_ROOT = _detect_repo_root(Path(__file__).resolve())
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from enforced_planning.file_context import check_required_reads
+from enforced_planning.file_context import collect_context
+from enforced_planning.file_context import load_relationships
 
 
 DEFAULT_CONFIG = Path("scripts/relationships.yaml")
@@ -34,7 +48,7 @@ def _normalize(path_text: str) -> str:
 
 def _repo_root() -> Path:
     """Return the canonical repo root for this script."""
-    return Path(__file__).resolve().parents[2]
+    return REPO_ROOT
 
 
 def _resolve_path(repo_root: Path, raw_path: str) -> Path:

@@ -1,23 +1,76 @@
 #!/usr/bin/env python3
-"""Check that generated AGENTS.md is in sync with canonical governance inputs.
-
-This validator compares the checked-in ``AGENTS.md`` file against the
-deterministic output of ``render_agents_md.py``. It is intended for local
-verification, hooks, and CI gates where manual drift must fail loudly.
-"""
+"""Check that generated AGENTS.md is in sync with canonical governance inputs."""
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import sys
 from pathlib import Path
 
-from render_agents_md import DEFAULT_TEMPLATE, render_agents_markdown, resolve_inputs
+SCRIPT_PATH = Path(__file__).resolve()
+
+
+def _detect_repo_root(script_path: Path) -> Path:
+    """Resolve repo root for both canonical and installed script layouts."""
+
+    if script_path.parent.name == "meta" and script_path.parent.parent.name == "scripts":
+        return script_path.parents[2]
+    if script_path.parent.name == "scripts":
+        return script_path.parents[1]
+    return script_path.parents[1]
+
+
+REPO_ROOT = _detect_repo_root(SCRIPT_PATH)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from enforced_planning.agents_rendering import build_renderer
+
+
+def _renderer_entrypoint(repo_root: Path) -> Path:
+    """Return the truthful render entrypoint path for this repo layout."""
+
+    candidates = (
+        repo_root / "scripts" / "meta" / "render_agents_md.py",
+        repo_root / "scripts" / "render_agents_md.py",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+_RENDER_RUNTIME = build_renderer(_renderer_entrypoint(REPO_ROOT))
+DEFAULT_TEMPLATE = _RENDER_RUNTIME.default_template
+
+
+def resolve_inputs(
+    repo_root: Path,
+    claude_file: str = "CLAUDE.md",
+    relationships_file: str = "scripts/relationships.yaml",
+    output_file: str = "AGENTS.md",
+    template_path: Path = DEFAULT_TEMPLATE,
+):
+    """Resolve AGENTS canonical inputs for one repo layout."""
+
+    return _RENDER_RUNTIME.resolve_inputs(
+        repo_root=repo_root,
+        claude_file=claude_file,
+        relationships_file=relationships_file,
+        output_file=output_file,
+        template_path=template_path,
+    )
+
+
+def render_agents_markdown(inputs):
+    """Render AGENTS using the truthful local renderer runtime."""
+
+    return _RENDER_RUNTIME.render_agents_markdown(inputs)
 
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the sync checker."""
-
     parser = argparse.ArgumentParser(
         description="Check whether AGENTS.md matches canonical governance inputs",
     )
@@ -56,7 +109,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """Compare current AGENTS.md to the deterministic rendered output."""
-
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
     template_path = Path(args.template).resolve()
@@ -76,7 +128,7 @@ def main() -> int:
         print(f"Generated AGENTS file is missing: {inputs.output_path}")
         print(
             "Run: "
-            f"python {repo_root / 'scripts' / 'meta' / 'render_agents_md.py'} --repo-root {repo_root}"
+            f"python {_renderer_entrypoint(repo_root)} --repo-root {repo_root}"
         )
         return 1
 
@@ -98,7 +150,7 @@ def main() -> int:
     print("AGENTS.md drift detected.")
     print(
         "Regenerate with: "
-        f"python {repo_root / 'scripts' / 'meta' / 'render_agents_md.py'} --repo-root {repo_root}"
+        f"python {_renderer_entrypoint(repo_root)} --repo-root {repo_root}"
     )
     if diff:
         print(diff)
