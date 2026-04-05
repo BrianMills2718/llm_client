@@ -1135,7 +1135,7 @@ class TestAgentSpecEnforcement:
 
     @pytest.mark.skipif(
         not _can_import_agent_spec(),
-        reason="agent_spec.py extracted to project-meta (Plan #17); import fails in this environment",
+        reason="agent_spec.py extracted to prompt_eval (Plan #90); import fails in this environment",
     )
     def test_agent_spec_summary_stored_in_provenance(self, tmp_path):
         io_log.configure_agent_spec_enforcement(mode="error", task_patterns=["benchmark"])
