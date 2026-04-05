@@ -396,13 +396,25 @@ def _apply_max_tokens(model: str, call_kwargs: dict[str, Any]) -> None:
 # Agent model detection and execution-mode contracts
 # ---------------------------------------------------------------------------
 
-_CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest"})
+_CODEX_AGENT_ALIASES: frozenset[str] = frozenset({"codex-mini-latest", "gpt-5.4"})
 
 # Matches bare model names that belong to the Codex family but don't start
 # with the "codex/" prefix — e.g. "gpt-5.3-codex", "gpt-5.1-codex-mini".
 # The pattern looks for "-codex" at a word boundary (end of string or
 # followed by a hyphen).
 _CODEX_FAMILY_RE = re.compile(r"-codex(?:-|$)", re.IGNORECASE)
+
+
+def _codex_detection_base(model: str) -> str:
+    """Return the provider-agnostic lowercase model name for Codex detection."""
+
+    return str(model or "").rsplit("/", 1)[-1].lower()
+
+
+def _is_codex_alias_model(model: str) -> bool:
+    """Check if a model is a named Codex SDK alias, even with provider prefixes."""
+
+    return _codex_detection_base(model) in _CODEX_AGENT_ALIASES
 
 
 def _is_codex_family_model(model: str) -> bool:
@@ -414,7 +426,7 @@ def _is_codex_family_model(model: str) -> bool:
     ``openrouter/openai/``) are stripped before matching.
     """
     # Strip provider prefix to get the bare model name.
-    base = model.rsplit("/", 1)[-1].lower()
+    base = _codex_detection_base(model)
     return bool(_CODEX_FAMILY_RE.search(base))
 
 
@@ -430,7 +442,7 @@ def _is_agent_model(model: str) -> bool:
         if lower == prefix or lower.startswith(prefix + "/"):
             return True
     # Support selected Codex aliases that map to Codex agent SDK models.
-    if lower in _CODEX_AGENT_ALIASES:
+    if _is_codex_alias_model(model):
         return True
     # Recognize Codex-family models by naming pattern (e.g. gpt-5.3-codex).
     if _is_codex_family_model(model):

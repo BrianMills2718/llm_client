@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from llm_client.core.config import ClientConfig, RoutingPolicy
-from llm_client.execution.call_contracts import _is_codex_family_model
+from llm_client.execution.call_contracts import (
+    _is_codex_alias_model,
+    _is_codex_family_model,
+)
 
 
 @dataclass(frozen=True)
@@ -52,11 +55,26 @@ def _is_image_generation_model(model: str) -> bool:
     return any(h in base for h in hints)
 
 
+def _canonicalize_codex_model(model: str) -> str:
+    """Return the canonical Codex SDK route for known Codex-routed models."""
+
+    raw = str(model or "").strip()
+    if not raw:
+        return raw
+    lower = raw.lower()
+    if lower == "codex" or lower.startswith("codex/"):
+        return raw
+    if _is_codex_alias_model(raw) or _is_codex_family_model(raw):
+        return f"codex/{raw.rsplit('/', 1)[-1]}"
+    return raw
+
+
 def normalize_model_for_policy(model: str, policy: RoutingPolicy) -> str:
     """Normalize model IDs according to explicit routing policy."""
     raw = str(model or "").strip()
     if not raw:
         return raw
+    raw = _canonicalize_codex_model(raw)
 
     lower = raw.lower()
     # Bare Gemini model IDs are not stable LiteLLM provider identities.
