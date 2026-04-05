@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: Gemini routing canonicalizes bare and aliased Gemini ids, and shared 429 cooldowns now avoid duplicate retry waits or cooldown busy-spins
+Verification context: exact gpt-5.4 requests now canonicalize to codex/gpt-5.4 instead of drifting into OpenRouter, while Gemini routing and shared 429 cooldown coordination remain intact
 
 ## Context
 

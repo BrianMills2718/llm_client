@@ -88,6 +88,10 @@ class TestProviderDetection:
         assert _get_provider("gpt-5.1-codex-mini") == "agent"
         assert _get_provider("gpt-5.1-codex-max") == "agent"
 
+    def test_gpt54_alias_models(self):
+        assert _get_provider("gpt-5.4") == "agent"
+        assert _get_provider("openrouter/openai/gpt-5.4") == "agent"
+
     def test_unknown_default(self):
         assert _get_provider("some-unknown-model") == "default"
 
