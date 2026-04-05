@@ -14,6 +14,7 @@ import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1982,6 +1983,34 @@ class TestCodexFallback:
         assert "--skip-git-repo-check" in command
         assert "--dangerously-bypass-approvals-and-sandbox" in command
         assert stdin_payload == "Reply with OK only."
+
+    def test_call_codex_via_cli_uses_subprocess_transport(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+    ) -> None:
+        """CLI transport should execute via subprocess and return the written output."""
+
+        def _fake_run(command, *, input, text, capture_output, check, timeout, env):
+            del input, text, capture_output, check, timeout, env
+            output_path = command[command.index("-o") + 1]
+            Path(output_path).write_text("cli transport ok\n")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(agents_codex_mod.subprocess, "run", _fake_run)
+
+        result = agents_codex_mod._call_codex_via_cli(
+            "codex",
+            [{"role": "user", "content": "Reply with OK only."}],
+            timeout=11,
+            working_directory=str(tmp_path),
+            approval_policy="never",
+            sandbox_mode="workspace-write",
+            skip_git_repo_check=True,
+        )
+
+        assert result.content == "cli transport ok"
+        assert result.raw_response == {"transport": "codex_cli"}
 
 
 # ---------------------------------------------------------------------------

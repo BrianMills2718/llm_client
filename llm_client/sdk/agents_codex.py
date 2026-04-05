@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time

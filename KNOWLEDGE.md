@@ -73,3 +73,20 @@ Runtime implication:
   transport-compatibility failure and fall back to CLI
 - keep the fallback rule narrow so unrelated Pydantic validation failures still
   surface normally
+
+### 2026-04-04 — codex — bug-pattern
+
+The Codex CLI transport path in `llm_client/sdk/agents_codex.py` can silently
+rot if it is only exercised through mocked dispatch tests.
+
+Measured failure:
+- forcing `LLM_CLIENT_CODEX_TRANSPORT=cli` from a real OpenClaw run failed
+  immediately with `name 'subprocess' is not defined`
+- root cause was simple: `_call_codex_via_cli()` used `subprocess.run(...)`
+  but the module did not import `subprocess`
+
+Current safe rule:
+- keep one direct unit test that executes `_call_codex_via_cli()` with
+  `subprocess.run` monkeypatched and verifies the output file is read back
+- transport-selection tests alone are not enough; the concrete CLI helper must
+  be exercised too
