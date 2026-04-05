@@ -3,7 +3,7 @@
 Status: Accepted
 Date: 2026-02-22
 Last verified: 2026-04-05
-Verification context: exact gpt-5.4 requests now canonicalize through the typed provider-governance policy, while shared 429 cooldown warnings now emit stable `PROVIDER_GOVERNANCE_EVENT[cooldown_registered]` records through the provider-coordination backend without duplicate waits or cooldown busy-spins
+Verification context: shared 429 cooldown warnings still emit stable `PROVIDER_GOVERNANCE_EVENT[cooldown_registered]` records, and foundation-event logging now honors dynamic `LLM_CLIENT_LOG_ENABLED` env suppression instead of leaking stale import-time enablement into tests and shared environments
 
 ## Context
 
