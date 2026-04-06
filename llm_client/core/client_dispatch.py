@@ -485,6 +485,10 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
     def _clean(node: Any) -> Any:
         if not isinstance(node, dict):
             return node
+        # Track whether this node was a free-form dict (additionalProperties: true).
+        # If so, don't add an empty `properties: {}` later — that would convert a
+        # permissive schema into a zero-property schema, which OpenAI enforces strictly.
+        _was_open_object = node.get("additionalProperties") is True
         # Remove unsupported top-level fields
         for key in ("additionalProperties", "strict", "title", "$schema"):
             node.pop(key, None)
@@ -511,8 +515,11 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
         items = node.get("items")
         if isinstance(items, dict):
             node["items"] = _clean(items)
-        # Ensure object type has properties
-        if node.get("type") == "object" and "properties" not in node:
+        # Ensure object type has properties (required by Gemini).
+        # Exception: free-form dicts (additionalProperties was True) — adding
+        # empty properties: {} would make them MORE restrictive, not less, because
+        # OpenAI and other providers may enforce "no properties declared" strictly.
+        if node.get("type") == "object" and "properties" not in node and not _was_open_object:
             node["properties"] = {}
         return node
 
