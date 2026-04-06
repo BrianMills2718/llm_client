@@ -137,6 +137,7 @@ from llm_client.core.errors import (
 )
 
 from llm_client.utils.rate_limit import configure as configure_rate_limit
+from llm_client.utils.logging_setup import setup_logging
 from llm_client.observability import (
     ActiveFeatureProfile,
     ActiveExperimentRun,
@@ -385,6 +386,7 @@ _CORE_SUBSTRATE_EXPORTS: tuple[str, ...] = (
     "ToolInfo",
     "ToolDecoratorRegistry",
     "tool_registry",
+    "setup_logging",
 )
 
 _COMPAT_HOLD_EXPORTS: tuple[str, ...] = (
