@@ -21,7 +21,7 @@
 Log it in the sprint tracker and proceed with the safer option.
 
 **Always work in worktrees for Plan-level changes.** Commit at every verified milestone.
-**Active sprint:** see `docs/ops/SPRINT_2026_04_04_EVENING.md` in project-meta.
+**No active sprint.** Check `project-meta/docs/ops/CURRENT_AUTHORITY_STACK.md` for current execution context.
 
 ---
 
