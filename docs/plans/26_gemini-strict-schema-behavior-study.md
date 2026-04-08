@@ -1,6 +1,6 @@
 # Plan #26: Gemini Strict-Schema Behavior Study
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -97,11 +97,11 @@ rates on representative schemas.
 
 ## Acceptance Criteria
 
-- [ ] Study script can run a Gemini model/case matrix and write JSON output
-- [ ] Summary includes execution-path evidence from observability DB
-- [ ] New tests pass
-- [ ] Existing structured-runtime tests pass
-- [ ] Docs/index updated
+- [x] Study script can run a Gemini model/case matrix and write JSON output
+- [x] Summary includes execution-path evidence from observability DB
+- [x] New tests pass
+- [x] Existing structured-runtime tests pass
+- [x] Docs/index updated
 
 ---
 
@@ -109,3 +109,28 @@ rates on representative schemas.
 
 - This plan intentionally does **not** change runtime behavior yet.
 - The first slice is evidence collection, not a fallback-policy refactor.
+
+## Completion Evidence (2026-04-08)
+
+### Verified Commands
+
+```bash
+python -m py_compile scripts/study_gemini_schema_behavior.py tests/test_gemini_schema_behavior_study.py
+python -m pytest tests/test_gemini_schema_behavior_study.py tests/test_structured_runtime.py -q
+python scripts/study_gemini_schema_behavior.py --model openrouter/google/gemini-2.5-pro --model gemini/gemini-2.5-pro --db-path tmp/gemini_schema_behavior_study/llm_observability.db --output-json tmp/gemini_schema_behavior_study/summary.json --max-budget 1.0
+python scripts/study_gemini_schema_behavior.py --model gemini/gemini-2.5-pro --db-path tmp/gemini_schema_behavior_study_direct/llm_observability.db --output-json tmp/gemini_schema_behavior_study_direct/summary.json --max-budget 1.0 --direct-gemini-thinking-budget 256
+```
+
+### Observed Results
+
+- `openrouter/google/gemini-2.5-pro`: `5/5` Tyler-like cases succeeded via `native_schema`
+- direct `gemini/gemini-2.5-pro` with the default shared thinking config: `5/5` failed before schema evaluation with provider-side `BadRequestError`
+- direct `gemini/gemini-2.5-pro` with `--direct-gemini-thinking-budget 256`: `5/5` Tyler-like cases succeeded via `native_schema`
+
+### Conclusion
+
+The strict-schema gap is not a proven Gemini schema-quality failure. The live
+evidence shows a provider/runtime transport precondition on the direct
+`gemini/*` lane: the default `budget_tokens=0` thinking configuration is
+rejected there, while both OpenRouter Gemini and direct Gemini with a positive
+thinking budget succeed natively on the same schema set.

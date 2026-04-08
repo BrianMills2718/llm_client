@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-03-17
-Last verified: 2026-04-05
-Verification context: the shared substrate now owns typed provider-governance policy and explicit governance events, and its observability layer now honors dynamic env-based logging suppression so shared SQLite contention does not break unrelated async client verification
+Last verified: 2026-04-08
+Verification context: the shared substrate still owns typed provider-governance policy and explicit governance events, its observability layer still honors dynamic env-based logging suppression, and direct Gemini thinking defaults are now expressed as shared runtime policy instead of per-call hardcoding
 
 ## Context
 

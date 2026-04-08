@@ -13,12 +13,17 @@ import asyncio
 import json
 import os
 import sqlite3
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from llm_client import acall_llm_structured, io_log
 
@@ -79,6 +84,20 @@ class StudyCase:
     name: str
     prompt: str
     response_model: type[BaseModel]
+
+
+def build_study_call_kwargs(
+    *,
+    model: str,
+    max_budget: float,
+    direct_gemini_thinking_budget: int | None,
+) -> dict[str, Any]:
+    """Build per-call kwargs for the live study without hiding provider requirements."""
+
+    kwargs: dict[str, Any] = {"max_budget": max_budget}
+    if model.lower().startswith("gemini/") and direct_gemini_thinking_budget is not None:
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": direct_gemini_thinking_budget}
+    return kwargs
 
 
 def build_case_registry() -> list[StudyCase]:
@@ -166,7 +185,13 @@ def write_summary_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-async def run_case(model: str, case: StudyCase, db_path: Path, max_budget: float) -> dict[str, Any]:
+async def run_case(
+    model: str,
+    case: StudyCase,
+    db_path: Path,
+    max_budget: float,
+    direct_gemini_thinking_budget: int | None,
+) -> dict[str, Any]:
     """Execute one live Gemini/schema case and attach observability evidence."""
 
     trace_id = f"llm_client/gemini_schema_study/{case.name}/{uuid.uuid4().hex[:12]}"
@@ -181,13 +206,18 @@ async def run_case(model: str, case: StudyCase, db_path: Path, max_budget: float
         "trace_id": trace_id,
     }
     try:
+        call_kwargs = build_study_call_kwargs(
+            model=model,
+            max_budget=max_budget,
+            direct_gemini_thinking_budget=direct_gemini_thinking_budget,
+        )
         parsed, _meta = await acall_llm_structured(
             model,
             [{"role": "user", "content": prompt}],
             case.response_model,
             task="gemini_schema_behavior_study",
             trace_id=trace_id,
-            max_budget=max_budget,
+            **call_kwargs,
         )
         result_summary["parsed"] = parsed.model_dump(mode="json")
     except Exception as exc:  # noqa: BLE001 - study must record the provider/runtime failure
@@ -197,17 +227,32 @@ async def run_case(model: str, case: StudyCase, db_path: Path, max_budget: float
     return result_summary
 
 
-async def run_study(models: list[str], db_path: Path, output_json: Path, max_budget: float) -> dict[str, Any]:
+async def run_study(
+    models: list[str],
+    db_path: Path,
+    output_json: Path,
+    max_budget: float,
+    direct_gemini_thinking_budget: int | None,
+) -> dict[str, Any]:
     """Run the full model x case matrix and write one JSON summary."""
 
     io_log.configure(project="llm_client", db_path=db_path)
     results: list[dict[str, Any]] = []
     for model in models:
         for case in build_case_registry():
-            results.append(await run_case(model=model, case=case, db_path=db_path, max_budget=max_budget))
+            results.append(
+                await run_case(
+                    model=model,
+                    case=case,
+                    db_path=db_path,
+                    max_budget=max_budget,
+                    direct_gemini_thinking_budget=direct_gemini_thinking_budget,
+                )
+            )
     payload = {
         "models": models,
         "db_path": str(db_path),
+        "direct_gemini_thinking_budget": direct_gemini_thinking_budget,
         "results": results,
     }
     write_summary_json(output_json, payload)
@@ -222,6 +267,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default="tmp/gemini_schema_behavior_study/llm_observability.db", help="Dedicated observability SQLite path.")
     parser.add_argument("--output-json", default="tmp/gemini_schema_behavior_study/summary.json", help="Summary JSON output path.")
     parser.add_argument("--max-budget", type=float, default=1.0, help="Per-call max budget passed to llm_client.")
+    parser.add_argument(
+        "--direct-gemini-thinking-budget",
+        type=int,
+        default=None,
+        help="Optional positive thinking budget for direct gemini/* models when the provider rejects budget_tokens=0.",
+    )
     return parser.parse_args()
 
 
@@ -231,7 +282,15 @@ def main() -> None:
     args = parse_args()
     db_path = Path(os.path.expanduser(args.db_path))
     output_json = Path(os.path.expanduser(args.output_json))
-    payload = asyncio.run(run_study(models=args.models, db_path=db_path, output_json=output_json, max_budget=args.max_budget))
+    payload = asyncio.run(
+        run_study(
+            models=args.models,
+            db_path=db_path,
+            output_json=output_json,
+            max_budget=args.max_budget,
+            direct_gemini_thinking_budget=args.direct_gemini_thinking_budget,
+        )
+    )
     print(json.dumps({"output_json": str(output_json), "cases": len(payload["results"])}, indent=2))
 
 
