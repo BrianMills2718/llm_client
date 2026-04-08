@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 OPENROUTER_ROUTING_ENV = "LLM_CLIENT_OPENROUTER_ROUTING"
 OPENROUTER_API_BASE_ENV = "OPENROUTER_API_BASE"
 OPENROUTER_DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
+DIRECT_GEMINI_THINKING_BUDGET_ENV = "LLM_CLIENT_DIRECT_GEMINI_THINKING_BUDGET"
+DEFAULT_DIRECT_GEMINI_THINKING_BUDGET = 256
 
 RoutingPolicy = Literal["openrouter", "direct"]
 
@@ -34,6 +36,7 @@ class ClientConfig:
     default_base_delay: float = 1.0
     default_max_delay: float = 30.0
     default_max_concurrent: int = 5
+    default_direct_gemini_thinking_budget: int | None = DEFAULT_DIRECT_GEMINI_THINKING_BUDGET
 
     def resolve_timeout(self, timeout: int | None) -> int:
         """Resolve timeout: explicit kwarg wins, else config default."""
@@ -54,6 +57,10 @@ class ClientConfig:
     def resolve_max_concurrent(self, max_concurrent: int | None) -> int:
         """Resolve max_concurrent: explicit kwarg wins, else config default."""
         return max_concurrent if max_concurrent is not None else self.default_max_concurrent
+
+    def resolve_direct_gemini_thinking_budget(self) -> int | None:
+        """Return the shared default thinking budget for direct Gemini models."""
+        return self.default_direct_gemini_thinking_budget
 
     def resolve_defaults(
         self,
@@ -89,7 +96,43 @@ class ClientConfig:
             )
             routing_policy = "openrouter"
 
+        direct_gemini_thinking_budget = _parse_direct_gemini_thinking_budget(
+            os.environ.get(DIRECT_GEMINI_THINKING_BUDGET_ENV)
+        )
+
         return cls(
             routing_policy=routing_policy,
             openrouter_api_base=os.environ.get(OPENROUTER_API_BASE_ENV, OPENROUTER_DEFAULT_API_BASE),
+            default_direct_gemini_thinking_budget=direct_gemini_thinking_budget,
         )
+
+
+def _parse_direct_gemini_thinking_budget(raw: str | None) -> int | None:
+    """Parse the shared direct-Gemini thinking-budget default from env."""
+
+    if raw is None:
+        return DEFAULT_DIRECT_GEMINI_THINKING_BUDGET
+    value = raw.strip().lower()
+    if value in {"", "default"}:
+        return DEFAULT_DIRECT_GEMINI_THINKING_BUDGET
+    if value in {"off", "false", "none", "disable", "disabled"}:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; expected integer or off/none. Defaulting to %d.",
+            DIRECT_GEMINI_THINKING_BUDGET_ENV,
+            raw,
+            DEFAULT_DIRECT_GEMINI_THINKING_BUDGET,
+        )
+        return DEFAULT_DIRECT_GEMINI_THINKING_BUDGET
+    if parsed < 0:
+        logger.warning(
+            "Invalid %s=%r; expected non-negative integer or off/none. Defaulting to %d.",
+            DIRECT_GEMINI_THINKING_BUDGET_ENV,
+            raw,
+            DEFAULT_DIRECT_GEMINI_THINKING_BUDGET,
+        )
+        return DEFAULT_DIRECT_GEMINI_THINKING_BUDGET
+    return parsed

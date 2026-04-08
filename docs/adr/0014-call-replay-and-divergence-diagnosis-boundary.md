@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-03-22
-Last verified: 2026-04-05
-Verification context: replayable routing traces still expose provider-governance events, and observability logging now honors dynamic `LLM_CLIENT_LOG_ENABLED` env suppression so disabled lanes do not fail on unrelated shared SQLite foundation-event writes
+Last verified: 2026-04-08
+Verification context: replayable routing traces still expose provider-governance events, observability logging still honors dynamic `LLM_CLIENT_LOG_ENABLED` env suppression so disabled lanes do not fail on unrelated shared SQLite foundation-event writes, and the Gemini schema study now provides replayable evidence for direct-vs-OpenRouter structured behavior
 
 ## Context
 

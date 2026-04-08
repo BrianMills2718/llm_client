@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scripts.study_gemini_schema_behavior import (
     build_case_registry,
+    build_study_call_kwargs,
     summarize_observability_rows,
     write_summary_json,
 )
@@ -54,6 +55,19 @@ def test_summarize_observability_rows_classifies_execution_paths() -> None:
     assert summary["response_format_type"] == "instructor"
     assert summary["retry_count"] == 1
     assert summary["row_count"] == 2
+
+
+def test_build_study_call_kwargs_adds_direct_gemini_thinking_budget() -> None:
+    """Direct Gemini runs can opt into a positive thinking budget for the study."""
+
+    kwargs = build_study_call_kwargs(
+        model="gemini/gemini-2.5-pro",
+        max_budget=1.0,
+        direct_gemini_thinking_budget=256,
+    )
+
+    assert kwargs["max_budget"] == 1.0
+    assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
 
 def test_write_summary_json_emits_expected_shape(tmp_path: Path) -> None:

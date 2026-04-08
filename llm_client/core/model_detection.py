@@ -34,9 +34,9 @@ def _is_claude_model(model: str) -> bool:
 def _is_thinking_model(model: str) -> bool:
     """Check if model needs thinking budget configuration.
 
-    Gemini 2.5+ thinking models allocate reasoning tokens by default,
-    consuming output token budget. Setting budget_tokens=0 disables
-    this so all tokens go to the actual response.
+    Gemini 2.5+ families expose thinking controls, but the correct default
+    budget is provider-dependent. Shared runtime policy decides whether
+    to inject a default and what value to use for each provider lane.
     """
     lower = model.lower()
     # Gemini 2.5-flash, 2.5-pro, 2.5-flash-lite, 3.x, 4.x are all thinking models

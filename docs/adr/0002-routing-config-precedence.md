@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-02-22
-Last verified: 2026-04-05
-Verification context: routing now canonicalizes exact gpt-5.4 requests through the typed provider-governance policy before direct or openrouter policy application, and `routing_trace["provider_governance_events"]` now exposes those governance decisions explicitly
+Last verified: 2026-04-08
+Verification context: routing still canonicalizes exact gpt-5.4 requests through the typed provider-governance policy before direct or openrouter policy application, `routing_trace["provider_governance_events"]` still exposes those governance decisions explicitly, and direct Gemini thinking defaults are now resolved from shared config
 
 ## Context
 

@@ -1151,7 +1151,7 @@ class TestThinkingModelDetection:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini3_thinking", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
     @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
@@ -1165,7 +1165,7 @@ class TestThinkingModelDetection:
         mock_comp.return_value = _mock_response()
         call_llm("gemini/gemini-4-pro", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_gemini4_thinking", max_budget=0)
         kwargs = mock_comp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
@@ -1212,7 +1212,7 @@ class TestThinkingModelDetection:
         mock_acomp.return_value = _mock_response()
         await acall_llm("gemini/gemini-3-flash", [{"role": "user", "content": "Hi"}], task="test", trace_id="test_async_gemini3_thinking", max_budget=0)
         kwargs = mock_acomp.call_args.kwargs
-        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
+        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
     @patch("litellm.get_supported_openai_params", return_value=["thinking"])
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
@@ -1244,7 +1244,7 @@ class TestThinkingModelDetection:
             max_budget=0,
         )
         call_kwargs = mock_client.chat.completions.create_with_completion.call_args.kwargs
-        assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 0}
+        assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
 
 class TestStripFences:

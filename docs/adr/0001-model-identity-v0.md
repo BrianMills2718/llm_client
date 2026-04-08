@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-02-22
-Last verified: 2026-04-05
-Verification context: exact gpt-5.4 requests now canonicalize through the typed provider-governance policy to codex/gpt-5.4, routing traces expose `provider_governance_events`, and Gemini shared-cap/cooldown behavior still flows through the coordination backend boundary
+Last verified: 2026-04-08
+Verification context: exact gpt-5.4 requests still canonicalize through the typed provider-governance policy to codex/gpt-5.4, routing traces still expose `provider_governance_events`, and direct Gemini thinking defaults are now shared-config driven instead of hardcoded to `budget_tokens=0`
 
 ## Context
 
