@@ -49,7 +49,7 @@ verify_branch_claim() {
     local branch="$2"
 
     if [[ "$script" == *"check_coordination_claims.py" ]]; then
-        python "$script" --list --project "$(basename "$REPO_ROOT")" --json | python - "$branch" <<'PY'
+        python "$script" --list --project "$(basename "$REPO_ROOT")" --json | python -c '
 import json
 import sys
 
@@ -60,7 +60,7 @@ for claim in claims:
     if claim.get("branch") == branch and claim.get("status") in {"active", "blocked", "handoff"}:
         raise SystemExit(0)
 raise SystemExit(1)
-PY
+' "$branch"
         return $?
     fi
 
