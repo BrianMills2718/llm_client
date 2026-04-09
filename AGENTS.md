@@ -36,6 +36,9 @@ make summary                 # Project stats
 # Development
 make status                  # git status --short --branch
 make help                    # List all targets
+make dead-code               # Run current dead-code scan
+make dead-code-audit         # Refresh reviewed dead-code inventory
+make dead-code-validate      # Validate reviewed dead-code dispositions
 
 # API Reference
 python scripts/meta/generate_api_reference.py --write  # Regenerate docs
