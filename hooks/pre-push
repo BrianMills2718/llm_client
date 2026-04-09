@@ -44,6 +44,29 @@ if [[ "${SKIP_CLAIM_VERIFY:-0}" != "1" ]]; then
     CLAIM_SCRIPT="$(find_claim_script || true)"
 fi
 
+verify_branch_claim() {
+    local script="$1"
+    local branch="$2"
+
+    if [[ "$script" == *"check_coordination_claims.py" ]]; then
+        python "$script" --list --project "$(basename "$REPO_ROOT")" --json | python - "$branch" <<'PY'
+import json
+import sys
+
+branch = sys.argv[1]
+payload = json.load(sys.stdin)
+claims = payload.get("claims", [])
+for claim in claims:
+    if claim.get("branch") == branch and claim.get("status") in {"active", "blocked", "handoff"}:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+        return $?
+    fi
+
+    python "$script" --verify-branch "$branch" >/dev/null 2>&1
+}
+
 declare -A CHECKED_BRANCHES=()
 
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -81,7 +104,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     if [[ -n "$CLAIM_SCRIPT" && -z "${CHECKED_BRANCHES[$remote_branch]:-}" ]]; then
         CHECKED_BRANCHES["$remote_branch"]="1"
-        if ! python "$CLAIM_SCRIPT" --verify-branch "$remote_branch" >/dev/null 2>&1; then
+        if ! verify_branch_claim "$CLAIM_SCRIPT" "$remote_branch"; then
             echo "ERROR: push blocked. Branch '$remote_branch' has no active claim." >&2
             echo "" >&2
             echo "Create claim before pushing:" >&2
