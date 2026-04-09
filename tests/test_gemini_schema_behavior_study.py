@@ -70,6 +70,18 @@ def test_build_study_call_kwargs_adds_direct_gemini_thinking_budget() -> None:
     assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 256}
 
 
+def test_build_study_call_kwargs_does_not_add_thinking_for_openrouter_gemini() -> None:
+    """OpenRouter Gemini models should not inherit direct-Gemini thinking kwargs."""
+
+    kwargs = build_study_call_kwargs(
+        model="openrouter/google/gemini-3.1-pro-preview",
+        max_budget=1.0,
+        direct_gemini_thinking_budget=256,
+    )
+
+    assert kwargs == {"max_budget": 1.0}
+
+
 def test_write_summary_json_emits_expected_shape(tmp_path: Path) -> None:
     """Summary writing should produce stable machine-readable JSON."""
 

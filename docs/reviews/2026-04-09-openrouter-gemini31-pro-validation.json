@@ -1,0 +1,49 @@
+{
+  "date": "2026-04-09",
+  "model": "openrouter/google/gemini-3.1-pro-preview",
+  "study": "scripts/study_gemini_schema_behavior.py",
+  "cases": 5,
+  "all_success": true,
+  "results": [
+    {
+      "case": "flat_required",
+      "status": "success",
+      "execution_path": "native_schema",
+      "response_format_type": "json_schema",
+      "retry_count": 0,
+      "validation_errors": null
+    },
+    {
+      "case": "nested_object",
+      "status": "success",
+      "execution_path": "native_schema",
+      "response_format_type": "json_schema",
+      "retry_count": 0,
+      "validation_errors": null
+    },
+    {
+      "case": "optional_field",
+      "status": "success",
+      "execution_path": "native_schema",
+      "response_format_type": "json_schema",
+      "retry_count": 0,
+      "validation_errors": null
+    },
+    {
+      "case": "list_of_objects",
+      "status": "success",
+      "execution_path": "native_schema",
+      "response_format_type": "json_schema",
+      "retry_count": 0,
+      "validation_errors": null
+    },
+    {
+      "case": "decision_like",
+      "status": "success",
+      "execution_path": "native_schema",
+      "response_format_type": "json_schema",
+      "retry_count": 0,
+      "validation_errors": null
+    }
+  ]
+}

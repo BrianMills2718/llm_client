@@ -453,6 +453,17 @@ class TestConfigLoading:
     def test_packaged_default_config_matches_exported_default_config(self):
         assert _load_packaged_default_config() == _DEFAULT_CONFIG
 
+    def test_packaged_registry_includes_openrouter_gemini31_pro_preview(self):
+        models = _DEFAULT_CONFIG["models"]
+        match = next(
+            (m for m in models if m["litellm_id"] == "openrouter/google/gemini-3.1-pro-preview"),
+            None,
+        )
+        assert match is not None
+        assert match["provider"] == "openrouter"
+        assert match["api_key_env"] == "OPENROUTER_API_KEY"
+        assert match["structured_output"] is True
+
     def test_parse_packaged_default_config_rejects_invalid_json(self):
         with pytest.raises(RuntimeError, match="Invalid packaged model registry JSON"):
             _parse_packaged_default_config("{not-json}")

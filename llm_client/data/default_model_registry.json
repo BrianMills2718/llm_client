@@ -62,6 +62,23 @@
     },
     {
       "api_key_env": "OPENROUTER_API_KEY",
+      "context": 1048576,
+      "cost": 7.0,
+      "intelligence": 44,
+      "litellm_id": "openrouter/google/gemini-3.1-pro-preview",
+      "name": "gemini-3.1-pro-preview",
+      "provider": "openrouter",
+      "speed": 72,
+      "structured_output": true,
+      "tags": [
+        "frontier",
+        "preview",
+        "1m-context",
+        "reasoning"
+      ]
+    },
+    {
+      "api_key_env": "OPENROUTER_API_KEY",
       "context": 128000,
       "cost": 0.69,
       "intelligence": 41,
