@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-02-22
-Last verified: 2026-04-05
-Verification context: @boundary decorators added to batch_runtime/config (2026-04-05)
+Last verified: 2026-04-09
+Verification context: exhausted-model cooldown routing added to fallback kernel and call-plan suppression (2026-04-09)
 
 ## Context
 
@@ -51,4 +51,3 @@ Negative:
 
 After router extraction (`resolve_call -> ResolvedCallPlan`) and shared kernel
 work, propose a follow-up ADR to unify or deprecate ambiguous `model` usage.
-

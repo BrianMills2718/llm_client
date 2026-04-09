@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, TypeVar
 
+from llm_client.core.model_availability import record_model_unavailability
+
 T = TypeVar("T")
 
 
@@ -129,6 +131,13 @@ def run_sync_with_fallback(
             return execute_model(model_idx, current_model)
         except Exception as exc:
             last_error = exc
+            exhaustion_record = record_model_unavailability(current_model, exc)
+            if exhaustion_record is not None and warning_sink is not None:
+                warning_sink.append(
+                    "MODEL_UNAVAILABLE: "
+                    f"{exhaustion_record['model']} "
+                    f"({exhaustion_record['reason']}, cooldown_s={exhaustion_record['cooldown_s']})"
+                )
             if model_idx < len(models) - 1:
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:
@@ -167,6 +176,13 @@ async def run_async_with_fallback(
             return await execute_model(model_idx, current_model)
         except Exception as exc:
             last_error = exc
+            exhaustion_record = record_model_unavailability(current_model, exc)
+            if exhaustion_record is not None and warning_sink is not None:
+                warning_sink.append(
+                    "MODEL_UNAVAILABLE: "
+                    f"{exhaustion_record['model']} "
+                    f"({exhaustion_record['reason']}, cooldown_s={exhaustion_record['cooldown_s']})"
+                )
             if model_idx < len(models) - 1:
                 next_model = models[model_idx + 1]
                 if on_fallback is not None:

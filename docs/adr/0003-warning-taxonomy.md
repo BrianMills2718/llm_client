@@ -2,8 +2,8 @@
 
 Status: Accepted
 Date: 2026-02-22
-Last verified: 2026-04-05
-Verification context: @boundary decorators added to batch_runtime/config (2026-04-05)
+Last verified: 2026-04-09
+Verification context: exhausted-model cooldown routing added to fallback kernel and call-plan suppression (2026-04-09)
 
 ## Context
 
@@ -36,4 +36,3 @@ Negative:
 
 Add stable warning codes (`LLMC_WARN_*`) with structured metadata once
 router/kernel contracts are stabilized.
-

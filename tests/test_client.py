@@ -45,6 +45,7 @@ from llm_client.core.errors import (
     LLMModelNotFoundError,
     LLMQuotaExhaustedError,
 )
+from llm_client.core.model_availability import clear_model_unavailability
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,9 @@ def _explicit_test_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Week-1 invariant: routing policy must be explicit in tests."""
     monkeypatch.setenv("LLM_CLIENT_OPENROUTER_ROUTING", "off")
     monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
+    clear_model_unavailability()
+    yield
+    clear_model_unavailability()
 
 
 class TestRequiredTags:

@@ -35,6 +35,7 @@ from llm_client.execution.call_contracts import (
 from llm_client.core.config import ClientConfig
 from llm_client.core.data_types import LLMCallResult
 from llm_client.core.model_detection import _resolve_api_base_for_model
+from llm_client.core.model_availability import filter_available_models
 from llm_client.utils.openrouter import _openrouter_routing_enabled
 from llm_client.result_finalization import finalize_result as _finalize_result_base
 from llm_client.result_metadata import (
@@ -96,10 +97,41 @@ def _resolve_call_plan(
 ) -> ResolvedCallPlan:
     """Resolve and log routing plan once per entrypoint."""
     cfg = config or ClientConfig.from_env()
-    plan = resolve_call(
+    resolved_plan = resolve_call(
         CallRequest(model=model, fallback_models=fallback_models, api_base=api_base),
         cfg,
     )
+    available_models, suppressed_models = filter_available_models(resolved_plan.models)
+    if not available_models:
+        suppressed_summary = ", ".join(
+            f"{item['model']}[{item['reason']} retry_after_s={item['retry_after_s']}]"
+            for item in suppressed_models
+        )
+        raise RuntimeError(
+            "All models in the resolved chain are temporarily unavailable due to recent provider exhaustion: "
+            f"{suppressed_summary}"
+        )
+
+    routing_trace = dict(resolved_plan.routing_trace)
+    if suppressed_models:
+        routing_trace["suppressed_models"] = suppressed_models
+        for item in suppressed_models:
+            logger.warning(
+                "ROUTE_SKIP_UNAVAILABLE: skipping %s (%s, retry_after_s=%.1f)",
+                item["model"],
+                item["reason"],
+                item["retry_after_s"],
+            )
+    plan = ResolvedCallPlan(
+        requested_model=resolved_plan.requested_model,
+        models=available_models,
+        primary_model=available_models[0],
+        fallback_models=available_models[1:],
+        routing_policy=resolved_plan.routing_policy,
+        requested_api_base=resolved_plan.requested_api_base,
+        routing_trace=routing_trace,
+    )
+
     normalization_events = plan.routing_trace.get("normalization_events")
     if isinstance(normalization_events, list):
         for event in normalization_events:

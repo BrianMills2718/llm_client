@@ -1,6 +1,8 @@
 """Unit tests for pure routing/config resolution."""
 
 from llm_client.core.config import ClientConfig
+from llm_client.core.client_dispatch import _resolve_call_plan
+from llm_client.core.model_availability import clear_model_unavailability, record_model_unavailability
 from llm_client.core.routing import CallRequest, resolve_api_base_for_model, resolve_call
 
 
@@ -51,3 +53,33 @@ def test_resolve_api_base_prefers_explicit_and_injects_openrouter_default() -> N
         resolve_api_base_for_model("openrouter/openai/gpt-4", "https://override", cfg)
         == "https://override"
     )
+
+
+def test_resolve_call_plan_skips_temporarily_unavailable_models() -> None:
+    cfg = ClientConfig(routing_policy="direct")
+
+    class ExhaustedError(Exception):
+        pass
+
+    clear_model_unavailability()
+    record_model_unavailability(
+        "gemini/gemini-2.5-flash",
+        ExhaustedError(
+            "Rate limit exceeded for GenerateContentRequestsPerDayPerProjectPerModel-FreeTier. "
+            "Please try again tomorrow."
+        ),
+    )
+
+    plan = _resolve_call_plan(
+        model="gemini/gemini-2.5-flash",
+        fallback_models=["gemini/gemini-2.5-flash-lite", "openrouter/openai/gpt-5.4-mini"],
+        api_base=None,
+        config=cfg,
+    )
+    clear_model_unavailability()
+
+    assert plan.primary_model == "gemini/gemini-2.5-flash-lite"
+    assert plan.models == ["gemini/gemini-2.5-flash-lite", "openrouter/openai/gpt-5.4-mini"]
+    suppressed = plan.routing_trace["suppressed_models"]
+    assert suppressed[0]["model"] == "gemini/gemini-2.5-flash"
+    assert suppressed[0]["reason"] == "provider_daily_quota_exhausted"
