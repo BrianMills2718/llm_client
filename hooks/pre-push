@@ -23,6 +23,7 @@ fi
 
 find_claim_script() {
     local candidates=(
+        "$REPO_ROOT/scripts/meta/check_coordination_claims.py"
         "$REPO_ROOT/scripts/meta/worktree-coordination/check_claims.py"
         "$REPO_ROOT/scripts/worktree-coordination/check_claims.py"
         "$REPO_ROOT/scripts/meta/check_claims.py"
@@ -84,7 +85,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             echo "ERROR: push blocked. Branch '$remote_branch' has no active claim." >&2
             echo "" >&2
             echo "Create claim before pushing:" >&2
-            echo "  python scripts/meta/worktree-coordination/check_claims.py --claim --task \"<task>\" --id $remote_branch" >&2
+            echo "  python scripts/meta/check_coordination_claims.py --claim --agent <agent> --project <project> --scope $remote_branch --intent \"<task>\" --branch $remote_branch" >&2
             echo "" >&2
             echo "Bypass claim check (not recommended):" >&2
             echo "  SKIP_CLAIM_VERIFY=1 git push $REMOTE_NAME" >&2
