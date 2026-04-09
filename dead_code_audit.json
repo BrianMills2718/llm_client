@@ -1,0 +1,240 @@
+{
+  "version": 1,
+  "generated_at": "2026-04-09T17:18:05.354899+00:00",
+  "detector": "vulture",
+  "findings_count": 21,
+  "audit_file": "dead_code_audit.json",
+  "findings": [
+    {
+      "file": "llm_client/io_log.py",
+      "line": 1576,
+      "name": "update_intervention",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "keep_reexport",
+      "note": "Intentional module-level re-export. Tests call io_log.update_intervention directly, so this import is part of the public observability surface.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/file_context.py",
+      "line": 24,
+      "name": "DEFAULT_READS_FILE",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/file_context.py",
+      "line": 25,
+      "name": "FileContext",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/file_context.py",
+      "line": 26,
+      "name": "ReadCheckResult",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 28,
+      "name": "PATH_CLEAN_RE",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 29,
+      "name": "REQUIRED_PLAN_SECTIONS",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 30,
+      "name": "ValidationResult",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 31,
+      "name": "collect_plan_requirements",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 32,
+      "name": "extract_inline_paths",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 33,
+      "name": "extract_paths",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 34,
+      "name": "extract_section",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 38,
+      "name": "looks_like_file_path",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 40,
+      "name": "normalize",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 41,
+      "name": "parse_contracts_used",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 42,
+      "name": "parse_data_flow",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 44,
+      "name": "parse_mentioned_adrs",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 47,
+      "name": "parse_tools_used",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 48,
+      "name": "parse_uncertainty_register",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 49,
+      "name": "print_summary",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 51,
+      "name": "split_lines",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    },
+    {
+      "file": "scripts/meta/validate_plan.py",
+      "line": 52,
+      "name": "validate_plan",
+      "kind": "unused-import",
+      "detector": "vulture",
+      "confidence": 90,
+      "disposition": "framework_sync",
+      "note": "Inherited enforced-planning wrapper re-export. No llm_client-local dependency found; retain only until the canonical framework wrapper surface is reduced upstream.",
+      "plan_ref": null
+    }
+  ]
+}

@@ -45,7 +45,7 @@ class _YAMLInlineLoader(BaseLoader):
     """Jinja2 loader for inline strings (no filesystem template inheritance)."""
 
     def get_source(
-        self, environment: Environment, template: str
+        self, _environment: Environment, template: str
     ) -> tuple[str, str | None, None]:
         raise TemplateNotFound(template)
 

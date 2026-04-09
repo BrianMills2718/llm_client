@@ -14,10 +14,11 @@ summarization heuristic beyond extracting a fixed set of sections from
 ``CLAUDE.md`` and recording a sync marker for ``scripts/relationships.yaml``.
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
@@ -28,9 +29,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from enforced_planning.agents_rendering import CanonicalInputs
 from enforced_planning.agents_rendering import build_renderer
-from enforced_planning.agents_rendering import extract_overview as _extract_overview
-from enforced_planning.agents_rendering import extract_section as _extract_section
-from enforced_planning.agents_rendering import extract_title as _extract_title
 from enforced_planning.agents_rendering import parse_args as _parse_args
 
 

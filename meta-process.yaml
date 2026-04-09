@@ -39,6 +39,15 @@ meta_process:
       enabled: false
     type_checking:
       enabled: false
+    dead_code:
+      enabled: true
+      strict: true
+      min_confidence: 80
+      paths:
+      - llm_client
+      - scripts
+      whitelist: .vulture_whitelist.py
+      audit_file: dead_code_audit.json
   acceptance_gates:
     enabled: false
   messaging:

@@ -27,6 +27,8 @@ Log it in the sprint tracker and proceed with the safer option.
 
 Shared LLM infrastructure for Brian's project ecosystem: completions, structured output, tool calling, embeddings, streaming, batch, agent SDK routing, MCP loops, retry/fallback, cost tracking, observability (JSONL + SQLite), model registry, and experiment logging. AGENTS.md is generated from this file via `render_agents_md.py`.
 
+Dead-code review is governed locally through `meta-process.yaml` and `dead_code_audit.json`. Real repo-local findings should be deleted or integrated; retained findings need explicit reviewed dispositions, not silent suppression.
+
 When working in this repo, read these first:
 
 1. [docs/plans/01_master-roadmap.md](docs/plans/01_master-roadmap.md)
@@ -56,6 +58,9 @@ make summary                 # Project stats
 # Development
 make status                  # git status --short --branch
 make help                    # List all targets
+make dead-code               # Run current dead-code scan
+make dead-code-audit         # Refresh reviewed dead-code inventory
+make dead-code-validate      # Validate reviewed dead-code dispositions
 
 # API Reference
 python scripts/meta/generate_api_reference.py --write  # Regenerate docs

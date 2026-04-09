@@ -4,7 +4,7 @@
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
-PYTHON := python
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; elif [ -x .venv/Scripts/python.exe ]; then echo .venv/Scripts/python.exe; else echo python; fi)
 DAYS ?= 7
 PROJECT ?=
 LIMIT ?= 20
@@ -102,7 +102,7 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
-.PHONY: test test-verbose test-integration lint typecheck check install
+.PHONY: test test-verbose test-integration lint typecheck check install dead-code dead-code-audit dead-code-validate
 
 test:  ## Run all tests
 	python -m pytest tests/ -q
@@ -125,7 +125,16 @@ typecheck:  ## Run mypy type checking
 check: lint typecheck test  ## Run all quality checks
 
 install:  ## Install in editable mode with dev deps
-	pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[dev]"
+
+dead-code:  ## Run dead code detection
+	@$(PYTHON) scripts/meta/check_dead_code.py
+
+dead-code-audit:  ## Refresh reviewed dead-code audit file
+	@$(PYTHON) scripts/meta/audit_dead_code.py --write
+
+dead-code-validate:  ## Validate reviewed dead-code dispositions
+	@$(PYTHON) scripts/meta/validate_dead_code_audit.py
 
 # ─── Maintenance ─────────────────────────────────────────────────────────────
 
@@ -159,7 +168,7 @@ help:  ## Show all targets
 	@echo "llm_client — runtime substrate for multi-provider LLM calls"
 	@echo ""
 	@echo "Development:"
-	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(test|lint|typecheck|check|install)' | \
+	@grep -E '^[a-z].*:.*## ' $(MAKEFILE_LIST) | grep -E '^(test|lint|typecheck|check|install|dead-code|dead-code-audit|dead-code-validate)' | \
 		awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Observability:"
