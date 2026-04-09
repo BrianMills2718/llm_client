@@ -63,14 +63,47 @@ def _repo_python(project_root: Path) -> str:
     interpreter for Python-based checks when present.
     """
 
-    candidates = [
-        project_root / ".venv" / "bin" / "python",
-        project_root / ".venv" / "Scripts" / "python.exe",
-    ]
+    candidates: list[Path] = []
+    for root in (project_root, _canonical_project_root(project_root)):
+        candidates.extend(
+            [
+                root / ".venv" / "bin" / "python",
+                root / ".venv" / "Scripts" / "python.exe",
+            ]
+        )
     for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
     return sys.executable
+
+
+def _canonical_project_root(project_root: Path) -> Path:
+    """Resolve the canonical repo root that owns the shared `.venv`.
+
+    In a git worktree the active checkout may live outside the canonical repo
+    root, while the governed `.venv` remains under the shared common dir owner.
+    Fall back to the active root when git metadata is unavailable.
+    """
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return project_root
+    common_dir = Path(result.stdout.strip())
+    if common_dir.name == ".git" and common_dir.parent.exists():
+        return common_dir.parent
+    return project_root
 
 
 def _load_config(project_root: Path) -> dict[str, Any]:

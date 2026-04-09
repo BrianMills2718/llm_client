@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from enforced_planning import coordination_claims
+from enforced_planning.worktree_paths import resolve_canonical_repo_root
 
 
 @dataclass(frozen=True)
@@ -135,10 +136,11 @@ def _branch_claims(project: str, branch: str) -> list[coordination_claims.ClaimR
 def _extract_json_block(raw_text: str) -> str:
     """Strip CLI noise before the first JSON token so parsing stays deterministic."""
 
-    for line in raw_text.splitlines():
+    lines = raw_text.splitlines()
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("[") or stripped.startswith("{"):
-            return stripped
+            return "\n".join(lines[index:]).strip()
     return raw_text
 
 
@@ -152,6 +154,8 @@ def load_active_decisions(project: str, *, limit: int = 5) -> list[dict[str, Any
             "active decisions",
             "--project",
             project,
+            "--type",
+            "semantic",
             "--raw",
             "--limit",
             str(limit),
@@ -168,7 +172,19 @@ def load_active_decisions(project: str, *, limit: int = 5) -> list[dict[str, Any
     decoded = json.loads(payload)
     if not isinstance(decoded, list):
         raise RuntimeError("agent-memory recall --raw must return a JSON array")
-    return [item for item in decoded if isinstance(item, dict)]
+    semantic_records = [item for item in decoded if isinstance(item, dict)]
+    decision_records = [
+        item
+        for item in semantic_records
+        if item.get("memory_type") == "semantic"
+        and (item.get("memory_subtype") == "decision" or item.get("primary_task") == "decision")
+    ]
+    in_flight_decisions = [
+        item
+        for item in decision_records
+        if "in-flight" in item.get("tags", [])
+    ]
+    return in_flight_decisions or decision_records
 
 
 def _claim_overlap_for_paths(
@@ -194,17 +210,18 @@ def evaluate_push_safety(
 ) -> dict[str, Any]:
     """Evaluate whether the current branch is safe to push as-is."""
 
-    resolved_repo_root = resolve_repo_root(repo_root)
-    resolved_project = project or resolved_repo_root.name
-    resolved_branch = branch or current_branch(resolved_repo_root)
-    default_branch = resolve_default_branch(resolved_repo_root)
+    active_repo_root = resolve_repo_root(repo_root)
+    canonical_repo_root = resolve_canonical_repo_root(active_repo_root)
+    resolved_project = project or canonical_repo_root.name
+    resolved_branch = branch or current_branch(active_repo_root)
+    default_branch = resolve_default_branch(active_repo_root)
     if not default_branch:
         raise RuntimeError("Unable to resolve the default branch for push-check.")
 
     issues: list[PushCheckFinding] = []
     warnings: list[PushCheckFinding] = []
 
-    if _working_tree_dirty(resolved_repo_root):
+    if _working_tree_dirty(active_repo_root):
         issues.append(
             PushCheckFinding(
                 code="dirty_worktree",
@@ -232,7 +249,7 @@ def evaluate_push_safety(
             )
         )
 
-    upstream = current_upstream(resolved_repo_root)
+    upstream = current_upstream(active_repo_root)
     ahead = 0
     behind = 0
     if upstream is None:
@@ -244,7 +261,7 @@ def evaluate_push_safety(
             )
         )
     else:
-        ahead, behind = ahead_behind(resolved_repo_root, upstream)
+        ahead, behind = ahead_behind(active_repo_root, upstream)
         if behind > 0:
             issues.append(
                 PushCheckFinding(
@@ -254,7 +271,7 @@ def evaluate_push_safety(
                 )
             )
 
-    changed_paths = changed_paths_since_default(resolved_repo_root, default_branch)
+    changed_paths = changed_paths_since_default(active_repo_root, default_branch)
     if not changed_paths:
         warnings.append(
             PushCheckFinding(
@@ -320,7 +337,8 @@ def evaluate_push_safety(
 
     return {
         "ok": not issues,
-        "repo_root": str(resolved_repo_root),
+        "repo_root": str(active_repo_root),
+        "canonical_repo_root": str(canonical_repo_root),
         "project": resolved_project,
         "branch": resolved_branch,
         "default_branch": default_branch,
