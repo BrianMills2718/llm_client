@@ -858,6 +858,62 @@ class TestNonRetryableErrors:
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
+    def test_gemini_monthly_spend_cap_not_retried(self, mock_comp: MagicMock) -> None:
+        """Gemini monthly spend-cap 429s should fail immediately so fallback can engage."""
+        import litellm
+
+        mock_comp.side_effect = litellm.RateLimitError(
+            (
+                "GeminiException - {"
+                '"error": {"code": 429, '
+                '"message": "Your project has exceeded its monthly spending cap. '
+                'Please go to AI Studio at https://ai.studio/spend to manage your project spend cap.", '
+                '"status": "RESOURCE_EXHAUSTED"}}'
+            ),
+            model="gemini/gemini-2.5-flash",
+            llm_provider="gemini",
+        )
+
+        with pytest.raises(LLMQuotaExhaustedError):
+            call_llm(
+                "gemini/gemini-2.5-flash",
+                [{"role": "user", "content": "Hi"}],
+                num_retries=2,
+                task="test",
+                trace_id="test_gemini_monthly_spend_cap",
+                max_budget=0,
+            )
+        assert mock_comp.call_count == 1
+
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
+    def test_gemini_daily_request_cap_not_retried(self, mock_comp: MagicMock) -> None:
+        """Gemini daily request-cap 429s should fail immediately instead of retrying."""
+        import litellm
+
+        mock_comp.side_effect = litellm.RateLimitError(
+            (
+                "GeminiException - {"
+                '"error": {"code": 429, '
+                '"message": "Rate limit exceeded for GenerateContentRequestsPerDayPerProjectPerModel-FreeTier. '
+                'Please try again tomorrow.", '
+                '"status": "RESOURCE_EXHAUSTED"}}'
+            ),
+            model="gemini/gemini-2.5-flash",
+            llm_provider="gemini",
+        )
+
+        with pytest.raises(LLMQuotaExhaustedError):
+            call_llm(
+                "gemini/gemini-2.5-flash",
+                [{"role": "user", "content": "Hi"}],
+                num_retries=2,
+                task="test",
+                trace_id="test_gemini_daily_request_cap",
+                max_budget=0,
+            )
+        assert mock_comp.call_count == 1
+
     @patch("llm_client.core.client.time.sleep")
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)

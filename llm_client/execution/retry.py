@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from llm_client.core.data_types import LLMCallResult
-from llm_client.core.errors import LLMEmptyResponseError
+from llm_client.core.errors import LLMEmptyResponseError, _QUOTA_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +73,7 @@ _EMPTY_TOOL_PROTOCOL_FINISH_REASONS = frozenset({
 # Patterns in error messages that indicate permanent failure (never retry).
 # Checked before _RETRYABLE_PATTERNS so they take precedence.
 _NON_RETRYABLE_PATTERNS = [
-    "quota",
-    "billing",
-    "insufficient",
-    "exceeded your current",
-    "plan and billing",
-    "account deactivated",
-    "account suspended",
+    *_QUOTA_PATTERNS,
 ]
 
 

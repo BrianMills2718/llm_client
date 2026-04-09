@@ -30,6 +30,7 @@ Track all implementation work here.
 | 22 | [Capability Ownership And Sanctioned Worktree Alignment](22_capability-ownership-and-sanctioned-worktree-alignment.md) | High | ✅ Complete | 21 |
 | 23 | [Authoritative coordination wave-1 rollout](23_authoritative-coordination-wave-1-rollout.md) | Critical | ✅ Complete | - |
 | 24 | [Workflow Kit Manifest, Validator, and Runtime Adapter Proving Slice](24_workflow-kit-manifest-validator-and-runtime-adapter-proving-slice.md) | — | Cancelled — execution strategy layer reassigned to agentic_scaffolding; packaging scope deferred to PROJECTS_DEFERRED. See `project-meta/docs/ops/ADR-2026-04-04-workflow-portability-revised-execution-strategies.md` (2026-04-04). | — |
+| 25 | [Gemini exhaustion fallback hardening](25_gemini_exhaustion_fallback_hardening.md) | High | ✅ Complete | Digimon GraphRAG rebuild recovery |
 | 91 | [Pending-Atom Submit Churn Requires TODO Progress](91_pending_atom_submit_churn_requires_todo_progress.md) | High | 🚧 In Progress | DIGIMON controller anti-churn verification |
 
 

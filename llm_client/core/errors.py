@@ -126,6 +126,14 @@ _QUOTA_PATTERNS = [
     "account deactivated",
     "account suspended",
     "add more using",
+    "monthly spending cap",
+    "monthly spend cap",
+    "spending cap",
+    "spend cap",
+    "requests per day",
+    "per day per project",
+    "per day per model",
+    "generatecontentrequestsperday",
 ]
 
 
