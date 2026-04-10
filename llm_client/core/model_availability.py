@@ -8,6 +8,7 @@ known quota/spend-cap exhaustion signal.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,45 @@ def _cooldown_seconds(env_name: str, default: float) -> float:
     return default if value <= 0 else value
 
 
+def _retry_hint_cap_seconds() -> float:
+    """Return the max provider retry hint to convert into cooldown."""
+    return _cooldown_seconds("LLM_CLIENT_PROVIDER_RETRY_HINT_COOLDOWN_CAP_S", 43200.0)
+
+
+def _provider_retry_hint_seconds(detail: str) -> float | None:
+    """Extract an unbounded provider retry-delay hint from raw error detail."""
+    patterns = (
+        r'"retryDelay"\s*:\s*"([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)?"',
+        r'retry(?:ing)?\s+(?:in|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hour|hours)?',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, detail, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        unit = (match.group(2) or "s").strip().lower()
+        if unit == "ms":
+            value /= 1000.0
+        elif unit in {"m", "min", "mins", "minute", "minutes"}:
+            value *= 60.0
+        elif unit in {"h", "hour", "hours"}:
+            value *= 3600.0
+        if value > 0:
+            return value
+    return None
+
+
+def _apply_provider_retry_hint(default_cooldown_s: float, detail: str) -> float:
+    """Honor provider retry hints when they exceed the default cooldown."""
+    hint_s = _provider_retry_hint_seconds(detail)
+    if hint_s is None:
+        return default_cooldown_s
+    return max(default_cooldown_s, min(hint_s, _retry_hint_cap_seconds()))
+
+
 def _unavailability_reason(detail: str) -> tuple[str, float] | None:
     """Classify quota exhaustion detail into a cooldown reason and duration."""
     lower = detail.lower()
@@ -51,22 +91,33 @@ def _unavailability_reason(detail: str) -> tuple[str, float] | None:
             "requests per day",
             "per day per project",
             "per day per model",
+            "generate_requests_per_model_per_day",
+            "generaterequestsperdayperprojectpermodel",
             "generatecontentrequestsperday",
             "try again tomorrow",
         )
     ):
         return (
             "provider_daily_quota_exhausted",
-            _cooldown_seconds("LLM_CLIENT_DAILY_QUOTA_COOLDOWN_S", 3600.0),
+            _apply_provider_retry_hint(
+                _cooldown_seconds("LLM_CLIENT_DAILY_QUOTA_COOLDOWN_S", 3600.0),
+                detail,
+            ),
         )
     if any(pattern in lower for pattern in ("monthly spending cap", "monthly spend cap", "spending cap", "spend cap")):
         return (
             "provider_spend_cap_exhausted",
-            _cooldown_seconds("LLM_CLIENT_SPEND_CAP_COOLDOWN_S", 300.0),
+            _apply_provider_retry_hint(
+                _cooldown_seconds("LLM_CLIENT_SPEND_CAP_COOLDOWN_S", 300.0),
+                detail,
+            ),
         )
     return (
         "provider_quota_exhausted",
-        _cooldown_seconds("LLM_CLIENT_QUOTA_COOLDOWN_S", 900.0),
+        _apply_provider_retry_hint(
+            _cooldown_seconds("LLM_CLIENT_QUOTA_COOLDOWN_S", 900.0),
+            detail,
+        ),
     )
 
 

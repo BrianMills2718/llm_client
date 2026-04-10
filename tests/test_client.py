@@ -950,6 +950,35 @@ class TestNonRetryableErrors:
         assert result.content == "Hello!"
         assert mock_comp.call_count == 2
 
+    @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)
+    def test_long_quota_retry_delay_is_not_retried(
+        self,
+        mock_comp: MagicMock,
+    ) -> None:
+        """Quota-like 429 with a multi-hour retry window should fail over instead of sleeping."""
+        import litellm
+
+        mock_comp.side_effect = litellm.RateLimitError(
+            (
+                "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_day. "
+                "Please retry in 9h40m20s. "
+                '{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34820s"}]}'
+            ),
+            model="gemini-2.5-flash",
+            llm_provider="gemini",
+        )
+
+        with pytest.raises(LLMQuotaExhaustedError):
+            call_llm(
+                "gemini/gemini-2.5-flash",
+                [{"role": "user", "content": "Hi"}],
+                num_retries=2,
+                task="test",
+                trace_id="test_long_quota_retry_delay",
+                max_budget=0,
+            )
+        assert mock_comp.call_count == 1
+
     @patch("llm_client.execution.execution_kernel.asyncio.sleep", new_callable=AsyncMock)
     @patch("llm_client.core.client.litellm.completion_cost", return_value=0.001)
     @patch("llm_client.core.client.litellm.acompletion", new_callable=AsyncMock)

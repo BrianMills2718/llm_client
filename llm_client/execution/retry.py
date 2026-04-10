@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -120,7 +121,11 @@ def _error_status_code(error: Exception) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def _coerce_retry_delay_seconds(raw_value: Any) -> float | None:
+def _coerce_retry_delay_seconds(
+    raw_value: Any,
+    *,
+    max_seconds: float | None = 600.0,
+) -> float | None:
     """Normalize a retry-delay value into seconds with sanity bounds."""
     if raw_value is None:
         return None
@@ -156,11 +161,16 @@ def _coerce_retry_delay_seconds(raw_value: Any) -> float | None:
         value *= 3600.0
     if value <= 0:
         return None
-    # Bound absurd delays while still honoring provider windows.
-    return min(value, 600.0)
+    if max_seconds is not None:
+        return min(value, max_seconds)
+    return value
 
 
-def _retry_delay_hint_seconds(error: Exception) -> float | None:
+def _retry_delay_hint_seconds(
+    error: Exception,
+    *,
+    max_seconds: float | None = 600.0,
+) -> float | None:
     """Parse provider retry-after hints from an error message (seconds)."""
     text = str(error)
     if not text:
@@ -174,16 +184,26 @@ def _retry_delay_hint_seconds(error: Exception) -> float | None:
         m = re.search(pat, text, flags=re.IGNORECASE)
         if not m:
             continue
-        hint = _coerce_retry_delay_seconds(f"{m.group(1)}{m.group(2) or 's'}")
+        hint = _coerce_retry_delay_seconds(
+            f"{m.group(1)}{m.group(2) or 's'}",
+            max_seconds=max_seconds,
+        )
         if hint is not None:
             return hint
     return None
 
 
-def _retry_delay_hint(error: Exception) -> tuple[float | None, str]:
+def _retry_delay_hint(
+    error: Exception,
+    *,
+    max_seconds: float | None = 600.0,
+) -> tuple[float | None, str]:
     """Return retry hint delay with source classification."""
     for attr in ("retry_after", "retry_after_seconds", "retry_after_s", "retry_delay"):
-        hint = _coerce_retry_delay_seconds(getattr(error, attr, None))
+        hint = _coerce_retry_delay_seconds(
+            getattr(error, attr, None),
+            max_seconds=max_seconds,
+        )
         if hint is not None:
             return hint, "structured"
 
@@ -193,14 +213,26 @@ def _retry_delay_hint(error: Exception) -> tuple[float | None, str]:
         header_value: Any = None
         if hasattr(headers, "get"):
             header_value = headers.get("retry-after") or headers.get("Retry-After")
-        hint = _coerce_retry_delay_seconds(header_value)
+        hint = _coerce_retry_delay_seconds(header_value, max_seconds=max_seconds)
         if hint is not None:
             return hint, "structured"
 
-    hint = _retry_delay_hint_seconds(error)
+    hint = _retry_delay_hint_seconds(error, max_seconds=max_seconds)
     if hint is not None:
         return hint, "parsed"
     return None, "none"
+
+
+def _max_in_call_retry_delay_seconds() -> float:
+    """Return the max provider hint to honor inside a single call attempt chain."""
+    raw = os.environ.get("LLM_CLIENT_MAX_IN_CALL_RETRY_DELAY_S")
+    if raw is None or not raw.strip():
+        return 120.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 120.0
+    return 120.0 if value <= 0 else value
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +286,11 @@ def _is_retryable(error: Exception, extra_patterns: list[str] | None = None) -> 
         if rate_limit_types and isinstance(error, rate_limit_types):
             error_str = str(error).lower()
             # Provider-specified retry windows are considered retryable even
-            # when the message includes "quota" phrasing.
-            hint_delay, _hint_source = _retry_delay_hint(error)
+            # when the message includes "quota" phrasing, but only when the
+            # requested wait is short enough to make in-call retry sensible.
+            hint_delay, _hint_source = _retry_delay_hint(error, max_seconds=None)
+            if hint_delay is not None and any(p in error_str for p in _NON_RETRYABLE_PATTERNS):
+                return hint_delay <= _max_in_call_retry_delay_seconds()
             if hint_delay is not None:
                 return True
             if any(p in error_str for p in _NON_RETRYABLE_PATTERNS):

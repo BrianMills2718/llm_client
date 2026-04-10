@@ -83,3 +83,23 @@ def test_resolve_call_plan_skips_temporarily_unavailable_models() -> None:
     suppressed = plan.routing_trace["suppressed_models"]
     assert suppressed[0]["model"] == "gemini/gemini-2.5-flash"
     assert suppressed[0]["reason"] == "provider_daily_quota_exhausted"
+
+
+def test_record_model_unavailability_uses_provider_retry_hint_for_daily_quota() -> None:
+    class ExhaustedError(Exception):
+        pass
+
+    clear_model_unavailability()
+    record = record_model_unavailability(
+        "gemini/gemini-2.5-flash",
+        ExhaustedError(
+            "Quota exceeded for metric: generativelanguage.googleapis.com/generate_requests_per_model_per_day. "
+            '{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34820s"}]}'
+        ),
+        now_monotonic=0.0,
+    )
+    clear_model_unavailability()
+
+    assert record is not None
+    assert record["reason"] == "provider_daily_quota_exhausted"
+    assert record["cooldown_s"] == 34820.0
