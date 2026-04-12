@@ -428,3 +428,34 @@ endif
 		$(if $(MESSAGE_FILE),--content-file "$(MESSAGE_FILE)",) \
 		$(if $(RECIPIENT),--recipient "$(RECIPIENT)",)
 # <<< META-PROCESS WORKTREE TARGETS <<<
+
+# >>> META-PROCESS PUBLISH TARGETS >>>
+PUBLISH_PUSH_CHECK_SCRIPT := scripts/meta/check_push_safety.py
+PUBLISH_DEAD_CODE_SCRIPT := scripts/meta/check_dead_code.py
+PUBLISH_DEAD_CODE_VALIDATE_SCRIPT := scripts/meta/validate_dead_code_audit.py
+
+.PHONY: publish-check
+
+publish-check:  ## Run the governed publish gate (coordination, repo checks, reviewed dead-code)
+	@if [ ! -f "$(PUBLISH_PUSH_CHECK_SCRIPT)" ]; then \
+		echo "Missing push-safety validator: $(PUBLISH_PUSH_CHECK_SCRIPT)"; \
+		echo "Install or sync the sanctioned governed-repo support before publishing."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PUBLISH_DEAD_CODE_SCRIPT)" ]; then \
+		echo "Missing dead-code detector: $(PUBLISH_DEAD_CODE_SCRIPT)"; \
+		echo "Install or sync the sanctioned governed-repo support before publishing."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PUBLISH_DEAD_CODE_VALIDATE_SCRIPT)" ]; then \
+		echo "Missing dead-code audit validator: $(PUBLISH_DEAD_CODE_VALIDATE_SCRIPT)"; \
+		echo "Install or sync the sanctioned governed-repo support before publishing."; \
+		exit 1; \
+	fi
+	@python "$(PUBLISH_PUSH_CHECK_SCRIPT)"
+	@python "$(PUBLISH_DEAD_CODE_SCRIPT)"
+	@python "$(PUBLISH_DEAD_CODE_VALIDATE_SCRIPT)"
+	@if $(MAKE) -n publish-check-extra >/dev/null 2>&1; then \
+		$(MAKE) publish-check-extra; \
+	fi
+# <<< META-PROCESS PUBLISH TARGETS <<<

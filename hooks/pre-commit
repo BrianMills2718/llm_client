@@ -1,7 +1,7 @@
 #!/bin/bash
-# Pre-commit hook (portable meta-process template)
+# Pre-commit hook (portable enforced-planning template)
 # Each check only runs if its script is installed.
-# Install via: meta-process/install.sh
+# Install via: ./install.sh
 
 set -e
 
@@ -9,22 +9,6 @@ echo "Running pre-commit checks..."
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
-
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [[ "$BRANCH" == "main" && "${ALLOW_MAIN_COMMIT:-0}" != "1" ]]; then
-    echo ""
-    echo "ERROR: direct commits on 'main' are blocked."
-    echo ""
-    echo "Use worktree/branch + PR workflow:"
-    echo "  make worktree BRANCH=plan-NN-description TASK=\"<task>\""
-    echo "  cd worktrees/plan-NN-description"
-    echo "  git commit ..."
-    echo ""
-    echo "Emergency override (use sparingly):"
-    echo "  ALLOW_MAIN_COMMIT=1 git commit ..."
-    echo ""
-    exit 1
-fi
 
 STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
 
@@ -49,22 +33,20 @@ if [[ -n "$GENERATOR" ]]; then
     fi
 fi
 
-# 2. Generated API reference sync (regenerate before coupling check)
-# This must run BEFORE doc-coupling so generated docs are staged when
-# the coupling check compares against origin.
-API_REFERENCE_GEN=$(find_script "generate_api_reference.py")
-if [[ -n "$API_REFERENCE_GEN" ]]; then
-    STAGED_API=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(llm_client/.*\.py|docs/API_REFERENCE\.(md|html)|scripts/meta/generate_api_reference\.py|scripts/doc_coupling\.yaml)$' || true)
-    if [[ -n "$STAGED_API" ]]; then
-        echo "Regenerating API reference docs..."
-        # Regenerate and stage instead of check-only — avoids race condition
-        # where --check compares disk state against staged Python changes.
-        python "$API_REFERENCE_GEN" --write 2>/dev/null || true
-        git add docs/API_REFERENCE.md docs/API_REFERENCE.html 2>/dev/null || true
+# 2. Locked-coupling check (V2 relationships.yaml)
+LOCKED_COUPLINGS=$(find_script "check_locked_couplings.py")
+if [[ -n "$LOCKED_COUPLINGS" ]]; then
+    echo "Checking locked couplings..."
+    if ! python "$LOCKED_COUPLINGS" --strict 2>/dev/null; then
+        echo ""
+        echo "ERROR: Locked coupling violated — update the coupled docs and re-stage."
+        echo "Run 'python $LOCKED_COUPLINGS' to see violations."
+        echo ""
+        exit 1
     fi
 fi
 
-# 3. Doc-coupling check (after API docs regenerated)
+# 4. Doc-coupling check (if script exists)
 DOC_COUPLING=$(find_script "check_doc_coupling.py")
 if [[ -n "$DOC_COUPLING" ]]; then
     echo "Checking doc-code coupling..."
@@ -77,7 +59,7 @@ if [[ -n "$DOC_COUPLING" ]]; then
     fi
 fi
 
-# 4. Mypy on changed src/ files (if mypy is installed)
+# 5. Mypy on changed src/ files (if mypy is installed)
 STAGED_SRC=$(echo "$STAGED_PY" | grep '^src/' || true)
 if [[ -n "$STAGED_SRC" ]] && command -v mypy >/dev/null 2>&1; then
     echo "Running mypy on changed files..."
@@ -89,7 +71,23 @@ if [[ -n "$STAGED_SRC" ]] && command -v mypy >/dev/null 2>&1; then
     fi
 fi
 
-# 5. Plan status consistency (if script exists and plan files staged)
+# 6. Capabilities section check on staged plan files
+CHECK_CAPS=$(find_script "check_plan_capabilities.py")
+if [[ -n "$CHECK_CAPS" ]]; then
+    STAGED_PLAN_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '^docs/plans/.*\.md$' || true)
+    if [[ -n "$STAGED_PLAN_FILES" ]]; then
+        echo "Checking plan Capabilities sections..."
+        if ! python "$CHECK_CAPS" $STAGED_PLAN_FILES --strict 2>/dev/null; then
+            echo ""
+            echo "ERROR: Cross-project plan missing Capabilities section!"
+            echo "Run 'python $CHECK_CAPS docs/plans/' to see all warnings."
+            echo ""
+            exit 1
+        fi
+    fi
+fi
+
+# 7. Plan status consistency (if script exists and plan files staged)
 SYNC_STATUS=$(find_script "sync_plan_status.py")
 if [[ -n "$SYNC_STATUS" ]]; then
     STAGED_PLANS=$(git diff --cached --name-only --diff-filter=ACM | grep '^docs/plans/' || true)
@@ -105,10 +103,39 @@ if [[ -n "$SYNC_STATUS" ]]; then
     fi
 fi
 
-# 6. Branch divergence check
+# 8. Dead code check (if enabled in meta-process.yaml)
+DEAD_CODE=$(find_script "check_dead_code.py")
+if [[ -n "$DEAD_CODE" ]] && [[ -n "$STAGED_PY" ]]; then
+    echo "Checking for dead code..."
+    if ! python "$DEAD_CODE" 2>/dev/null; then
+        echo ""
+        echo "ERROR: Dead code check failed!"
+        echo "Run 'python $DEAD_CODE' to see details."
+        echo ""
+        exit 1
+    fi
+fi
+
+# 8b. Reviewed dead-code audit validation (if script exists)
+DEAD_CODE_AUDIT=$(find_script "validate_dead_code_audit.py")
+STAGED_DEAD_CODE_AUDIT=$(git diff --cached --name-only --diff-filter=ACM | grep '^dead_code_audit\.json$' || true)
+STAGED_META_PROCESS=$(git diff --cached --name-only --diff-filter=ACM | grep '^meta-process\.yaml$' || true)
+if [[ -n "$DEAD_CODE_AUDIT" ]] && { [[ -n "$STAGED_PY" ]] || [[ -n "$STAGED_DEAD_CODE_AUDIT" ]] || [[ -n "$STAGED_META_PROCESS" ]]; }; then
+    echo "Validating reviewed dead-code audit..."
+    if ! python "$DEAD_CODE_AUDIT" 2>/dev/null; then
+        echo ""
+        echo "ERROR: Reviewed dead-code audit is invalid!"
+        echo "Run 'python $DEAD_CODE_AUDIT' to see missing or stale dispositions."
+        echo ""
+        exit 1
+    fi
+fi
+
+# 9. Branch divergence check
 echo "Checking branch freshness..."
 git fetch origin 2>/dev/null || true
 
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || true
 REMOTE="origin/$BRANCH"
 
 if git rev-parse --verify "$REMOTE" >/dev/null 2>&1; then
@@ -129,6 +156,23 @@ if git rev-parse --verify "$REMOTE" >/dev/null 2>&1; then
     if [ "$REMOTE_ONLY" -gt 5 ]; then
         echo "WARNING: Branch is $REMOTE_ONLY commits behind remote"
         echo "Consider: git pull --rebase origin $BRANCH"
+    fi
+fi
+
+# 10. Terminology linter on staged .md files (if vocab pack and script exist)
+TERM_LINTER=$(find_script "check_terminology.py")
+VOCAB_PACK="$REPO_ROOT/generated/vocab_pack.jsonl"
+if [[ -n "$TERM_LINTER" ]] && [[ -f "$VOCAB_PACK" ]]; then
+    STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' | grep -v '^vision/archive/' | grep -v '^docs/ops/archive/' | grep -v '^tests/fixtures/' || true)
+    if [[ -n "$STAGED_MD" ]]; then
+        echo "Checking terminology in staged markdown files..."
+        if ! python "$TERM_LINTER" --files $STAGED_MD 2>/dev/null; then
+            echo ""
+            echo "ERROR: Deprecated terminology found in staged files!"
+            echo "Run 'python $TERM_LINTER --files <file>' to see violations."
+            echo ""
+            exit 1
+        fi
     fi
 fi
 

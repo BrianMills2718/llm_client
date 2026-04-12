@@ -1,5 +1,5 @@
 #!/bin/bash
-# Post-commit hook (portable meta-process template)
+# Post-commit hook (portable enforced-planning template)
 # Reminds about unpushed commits.
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0

@@ -1,120 +1,26 @@
 #!/bin/bash
-# Pre-push guard:
-# 1) Block direct pushes to main (enforce PR/worktree workflow).
-# 2) Optionally verify non-main branches have an active claim.
-#
-# Escape hatches:
-# - ALLOW_MAIN_PUSH=1          Allow direct pushes to main for emergency use.
-# - SKIP_CLAIM_VERIFY=1        Skip branch-claim verification.
+# Pre-push hook (portable enforced-planning template)
+# Enforces the governed publish path before a branch reaches the remote.
 
-set -euo pipefail
+set -e
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$REPO_ROOT" ]]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-fi
-REMOTE_NAME="${1:-origin}"
-REMOTE_URL="${2:-}"
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
 
-if [[ "${ALLOW_MAIN_PUSH:-0}" == "1" ]]; then
-    exit 0
+if [[ ! -f "$REPO_ROOT/Makefile" ]]; then
+    echo ""
+    echo "ERROR: Governed publish path requires a Makefile with publish-check."
+    echo ""
+    exit 1
 fi
 
-find_claim_script() {
-    local candidates=(
-        "$REPO_ROOT/scripts/meta/check_coordination_claims.py"
-        "$REPO_ROOT/scripts/meta/worktree-coordination/check_claims.py"
-        "$REPO_ROOT/scripts/worktree-coordination/check_claims.py"
-        "$REPO_ROOT/scripts/meta/check_claims.py"
-        "$REPO_ROOT/scripts/check_claims.py"
-    )
-    local script
-    for script in "${candidates[@]}"; do
-        if [[ -f "$script" ]]; then
-            echo "$script"
-            return 0
-        fi
-    done
-    return 1
-}
-
-CLAIM_SCRIPT=""
-if [[ "${SKIP_CLAIM_VERIFY:-0}" != "1" ]]; then
-    CLAIM_SCRIPT="$(find_claim_script || true)"
+if ! make -n publish-check >/dev/null 2>&1; then
+    echo ""
+    echo "ERROR: Missing publish-check target."
+    echo "Sync the governed Makefile publish block before pushing."
+    echo ""
+    exit 1
 fi
 
-verify_branch_claim() {
-    local script="$1"
-    local branch="$2"
-
-    if [[ "$script" == *"check_coordination_claims.py" ]]; then
-        python "$script" --list --project "$(basename "$REPO_ROOT")" --json | python -c '
-import json
-import sys
-
-branch = sys.argv[1]
-payload = json.load(sys.stdin)
-claims = payload.get("claims", [])
-for claim in claims:
-    if claim.get("branch") == branch and claim.get("status") in {"active", "blocked", "handoff"}:
-        raise SystemExit(0)
-raise SystemExit(1)
-' "$branch"
-        return $?
-    fi
-
-    python "$script" --verify-branch "$branch" >/dev/null 2>&1
-}
-
-declare -A CHECKED_BRANCHES=()
-
-while read -r local_ref local_sha remote_ref remote_sha; do
-    [[ -z "${local_ref:-}" ]] && continue
-
-    # Ignore tag pushes and other non-branch refs.
-    if [[ "$remote_ref" != refs/heads/* && "$local_ref" != refs/heads/* ]]; then
-        continue
-    fi
-
-    remote_branch=""
-    if [[ "$remote_ref" == refs/heads/* ]]; then
-        remote_branch="${remote_ref#refs/heads/}"
-    elif [[ "$local_ref" == refs/heads/* ]]; then
-        remote_branch="${local_ref#refs/heads/}"
-    fi
-
-    [[ -z "$remote_branch" ]] && continue
-
-    if [[ "$remote_branch" == "main" ]]; then
-        echo "ERROR: direct push to main is blocked by pre-push guard." >&2
-        echo "" >&2
-        echo "Use worktree/branch + PR merge flow instead." >&2
-        echo "Emergency override (use sparingly):" >&2
-        echo "  ALLOW_MAIN_PUSH=1 git push $REMOTE_NAME ${local_ref#refs/heads/}:main" >&2
-        echo "" >&2
-        echo "Remote: $REMOTE_NAME $REMOTE_URL" >&2
-        exit 1
-    fi
-
-    # Skip claim verification for deleted refs.
-    if [[ "$local_sha" =~ ^0+$ ]]; then
-        continue
-    fi
-
-    if [[ -n "$CLAIM_SCRIPT" && -z "${CHECKED_BRANCHES[$remote_branch]:-}" ]]; then
-        CHECKED_BRANCHES["$remote_branch"]="1"
-        if ! verify_branch_claim "$CLAIM_SCRIPT" "$remote_branch"; then
-            echo "ERROR: push blocked. Branch '$remote_branch' has no active claim." >&2
-            echo "" >&2
-            echo "Create claim before pushing:" >&2
-            echo "  python scripts/meta/check_coordination_claims.py --claim --agent <agent> --project <project> --scope $remote_branch --intent \"<task>\" --branch $remote_branch" >&2
-            echo "" >&2
-            echo "Bypass claim check (not recommended):" >&2
-            echo "  SKIP_CLAIM_VERIFY=1 git push $REMOTE_NAME" >&2
-            exit 1
-        fi
-    fi
-done
-
-exit 0
+echo "Running publish-check..."
+make publish-check
