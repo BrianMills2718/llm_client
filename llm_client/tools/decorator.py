@@ -79,6 +79,7 @@ class ToolInfo:
     description: str
     cost_tier: str  # free | cheap | moderate | expensive
     func: Callable[..., Any]
+    goal: str | None = None
     input_type: type | None = None
     output_type: type | None = None
 
@@ -147,6 +148,7 @@ def tool(
     domain: str = "general",
     description: str = "",
     cost_tier: str = "cheap",
+    goal: str | None = None,
     result_type: type | None = None,
 ) -> Callable[..., Any]:
     """Decorator that wraps an async function with ToolResult, observability, and registration.
@@ -162,6 +164,7 @@ def tool(
         domain: Logical grouping (e.g. "web", "government", "social").
         description: Human-readable description. Falls back to docstring.
         cost_tier: One of "free", "cheap", "moderate", "expensive".
+        goal: Optional canonical goal ID from the goal taxonomy.
 
     Raises:
         TypeError: If the decorated function is not async.
@@ -206,6 +209,7 @@ def tool(
             domain=domain,
             description=desc,
             cost_tier=cost_tier,
+            goal=goal,
             func=func,
             input_type=_input_type,
             output_type=_output_type or result_type,

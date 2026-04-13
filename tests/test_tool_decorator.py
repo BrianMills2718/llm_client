@@ -216,6 +216,17 @@ class TestRegistryAutoPopulation:
         assert hasattr(with_info, "_tool_info")
         assert with_info._tool_info.name == "with_info"
 
+    def test_goal_metadata_attached_to_tool_info(self) -> None:
+        """Optional goal metadata should be retained on the registered tool."""
+
+        @tool(name="goalful", goal="research-quality")
+        async def goalful() -> str:
+            return "ok"
+
+        info = registry.get("goalful")
+        assert info is not None
+        assert info.goal == "research-quality"
+
 
 # ---------------------------------------------------------------------------
 # Test: registry queries
@@ -377,9 +388,11 @@ class TestToolInfoValidation:
                 domain="test",
                 description="test",
                 cost_tier=tier,
+                goal="research-quality",
                 func=lambda: None,
             )
             assert info.cost_tier == tier
+            assert info.goal == "research-quality"
 
     def test_description_fallback_to_docstring(self) -> None:
         """When description is empty, @tool uses the first line of __doc__."""
