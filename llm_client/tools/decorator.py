@@ -80,6 +80,8 @@ class ToolInfo:
     cost_tier: str  # free | cheap | moderate | expensive
     func: Callable[..., Any]
     goal: str | None = None
+    complexity: int | None = None
+    designed_for: str | None = None
     input_type: type | None = None
     output_type: type | None = None
 
@@ -89,6 +91,10 @@ class ToolInfo:
         if self.cost_tier not in allowed:
             raise ValueError(
                 f"cost_tier must be one of {allowed}, got {self.cost_tier!r}"
+            )
+        if self.complexity is not None and not 0 <= self.complexity <= 5:
+            raise ValueError(
+                f"complexity must be between 0 and 5, got {self.complexity!r}"
             )
 
 
@@ -149,6 +155,8 @@ def tool(
     description: str = "",
     cost_tier: str = "cheap",
     goal: str | None = None,
+    complexity: int | None = None,
+    designed_for: str | None = None,
     result_type: type | None = None,
 ) -> Callable[..., Any]:
     """Decorator that wraps an async function with ToolResult, observability, and registration.
@@ -165,6 +173,8 @@ def tool(
         description: Human-readable description. Falls back to docstring.
         cost_tier: One of "free", "cheap", "moderate", "expensive".
         goal: Optional canonical goal ID from the goal taxonomy.
+        complexity: Optional SM complexity level (0-5).
+        designed_for: Optional human-readable routing hint for agent/tool selection.
 
     Raises:
         TypeError: If the decorated function is not async.
@@ -210,6 +220,8 @@ def tool(
             description=desc,
             cost_tier=cost_tier,
             goal=goal,
+            complexity=complexity,
+            designed_for=designed_for,
             func=func,
             input_type=_input_type,
             output_type=_output_type or result_type,

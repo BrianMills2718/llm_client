@@ -216,16 +216,23 @@ class TestRegistryAutoPopulation:
         assert hasattr(with_info, "_tool_info")
         assert with_info._tool_info.name == "with_info"
 
-    def test_goal_metadata_attached_to_tool_info(self) -> None:
-        """Optional goal metadata should be retained on the registered tool."""
+    def test_metadata_attached_to_tool_info(self) -> None:
+        """Optional routing metadata should be retained on the registered tool."""
 
-        @tool(name="goalful", goal="research-quality")
+        @tool(
+            name="goalful",
+            goal="research-quality",
+            complexity=2,
+            designed_for="General research routing",
+        )
         async def goalful() -> str:
             return "ok"
 
         info = registry.get("goalful")
         assert info is not None
         assert info.goal == "research-quality"
+        assert info.complexity == 2
+        assert info.designed_for == "General research routing"
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +387,18 @@ class TestToolInfoValidation:
                 func=lambda: None,
             )
 
+    def test_invalid_complexity_raises(self) -> None:
+        """ToolInfo rejects complexity values outside the supported SM range."""
+        with pytest.raises(ValueError, match="complexity"):
+            ToolInfo(
+                name="bad_complexity",
+                domain="test",
+                description="test",
+                cost_tier="cheap",
+                complexity=6,
+                func=lambda: None,
+            )
+
     def test_valid_cost_tiers_accepted(self) -> None:
         """All four valid cost_tier values are accepted."""
         for tier in ("free", "cheap", "moderate", "expensive"):
@@ -389,10 +408,14 @@ class TestToolInfoValidation:
                 description="test",
                 cost_tier=tier,
                 goal="research-quality",
+                complexity=1,
+                designed_for="Routing smoke test",
                 func=lambda: None,
             )
             assert info.cost_tier == tier
             assert info.goal == "research-quality"
+            assert info.complexity == 1
+            assert info.designed_for == "Routing smoke test"
 
     def test_description_fallback_to_docstring(self) -> None:
         """When description is empty, @tool uses the first line of __doc__."""
