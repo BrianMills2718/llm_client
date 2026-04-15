@@ -1,187 +1,133 @@
-# Handoff: llm_client consolidation & architecture cleanup
+# Handoff: llm_client runtime follow-up relevant to DIGIMON
 
-**Date:** 2026-03-24
-**Session:** Claude Code (Opus 4.6)
-**Duration:** ~5 hours
-**Repos touched:** llm_client, agentic_scaffolding, prompt_eval, project-meta
+Updated: 2026-04-14
+Working branch: `fix/instructor-retry-unwrapping`
 
----
+## Current Posture
 
-## What was done
+- `llm_client` is in maintenance mode, not an open-ended refactor sprint.
+- Plans `#25`, `#26`, and `#27` already landed the GraphRAG-critical provider
+  exhaustion fixes:
+  - monthly spend-cap exhaustion is treated as immediate failover,
+  - exhausted models are cooled down across calls,
+  - multi-hour provider retry hints fail over instead of sleeping inside the
+    call.
+- The branch is ahead of `origin/fix/instructor-retry-unwrapping` by two
+  unpublished commits:
+  - `2308465` `[Plan #178] Add goal metadata to tool decorator`
+  - `3739578` `[Plan #179] Add tool complexity and routing metadata`
 
-### Plan #17: llm_client consolidation (COMPLETE)
-- Relocated 7 governance modules to proper homes per ADR-2026-03-22:
-  - validators → agentic_scaffolding/validators/framework.py (68 tests)
-  - git_utils, agent_spec, task_graph, analyzer → project-meta/scripts/meta/
-  - scoring + experiment_eval → prompt_eval
-- Discovered v2's observability is a regression (deleted SQLite, stubs for experiment_run)
-- Cancelled wholesale v2 swap, cherry-picked 4 context-engineering features instead
-- Archived v2 to ~/projects/archive/llm_client_v2/
-- Updated root CLAUDE.md: scoring → prompt_eval, Langfuse rejected per library guidelines
+Those two commits are repo-local metadata improvements, not GraphRAG blockers,
+but they were not yet pushed before this handoff.
 
-### Plan #12: Module reorganization (COMPLETE)
-- Moved 79 flat modules into 6 subdirectories: core/, execution/, agent/, sdk/, tools/, utils/
-- sys.modules aliasing pattern for transparent compatibility stubs
-- 101 public exports unchanged, 247+ tests pass
+## What Is Finished
 
-### Plan #14: Batch progress & stagnation (COMPLETE)
-- BatchProgressTracker, stagnation detection (rolling error hash), per-item timeout
-- New params: progress_interval, on_batch_progress, stagnation_window, abort_on_stagnation, item_timeout_s
+- Provider exhaustion classification is materially better than it was during the
+  failed DIGIMON rebuild attempts.
+- Routing now suppresses recently exhausted models instead of re-probing them
+  on every chunk.
+- Long retry windows now fail over rather than sleeping for hours inside a
+  single batch call.
+- Tool decorator metadata now includes:
+  - `goal`
+  - `complexity`
+  - `routing hints`
 
-### Plan #13: SDK adapter investigation (COMPLETE — no change needed)
-- Subprocess fallback is load-bearing (1610+ observed calls, handles real SDK failures)
+The new tool metadata is implemented and tested, but downstream consumers have
+not yet been broadly updated to exploit it.
 
-### Other completed work
-- Fixed agent loop fallback bypass bug (text_runtime.py early returns removed)
-- Code smell fixes: 6 silent except:pass → warnings, dead imports, misleading function name
-- Deleted 28 zero-importer compatibility stubs, fixed all internal canonical paths
-- Enabled litellm.enable_json_schema_validation + retryable JSONSchemaValidationError
-- Plan #8: subtree CLAUDE.md for 6 new subdirectories
-- Plan #15 step 1: ClientConfig default fields added
-- Root CLAUDE.md: refined "don't speculate" → "don't add code paths for hypothetical scenarios"
-- BACKLOG items resolved/closed
-- TODOs added to Digimon, sam_gov, active-stack-core ISSUES.md files
+## Unfinished Work
 
----
+### 1. Plan `#91` is still the live shared-runtime blocker for DIGIMON controller churn
 
-## Current state
+Plan: `docs/plans/91_pending_atom_submit_churn_requires_todo_progress.md`
 
-| Repo | Branch | Pushed | Key state |
-|------|--------|--------|-----------|
-| llm_client | main + digimon-stable (synced) | Yes | 101 exports, 6 subdirs, 29 stubs remaining |
-| agentic_scaffolding | trip-backup-* | Yes | validators/framework.py added |
-| prompt_eval | main | Yes | scoring.py + experiment_eval.py added |
-| project-meta | master | Yes | Plan #17 complete, handoff docs |
+Problem:
 
----
+- repeated `submit_answer` attempts rejected for `pending_atoms` can still
+  escalate into forced-terminal behavior;
+- that is the wrong shared policy for DIGIMON’s unresolved-hop failure family;
+- the correct shared behavior is to require genuine TODO/evidence progress
+  before another submit is attempted.
 
-## Remaining llm_client work (all planned, none urgent)
+Why this still matters:
 
-### Plan #15 step 2: Wire ClientConfig defaults into signatures
-**File:** `docs/plans/15_centralize-defaults.md`
-**What:** Change `timeout: int = 60` → `timeout: int | None = None` in 16+ signatures.
-Resolve to `config.default_timeout` at call time.
-**Blocker:** The resolution needs to happen in the impl functions (text_runtime,
-structured_runtime, batch_runtime), not in the client.py facade. The call chain
-passes `timeout` through multiple layers. An earlier attempt was reverted because
-tests broke — mock targets reference these defaults.
-**Step 1 done:** ClientConfig has the fields and resolve_*() methods.
+- DIGIMON Plan `#30` should not hand-roll an app-local patch for this;
+- if the controller keeps churning around unresolved atoms, the shared runtime
+  is still the right fix surface.
 
-### Plan #16: Remove remaining 29 compatibility stubs
-**File:** `docs/plans/16_remove-compatibility-stubs.md`
-**What:** 28 stubs already deleted. 29 remain — they're imported by `__init__.py`
-and tests. To delete them: update `__init__.py` imports to canonical paths, update
-test mock targets, then delete stubs.
-**Key insight:** The `__init__.py` still does `from llm_client.client import ...`
-(old path via stub) instead of `from llm_client.core.client import ...`. Same for
-`mcp_agent` (62 references), `errors` (7), etc.
+Files:
 
-### Plan #17: text_runtime sync/async deduplication
-**File:** `docs/plans/17_text-runtime-dedup.md`
-**What:** `_call_llm_impl` and `_acall_llm_impl` are ~400 lines each, near
-identical. Also has 86-line rebinding blocks. Strategy: async-first, make
-sync wrap async via asyncio.run(). Pre-investigation needed: measure
-asyncio.run() overhead.
+- `llm_client/agent/mcp_turn_tools.py`
+- `llm_client/agent/mcp_turn_outcomes.py`
+- `llm_client/agent/mcp_turn_execution.py`
+- `tests/test_mcp_agent.py`
 
----
+Acceptance already written in the plan:
 
-## Downstream projects needing llm_client migration
+- pending-atom submit retries are suppressed until TODO progress occurs;
+- the runtime no longer emits forced-final acceptance for this family;
+- existing submit-evidence gating remains green.
 
-| Project | Issue | Files | Priority |
-|---------|-------|-------|----------|
-| active-stack-core | Private API imports (_route_acall, etc.) | 95 | High |
-| Digimon_for_KG_application | LiteLLMProvider in 40 files | 51 | Medium |
-| sam_gov | Deprecated imports (LiteLLMClient, etc.) | 62 | Low (frozen) |
+### 2. The new tool-routing metadata is landed but not yet widely consumed
 
-TODOs added to each project's ISSUES.md.
+Commits:
 
----
+- `2308465` goal metadata
+- `3739578` complexity/routing metadata
 
-## Gotchas for next agent
+What is still unfinished:
 
-- **Pre-commit hooks:** llm_client has doc-coupling, API reference sync, plan
-  status consistency, and branch protection (main requires `ALLOW_MAIN_COMMIT=1`
-  / `ALLOW_MAIN_PUSH=1`). Regenerate API docs after any public surface change:
-  `python scripts/meta/generate_api_reference.py --write`
+- deciding which downstream planners/runtimes should use the new metadata first;
+- validating that the metadata helps routing choices instead of just enriching
+  the registry surface;
+- documenting the intended consumer contract more explicitly if these fields are
+  now considered stable substrate.
 
-- **sys.modules stubs:** The 29 remaining stubs at root use `sys.modules[__name__] = _canonical`
-  to transparently alias old paths to new subdirectories. This makes ALL attributes
-  (including privates and mock targets) work. Don't replace with `from X import *`
-  — that breaks private names.
+This is not a blocker for DIGIMON recovery, but it is open follow-through.
 
-- **project-meta .doc-coupling-acks:** YAML list with `path` + `reason` keys.
-  Post-commit hook auto-deletes the file. agentic_scaffolding's hook doesn't
-  support ack files — update CLAUDE.md "Last verified" date instead.
+### 3. DIGIMON rebuild resilience is improved, not fully proved
 
-- **prompt_eval scoring.py** still has `from llm_client import io_log` (late import
-  inside ascore_output). This works because prompt_eval depends on llm_client. If
-  io_log ever moves, this breaks.
+The retry/failover code is in much better shape, but one thing still lacks a
+full end-to-end proof:
 
-- **experiment_summary stays in llm_client** — 3 core observability modules import
-  it. Don't move it.
+- a successful complete long GraphRAG rebuild under real provider pressure,
+  with quotas rotating and fallback legs degrading in different ways.
 
-- **git_utils.py** exists as both a root stub AND in utils/. The root stub was
-  recreated by another agent for import compatibility. The canonical location is
-  `llm_client/utils/git_utils.py`.
+The code changes are real. The remaining uncertainty is operational proof, not
+obvious missing implementation.
 
-- **Langfuse rejected:** Per root CLAUDE.md "observability is tier 1, libraries
-  are tier 2." Don't recommend adding Langfuse.
+## Recommended Next Steps
 
-- **All personal repos use SSH** (`git@github.com:BrianMills2718/...`).
-  `gh auth` active = `brian-steno` (work account).
+1. Push this branch so the tool-metadata commits and current handoff are no
+   longer local-only.
+2. When DIGIMON restarts controller anti-churn work, implement Plan `#91`
+   before app-local controller patches.
+3. After the next real long-running DIGIMON rebuild or benchmark batch, review
+   whether any remaining provider failure mode still belongs in shared runtime.
+4. Decide whether `goal` / `complexity` / routing metadata should be treated as
+   stable planner contract or as experimental substrate hints.
 
----
+## Read First
 
-## Session: 2026-03-25/26 — Strategic Review & Cleanup
+1. `CLAUDE.md`
+2. `docs/plans/01_master-roadmap.md`
+3. `docs/plans/CLAUDE.md`
+4. `docs/plans/91_pending_atom_submit_churn_requires_todo_progress.md`
+5. `llm_client/tools/decorator.py`
+6. `tests/test_tool_decorator.py`
 
-**Agent:** Claude Code (Opus 4.6)
-**Duration:** ~8 hours across 2 sessions
+## Verification State
 
-### What was done
+The tool-metadata commits already include test coverage in
+`tests/test_tool_decorator.py`. This handoff update itself is documentation-only
+and does not change code behavior.
 
-#### Strategic review
-- Assessed value proposition, alternatives landscape, adoption (398 files across 26 projects)
-- Identified core value (observability, policy enforcement) vs redundant layers (retry/fallback)
-- Declared maintenance mode: stop internal cleanup, invest in consumer projects
+## Bottom Line
 
-#### Repo declutter (-15,226 lines from tracked files)
-- Archived 8 stale docs + 34 meta-patterns + 6 worktree-coordination scripts
-- Rewrote README from 1002 to 169 lines
-- Created docs/guides/ (4 focused guides extracted from README)
-- Rewrote Makefile as consumer observability interface
+`llm_client` is not the main blocker anymore. The critical GraphRAG quota and
+retry fixes are already landed. The two unfinished truths are:
 
-#### Infrastructure improvements
-- Externalized prompt assets to ~/projects/prompts/ (LLM_CLIENT_PROMPT_ASSET_ROOT)
-- Added LiteLLM observer callback for unmigrated projects (litellm_observer_callback.py)
-- Enabled Instructor validation re-ask (max_retries=0 → 2)
-- Added error_type, execution_path, retry_count to observability schema
-- Fixed test noise polluting observability DB (conftest.py autouse fixture)
-- Added explicit ImportError for 8 extracted functions (clear migration messages)
-
-#### Plan execution
-- Plan 16: Removed all 29 compatibility stubs, canonicalized imports
-- Plan 08: Marked Complete (subtree instructions exist)
-- Plans 15, 17: Cancelled (pure refactoring, no consumer value)
-
-#### Documentation audit
-- Superseded ADR-0008 (task_graph/experiment_eval extracted)
-- Fixed relationships.yaml stale module references
-- Updated master roadmap (replaced 80-line stale checkpoint narrative)
-- Added embed/aembed to README API table (16 functions, not 14)
-- Listed all 10 task profiles in README
-
-#### Skills created
-- /create-skill (global) — skill-making skill
-- /setup-project-makefile (projects-level) — standardized Makefile template
-
-### Known issues from this session
-- Plan 16 stub removal broke DIGIMON benchmark runner (module-level imports)
-- Plan 18 error budget wiring had syntax error in mcp_agent.py (rescued by other agent)
-- Downstream consumers need migration: DIGIMON (6 functions), agent_ontology (templates)
-- TEMPORARY migration notes added to DIGIMON and agent_ontology CLAUDE.md files
-
-### Gotchas for next agent
-- Other agents added: tool-call observability (Wave 0/1), rubric registry, workflow builder, log maintenance — these are on tool-observability-wave1 branch, not merged to main
-- Main is stable at 55497fc but tool-observability-wave1 has 7 additional commits
-- Don't re-add compatibility stubs — force consumers to use canonical paths
-- The rescue branch (rescue/2026-03-26-llm-client-mcp-agent-wip) has the broken error budget wiring — don't use it
+1. Plan `#91` still needs to land if DIGIMON’s submit-churn family stays live.
+2. The new tool-routing metadata exists, but its real consumer contract is not
+   yet fully operationalized.

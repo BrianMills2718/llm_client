@@ -33,10 +33,11 @@ When working in this repo, read these first:
 
 1. [docs/plans/01_master-roadmap.md](docs/plans/01_master-roadmap.md)
 2. [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md)
-3. [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
-4. [docs/API_REFERENCE.html](docs/API_REFERENCE.html) for the generated browser reference
-5. [scripts/meta/generate_api_reference.py](scripts/meta/generate_api_reference.py) to regenerate the docs
-6. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)
+3. [docs/HANDOFF.md](docs/HANDOFF.md)
+4. [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+5. [docs/API_REFERENCE.html](docs/API_REFERENCE.html) for the generated browser reference
+6. [scripts/meta/generate_api_reference.py](scripts/meta/generate_api_reference.py) to regenerate the docs
+7. [OpenClaw success-criteria contract](.openclaw/success-criteria.yaml)
 
 ---
 
